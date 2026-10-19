@@ -1,3 +1,5 @@
+# ruff: noqa: E501
+"""One-off Token Factory capability probe; results in docs/plan/tf-probe.md."""
 import json
 import os
 import time
