@@ -1,0 +1,668 @@
+{
+ "_comment": "FIXTURE inputs for the Iterator cassettes (Task 9). Sites + OrderFields schema from tests/fixtures/cassettes/adapter/demo_sites.json; adapter v0 replayed from Task 6's recorded adapter cassettes; case inputs from offramp-demo-app tests/fixtures (tickets, emails, refunds); references are the demo fixtures' expected answers (refunds) or hand labels; candidate outputs are hand-written fixture failures, not recorded model outputs.",
+ "schemas": {
+  "OrderFields": {
+   "properties": {
+    "order_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Order id such as HH-48213, null if not stated",
+     "title": "Order Id"
+    },
+    "customer_name": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Full name of the customer as written",
+     "title": "Customer Name"
+    },
+    "customer_email": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Customer's email address",
+     "title": "Customer Email"
+    },
+    "order_date": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Order date as YYYY-MM-DD, null if not stated",
+     "title": "Order Date"
+    },
+    "total_amount": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Order total as a plain number, no symbol",
+     "title": "Total Amount"
+    },
+    "currency": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "ISO 4217 currency code, e.g. EUR",
+     "title": "Currency"
+    },
+    "issue": {
+     "enum": [
+      "damaged",
+      "missing_item",
+      "wrong_item",
+      "late_delivery",
+      "billing_error",
+      "other"
+     ],
+     "title": "Issue",
+     "type": "string"
+    }
+   },
+   "required": [
+    "order_id",
+    "customer_name",
+    "customer_email",
+    "order_date",
+    "total_amount",
+    "currency",
+    "issue"
+   ],
+   "title": "OrderFields",
+   "type": "object"
+  }
+ },
+ "tiers": {
+  "cs_01": "lightning",
+  "cs_03": "lightning",
+  "cs_05": "super"
+ },
+ "sites": {
+  "cs_01": {
+   "site": {
+    "id": "cs_01",
+    "file": "helphub/inbox/triage.py",
+    "lines": [
+     31,
+     39
+    ],
+    "kind": "chat",
+    "sdk": "openai",
+    "call": "client.chat.completions.create",
+    "function": "triage_ticket",
+    "source_model": "gpt-4o-mini",
+    "prompt_source": "fstring",
+    "prompt_ref": "TRIAGE_SYSTEM_PROMPT",
+    "template": {
+     "system": "You are the ticket router for HelpHub, a customer support platform.\nClassify the customer's ticket into exactly one queue:\n\n- billing: charges, invoices, payment methods, subscription pricing\n- shipping: delivery status, tracking, delays, lost parcels, address changes\n- returns_refunds: returns, exchanges, damaged or wrong items, refund requests\n- technical_support: bugs, errors, integrations, API and webhook problems\n- account_access: login, password reset, two-factor, locked or compromised accounts\n- general: anything else, including feedback, partnerships and sales questions\n\nReply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation.",
+     "user": "Subject: {subject}\n\n{body}",
+     "variables": [
+      "subject",
+      "body"
+     ]
+    },
+    "params": {
+     "max_tokens": 16,
+     "temperature": 0
+    },
+    "contract": {
+     "task_type": "classification",
+     "output": "label",
+     "labels": [
+      "billing",
+      "shipping",
+      "returns_refunds",
+      "technical_support",
+      "account_access",
+      "general"
+     ]
+    },
+    "confidence": 1.0,
+    "flags": []
+   },
+   "adapter_v0": {
+    "site_id": "cs_01",
+    "version": 0,
+    "tier": null,
+    "spec": {
+     "system_prompt": null,
+     "user_prefix": "",
+     "user_suffix": "",
+     "few_shot": [],
+     "response_format": null,
+     "json_mode_fallback": false,
+     "tools": null,
+     "tool_choice": null,
+     "reasoning": "off",
+     "max_tokens": 16,
+     "temperature": 0.0,
+     "extra_body": {}
+    },
+    "patch": null,
+    "notes": [
+     "Classification task with fixed label set; no JSON parsing required.",
+     "System prompt already constrains output to exact queue name.",
+     "Temperature 0 and max_tokens=16 keep replies deterministic and minimal.",
+     "No tools or structured output used in this call site.",
+     "Source model gpt-4o-mini is non-reasoning; reasoning off matches behavior."
+    ],
+    "risk_flags": [
+     "label_drift: Nemotron may occasionally add whitespace or newline before/after label",
+     "case_variance: Model might capitalize label (e.g., 'Billing') despite lower-case instruction",
+     "extra_token: With max_tokens=16, reasoning prose could leak if reasoning accidentally enabled",
+     "punctuation_leak: Rarely appends period or colon after label despite 'no punctuation' rule",
+     "ambiguity_fallback: On borderline tickets, may pick 'general' more often than source model"
+    ],
+    "change_log": []
+   },
+   "cases": [
+    {
+     "case": {
+      "id": "cs_01:002",
+      "site_id": "cs_01",
+      "variables": {
+       "subject": "Webhook endpoint receiving 500s since Tuesday deploy",
+       "body": "Since your Tuesday release our webhook consumer at https://hooks.northwind.example/helphub has been getting malformed payloads. Before the release the `ticket.updated` event looked like:\n\n{\"event\": \"ticket.updated\", \"data\": {\"id\": 8812, \"status\": \"open\"}}\n\nNow we get:\n\n{\"event\": \"ticket.updated\", \"data\": {\"id\": 8812, \"status\": \"open\", \"labels\": [null]}}\n\nand our JSON schema validator rejects the null entry, so our handler returns 500 and your side retries. We have now had 41 retries on a single event and the retry queue keeps growing. Stack trace from our side:\n\n  File \"/srv/app/handlers.py\", line 88, in on_ticket_updated\n    validate(event, TICKET_SCHEMA)\njsonschema.exceptions.ValidationError: None is not of type 'string'\n\nWe have not changed anything on our side. Can someone tell us whether the null label is intended and whether the retries can be paused for our workspace (id ws_7741) until we ship a tolerant validator? This is blocking our support team from seeing status changes in their dashboard."
+      },
+      "input_messages": [
+       {
+        "role": "system",
+        "content": "You are the ticket router for HelpHub, a customer support platform.\nClassify the customer's ticket into exactly one queue:\n\n- billing: charges, invoices, payment methods, subscription pricing\n- shipping: delivery status, tracking, delays, lost parcels, address changes\n- returns_refunds: returns, exchanges, damaged or wrong items, refund requests\n- technical_support: bugs, errors, integrations, API and webhook problems\n- account_access: login, password reset, two-factor, locked or compromised accounts\n- general: anything else, including feedback, partnerships and sales questions\n\nReply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation."
+       },
+       {
+        "role": "user",
+        "content": "Subject: Webhook endpoint receiving 500s since Tuesday deploy\n\nSince your Tuesday release our webhook consumer at https://hooks.northwind.example/helphub has been getting malformed payloads. Before the release the `ticket.updated` event looked like:\n\n{\"event\": \"ticket.updated\", \"data\": {\"id\": 8812, \"status\": \"open\"}}\n\nNow we get:\n\n{\"event\": \"ticket.updated\", \"data\": {\"id\": 8812, \"status\": \"open\", \"labels\": [null]}}\n\nand our JSON schema validator rejects the null entry, so our handler returns 500 and your side retries. We have now had 41 retries on a single event and the retry queue keeps growing. Stack trace from our side:\n\n  File \"/srv/app/handlers.py\", line 88, in on_ticket_updated\n    validate(event, TICKET_SCHEMA)\njsonschema.exceptions.ValidationError: None is not of type 'string'\n\nWe have not changed anything on our side. Can someone tell us whether the null label is intended and whether the retries can be paused for our workspace (id ws_7741) until we ship a tolerant validator? This is blocking our support team from seeing status changes in their dashboard."
+       }
+      ],
+      "expected_kind": "label",
+      "split": "dev"
+     },
+     "reference": "technical_support",
+     "candidate": "technical_support\n\nThe customer reports webhook payload failures after the Tuesday release."
+    },
+    {
+     "case": {
+      "id": "cs_01:003",
+      "site_id": "cs_01",
+      "variables": {
+       "subject": "Locked out, lost my phone",
+       "body": "My phone was stolen and it had my authenticator app. I do not have the recovery codes. I cannot sign in to the workspace and my team needs access today."
+      },
+      "input_messages": [
+       {
+        "role": "system",
+        "content": "You are the ticket router for HelpHub, a customer support platform.\nClassify the customer's ticket into exactly one queue:\n\n- billing: charges, invoices, payment methods, subscription pricing\n- shipping: delivery status, tracking, delays, lost parcels, address changes\n- returns_refunds: returns, exchanges, damaged or wrong items, refund requests\n- technical_support: bugs, errors, integrations, API and webhook problems\n- account_access: login, password reset, two-factor, locked or compromised accounts\n- general: anything else, including feedback, partnerships and sales questions\n\nReply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation."
+       },
+       {
+        "role": "user",
+        "content": "Subject: Locked out, lost my phone\n\nMy phone was stolen and it had my authenticator app. I do not have the recovery codes. I cannot sign in to the workspace and my team needs access today."
+       }
+      ],
+      "expected_kind": "label",
+      "split": "dev"
+     },
+     "reference": "account_access",
+     "candidate": "Account Access"
+    },
+    {
+     "case": {
+      "id": "cs_01:006",
+      "site_id": "cs_01",
+      "variables": {
+       "subject": "Cancelar suscripción y devolución",
+       "body": "Hola, quiero cancelar mi plan anual que renové hace 10 días y que me devuelvan el dinero. No lo he usado nada. Gracias."
+      },
+      "input_messages": [
+       {
+        "role": "system",
+        "content": "You are the ticket router for HelpHub, a customer support platform.\nClassify the customer's ticket into exactly one queue:\n\n- billing: charges, invoices, payment methods, subscription pricing\n- shipping: delivery status, tracking, delays, lost parcels, address changes\n- returns_refunds: returns, exchanges, damaged or wrong items, refund requests\n- technical_support: bugs, errors, integrations, API and webhook problems\n- account_access: login, password reset, two-factor, locked or compromised accounts\n- general: anything else, including feedback, partnerships and sales questions\n\nReply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation."
+       },
+       {
+        "role": "user",
+        "content": "Subject: Cancelar suscripción y devolución\n\nHola, quiero cancelar mi plan anual que renové hace 10 días y que me devuelvan el dinero. No lo he usado nada. Gracias."
+       }
+      ],
+      "expected_kind": "label",
+      "split": "dev"
+     },
+     "reference": "returns_refunds",
+     "candidate": "billing"
+    }
+   ]
+  },
+  "cs_03": {
+   "site": {
+    "id": "cs_03",
+    "file": "helphub/orders/extract.py",
+    "lines": [
+     47,
+     57
+    ],
+    "kind": "chat",
+    "sdk": "anthropic",
+    "call": "client.messages.create",
+    "function": "extract_order",
+    "source_model": "claude-sonnet-4-5",
+    "prompt_source": "fstring",
+    "prompt_ref": "EXTRACT_SYSTEM_PROMPT",
+    "template": {
+     "system": "You extract structured order data from customer support emails.\nReply with a single JSON object that validates against the JSON schema given in the user message.\nUse null for any field the email does not state; never guess.\nWrite dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot\nas the decimal separator. Keep names exactly as written. The email may be in any language.\nDo not wrap the JSON in markdown and do not add any commentary.",
+     "user": "JSON schema:\n<pydantic:OrderFields>\n\nEmail:\n{email}",
+     "variables": [
+      "email"
+     ]
+    },
+    "params": {
+     "max_tokens": 1024,
+     "system": "You extract structured order data from customer support emails.\nReply with a single JSON object that validates against the JSON schema given in the user message.\nUse null for any field the email does not state; never guess.\nWrite dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot\nas the decimal separator. Keep names exactly as written. The email may be in any language.\nDo not wrap the JSON in markdown and do not add any commentary."
+    },
+    "contract": {
+     "task_type": "json_extraction",
+     "output": "json"
+    },
+    "confidence": 1.0,
+    "flags": []
+   },
+   "adapter_v0": {
+    "site_id": "cs_03",
+    "version": 0,
+    "tier": null,
+    "spec": {
+     "system_prompt": null,
+     "user_prefix": "",
+     "user_suffix": "",
+     "few_shot": [],
+     "response_format": {
+      "type": "json_schema",
+      "json_schema": {
+       "name": "OrderFields",
+       "strict": true,
+       "schema": {
+        "properties": {
+         "order_id": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "description": "Order id such as HH-48213, null if not stated",
+          "title": "Order Id"
+         },
+         "customer_name": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "description": "Full name of the customer as written",
+          "title": "Customer Name"
+         },
+         "customer_email": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "description": "Customer's email address",
+          "title": "Customer Email"
+         },
+         "order_date": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "description": "Order date as YYYY-MM-DD, null if not stated",
+          "title": "Order Date"
+         },
+         "total_amount": {
+          "anyOf": [
+           {
+            "type": "number"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "description": "Order total as a plain number, no symbol",
+          "title": "Total Amount"
+         },
+         "currency": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "description": "ISO 4217 currency code, e.g. EUR",
+          "title": "Currency"
+         },
+         "issue": {
+          "enum": [
+           "damaged",
+           "missing_item",
+           "wrong_item",
+           "late_delivery",
+           "billing_error",
+           "other"
+          ],
+          "title": "Issue",
+          "type": "string"
+         }
+        },
+        "required": [
+         "order_id",
+         "customer_name",
+         "customer_email",
+         "order_date",
+         "total_amount",
+         "currency",
+         "issue"
+        ],
+        "title": "OrderFields",
+        "type": "object",
+        "additionalProperties": false
+       }
+      }
+     },
+     "json_mode_fallback": false,
+     "tools": null,
+     "tool_choice": null,
+     "reasoning": "off",
+     "max_tokens": 1024,
+     "temperature": 0.0,
+     "extra_body": {}
+    },
+    "patch": null,
+    "notes": [
+     "temperature: not set in source -> 0 (deterministic eval)",
+     "system: Anthropic system= -> leading system message (rendered into each case)",
+     "Source model is non-reasoning; task is deterministic JSON extraction with strict schema.",
+     "Token Factory supports guided JSON decoding on all tiers; using json_schema for zero-retry validation.",
+     "Temperature forced to 0 for deterministic eval; max_tokens unchanged at 1024.",
+     "System prompt already pins output format exactly; no user_suffix needed.",
+     "No tools or streaming involved; single-turn extraction."
+    ],
+    "risk_flags": [
+     "null_handling: Nemotron may omit keys instead of writing explicit null; downstream parser must treat missing as null.",
+     "date_format: Model may occasionally emit DD/MM/YYYY or month names despite schema; schema validation will catch but repair retry adds latency.",
+     "currency_code: Rarely emits symbol (€) instead of ISO code (EUR); schema expects ISO 4217.",
+     "amount_format: May use comma decimal separator in non-English emails; schema expects dot.",
+     "markdown_wrapping: Despite instruction, Lightning tier sometimes wraps JSON in ```json fences; parser must strip fences."
+    ],
+    "change_log": []
+   },
+   "cases": [
+    {
+     "case": {
+      "id": "cs_03:001",
+      "site_id": "cs_03",
+      "variables": {
+       "email": "From: Katharina Müller <k.mueller@example.at>\nTo: support@helphub.example\nDate: Thu, 4 Sep 2025 07:30:00 +0200\nSubject: Bestellung HH-30417 unvollständig\nContent-Type: text/plain; charset=\"UTF-8\"\n\nGuten Tag,\n\nich habe am 25.08.2025 die Bestellung HH-30417 aufgegeben (Gesamtbetrag 62,90 €).\nHeute ist das Paket in Wien angekommen, aber das Ladekabel fehlt. Auf dem\nLieferschein steht es trotzdem. Bitte senden Sie mir das fehlende Kabel zu.\n\nMit freundlichen Grüßen\nKatharina Müller\n"
+      },
+      "input_messages": [
+       {
+        "role": "system",
+        "content": "You extract structured order data from customer support emails.\nReply with a single JSON object that validates against the JSON schema given in the user message.\nUse null for any field the email does not state; never guess.\nWrite dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot\nas the decimal separator. Keep names exactly as written. The email may be in any language.\nDo not wrap the JSON in markdown and do not add any commentary."
+       },
+       {
+        "role": "user",
+        "content": "JSON schema:\n{\"properties\": {\"order_id\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order id such as HH-48213, null if not stated\", \"title\": \"Order Id\"}, \"customer_name\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Full name of the customer as written\", \"title\": \"Customer Name\"}, \"customer_email\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Customer's email address\", \"title\": \"Customer Email\"}, \"order_date\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order date as YYYY-MM-DD, null if not stated\", \"title\": \"Order Date\"}, \"total_amount\": {\"anyOf\": [{\"type\": \"number\"}, {\"type\": \"null\"}], \"description\": \"Order total as a plain number, no symbol\", \"title\": \"Total Amount\"}, \"currency\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"ISO 4217 currency code, e.g. EUR\", \"title\": \"Currency\"}, \"issue\": {\"enum\": [\"damaged\", \"missing_item\", \"wrong_item\", \"late_delivery\", \"billing_error\", \"other\"], \"title\": \"Issue\", \"type\": \"string\"}}, \"required\": [\"order_id\", \"customer_name\", \"customer_email\", \"order_date\", \"total_amount\", \"currency\", \"issue\"], \"title\": \"OrderFields\", \"type\": \"object\"}\n\nEmail:\nFrom: Katharina Müller <k.mueller@example.at>\nTo: support@helphub.example\nDate: Thu, 4 Sep 2025 07:30:00 +0200\nSubject: Bestellung HH-30417 unvollständig\nContent-Type: text/plain; charset=\"UTF-8\"\n\nGuten Tag,\n\nich habe am 25.08.2025 die Bestellung HH-30417 aufgegeben (Gesamtbetrag 62,90 €).\nHeute ist das Paket in Wien angekommen, aber das Ladekabel fehlt. Auf dem\nLieferschein steht es trotzdem. Bitte senden Sie mir das fehlende Kabel zu.\n\nMit freundlichen Grüßen\nKatharina Müller\n"
+       }
+      ],
+      "expected_kind": "json",
+      "split": "dev"
+     },
+     "reference": "{\"order_id\": \"HH-30417\", \"customer_name\": \"Katharina Müller\", \"customer_email\": \"k.mueller@example.at\", \"order_date\": \"2025-08-25\", \"total_amount\": 62.9, \"currency\": \"EUR\", \"issue\": \"missing_item\"}",
+     "candidate": "```json\n{\"order_id\": \"HH-30417\", \"customer_name\": \"Katharina Müller\", \"customer_email\": \"k.mueller@example.at\", \"order_date\": \"25.08.2025\", \"total_amount\": \"62,90\", \"currency\": \"EUR\", \"issue\": \"missing_item\"}\n```"
+    },
+    {
+     "case": {
+      "id": "cs_03:002",
+      "site_id": "cs_03",
+      "variables": {
+       "email": "From: Lena Fischer <lena.fischer@example.de>\nTo: support@helphub.example\nDate: Fri, 5 Sep 2025 10:44:21 +0200\nSubject: Doppelt abgebucht / charged twice (HH-42018)\n\nHello,\n\nfor order HH-42018 from 2025-09-06 (sic, my bank statement date) I was charged\n28,50 € twice. Please refund one of the two payments.\n\nLena Fischer\nlena.fischer@example.de\n"
+      },
+      "input_messages": [
+       {
+        "role": "system",
+        "content": "You extract structured order data from customer support emails.\nReply with a single JSON object that validates against the JSON schema given in the user message.\nUse null for any field the email does not state; never guess.\nWrite dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot\nas the decimal separator. Keep names exactly as written. The email may be in any language.\nDo not wrap the JSON in markdown and do not add any commentary."
+       },
+       {
+        "role": "user",
+        "content": "JSON schema:\n{\"properties\": {\"order_id\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order id such as HH-48213, null if not stated\", \"title\": \"Order Id\"}, \"customer_name\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Full name of the customer as written\", \"title\": \"Customer Name\"}, \"customer_email\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Customer's email address\", \"title\": \"Customer Email\"}, \"order_date\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order date as YYYY-MM-DD, null if not stated\", \"title\": \"Order Date\"}, \"total_amount\": {\"anyOf\": [{\"type\": \"number\"}, {\"type\": \"null\"}], \"description\": \"Order total as a plain number, no symbol\", \"title\": \"Total Amount\"}, \"currency\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"ISO 4217 currency code, e.g. EUR\", \"title\": \"Currency\"}, \"issue\": {\"enum\": [\"damaged\", \"missing_item\", \"wrong_item\", \"late_delivery\", \"billing_error\", \"other\"], \"title\": \"Issue\", \"type\": \"string\"}}, \"required\": [\"order_id\", \"customer_name\", \"customer_email\", \"order_date\", \"total_amount\", \"currency\", \"issue\"], \"title\": \"OrderFields\", \"type\": \"object\"}\n\nEmail:\nFrom: Lena Fischer <lena.fischer@example.de>\nTo: support@helphub.example\nDate: Fri, 5 Sep 2025 10:44:21 +0200\nSubject: Doppelt abgebucht / charged twice (HH-42018)\n\nHello,\n\nfor order HH-42018 from 2025-09-06 (sic, my bank statement date) I was charged\n28,50 € twice. Please refund one of the two payments.\n\nLena Fischer\nlena.fischer@example.de\n"
+       }
+      ],
+      "expected_kind": "json",
+      "split": "dev"
+     },
+     "reference": "{\"order_id\": \"HH-42018\", \"customer_name\": \"Lena Fischer\", \"customer_email\": \"lena.fischer@example.de\", \"order_date\": \"2025-09-06\", \"total_amount\": 28.5, \"currency\": \"EUR\", \"issue\": \"billing_error\"}",
+     "candidate": "{\"order_id\": \"HH-42018\", \"customer_name\": \"Lena Fischer\", \"customer_email\": \"lena.fischer@example.de\", \"order_date\": null, \"total_amount\": 28.5, \"currency\": \"€\", \"issue\": \"billing_error\"}"
+    }
+   ]
+  },
+  "cs_05": {
+   "site": {
+    "id": "cs_05",
+    "file": "helphub/refunds/plan.py",
+    "lines": [
+     68,
+     89
+    ],
+    "kind": "chat",
+    "sdk": "openai",
+    "call": "client.chat.completions.create",
+    "function": "plan_refund",
+    "source_model": "o3",
+    "prompt_source": "fstring",
+    "prompt_ref": "REFUND_POLICY",
+    "template": {
+     "system": "You compute subscription refunds for HelpHub billing. Follow this policy exactly, step by step, and show your arithmetic.\n\n1. Tiered price. The list price is in USD per seat per billing period. Seats are priced in graduated tiers: seats 1-10 cost 100% of list price, seats 11-50 cost 85%, seats 51 and above cost 70%. Subtotal = sum over the tiers of (seats in that tier x list price x tier rate). Round the subtotal to 2 decimals, half up.\n2. Coupon. Take the coupon percentage off the subtotal and round to 2 decimals, half up. The result is the USD amount paid for the period.\n3. Days used. Days used = the number of days from the period start date to the cancellation date, counting both dates. Unused days = billing period days - days used, never below 0.\n4. Refundable amount in USD. If the billing period is 365 days and days used is 14 or fewer, the refundable amount is the full amount paid. Otherwise, prorated = amount paid x unused days / billing period days, rounded to 2 decimals half up; then subtract a 3% processing fee on the prorated amount, rounded to 2 decimals half up. The fee is not charged on a full refund.\n5. Prior refunds. Subtract the USD refunds already issued from the refundable amount. If the result is negative, it is 0.\n6. Currency. Multiply by the exchange rate recorded at purchase (units of the customer's currency per 1 USD) and round half up to the currency's minor unit: 2 decimals for USD, EUR and GBP, 0 decimals for JPY.\n7. Show your working, then put the final refund in the customer's currency alone on the last line as `ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator).",
+     "user": "Plan: {request_plan_name}, billing period {request_period_days} days\nList price: {request_list_price_usd} USD per seat per period\nSeats: {request_seats}\nPeriod start: {request_period_start}\nCancelled on: {request_cancel_date}\nCoupon: {request_coupon_pct}% off\nRefunds already issued: {request_prior_refund_usd} USD\nCustomer paid in {request_currency} at {request_fx_rate} {request_currency} per 1 USD\n\nHow much do we refund, in {request_currency}?",
+     "variables": [
+      "request_plan_name",
+      "request_period_days",
+      "request_list_price_usd",
+      "request_seats",
+      "request_period_start",
+      "request_cancel_date",
+      "request_coupon_pct",
+      "request_prior_refund_usd",
+      "request_currency",
+      "request_fx_rate"
+     ]
+    },
+    "params": {
+     "max_completion_tokens": 16000
+    },
+    "contract": {
+     "task_type": "reasoning",
+     "output": "text",
+     "reasoning_heavy": true
+    },
+    "confidence": 1.0,
+    "flags": []
+   },
+   "adapter_v0": {
+    "site_id": "cs_05",
+    "version": 0,
+    "tier": null,
+    "spec": {
+     "system_prompt": null,
+     "user_prefix": "",
+     "user_suffix": "",
+     "few_shot": [],
+     "response_format": null,
+     "json_mode_fallback": false,
+     "tools": null,
+     "tool_choice": null,
+     "reasoning": "high",
+     "max_tokens": 16000,
+     "temperature": 0.0,
+     "extra_body": {}
+    },
+    "patch": null,
+    "notes": [
+     "max_tokens: max_completion_tokens=16000 -> max_tokens=16000",
+     "temperature: not set in source -> 0 (deterministic eval)",
+     "reasoning: o3 is a reasoning model -> Nemotron thinking on",
+     "Source model o3 is a reasoning model; Nemotron thinking enabled at high to match multi-step arithmetic and policy logic.",
+     "Prompt requires step-by-step arithmetic with specific rounding rules; thinking mode improves accuracy.",
+     "Output format is free text ending with 'ANSWER: <number>' line; text mode preserves this.",
+     "Max tokens 16000 provides room for reasoning trace and final answer.",
+     "Temperature 0 ensures deterministic arithmetic."
+    ],
+    "risk_flags": [
+     "lightning_reasoning_leak: with thinking on, Lightning writes its reasoning into the reply text (docs/plan/tf-probe.md), so Lightning may fail this site on format",
+     "rounding_drift: Nemotron may apply half-up rounding differently on intermediate steps vs o3.",
+     "tier_calc_error: Graduated tier arithmetic (1-10, 11-50, 51+) could miscount seats at boundaries.",
+     "date_inclusion_bug: 'Counting both dates' for days used may be interpreted as exclusive by Nemotron.",
+     "fee_on_full_refund: 3% processing fee must not apply when full refund triggered (≤14 days on 365-day period); Nemotron may incorrectly apply it.",
+     "currency_rounding: Minor-unit rounding (0 decimals JPY, 2 others) may differ from o3's implementation."
+    ],
+    "change_log": []
+   },
+   "cases": [
+    {
+     "case": {
+      "id": "cs_05:003",
+      "site_id": "cs_05",
+      "variables": {
+       "request_plan_name": "Business Annual",
+       "request_period_days": "365",
+       "request_list_price_usd": "99.00",
+       "request_seats": "12",
+       "request_period_start": "2025-02-03",
+       "request_cancel_date": "2025-02-14",
+       "request_coupon_pct": "0",
+       "request_prior_refund_usd": "0",
+       "request_currency": "EUR",
+       "request_fx_rate": "0.9231"
+      },
+      "input_messages": [
+       {
+        "role": "system",
+        "content": "You compute subscription refunds for HelpHub billing. Follow this policy exactly, step by step, and show your arithmetic.\n\n1. Tiered price. The list price is in USD per seat per billing period. Seats are priced in graduated tiers: seats 1-10 cost 100% of list price, seats 11-50 cost 85%, seats 51 and above cost 70%. Subtotal = sum over the tiers of (seats in that tier x list price x tier rate). Round the subtotal to 2 decimals, half up.\n2. Coupon. Take the coupon percentage off the subtotal and round to 2 decimals, half up. The result is the USD amount paid for the period.\n3. Days used. Days used = the number of days from the period start date to the cancellation date, counting both dates. Unused days = billing period days - days used, never below 0.\n4. Refundable amount in USD. If the billing period is 365 days and days used is 14 or fewer, the refundable amount is the full amount paid. Otherwise, prorated = amount paid x unused days / billing period days, rounded to 2 decimals half up; then subtract a 3% processing fee on the prorated amount, rounded to 2 decimals half up. The fee is not charged on a full refund.\n5. Prior refunds. Subtract the USD refunds already issued from the refundable amount. If the result is negative, it is 0.\n6. Currency. Multiply by the exchange rate recorded at purchase (units of the customer's currency per 1 USD) and round half up to the currency's minor unit: 2 decimals for USD, EUR and GBP, 0 decimals for JPY.\n7. Show your working, then put the final refund in the customer's currency alone on the last line as `ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator)."
+       },
+       {
+        "role": "user",
+        "content": "Plan: Business Annual, billing period 365 days\nList price: 99.00 USD per seat per period\nSeats: 12\nPeriod start: 2025-02-03\nCancelled on: 2025-02-14\nCoupon: 0% off\nRefunds already issued: 0 USD\nCustomer paid in EUR at 0.9231 EUR per 1 USD\n\nHow much do we refund, in EUR?"
+       }
+      ],
+      "expected_kind": "number",
+      "split": "dev"
+     },
+     "reference": "ANSWER: 1069.23",
+     "candidate": "Subtotal: 10 x 99.00 + 2 x 99.00 x 0.85 = 990.00 + 168.30 = 1158.30. Coupon 0%: paid 1158.30.\nDays used: 2025-02-03 to 2025-02-14 = 12 days, within the 14-day window: full refund 1158.30.\nProcessing fee 3%: 34.75, refundable 1123.55.\nIn EUR: 1123.55 x 0.9231 = 1037.15.\nANSWER: 1037.15"
+    },
+    {
+     "case": {
+      "id": "cs_05:004",
+      "site_id": "cs_05",
+      "variables": {
+       "request_plan_name": "Business Annual",
+       "request_period_days": "365",
+       "request_list_price_usd": "99.00",
+       "request_seats": "12",
+       "request_period_start": "2025-02-03",
+       "request_cancel_date": "2025-02-17",
+       "request_coupon_pct": "0",
+       "request_prior_refund_usd": "0",
+       "request_currency": "EUR",
+       "request_fx_rate": "0.9231"
+      },
+      "input_messages": [
+       {
+        "role": "system",
+        "content": "You compute subscription refunds for HelpHub billing. Follow this policy exactly, step by step, and show your arithmetic.\n\n1. Tiered price. The list price is in USD per seat per billing period. Seats are priced in graduated tiers: seats 1-10 cost 100% of list price, seats 11-50 cost 85%, seats 51 and above cost 70%. Subtotal = sum over the tiers of (seats in that tier x list price x tier rate). Round the subtotal to 2 decimals, half up.\n2. Coupon. Take the coupon percentage off the subtotal and round to 2 decimals, half up. The result is the USD amount paid for the period.\n3. Days used. Days used = the number of days from the period start date to the cancellation date, counting both dates. Unused days = billing period days - days used, never below 0.\n4. Refundable amount in USD. If the billing period is 365 days and days used is 14 or fewer, the refundable amount is the full amount paid. Otherwise, prorated = amount paid x unused days / billing period days, rounded to 2 decimals half up; then subtract a 3% processing fee on the prorated amount, rounded to 2 decimals half up. The fee is not charged on a full refund.\n5. Prior refunds. Subtract the USD refunds already issued from the refundable amount. If the result is negative, it is 0.\n6. Currency. Multiply by the exchange rate recorded at purchase (units of the customer's currency per 1 USD) and round half up to the currency's minor unit: 2 decimals for USD, EUR and GBP, 0 decimals for JPY.\n7. Show your working, then put the final refund in the customer's currency alone on the last line as `ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator)."
+       },
+       {
+        "role": "user",
+        "content": "Plan: Business Annual, billing period 365 days\nList price: 99.00 USD per seat per period\nSeats: 12\nPeriod start: 2025-02-03\nCancelled on: 2025-02-17\nCoupon: 0% off\nRefunds already issued: 0 USD\nCustomer paid in EUR at 0.9231 EUR per 1 USD\n\nHow much do we refund, in EUR?"
+       }
+      ],
+      "expected_kind": "number",
+      "split": "dev"
+     },
+     "reference": "ANSWER: 994.53",
+     "candidate": "Paid: 1158.30 USD (10 seats at 99.00, 2 seats at 84.15).\nDays used: 2025-02-17 - 2025-02-03 = 14 days, so the cancellation is inside the 14-day window and the full amount is refunded.\nIn EUR: 1158.30 x 0.9231 = 1069.23.\nANSWER: 1069.23"
+    },
+    {
+     "case": {
+      "id": "cs_05:006",
+      "site_id": "cs_05",
+      "variables": {
+       "request_plan_name": "Enterprise Monthly",
+       "request_period_days": "30",
+       "request_list_price_usd": "230.30",
+       "request_seats": "10",
+       "request_period_start": "2025-09-01",
+       "request_cancel_date": "2025-09-15",
+       "request_coupon_pct": "0",
+       "request_prior_refund_usd": "0",
+       "request_currency": "USD",
+       "request_fx_rate": "1"
+      },
+      "input_messages": [
+       {
+        "role": "system",
+        "content": "You compute subscription refunds for HelpHub billing. Follow this policy exactly, step by step, and show your arithmetic.\n\n1. Tiered price. The list price is in USD per seat per billing period. Seats are priced in graduated tiers: seats 1-10 cost 100% of list price, seats 11-50 cost 85%, seats 51 and above cost 70%. Subtotal = sum over the tiers of (seats in that tier x list price x tier rate). Round the subtotal to 2 decimals, half up.\n2. Coupon. Take the coupon percentage off the subtotal and round to 2 decimals, half up. The result is the USD amount paid for the period.\n3. Days used. Days used = the number of days from the period start date to the cancellation date, counting both dates. Unused days = billing period days - days used, never below 0.\n4. Refundable amount in USD. If the billing period is 365 days and days used is 14 or fewer, the refundable amount is the full amount paid. Otherwise, prorated = amount paid x unused days / billing period days, rounded to 2 decimals half up; then subtract a 3% processing fee on the prorated amount, rounded to 2 decimals half up. The fee is not charged on a full refund.\n5. Prior refunds. Subtract the USD refunds already issued from the refundable amount. If the result is negative, it is 0.\n6. Currency. Multiply by the exchange rate recorded at purchase (units of the customer's currency per 1 USD) and round half up to the currency's minor unit: 2 decimals for USD, EUR and GBP, 0 decimals for JPY.\n7. Show your working, then put the final refund in the customer's currency alone on the last line as `ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator)."
+       },
+       {
+        "role": "user",
+        "content": "Plan: Enterprise Monthly, billing period 30 days\nList price: 230.30 USD per seat per period\nSeats: 10\nPeriod start: 2025-09-01\nCancelled on: 2025-09-15\nCoupon: 0% off\nRefunds already issued: 0 USD\nCustomer paid in USD at 1 USD per 1 USD\n\nHow much do we refund, in USD?"
+       }
+      ],
+      "expected_kind": "number",
+      "split": "dev"
+     },
+     "reference": "ANSWER: 1116.95",
+     "candidate": "Paid: 10 x 230.30 = 2303.00. Days used 15, unused 15. Prorated: 2303.00 x 15 / 30 = 1151.50.\nFee: 3% of 1151.50 = 34.545, rounded to 34.54. Refundable: 1151.50 - 34.54 = 1116.96.\nANSWER: 1116.96"
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,81 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write the one-sentence reason for one Offramp verdict. Offramp tested whether NVIDIA Nemotron on Nebius Token Factory can take over one LLM call site of a Python repo, measured as agreement with reference outputs on held-out cases. MIGRATE: the named tier reached parity on the held-out cases, cheaper tiers did not. KEEP_CLOSED: no tier did, so the call stays on its current model.\n\nWrite one sentence of at most 40 words for an engineer reviewing the pull request: what the call site does and why the verdict follows. Use only the facts given. Every number you write must appear in the facts exactly as written: never compute new numbers, prices or savings. For KEEP_CLOSED, include the \"result\" text verbatim. Name tiers as Lightning, Super or Ultra.\n\nReply with one JSON object: {\"reason\": \"<the sentence>\"}."
+      },
+      {
+        "role": "user",
+        "content": "{\n \"site\": {\n  \"id\": \"cs_06\",\n  \"file\": \"helphub/summaries/summarize.py\",\n  \"function\": \"summarize_thread\",\n  \"source_model\": \"claude-haiku-4-5\",\n  \"task_type\": \"free_text\"\n },\n \"decision\": \"MIGRATE\",\n \"tier\": \"super\",\n \"result\": \"judge mean 4.50 ≥ 4.0 (parity vs reference 100.0%) on holdout\",\n \"iterations\": 0,\n \"adapter_changes\": [],\n \"holdout_failures_by_category\": {},\n \"closed_reference\": null\n}"
+      }
+    ],
+    "params": {
+      "max_tokens": 300,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "VerdictReason",
+          "schema": {
+            "properties": {
+              "reason": {
+                "maxLength": 400,
+                "title": "Reason",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "title": "VerdictReason",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-a06e8b281485bc17",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"reason\": \"The summarize_thread function uses claude-haiku-4-5 to generate free-text summaries; migrating to NVIDIA Nemotron via Super tier achieved parity (judge mean 4.50 ≥ 4.0) matching reference output on holdout cases.\"}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792411235,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 60,
+      "prompt_tokens": 353,
+      "total_tokens": 413,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 353
+    }
+  },
+  "latency_ms": 1179,
+  "usage": {
+    "prompt_tokens": 353,
+    "completion_tokens": 60
+  },
+  "created_at": "2026-10-19T12:00:35.744575+00:00"
+}
