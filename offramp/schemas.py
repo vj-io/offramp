@@ -234,6 +234,8 @@ class Verdict(BaseModel):
     # fetched via Tavily 2026-10-19) x tokens measured on the Token Factory call"
     cost_after_per_1k: float | None = None
     sunset_risk: str | None = None  # deprecation notice for the source model found via Tavily, with URL
+    closed_reference_model: str | None = None  # GC27(c): e.g. "claude-sonnet-5.5 (via Claude Code; not the repo's source model)"
+    closed_reference_parity_pct: float | None = None  # that model's holdout parity on the same references
     reason: str
 
 
@@ -243,7 +245,7 @@ class Verdict(BaseModel):
 EventType = Literal[
     "stage",  # payload: {"stage": Stage, "detail"?: str}
     "site",  # payload: CallSite
-    "case_summary",  # payload: {"site_id", "dev": int, "holdout": int, "baselines": int}
+    "case_summary",  # payload: CaseSummary
     "tier_result",  # payload: TierResult (case_scores omitted)
     "iteration",  # payload: Adapter (spec + change_log), call_site_id set
     "verdict",  # payload: Verdict
@@ -252,6 +254,25 @@ EventType = Literal[
     "error",  # payload: {"stage": Stage, "reason": str}
     "done",  # payload: {"totals": RunTotals}
 ]
+
+
+class ReferenceAudit(BaseModel):
+    """GC18: blind check of seed references by an independent model; human audit when available."""
+
+    checked: int = 0
+    agreed: int = 0
+    dropped: int = 0
+    human_verified: int = 0
+    auditor: str | None = None  # e.g. "claude-sonnet-5.5 (via Claude Code)"
+
+
+class CaseSummary(BaseModel):
+    site_id: str
+    dev: int
+    holdout: int
+    references: int
+    reference_methods: dict[str, int] = Field(default_factory=dict)  # {"reference:seed": 20, "reference:oracle": 17}
+    audit: ReferenceAudit = Field(default_factory=ReferenceAudit)
 
 
 class RunEvent(BaseModel):
