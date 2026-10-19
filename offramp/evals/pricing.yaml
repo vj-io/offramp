@@ -1,0 +1,66 @@
+# Published USD prices per 1M tokens (standard tier: no batch, no prompt-cache discounts).
+# Every entry carries its own `as_of` date and `source` URL (PRD §6.5). `tier` marks Token Factory models:
+# offramp/tf/tiers.py reads TF prices by tier, so overriding a model id via OFFRAMP_MODEL_* keeps the tier price.
+models:
+  # --- Nebius Token Factory (Nemotron) ---
+  nvidia/Nemotron-3-Ultra-550b-a55b:
+    tier: ultra
+    input_usd_per_m: 1.00
+    output_usd_per_m: 3.00
+    as_of: "2026-10-19"
+    source: https://nebius.com/token-factory/prices
+    note: "Price from PRD §1; the Nebius price page was not machine-readable on as_of, re-check in Task 14."
+  nvidia/nemotron-3-super-120b-a12b:
+    tier: super
+    input_usd_per_m: 0.30
+    output_usd_per_m: 0.90
+    as_of: "2026-10-19"
+    source: https://nebius.com/token-factory/prices
+    note: "Matches PRD §1; also listed at $0.30/$0.90 for Nebius by Artificial Analysis (artificialanalysis.ai)."
+  nvidia/Nemotron-3_5-Lightning:
+    tier: lightning
+    input_usd_per_m: 0.06
+    output_usd_per_m: 0.24
+    as_of: "2026-10-19"
+    source: https://nebius.com/token-factory/prices
+    note: "Price from PRD §1; the Nebius price page was not machine-readable on as_of, re-check in Task 14."
+
+  # --- OpenAI (closed source models used by the demo) ---
+  gpt-4o-mini:
+    input_usd_per_m: 0.15
+    output_usd_per_m: 0.60
+    as_of: "2026-10-19"
+    source: https://developers.openai.com/api/docs/pricing
+  gpt-4o:
+    input_usd_per_m: 2.50
+    output_usd_per_m: 10.00
+    as_of: "2026-10-19"
+    source: https://developers.openai.com/api/docs/pricing
+  gpt-4.1-mini:
+    input_usd_per_m: 0.40
+    output_usd_per_m: 1.60
+    as_of: "2026-10-19"
+    source: https://developers.openai.com/api/docs/pricing
+  o3:
+    input_usd_per_m: 2.00
+    output_usd_per_m: 8.00
+    as_of: "2026-10-19"
+    source: https://developers.openai.com/api/docs/pricing
+  o4-mini:
+    input_usd_per_m: 1.10
+    output_usd_per_m: 4.40
+    as_of: "2026-10-19"
+    source: https://developers.openai.com/api/docs/pricing
+
+  # --- Anthropic ---
+  claude-sonnet-4-5:
+    input_usd_per_m: 3.00
+    output_usd_per_m: 15.00
+    as_of: "2026-10-19"
+    source: https://platform.claude.com/docs/en/about-claude/pricing
+    note: "Listed as deprecated on the Anthropic pricing page at as_of; price still published."
+  claude-haiku-4-5:
+    input_usd_per_m: 1.00
+    output_usd_per_m: 5.00
+    as_of: "2026-10-19"
+    source: https://platform.claude.com/docs/en/about-claude/pricing
