@@ -379,9 +379,12 @@ PROVIDER_ERRORS = [
     _status(404, '{"error": "model nvidia/unknown not found"}'),
     _status(429, '{"error": "quota exceeded: credit balance is 0"}'),
     _status(429, '{"error": "rate limit reached, retry later"}'),  # still limited after the SDK retries
+    _status(502),  # gateway / service outage after the SDK retries: says nothing about the model
+    _status(503),
+    _status(504),
     openai.APIConnectionError(request=_REQ),  # network down: says nothing about the model
 ]
-CASE_FAILURES = [_timeout(), _status(400, '{"error": "context length exceeded"}'), _status(500), _status(503)]
+CASE_FAILURES = [_timeout(), _status(400, '{"error": "context length exceeded"}'), _status(422), _status(500)]
 
 
 @pytest.mark.parametrize(
@@ -401,10 +404,39 @@ def test_provider_error_is_raised_never_scored(exc):
     "exc", CASE_FAILURES, ids=lambda e: type(e).__name__ + str(getattr(e, "status_code", ""))
 )
 def test_model_side_failure_is_a_scored_failed_case(exc):
-    cases = [_case(1), _case(2)]
-    result = _run(CaseClient({"cs_01:001": _ok("billing"), "cs_01:002": exc}), cases, [_ref(1), _ref(2)])
+    cases = [_case(1), _case(2), _case(3)]  # 1 failure in 3: below the outage fraction
+    replies = {"cs_01:001": _ok("billing"), "cs_01:002": exc, "cs_01:003": _ok("billing")}
+    result = _run(CaseClient(replies), cases, [_ref(i) for i in range(1, 4)])
     assert result.failing_case_ids == ["cs_01:002"]
     assert result.case_scores[1].error_category == CANDIDATE_ERROR
+
+
+@pytest.mark.parametrize(
+    ("failures", "exc", "outage"),
+    [
+        (1, _timeout(), False),  # 1 of 4 timed out: a slow model, scored
+        (2, _timeout(), True),  # 2 of 4 (50%): a run that broad is an outage, not a measurement
+        (2, _status(500), True),  # 5xx count toward it as well
+        (3, _status(500), True),
+        (2, _status(400), False),  # request-level rejections are the case's own: always scored
+    ],
+)
+def test_broad_timeouts_or_5xx_are_an_outage(failures, exc, outage):
+    cases = [_case(i) for i in range(1, 5)]
+    replies = {c.id: (exc if i < failures else _ok("billing")) for i, c in enumerate(cases)}
+    refs = [_ref(i) for i in range(1, 5)]
+    if outage:
+        with pytest.raises(ProviderError, match=f"{failures}/4"):
+            _run(CaseClient(replies), cases, refs)
+    else:
+        assert len(_run(CaseClient(replies), cases, refs).failing_case_ids) == failures
+
+
+def test_judge_timeout_is_a_run_error_not_a_candidate_score():
+    case = _case(1)
+    client = CaseClient({case.id: _ok("x")}, judge_replies=(_timeout(),))
+    with pytest.raises(ProviderError, match="judge"):
+        _run(client, [case], [], site=_site("free_text"))
 
 
 def test_provider_error_from_the_judge_is_raised():

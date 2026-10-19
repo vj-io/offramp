@@ -1,8 +1,9 @@
 """Eval runner (PRD §6.5): run one site's cases on one tier, score them, measure latency/tokens/cost.
 
 Every TierResult number shown anywhere comes from here, so the rules are strict:
-- every case of the requested split is run and scored; per-request model failures (timeout, 5xx, 400) are
-  failed cases, never dropped. A deterministic case without a reference raises MissingReference, and an
+- every case of the requested split is run and scored; per-request model failures (timeout, 500, 400/422)
+  are failed cases, never dropped, unless half the calls or more timed out or failed 5xx (an outage:
+  ProviderError). A deterministic case without a reference raises MissingReference, and an
   account/credit/config error raises ProviderError: neither is ever turned into a measured result;
 - eval-target calls use role "eval_target" (the only Ultra role outside the 40-call agent cap) and send
   `reasoning` per AdapterSpec.reasoning, so enable_thinking is always explicit (Global Constraint 25);
@@ -23,7 +24,13 @@ from typing import Any
 import openai
 
 from offramp.agents.judge import LOW_SCORE, case_passes, judge
-from offramp.evals.errors import MissingReference, is_case_failure, provider_error
+from offramp.evals.errors import (
+    MissingReference,
+    ProviderError,
+    is_case_failure,
+    is_timeout_or_5xx,
+    provider_error,
+)
 from offramp.evals.scorers import score_case
 from offramp.evals.scorers.aggregate import CANDIDATE_ERROR, DEFAULT_THRESHOLDS, Thresholds, site_pass
 from offramp.schemas import (
@@ -45,6 +52,7 @@ from offramp.tf.client import LLM
 from offramp.tf.tiers import get_tier
 
 MAX_CONCURRENCY = 8
+OUTAGE_FRACTION = 0.5  # this share of a run's calls timing out or failing 5xx is an outage, not a measurement
 
 BuildRequest = Callable[[AdapterSpec, EvalCase, Tier], dict[str, Any]]
 
@@ -147,6 +155,7 @@ def _run_calls(
     client: LLM, requests: list[dict[str, Any]], cases: list[EvalCase], tier: Tier, version: int
 ) -> list[CandidateResult]:
     info = get_tier(tier)
+    outage_like: list[str] = []  # case ids that timed out or failed 5xx (list.append is thread-safe)
 
     def call(req: dict[str, Any], case: EvalCase) -> CandidateResult:
         started = time.perf_counter()
@@ -155,6 +164,8 @@ def _run_calls(
         except openai.APIError as e:  # after the SDK's own retries
             if not is_case_failure(e):
                 raise provider_error(e) from e
+            if is_timeout_or_5xx(e):
+                outage_like.append(case.id)
             return CandidateResult(
                 case_id=case.id,
                 tier=tier,
@@ -182,9 +193,15 @@ def _run_calls(
     pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENCY)
     try:
         futures = [pool.submit(call, req, case) for req, case in zip(requests, cases, strict=True)]
-        return [f.result() for f in futures]
+        results = [f.result() for f in futures]
     finally:
         pool.shutdown(cancel_futures=True)  # on BudgetExceeded/ProviderError/CacheMiss: no further calls
+    if results and len(outage_like) / len(results) >= OUTAGE_FRACTION:
+        raise ProviderError(
+            f"{len(outage_like)}/{len(results)} calls timed out or failed with a 5xx: "
+            "a provider outage, not a measurement"
+        )
+    return results
 
 
 def _judge_scores(

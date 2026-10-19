@@ -6,11 +6,13 @@ case (human or labelled closed-model reference) the judge sees both answers blin
 twice, A/B then B/A; scores are averaged over the two orderings, and the swap gives position consistency.
 
 Batched: one Ultra call (role "judge") scores every case of one batch per ordering, so a (site, tier, split)
-costs 2 Ultra agent calls when references exist, 1 when not (the 40-call cap, Global Constraint 8).
+costs 2 Ultra agent calls when references exist, 1 when not (the 40-call cap, Global Constraint 8). A batch is
+split only when its prompt is estimated above MAX_PROMPT_TOKENS.
 
-Scores are always inside 1..5: anything the judge did not score validly (blank answer, invalid reply, case
-left out, timed-out judge call) counts as 1.0 for the candidate. Never 0, never clamped. Account, credit and
-config errors raise ProviderError (offramp.evals.errors) instead.
+Only scores the judge actually gave are used, always inside 1..5 (never clamped). A blank candidate answer is
+the candidate's own failure and scores 1.0 without a call. Any judge-side failure (call error of any kind,
+reply that does not match the rubric schema, a case left out) raises ProviderError: the judge is not the model
+under test, so its failures never become candidate scores.
 """
 
 from __future__ import annotations
@@ -23,18 +25,19 @@ from typing import Any, Literal, NamedTuple
 import openai
 from pydantic import BaseModel
 
-from offramp.evals.errors import is_case_failure, provider_error
+from offramp.evals.errors import ProviderError, provider_error
 from offramp.evals.scorers.aggregate import JUDGE_FLOOR, JUDGE_MARGIN, RUBRIC_MIN, _at_least
 from offramp.schemas import CaseScore, EvalCase, ModelOutput, Tier
 from offramp.tf.client import LLM
 
 JUDGE_ROLE = "judge"
-UNJUDGED = RUBRIC_MIN  # 1.0
+NO_ANSWER = RUBRIC_MIN  # 1.0 for a blank candidate answer
 EMPTY_OUTPUT = "empty_output"  # no answer to judge (blank text, or no output at all)
-NOT_SCORED = "unjudged"  # the judge returned no valid score for the case
 LOW_SCORE = "low_judge_score"
 
 MAX_TOKENS_BASE, MAX_TOKENS_PER_CASE = 400, 150  # thinking off: JSON only, ~90 tokens per scored case
+MAX_PROMPT_TOKENS = 80_000  # split a batch only above this estimated prompt size
+CHARS_PER_TOKEN = 4  # ponytail: rough estimate; use the tokenizer if batches land near the limit
 
 Score = Literal[1, 2, 3, 4, 5]
 
@@ -72,10 +75,10 @@ class PairBatch(BaseModel):
 class JudgeScore(BaseModel):
     case_id: str
     candidate: float  # 1..5
-    reference: float | None = None  # 1..5 when a reference was judged in at least one ordering
-    consistent: bool | None = None  # pairwise and judged in both orderings: same preference after the swap
+    reference: float | None = None  # 1..5 when the case was judged pairwise
+    consistent: bool | None = None  # pairwise: same preference in A/B and B/A
     detail: str = ""
-    error_category: str | None = None  # EMPTY_OUTPUT / NOT_SCORED; None when judged
+    error_category: str | None = None  # EMPTY_OUTPUT for a blank answer; None when judged
 
 
 class JudgeResult(BaseModel):
@@ -137,7 +140,9 @@ def _prompt(items: list[tuple[EvalCase, str, str | None]]) -> str:
 
 
 def _ask(client: LLM, items: list[tuple[EvalCase, str, str | None]], paired: bool) -> dict[int, Any]:
-    """One batched Ultra call: {1-based case number: item}; {} if the call failed or the reply is invalid."""
+    """One batched Ultra call: {1-based case number: item} with every case of the batch scored, or
+    ProviderError. (TFClient's one repair retry applies on the json_object path; with json_schema the
+    reply is decoded against the schema.)"""
     try:
         result = client.chat(
             role=JUDGE_ROLE,
@@ -151,16 +156,40 @@ def _ask(client: LLM, items: list[tuple[EvalCase, str, str | None]], paired: boo
             response_model=PairBatch if paired else SingleBatch,
             reasoning="off",
         )
-    except openai.APIError as e:  # after the SDK's retries
-        if not is_case_failure(e):
-            raise provider_error(e) from e  # account/credit/config: a run error, not a judgement
-        return {}  # timeout / 5xx: nothing judged, the batch scores 1.0
+    except openai.APIError as e:  # after the SDK's retries; any kind: the judge is not under test
+        raise provider_error(e, "judge: ") from e
     if result.parsed is None:
-        return {}
+        raise ProviderError("judge: reply does not match the rubric schema")
     by_case: dict[int, Any] = {}
     for item in result.parsed.scores:
         if 1 <= item.case <= len(items):
             by_case.setdefault(item.case, item)  # first entry wins
+    missing = [case.id for n, (case, _, _) in enumerate(items, 1) if n not in by_case]
+    if missing:
+        raise ProviderError(f"judge: left {len(missing)} case(s) unscored: {', '.join(missing)}")
+    return by_case
+
+
+def _chunks(items: list) -> list[list]:
+    """Consecutive slices with an estimated prompt under MAX_PROMPT_TOKENS; an oversized case goes alone."""
+    chunks: list[list] = []
+    size = 0
+    for item in items:
+        tokens = len(_prompt([item])) // CHARS_PER_TOKEN
+        if not chunks or size + tokens > MAX_PROMPT_TOKENS:
+            chunks.append([])
+            size = 0
+        chunks[-1].append(item)
+        size += tokens
+    return chunks
+
+
+def _ask_all(client: LLM, items: list[tuple[EvalCase, str, str | None]], paired: bool) -> dict[int, Any]:
+    by_case: dict[int, Any] = {}
+    offset = 0
+    for chunk in _chunks(items):
+        by_case.update({offset + n: item for n, item in _ask(client, chunk, paired).items()})
+        offset += len(chunk)
     return by_case
 
 
@@ -183,7 +212,7 @@ def judge(
         cand, ref = candidates.get(case.id), references.get(case.id)
         if _blank(cand):
             scores[case.id] = JudgeScore(
-                case_id=case.id, candidate=UNJUDGED, detail="no answer to judge", error_category=EMPTY_OUTPUT
+                case_id=case.id, candidate=NO_ANSWER, detail="no answer to judge", error_category=EMPTY_OUTPUT
             )
         elif _blank(ref):
             singles.append((case, cand.text, None))
@@ -191,48 +220,27 @@ def judge(
             pairs.append((case, cand.text, ref.text))
 
     if pairs:
-        ab = _ask(client, pairs, paired=True)  # candidate is A
-        ba = _ask(client, [(c, r, a) for c, a, r in pairs], paired=True)  # reference is A
+        ab = _ask_all(client, pairs, paired=True)  # candidate is A
+        ba = _ask_all(client, [(c, r, a) for c, a, r in pairs], paired=True)  # reference is A
         for n, (case, _, _) in enumerate(pairs, 1):
-            cand_scores, ref_scores, prefs, notes = [], [], [], []
-            for got, cand_key in ((ab.get(n), "a"), (ba.get(n), "b")):
-                if got is None:
-                    cand_scores.append(UNJUDGED)
-                    continue
-                c = getattr(got, cand_key).mean()
-                r = (got.b if cand_key == "a" else got.a).mean()
-                cand_scores.append(c)
-                ref_scores.append(r)
-                prefs.append(_sign(c - r))
-                notes.append(
-                    f"candidate is {cand_key.upper()}: {got.note.strip()}" if got.note.strip() else ""
-                )
-            candidate = math.fsum(cand_scores) / 2
-            reference = math.fsum(ref_scores) / len(ref_scores) if ref_scores else None
+            x, y = ab[n], ba[n]
+            cand_ab, ref_ab, cand_ba, ref_ba = x.a.mean(), x.b.mean(), y.b.mean(), y.a.mean()
+            candidate, reference = (cand_ab + cand_ba) / 2, (ref_ab + ref_ba) / 2
             scores[case.id] = JudgeScore(
                 case_id=case.id,
                 candidate=candidate,
                 reference=reference,
-                consistent=prefs[0] == prefs[1] if len(prefs) == 2 else None,
-                detail=_detail(candidate, reference, notes),
-                error_category=NOT_SCORED if not notes else None,
+                consistent=_sign(cand_ab - ref_ab) == _sign(cand_ba - ref_ba),
+                detail=_detail(candidate, reference, [_note("A", x), _note("B", y)]),
             )
 
     if singles:
-        got_by_case = _ask(client, singles, paired=False)
+        got = _ask_all(client, singles, paired=False)
         for n, (case, _, _) in enumerate(singles, 1):
-            got = got_by_case.get(n)
-            if got is None:
-                scores[case.id] = JudgeScore(
-                    case_id=case.id,
-                    candidate=UNJUDGED,
-                    detail="judge returned no score",
-                    error_category=NOT_SCORED,
-                )
-            else:
-                scores[case.id] = JudgeScore(
-                    case_id=case.id, candidate=got.a.mean(), detail=_detail(got.a.mean(), None, [got.note])
-                )
+            candidate = got[n].a.mean()
+            scores[case.id] = JudgeScore(
+                case_id=case.id, candidate=candidate, detail=_detail(candidate, None, [got[n].note])
+            )
 
     ordered = [scores[c.id] for c in cases]
     refs = [s.reference for s in ordered if s.reference is not None]
@@ -242,6 +250,10 @@ def judge(
         reference_mean=math.fsum(refs) / len(refs) if refs else None,
         consistency=sum(swaps) / len(swaps) if swaps else None,
     )
+
+
+def _note(position: str, item: Any) -> str:
+    return f"candidate is {position}: {item.note.strip()}" if item.note.strip() else ""
 
 
 def _detail(candidate: float, reference: float | None, notes: list[str]) -> str:

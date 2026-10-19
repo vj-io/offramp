@@ -162,14 +162,39 @@ def test_prompt_carries_evidence_and_call_is_ultra_judge_thinking_off():
     assert "groundedness" in call["messages"][0]["content"]
 
 
+def _all_scored(n: int) -> dict:
+    return {"scores": [_single(i, _r(5, 5, 5)) for i in range(1, n + 1)]}
+
+
 def test_max_tokens_grows_with_batch():
     small, big = FakeLLM(), FakeLLM()
-    small.add(JUDGE_ROLE, {"scores": []})
-    big.add(JUDGE_ROLE, {"scores": []})
+    small.add(JUDGE_ROLE, _all_scored(1))
+    big.add(JUDGE_ROLE, _all_scored(20))
     judge(small, [_case(1)], {"cs_04:001": ModelOutput(text="a")})
     cases = [_case(i) for i in range(1, 21)]
     judge(big, cases, {c.id: ModelOutput(text="a") for c in cases})
+    assert len(big.calls) == 1  # a batch far below the prompt limit is one call
     assert big.calls[0]["max_tokens"] > small.calls[0]["max_tokens"] + 19 * 60
+
+
+def test_batch_over_the_prompt_limit_is_chunked(monkeypatch):
+    import offramp.agents.judge as judge_module
+
+    cases = [_case(i, user="x" * 400) for i in range(1, 6)]  # ~100+ tokens of evidence each
+    monkeypatch.setattr(judge_module, "MAX_PROMPT_TOKENS", 300)  # stands in for 80k
+    fake = FakeLLM().add(JUDGE_ROLE, *[_all_scored(2), _all_scored(2), {"scores": [_single(1, _r(2, 2, 2))]}])
+    result = judge(fake, cases, {c.id: ModelOutput(text=f"answer {c.id}") for c in cases})
+
+    assert len(fake.calls) == 3  # 2 + 2 + 1 cases
+    last = _user_prompt(fake.calls[2])
+    assert last.startswith("Case 1\n") and " #5\n" in last and " #4\n" not in last
+    assert [s.candidate for s in result.scores] == [5.0, 5.0, 5.0, 5.0, 2.0]  # numbering restarts per chunk
+
+
+def test_default_prompt_limit_is_80k_tokens():
+    import offramp.agents.judge as judge_module
+
+    assert judge_module.MAX_PROMPT_TOKENS == 80_000
 
 
 # ------------------------------------------------------------------ never outside 1..5, never 0
@@ -193,12 +218,11 @@ def test_nothing_to_judge_makes_no_call():
     assert fake.calls == [] and result.scores[0].candidate == 1.0
 
 
-def test_case_the_judge_skipped_scores_one():
+def test_case_the_judge_left_out_is_a_judge_failure_not_a_score():
     cases = [_case(1), _case(2)]
     fake = FakeLLM().add(JUDGE_ROLE, {"scores": [_single(2, _r(5, 5, 5))]})
-    result = judge(fake, cases, {c.id: ModelOutput(text="x") for c in cases})
-    assert [s.candidate for s in result.scores] == [1.0, 5.0]
-    assert result.scores[0].error_category == "unjudged"
+    with pytest.raises(ProviderError, match="cs_04:001"):
+        judge(fake, cases, {c.id: ModelOutput(text="x") for c in cases})
 
 
 @pytest.mark.parametrize(
@@ -214,28 +238,29 @@ def test_case_the_judge_skipped_scores_one():
             response=httpx.Response(502, request=httpx.Request("POST", "https://x")),
             body=None,
         ),
+        openai.InternalServerError(
+            "Error code: 500",
+            response=httpx.Response(500, request=httpx.Request("POST", "https://x")),
+            body=None,
+        ),
     ],
 )
-def test_invalid_judge_reply_scores_one(reply):
+def test_judge_side_failure_raises_never_scores(reply):
+    # the judge is not the model under test: its timeouts, outages, bad replies say nothing of the candidate
     fake = FakeLLM().add(JUDGE_ROLE, reply)
-    result = judge(fake, [_case(1)], {"cs_04:001": ModelOutput(text="x")})
-    assert result.scores[0].candidate == 1.0
-    assert result.scores[0].error_category == "unjudged"
+    with pytest.raises(ProviderError, match="judge"):
+        judge(fake, [_case(1)], {"cs_04:001": ModelOutput(text="x")})
 
 
-def test_pairwise_ordering_the_judge_skipped_counts_one_for_the_candidate():
+def test_pairwise_ordering_the_judge_skipped_raises():
     case = _case(1)
     fake = FakeLLM().add(
         JUDGE_ROLE,
         {"scores": [_pair(1, _r(5, 5, 5), _r(5, 5, 5))]},
         {"scores": []},  # B/A ordering never scored the case
     )
-    result = judge(fake, [case], {case.id: ModelOutput(text="c")}, {case.id: ModelOutput(text="r")})
-    s = result.scores[0]
-    assert s.candidate == 3.0  # mean(5, 1.0)
-    assert s.reference == 5.0  # only the ordering that scored it
-    assert s.consistent is None  # cannot compare a swap that was never judged
-    assert result.consistency is None
+    with pytest.raises(ProviderError, match="cs_04:001"):
+        judge(fake, [case], {case.id: ModelOutput(text="c")}, {case.id: ModelOutput(text="r")})
 
 
 def test_unknown_and_duplicate_case_numbers_ignored():
@@ -404,7 +429,6 @@ def test_record_free_text_cassettes():
 def test_cassette_pairwise_and_absolute_rank_the_faulty_answers_low():
     pairwise, absolute = _run_free_text(TFClient(cache_dir=CASSETTES, live=False))
     for result in (pairwise, absolute):
-        assert [s.error_category for s in result.scores if s.error_category == "unjudged"] == []
         assert all(1.0 <= s.candidate <= 5.0 for s in result.scores)
         by_id = {s.case_id: s for s in result.scores}
         faithful = [by_id[f"test_ft:{i:03d}"].candidate for i in (1, 2, 4)]
