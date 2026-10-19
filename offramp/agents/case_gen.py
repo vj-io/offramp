@@ -620,7 +620,7 @@ class Seed:
     giveaways: list[str] = field(default_factory=list)  # expected values never written as "Label: value"
     verbatim: list[str] = field(default_factory=list)  # identifiers never written in what the person says
     undetermined: list[str] = field(default_factory=list)  # values of free enums no input may dictate
-    present: list[Any] = field(default_factory=list)  # the record's seeded (non-null) scalar values
+    present: list[tuple[str, Any]] = field(default_factory=list)  # (detector kind, seeded non-null value)
     absent: list[tuple[str, str, str | None]] = field(
         default_factory=list
     )  # null fields: (name, kind, id regex)
@@ -1054,9 +1054,9 @@ def _absent_kind(key: str, prop: dict[str, Any]) -> tuple[str, str | None] | Non
     kind = _string_kind(key, prop)
     if kind == "example":
         return "id", _shape_pattern(_EXAMPLE.search(prop.get("description", ""))[1])
-    if kind == "name":  # the sender-name detector fits a person, not a product or a shop
-        text = f"{key} {prop.get('description', '')}".lower().replace("_", " ")
-        return ("name", None) if any(w in text for w in _PERSON_WORDS) else None
+    if kind == "name":  # a person (customer, first/last/full name, plain "name"), not a product or a shop
+        words = set(re.findall(r"[a-z]+", f"{key} {prop.get('description', '')}".lower()))
+        return None if words & _NON_PERSON_WORDS else ("name", None)
     return (kind, None) if kind in ("email", "date", "currency") else None
 
 
@@ -1073,7 +1073,11 @@ def json_seed(record: dict[str, Any], schema: dict[str, Any]) -> Seed:
         found = _absent_kind(key, _flat(schema.get("properties", {}).get(key, {}), schema))
         if found:
             absent.append((key, *found))
-    present = [v for v in record.values() if v is not None and not isinstance(v, dict | list)]
+    present = []
+    for key, value in record.items():
+        found = _absent_kind(key, _flat(schema.get("properties", {}).get(key, {}), schema))
+        if found and value is not None and not isinstance(value, dict | list):
+            present.append((found[0], value))
     return Seed(
         ModelOutput(text=text), shown, stated=_json_stated(record, schema), present=present, absent=absent
     )
@@ -1160,7 +1164,9 @@ def _date_stated(iso: str, text: str) -> bool:
         f"{d.day}/{d.month}/{d.year}",
         f"{d.month}/{d.day}/{d.year}",
         f"{d.year}年{d.month}月{d.day}日",
+        f"{d.year}.{d.month:02}.{d.day:02}",
     ]
+    text = re.sub(r"(\d)(?:st|nd|rd|th)\b", r"\1", text)  # "12th March 2025"
     if any(f in text for f in forms):
         return True
     words = set(re.findall(r"\w+", text.casefold()))
@@ -1181,8 +1187,8 @@ def _derivable(value: Any, kind: str | None, text: str) -> bool:
         return Decimal(str(value)) in _numbers(text)
     if kind == "currency":
         return _currency_named(str(value), text)
-    if kind == "date":
-        return _date_stated(str(value), _without_date_headers(text))
+    if kind == "date":  # in the body: header dates (Date, Subject) are about the message, not the record
+        return _date_stated(str(value), _header_block(text)[1])
     return _squash(str(value)) in _squash(text)
 
 
@@ -1205,22 +1211,34 @@ _EMAIL = re.compile(
     r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+|[\w.+-]+\s*[\[(]at[\])]\s*[\w-]+(?:\s*[\[(]dot[\])]\s*[\w-]+)+"
 )
 _AMOUNT_WORDS = ("amount", "total", "price", "cost", "sum", "paid", "fee", "charge")
-_PERSON_WORDS = (
-    "customer",
-    "sender",
-    "contact",
-    "person",
-    "client",
-    "buyer",
-    "recipient",
-    "user",
-    "author",
-    "full name",
-    "signer",
-    "requester",
-    "kunde",
-    "cliente",
-)
+_NON_PERSON_WORDS = {
+    "product",
+    "products",
+    "company",
+    "shop",
+    "store",
+    "file",
+    "brand",
+    "item",
+    "merchant",
+    "vendor",
+    "business",
+    "organisation",
+    "organization",
+    "street",
+    "city",
+    "country",
+    "domain",
+    "host",
+    "plan",
+    "project",
+    "app",
+    "model",
+    "category",
+    "bank",
+    "hotel",
+    "airline",
+}
 
 # ---- email headers: keys compared without inner spaces ("Dat e:" is a Date header the writer mangled)
 _HEADER_KEYS = {
@@ -1313,34 +1331,16 @@ _NULL_CURRENCY_WORDS = (
     }
 )
 _NEAR_NUMBER_WORDS = {"kr", "rs", "rs.", "zł", "元", "원"}
-_NOT_CURRENCY = {
-    "UTC",
-    "GMT",
-    "CET",
-    "CEST",
-    "EST",
-    "EDT",
-    "PST",
-    "PDT",
-    "JST",
-    "KST",
-    "IST",
-    "BST",
-    "MSK",
-    "AEST",
-    "KGS",
-    "LBS",
-    "PCS",
-    "MHZ",
-    "GHZ",
-    "RPM",
-    "DPI",
-    "SKU",
-    "PIN",
-    "ETA",
-    "VAT",
-    "USB",
-}
+# ISO 4217 codes; the ones that are also common words or units (ALL, TOP, CUP, PEN, MAD, KGS, PHP...) only
+# count where CURRENCY_ALIASES / _OTHER_CURRENCY_CODES name them.
+_ISO_CODES = set(
+    "AED AFN AMD ANG AOA ARS AUD AWG AZN BBD BDT BGN BHD BIF BMD BND BRL BSD BTN BWP BYN BZD CAD CDF CHF CLP "
+    "CNY COP CRC CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GHS GIP GMD GNF GTQ GYD HKD HNL HTG HUF "
+    "IDR ILS INR IQD IRR ISK JMD JOD JPY KES KHR KMF KPW KRW KWD KYD KZT LBP LKR LRD LSL LYD MDL MGA MKD MMK "
+    "MNT MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PGK PKR PLN PYG QAR RON RSD RUB RWF SAR "
+    "SBD SCR SDG SEK SGD SHP SLE SRD SSP STN SYP SZL THB TJS TMT TND TTD TWD TZS UAH UGX USD UYU UZS VES VND "
+    "VUV WST XAF XCD XOF XPF YER ZAR ZMW ZWL".split()
+)
 _NUM = r"\d[\d.,']*\d|\d"
 
 
@@ -1357,7 +1357,7 @@ def _alternation(words: set[str]) -> str:
 
 _CURRENCY_NAMES = re.compile(_alternation(_NULL_CURRENCY_WORDS), re.IGNORECASE)
 _NEAR = _alternation(_NEAR_NUMBER_WORDS)
-_CODE = rf"(?<![A-Za-z])(?!(?:{'|'.join(_NOT_CURRENCY)})(?![A-Za-z]))[A-Z]{{3}}(?![A-Za-z])"
+_CODE = rf"(?<![A-Za-z])(?:{'|'.join(sorted(_ISO_CODES))})(?![A-Za-z])"
 _NEAR_NUMBER = re.compile(rf"(?:{_NUM})\s?(?:(?i:{_NEAR})|{_CODE})|(?:(?i:{_NEAR})|{_CODE})\s?(?:{_NUM})")
 _CURRENCY_MARKER = rf"(?i:{_alternation(_NULL_CURRENCY_WORDS)}|{_NEAR})|{_CODE}"
 _AMOUNT = re.compile(rf"(?:{_CURRENCY_MARKER})\s?(?:{_NUM})|(?:{_NUM})\s?(?:{_CURRENCY_MARKER})")
@@ -1369,9 +1369,9 @@ _DATE_FORMS = [
     for p in (
         r"(?<!\d)\d{4}-\d{1,2}-\d{1,2}(?!\d)",
         r"(?<!\d)\d{4}/\d{1,2}/\d{1,2}(?!\d)",
-        r"(?<![\d.])\d{4}\.\d{1,2}\.\d{1,2}(?![\d.])",
+        r"(?<![\d.])\d{4}\.\d{1,2}\.\d{1,2}(?!\d|\.\d)",
         r"(?<![\d.,])\d{1,2}[./]\d{1,2}[./]\d{2,4}(?!\d)",
-        r"\d{4}\s*年\s*\d{1,2}\s*月",
+        r"\d{4}\s*年\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?",
         r"\d{1,2}\s*月\s*\d{1,2}\s*日",
         rf"(?<!\d)\d{{1,2}}(?:st|nd|rd|th)?\s+of\s+(?:{_MONTH_WORDS})(?![^\W\d_])",
         rf"(?<!\d)\d{{1,2}}(?:st|nd|rd|th)?\.?\s+(?:de\s+)?(?:{_MONTH_WORDS})(?![^\W\d_])",
@@ -1389,12 +1389,14 @@ _SIGNOFF = re.compile(
     re.IGNORECASE,
 )
 _GREETING = re.compile(
-    r"^(?:hi|hello|hey|dear|hola|hallo|bonjour|ciao|olá|ola|oi|liebe|lieber|estimad[oa]|querid[oa]|caro|cara|"
-    r"sehr geehrte[rs]?|good (?:morning|afternoon|evening))(?![^\W\d_])[\s,]*(?P<rest>[^,\n!:;]+)",
+    r"^(?:hi|hello|hey|dear|hola|hallo|bonjour|bonsoir|salut|ciao|buongiorno|buonasera|olá|ola|oi|liebe|lieber|"
+    r"estimad[oa]|querid[oa]|caro|cara|sehr geehrte[rs]?|good (?:morning|afternoon|evening)|"
+    r"buen[oa]s (?:días|dias|tardes|noches)|guten (?:tag|morgen|abend))(?![^\W\d_])[\s,]*(?P<rest>.+)",
     re.IGNORECASE,
 )
 _LABEL = re.compile(
-    r"^(?:name|customer|customer name|client|kunde|kundin|nombre|cliente|nom|nome|氏名|名前|お名前)"
+    r"^(?:name|customer|customer name|client|kunde|kundin|nombre|cliente|nom|nome|ship to|bill to|ordered by|"
+    r"recipient|contact|absender|remitente|destinatario|氏名|名前|お名前)"
     r"\s*[:：]\s*(?P<rest>.+)$",
     re.IGNORECASE,
 )
@@ -1404,7 +1406,7 @@ _INTRODUCTION = re.compile(
     re.IGNORECASE,
 )
 _HERE = re.compile(r"(?:^|[.!?,]\s*)([A-Z][\w'’-]+(?:\s+[A-Z][\w'’-]+)?)\s+here\b")
-_HONORIFIC = re.compile(rf"({_CJK}{{1,4}})\s?(?:様|さん|殿|님)")
+_HONORIFIC = re.compile(rf"({_CJK}{{1,4}})\s?(?:様|さん|殿|님)(?!{_CJK})")
 _DEVICE = re.compile(
     r"^(?:sent from|enviado desde|enviado do|von meinem|envoyé de|inviato da|送信元|发自)", re.IGNORECASE
 )
@@ -1461,6 +1463,27 @@ _NOT_NAMES = {
     "damen",
     "herren",
     "お客",
+    "nothing",
+    "nobody",
+    "everything",
+    "everybody",
+    "anyone",
+    "someone",
+    "something",
+    "click",
+    "delivered",
+    "terrible",
+    "please",
+    "refund",
+    "kunde",
+    "kundin",
+    "i",
+    "i'm",
+    "im",
+    "me",
+    "my",
+    "we",
+    "our",
 }
 _CLOSERS = {
     "以上",
@@ -1478,6 +1501,17 @@ _CLOSERS = {
     "此致",
     "敬礼",
     "お客",
+    "以上です",
+    "多谢",
+    "感謝",
+    "감사해요",
+    "お願い",
+    "お願いいたします",
+    "宜しくお願いします",
+    "担当",
+    "皆様",
+    "各位",
+    "御中",
 }
 _TITLES = {
     "mr",
@@ -1501,6 +1535,8 @@ _TITLES = {
 
 def _header_key(line: str) -> str | None:
     """A line's normalised header key ("Dat e:" -> "date"; a quoted "> From:" -> "from"), if it has one."""
+    if re.match(r"^\s*>?\s*from\s+\S+@\S+", line, re.IGNORECASE):  # "From chloe@example.com" (no colon)
+        return "from"
     match = _KEY.match(line)
     if not match:
         return None
@@ -1599,14 +1635,15 @@ def _name_like(text: str, brands: set[str]) -> bool:
     a CJK/Hangul run of at most 4 characters that is not a closing phrase ("以上", "谢谢")."""
     if re.search(_CJK, text):
         core = "".join(re.findall(_CJK, text))
-        return bool(core) and core not in _CLOSERS and len(core) <= 4
+        return bool(core) and not any(c in core for c in _CLOSERS) and len(core) <= 4
     words = re.findall(r"[^\W\d_][\w'’.-]*", text)
     names = [w for w in words if w.rstrip(".").casefold() not in _TITLES]
     if not names or len(words) > 4:
         return False
     for word in names:
         bare = word.rstrip(".'’")
-        if bare.casefold() in _NOT_NAMES or bare.casefold() in brands:
+        parts = re.split(r"[-‐]", bare.casefold())  # "Support-Team", "HelpHub-Team"
+        if any(part in _NOT_NAMES or part in brands for part in parts):
             return False
         if not word[0].isupper() or (bare.isupper() and len(bare) > 1):
             return False
@@ -1620,6 +1657,13 @@ def _person_names(text: str, brands: set[str]) -> list[str]:
     found = []
     lines = [line.strip().lstrip(">").strip() for line in text.splitlines()]
     lines = [line for line in lines if line]
+    brands = brands | {
+        label
+        for line in lines
+        if _header_key(line) in _RECIPIENT_KEYS
+        for address in _EMAIL.findall(line)
+        for label in address.split("@")[-1].casefold().split(".")
+    }
     for line in lines:
         key = _header_key(line)
         if key in ("from", "de", "von", "da", "van", "差出人", "送信者"):
@@ -1630,8 +1674,9 @@ def _person_names(text: str, brands: set[str]) -> list[str]:
             continue
         for pattern in (_GREETING, _LABEL):
             match = pattern.match(line)
-            if match and _name_like(match["rest"].strip(), brands):
-                found.append(match["rest"].strip())
+            name = _leading_name(match["rest"]) if match else ""
+            if name and _name_like(name, brands):
+                found.append(name)
     for i, line in enumerate(lines):
         signoff = _SIGNOFF.match(line)
         if not signoff:
@@ -1654,8 +1699,23 @@ def _person_names(text: str, brands: set[str]) -> list[str]:
         found.append(last)
     found += [m[1] for m in _HERE.finditer(text) if _name_like(m[1], brands)]
     found += [m[1] for m in _INTRODUCTION.finditer(text) if m[1][0].isupper() and _name_like(m[1], brands)]
-    found += [m[1] for m in _HONORIFIC.finditer(text) if m[1] not in _CLOSERS]
+    found += [m[1] for m in _HONORIFIC.finditer(text) if not any(c in m[1] for c in _CLOSERS)]
     return found
+
+
+def _leading_name(rest: str) -> str:
+    """The capitalised words opening `rest` ("Priya - my order broke" -> "Priya", "Mr. Tanaka," kept)."""
+    taken: list[str] = []
+    for token in rest.split():
+        word = token.strip("\"'“”‘’()[]")
+        bare = word.rstrip(",.!?;:")
+        is_title = bare.casefold().rstrip(".") in _TITLES
+        if not bare or not (bare[0].isupper() or re.search(_CJK, bare) or is_title):
+            break
+        taken.append(word if is_title else bare)
+        if (word != bare and not is_title) or len(taken) == 4:
+            break
+    return " ".join(taken)
 
 
 def _date_matches(text: str) -> list[str]:
@@ -1672,6 +1732,11 @@ def _same_value(kind: str, found: str, value: Any) -> bool:
     if kind == "date":  # a mention without a year ("12 March") compares on day and month
         if not (isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)):
             return False
+        cjk = re.fullmatch(
+            r"\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*", found
+        )  # "3月12日", inside "2025年3月12日"
+        if cjk:
+            return (int(cjk[1]), int(cjk[2])) == (int(value[5:7]), int(value[8:10]))
         return _date_stated(value, found if re.search(r"\d{4}", found) else f"{found} {value[:4]}")
     if kind == "amount":
         return isinstance(value, int | float) and Decimal(str(value)) in _numbers(found)
@@ -1682,7 +1747,11 @@ def _same_value(kind: str, found: str, value: Any) -> bool:
 
 
 def _null_found(
-    kind: str, pattern: str | None, text: str, present: list[Any] = (), brands: set[str] = frozenset()
+    kind: str,
+    pattern: str | None,
+    text: str,
+    present: list[tuple[str, Any]] = (),
+    brands: set[str] = frozenset(),
 ) -> str | None:
     """The first mention in `text` of a field of this kind that is not one of the record's seeded values, or
     None. Dates ignore the message's own Date header."""
@@ -1700,13 +1769,17 @@ def _null_found(
         matches = [m[0] for m in re.finditer(pattern, text, re.IGNORECASE)]
     else:
         matches = []
-    return next((m for m in matches if not any(_same_value(kind, m, v) for v in present)), None)
+    same_kind = [v for k, v in present if k == kind]  # an email handle never excuses a signed first name
+    return next((m for m in matches if not any(_same_value(kind, m, v) for v in same_kind)), None)
 
 
 def _brands(site: CallSite) -> set[str]:
     """Words the call's own prompt capitalises (the product, the desk): not a customer's name."""
     texts = [site.template.system or "", site.template.user] if site.template else []
-    return {w.casefold() for t in texts for w in re.findall(r"[^\W\d_]+", t) if any(c.isupper() for c in w)}
+    words = {w.casefold() for t in texts for w in re.findall(r"[^\W\d_]+", t) if any(c.isupper() for c in w)}
+    return words | {
+        p for p in re.findall(r"[a-z]+", site.file.lower()) if p not in ("py", "src", "app", "lib")
+    }
 
 
 def record_problem(
@@ -1746,11 +1819,18 @@ def record_problem(
     problems += [
         f"states a value no input should decide ({v!r})" for v in seed.undetermined if _given_away(written, v)
     ]
-    brands = _brands(site) if seed.absent else set()
+    seeded_names = [v for k, v in seed.present if k == "name"]
+    brands = _brands(site) if seed.absent or seeded_names else set()
     for name, kind, pattern in seed.absent:
         found = _null_found(kind, pattern, everything, seed.present, brands)
         if found:
             problems.append(f"states {name} although it is null ({found!r})")
+    unquoted = "\n".join(line for line in everything.splitlines() if not line.lstrip().startswith(">"))
+    others = [
+        n for n in _person_names(unquoted, brands) if not any(_same_value("name", n, v) for v in seeded_names)
+    ]
+    if seeded_names and others:  # cs_03:015: "my name is Chloé Dubois" ... signed "Miguel Garcia"
+        problems.append(f"names another person ({others[0]!r}) besides the seeded name")
     return "; ".join(problems) or None
 
 

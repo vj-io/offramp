@@ -1648,3 +1648,141 @@ def test_prepare_refuses_an_unknown_site(tmp_path, monkeypatch, capsys):
 
     assert cli.main(["prepare", str(tmp_path), "--site", "cs_9", "--cache-only"]) != 0
     assert "cs_9" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------- Task 7b re-review round 1: real records
+
+REAL = json.loads((HERE / "cs03_audit_records.json").read_text())
+
+
+def real_site(system: str = "You extract structured order data from customer support emails.") -> CallSite:
+    return CallSite(
+        id="cs_03",
+        file="helphub/orders/extract.py",
+        lines=[1, 2],
+        sdk="anthropic",
+        call="c",
+        prompt_source="fstring",
+        template=PromptTemplate(system=system, user="{email}", variables=["email"]),
+        contract=Contract(task_type="json_extraction", output="json_schema", json_schema=REAL["schema"]),
+    )
+
+
+def real_problem(reference: dict, email: str) -> str | None:
+    seed = cg.json_seed(reference, REAL["schema"])
+    return cg.record_problem(real_site(), [cg.Recipe(var="email", field="text")], seed, {"text": email})
+
+
+@pytest.mark.parametrize("row", REAL["dropped_before_7b"], ids=lambda r: r["id"])
+def test_every_record_the_audit_dropped_before_7b_is_rejected(row):
+    # Replays the 12 real cs_03 records the blind audit dropped before Task 7b (seed vs written email).
+    assert real_problem(json.loads(row["reference"]), row["email"]) is not None
+
+
+@pytest.mark.parametrize("row", REAL["kept_after_7b"], ids=lambda r: r["id"])
+def test_every_record_the_audit_kept_after_7b_still_passes(row):
+    assert real_problem(json.loads(row["reference"]), row["email"]) is None
+
+
+@pytest.mark.parametrize("case_id, name", [("cs_03:001", "Hanako"), ("cs_03:014", "Priya")])
+def test_a_signed_first_name_is_not_excused_by_the_seeded_email_handle(case_id, name):
+    # Null customer_name, seeded hanako.t3@... / priya.n7@...: the handle starts with the signed name.
+    row = next(r for r in REAL["dropped_before_7b"] if r["id"] == case_id)
+
+    assert f"states customer_name although it is null ('{name}')" in real_problem(
+        json.loads(row["reference"]), row["email"]
+    )
+
+
+@pytest.mark.parametrize(
+    "key, desc, person",
+    [
+        ("first_name", "First name", True),
+        ("last_name", "Last name", True),
+        ("full_name", "Full name", True),
+        ("name", "Name", True),
+        ("patient_name", "Patient name", True),
+        ("customer_name", "Full name", True),
+        ("product_name", "Name of the product the customer ordered", False),
+        ("shop_name", "Shop name", False),
+        ("company_name", "Company name", False),
+    ],
+)
+def test_every_person_name_field_gets_the_name_detector(key, desc, person):
+    found = cg._absent_kind(key, {"type": "string", "description": desc})
+
+    assert (found == ("name", None)) is person
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Hallo Support-Team,\nmeine Bestellung ist kaputt.",
+        "Sehr geehrtes HelpHub-Team,\nBestellung kaputt.",
+        "ご担当者様\n注文が壊れていました。",
+        "商品の様子がおかしいです。",
+        "Nothing here works.",
+        "Nobody here answers the phone.",
+        "Hello HelpHub,\nmy order broke.",  # the product's name, from the call site's own path (helphub/...)
+        "To: support@acme.example\n\nHello Acme,\nmy order broke.",  # the recipient's own name
+        "Ich bin Kunde.\nBestellung kaputt.",
+        "Order broke.\nRefund Please",
+        "注文が壊れていました。\n以上です",
+    ],
+)
+def test_desk_names_and_common_words_are_not_customer_names(text):
+    reference = {k: None for k in json.loads(REAL["dropped_before_7b"][0]["reference"])} | {"issue": "other"}
+
+    assert "customer_name" not in (real_problem(reference, text) or "")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Order 12 MAR 2025 broke.",
+        "RMA 48213 is open.",
+        "DHL 1234567890 lost it.",
+        "Ship within 24 HRS please.",
+        "Delivered at 10:00 CST.",
+    ],
+)
+def test_codes_that_are_not_currencies_are_not_currency(text):
+    problem = email_problem({k: None for k in FULL} | {"issue": "other"}, text) or ""
+
+    assert "currency" not in problem and "total_amount" not in problem
+
+
+@pytest.mark.parametrize("written", ["2025年3月12日", "12th March 2025", "12th of March 2025", "2025.03.12"])
+def test_a_seeded_date_in_cjk_or_ordinal_form_is_stated_and_excuses_its_sibling(written):
+    record = {k: None for k in SIBLINGS["properties"]} | {"order_date": "2025-03-12"}
+
+    problem = email_problem(record, f"Order from {written}, broken.", SIBLINGS) or ""
+
+    assert "delivery_date" not in problem and "does not state order_date" not in problem
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Hi Priya - my order broke.",
+        "Hi Priya. My order is broken.",
+        "Buenos días Miguel,\nsu pedido.",
+        "Guten Tag Frau Müller,\nIhre Bestellung.",
+        "Ship to: Priya Nair, 12 Main St",
+        "Ordered by: Jürgen Müller",
+    ],
+)
+def test_more_greetings_and_labels_name_the_customer(text):
+    assert "customer_name" in (email_problem(NAME_NULL, text) or "")
+
+
+def test_a_dotted_date_ending_a_sentence_is_a_date():
+    assert "order_date" in (email_problem(NAME_NULL, "Ordered 2025.03.12.") or "")
+
+
+def test_a_second_person_beside_a_seeded_name_is_a_conflict_but_a_quoted_agent_is_not():
+    record = {k: None for k in FULL} | {"issue": "other", "customer_name": "Chloé Dubois"}
+    body = "My name is Chloé Dubois and my order broke."
+
+    assert "another person ('Miguel Garcia')" in email_problem(record, body + "\n\nthx\nMiguel Garcia")
+    assert email_problem(record, body + "\n\nThanks,\nChloé\n\n> Kind regards,\n> Tom") is None
