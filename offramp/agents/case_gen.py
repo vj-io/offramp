@@ -620,6 +620,7 @@ class Seed:
     giveaways: list[str] = field(default_factory=list)  # expected values never written as "Label: value"
     verbatim: list[str] = field(default_factory=list)  # identifiers never written in what the person says
     undetermined: list[str] = field(default_factory=list)  # values of free enums no input may dictate
+    present: list[Any] = field(default_factory=list)  # the record's seeded (non-null) scalar values
     absent: list[tuple[str, str, str | None]] = field(
         default_factory=list
     )  # null fields: (name, kind, id regex)
@@ -1053,7 +1054,10 @@ def _absent_kind(key: str, prop: dict[str, Any]) -> tuple[str, str | None] | Non
     kind = _string_kind(key, prop)
     if kind == "example":
         return "id", _shape_pattern(_EXAMPLE.search(prop.get("description", ""))[1])
-    return (kind, None) if kind in ("email", "date", "currency", "name") else None
+    if kind == "name":  # the sender-name detector fits a person, not a product or a shop
+        text = f"{key} {prop.get('description', '')}".lower().replace("_", " ")
+        return ("name", None) if any(w in text for w in _PERSON_WORDS) else None
+    return (kind, None) if kind in ("email", "date", "currency") else None
 
 
 def json_seed(record: dict[str, Any], schema: dict[str, Any]) -> Seed:
@@ -1069,7 +1073,10 @@ def json_seed(record: dict[str, Any], schema: dict[str, Any]) -> Seed:
         found = _absent_kind(key, _flat(schema.get("properties", {}).get(key, {}), schema))
         if found:
             absent.append((key, *found))
-    return Seed(ModelOutput(text=text), shown, stated=_json_stated(record, schema), absent=absent)
+    present = [v for v in record.values() if v is not None and not isinstance(v, dict | list)]
+    return Seed(
+        ModelOutput(text=text), shown, stated=_json_stated(record, schema), present=present, absent=absent
+    )
 
 
 def make_seeds(
@@ -1105,18 +1112,18 @@ def make_seeds(
 
 _NUMBER_RUN = re.compile(r"\d(?:[\d.,'   ]*\d)?")
 _MONTHS = [
-    "january jan januar enero janvier",
-    "february feb februar febrero février",
-    "march mar märz marzo mars",
-    "april apr abril avril",
-    "may mai mayo",
-    "june jun juni junio juin",
-    "july jul juli julio juillet",
+    "january jan januar enero janvier janeiro gennaio",
+    "february feb februar febrero février fevereiro febbraio",
+    "march mar märz marzo mars março",
+    "april apr abril avril aprile",
+    "may mai mayo maio maggio",
+    "june jun juni junio juin junho giugno",
+    "july jul juli julio juillet julho luglio",
     "august aug agosto août",
-    "september sep sept septiembre septembre",
-    "october oct oktober octubre octobre",
-    "november nov noviembre novembre",
-    "december dec dezember diciembre décembre",
+    "september sep sept septiembre septembre setembro settembre",
+    "october oct oktober octubre octobre outubro ottobre",
+    "november nov noviembre novembre novembro",
+    "december dec dezember diciembre décembre dezembro dicembre",
 ]
 _QUOTES = "\"'`“”‘’«»"
 
@@ -1194,53 +1201,147 @@ def _given_away(text: str, value: str) -> bool:
 
 _CJK = r"[぀-ヿ一-鿿가-힯]"
 _OTHER_CURRENCY_CODES = ["chf", "cny", "aud", "cad", "mxn", "brl", "krw", "sek", "nok", "dkk", "pln"]
-_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
-_HEADER_LINE = re.compile(  # an email header, in the languages the writers use
-    r"^\s*(?:from|to|cc|bcc|reply-to|subject|date|sent|de|para|asunto|fecha|enviado|von|an|betreff|datum|"
-    r"gesendet|à|objet|envoyé|da|a|oggetto|data|差出人|送信者|宛先|件名|日付|送信日時)\s*[:：]",
-    re.IGNORECASE,
+_EMAIL = re.compile(
+    r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+|[\w.+-]+\s*[\[(]at[\])]\s*[\w-]+(?:\s*[\[(]dot[\])]\s*[\w-]+)+"
 )
-_DATE_KEY = re.compile(
-    r"^\s*(?:date|sent|fecha|enviado|datum|gesendet|envoyé|data|日付|送信日時)\s*[:：]", re.I
-)
-_RECIPIENT_KEY = re.compile(r"^\s*(?:to|cc|bcc|para|an|à|a|宛先)\s*[:：]", re.IGNORECASE)
-_SIGNOFF = (
-    r"(?:thanks|thank you|many thanks|thx|regards|best|best regards|kind regards|warm regards|cheers|"
-    r"sincerely|yours|gracias|muchas gracias|saludos|un saludo|atentamente|danke|vielen dank|grüße|gruß|"
-    r"viele grüße|liebe grüße|mit freundlichen grüßen|lg|merci|cordialement|bien à vous|obrigad[oa]|"
-    r"よろしく[^\n]*|ありがとう[^\n]*|宜しく[^\n]*)"
-)
-_INTRODUCTION = re.compile(
-    r"(?:\bmy name is|\bi am|\bi'm|\bthis is|\bme llamo|\bmi nombre es|\bsoy|\bich bin|\bich heiße|"
-    r"\bmein name ist|\bje m'appelle|\bje suis)\s+([^\W\d_][\w'’-]*)",
-    re.IGNORECASE,
-)
-_FROM = re.compile(r"^\s*(?:from|de|von|da|van|差出人|送信者)\s*[:：]\s*(.+)$", re.IGNORECASE | re.M)
 _AMOUNT_WORDS = ("amount", "total", "price", "cost", "sum", "paid", "fee", "charge")
+_PERSON_WORDS = (
+    "customer",
+    "sender",
+    "contact",
+    "person",
+    "client",
+    "buyer",
+    "recipient",
+    "user",
+    "author",
+    "full name",
+    "signer",
+    "requester",
+    "kunde",
+    "cliente",
+)
 
+# ---- email headers: keys compared without inner spaces ("Dat e:" is a Date header the writer mangled)
+_HEADER_KEYS = {
+    "from",
+    "to",
+    "cc",
+    "bcc",
+    "reply-to",
+    "subject",
+    "date",
+    "sent",
+    "de",
+    "para",
+    "asunto",
+    "fecha",
+    "enviado",
+    "von",
+    "an",
+    "betreff",
+    "datum",
+    "gesendet",
+    "à",
+    "objet",
+    "envoyé",
+    "da",
+    "van",
+    "oggetto",
+    "data",
+    "差出人",
+    "送信者",
+    "宛先",
+    "件名",
+    "日付",
+    "送信日時",
+}
+_ADDRESS_KEYS = _HEADER_KEYS - {
+    "date",
+    "sent",
+    "fecha",
+    "enviado",
+    "datum",
+    "gesendet",
+    "envoyé",
+    "data",
+    "日付",
+    "送信日時",
+}
+_DATE_KEYS = _HEADER_KEYS - _ADDRESS_KEYS
+_RECIPIENT_KEYS = {"to", "cc", "bcc", "para", "an", "à", "宛先"}
+_KEY = re.compile(r"^\s*>?\s*([^\W\d_][^\n:：]{0,24}?)\s*[:：]")
 
-def _header_block(text: str) -> tuple[list[str], str]:
-    """(the leading email header lines, the rest). A note that starts "注文番号: ..." has no header block."""
-    lines = text.splitlines()
-    i = 0
-    while i < len(lines) and lines[i].strip() and _HEADER_LINE.match(lines[i]):
-        i += 1
-    return lines[:i], "\n".join(lines[i:])
-
-
-def _without_date_headers(text: str) -> str:
-    """The text minus the email's own Date header: when the message was sent, never a value of the record
-    (Task 14: seeds whose order date sat only in that header were rightly read as null). A "日付:" line in
-    a note's body stays: there it is a value."""
-    headers, rest = _header_block(text)
-    return "\n".join([h for h in headers if not _DATE_KEY.match(h)] + [rest])
-
-
-def _customer_emails(text: str) -> list[str]:
-    """Email addresses in `text` other than the message's recipients (To/Cc/Para/An: the support desk)."""
-    headers, _ = _header_block(text)
-    recipients = {a.casefold() for h in headers if _RECIPIENT_KEY.match(h) for a in _EMAIL.findall(h)}
-    return [a for a in _EMAIL.findall(text) if a.casefold() not in recipients]
+# ---- currencies: names and symbols that mean money anywhere; short or ambiguous ones only next to a number;
+# a bare three-letter code only next to a number, minus time zones and units. "pound(s)" alone is a weight
+# ("3 pounds"), so only the reverse check (CURRENCY_ALIASES) accepts it.
+_NULL_CURRENCY_WORDS = (
+    ({a for names in CURRENCY_ALIASES.values() for a in names} - {"pound", "pounds"})
+    | set(_OTHER_CURRENCY_CODES)
+    | {
+        "franc",
+        "francs",
+        "franken",
+        "yuan",
+        "peso",
+        "pesos",
+        "reais",
+        "rublo",
+        "rublos",
+        "ruble",
+        "rubles",
+        "rouble",
+        "roubles",
+        "livre",
+        "livres",
+        "sterlina",
+        "sterline",
+        "krona",
+        "kronor",
+        "krone",
+        "kroner",
+        "złoty",
+        "zloty",
+        "₩",
+        "₽",
+        "₺",
+        "₪",
+        "฿",
+        "₱",
+        "₫",
+        "r$",
+    }
+)
+_NEAR_NUMBER_WORDS = {"kr", "rs", "rs.", "zł", "元", "원"}
+_NOT_CURRENCY = {
+    "UTC",
+    "GMT",
+    "CET",
+    "CEST",
+    "EST",
+    "EDT",
+    "PST",
+    "PDT",
+    "JST",
+    "KST",
+    "IST",
+    "BST",
+    "MSK",
+    "AEST",
+    "KGS",
+    "LBS",
+    "PCS",
+    "MHZ",
+    "GHZ",
+    "RPM",
+    "DPI",
+    "SKU",
+    "PIN",
+    "ETA",
+    "VAT",
+    "USB",
+}
+_NUM = r"\d[\d.,']*\d|\d"
 
 
 def _alias_pattern(alias: str) -> str:
@@ -1250,14 +1351,237 @@ def _alias_pattern(alias: str) -> str:
     return re.escape(alias)
 
 
-def _all_currency_markers() -> str:
-    aliases = {a for names in CURRENCY_ALIASES.values() for a in names} | set(_OTHER_CURRENCY_CODES)
-    return "|".join(_alias_pattern(a) for a in sorted(aliases, key=len, reverse=True))
+def _alternation(words: set[str]) -> str:
+    return "|".join(_alias_pattern(a) for a in sorted(words, key=len, reverse=True))
+
+
+_CURRENCY_NAMES = re.compile(_alternation(_NULL_CURRENCY_WORDS), re.IGNORECASE)
+_NEAR = _alternation(_NEAR_NUMBER_WORDS)
+_CODE = rf"(?<![A-Za-z])(?!(?:{'|'.join(_NOT_CURRENCY)})(?![A-Za-z]))[A-Z]{{3}}(?![A-Za-z])"
+_NEAR_NUMBER = re.compile(rf"(?:{_NUM})\s?(?:(?i:{_NEAR})|{_CODE})|(?:(?i:{_NEAR})|{_CODE})\s?(?:{_NUM})")
+_CURRENCY_MARKER = rf"(?i:{_alternation(_NULL_CURRENCY_WORDS)}|{_NEAR})|{_CODE}"
+_AMOUNT = re.compile(rf"(?:{_CURRENCY_MARKER})\s?(?:{_NUM})|(?:{_NUM})\s?(?:{_CURRENCY_MARKER})")
+
+# ---- dates: written forms in en/de/es/fr/pt/it
+_MONTH_WORDS = "|".join(sorted({w for m in _MONTHS for w in m.split()}, key=len, reverse=True))
+_DATE_FORMS = [
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"(?<!\d)\d{4}-\d{1,2}-\d{1,2}(?!\d)",
+        r"(?<!\d)\d{4}/\d{1,2}/\d{1,2}(?!\d)",
+        r"(?<![\d.])\d{4}\.\d{1,2}\.\d{1,2}(?![\d.])",
+        r"(?<![\d.,])\d{1,2}[./]\d{1,2}[./]\d{2,4}(?!\d)",
+        r"\d{4}\s*年\s*\d{1,2}\s*月",
+        r"\d{1,2}\s*月\s*\d{1,2}\s*日",
+        rf"(?<!\d)\d{{1,2}}(?:st|nd|rd|th)?\s+of\s+(?:{_MONTH_WORDS})(?![^\W\d_])",
+        rf"(?<!\d)\d{{1,2}}(?:st|nd|rd|th)?\.?\s+(?:de\s+)?(?:{_MONTH_WORDS})(?![^\W\d_])",
+        rf"(?<![^\W\d_])(?:{_MONTH_WORDS})\.?\s+\d{{1,2}}(?!\d)",
+    )
+]
+
+# ---- names: where a sender is named, and what is not a name
+_SIGNOFF = re.compile(
+    r"^(?:thanks|thank you|many thanks|thx|regards|best|best regards|kind regards|warm regards|cheers|"
+    r"sincerely|yours|gracias|muchas gracias|saludos|un saludo|atentamente|danke|vielen dank|grüße|gruß|"
+    r"viele grüße|liebe grüße|mit freundlichen grüßen|lg|merci|cordialement|bien à vous|obrigad[oa]|"
+    r"cumprimentos|grazie|cordiali saluti|saluti|よろしく[^\n]*|ありがとう[^\n]*|宜しく[^\n]*)"
+    r"(?![^\W\d_])[\s,.!。、]*(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_GREETING = re.compile(
+    r"^(?:hi|hello|hey|dear|hola|hallo|bonjour|ciao|olá|ola|oi|liebe|lieber|estimad[oa]|querid[oa]|caro|cara|"
+    r"sehr geehrte[rs]?|good (?:morning|afternoon|evening))(?![^\W\d_])[\s,]*(?P<rest>[^,\n!:;]+)",
+    re.IGNORECASE,
+)
+_LABEL = re.compile(
+    r"^(?:name|customer|customer name|client|kunde|kundin|nombre|cliente|nom|nome|氏名|名前|お名前)"
+    r"\s*[:：]\s*(?P<rest>.+)$",
+    re.IGNORECASE,
+)
+_INTRODUCTION = re.compile(
+    r"(?:\bmy name is|\bi am|\bi'm|\bthis is|\bme llamo|\bmi nombre es|\bsoy|\bich bin|\bich heiße|"
+    r"\bmein name ist|\bje m'appelle|\bje suis)\s+([^\W\d_][\w'’-]*(?:\s+[^\W\d_][\w'’-]*)?)",
+    re.IGNORECASE,
+)
+_HERE = re.compile(r"(?:^|[.!?,]\s*)([A-Z][\w'’-]+(?:\s+[A-Z][\w'’-]+)?)\s+here\b")
+_HONORIFIC = re.compile(rf"({_CJK}{{1,4}})\s?(?:様|さん|殿|님)")
+_DEVICE = re.compile(
+    r"^(?:sent from|enviado desde|enviado do|von meinem|envoyé de|inviato da|送信元|发自)", re.IGNORECASE
+)
+_NOT_NAMES = {
+    "team",
+    "support",
+    "customer",
+    "customers",
+    "service",
+    "services",
+    "care",
+    "desk",
+    "staff",
+    "admin",
+    "billing",
+    "sales",
+    "everyone",
+    "all",
+    "there",
+    "friend",
+    "friends",
+    "sir",
+    "madam",
+    "colleagues",
+    "equipo",
+    "soporte",
+    "atención",
+    "cliente",
+    "clientes",
+    "kundenservice",
+    "kundendienst",
+    "zusammen",
+    "alle",
+    "équipe",
+    "client",
+    "assistance",
+    "supporto",
+    "equipe",
+    "atendimento",
+    "the",
+    "urgent",
+    "important",
+    "regarding",
+    "about",
+    "order",
+    "ticket",
+    "request",
+    "help",
+    "hilfe",
+    "ayuda",
+    "aide",
+    "aiuto",
+    "ajuda",
+    "damen",
+    "herren",
+    "お客",
+}
+_CLOSERS = {
+    "以上",
+    "谢谢",
+    "謝謝",
+    "감사합니다",
+    "お願いします",
+    "よろしくお願いします",
+    "よろしく",
+    "ありがとう",
+    "ありがとうございます",
+    "敬具",
+    "草々",
+    "再见",
+    "此致",
+    "敬礼",
+    "お客",
+}
+_TITLES = {
+    "mr",
+    "mrs",
+    "ms",
+    "miss",
+    "dr",
+    "prof",
+    "herr",
+    "frau",
+    "sr",
+    "sra",
+    "srta",
+    "m",
+    "mme",
+    "mlle",
+    "sig",
+    "dott",
+}
+
+
+def _header_key(line: str) -> str | None:
+    """A line's normalised header key ("Dat e:" -> "date"; a quoted "> From:" -> "from"), if it has one."""
+    match = _KEY.match(line)
+    if not match:
+        return None
+    key = re.sub(r"\s+", "", match[1]).casefold()
+    return key if key in _HEADER_KEYS or key.startswith("x-") else None
+
+
+def _header_block(text: str) -> tuple[list[str], str]:
+    """(the leading email header lines, the rest). The leading run of header lines is a header block when it
+    has an address-type key (From, To, Subject, their translations) or ends at a blank line, as headers do;
+    a note such as "Date: ...\nOrder: ..." or "注文番号: ..." has none."""
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines) and lines[i].strip() and _header_key(lines[i]):
+        i += 1
+    blank_after = i < len(lines) and not lines[i].strip()
+    if not i or not ({_header_key(line) for line in lines[:i]} & _ADDRESS_KEYS or blank_after):
+        return [], text
+    return lines[:i], "\n".join(lines[i:])
+
+
+def _without_date_headers(text: str) -> str:
+    """The text minus the email's own Date header: when the message was sent, never a value of the record
+    (Task 14: seeds whose order date sat only in that header were rightly read as null). A "日付:" line in
+    a note's body stays: there it is a value."""
+    headers, rest = _header_block(text)
+    return "\n".join([h for h in headers if _header_key(h) not in _DATE_KEYS] + [rest])
+
+
+def _customer_emails(text: str) -> list[str]:
+    """Email addresses in `text` that are not the support desk's: not on a recipient line (To/Cc/Para/An,
+    quoted ones included), not at a recipient's domain, not a role address such as support@ or info@."""
+    recipients = {
+        a.casefold()
+        for line in text.splitlines()
+        if _header_key(line) in _RECIPIENT_KEYS
+        for a in _EMAIL.findall(line)
+    }
+    desk = {a.split("@")[-1] for a in recipients}
+    roles = {
+        "support",
+        "soporte",
+        "suporte",
+        "help",
+        "helpdesk",
+        "info",
+        "service",
+        "services",
+        "kundenservice",
+        "kundendienst",
+        "noreply",
+        "no-reply",
+        "contact",
+        "billing",
+        "sales",
+        "ops",
+        "admin",
+        "care",
+        "hilfe",
+        "atendimento",
+        "assistance",
+    }
+    found = []
+    for address in _EMAIL.findall(text):
+        local, _, domain = address.casefold().partition("@")
+        if address.casefold() not in recipients and domain not in desk and local not in roles:
+            found.append(address)
+    return found
 
 
 def _currency_named(code: str, text: str) -> bool:
     aliases = CURRENCY_ALIASES.get(code.upper(), [code.casefold()])
     return any(re.search(_alias_pattern(a), text, re.IGNORECASE) for a in aliases)
+
+
+def _currency_matches(text: str) -> list[str]:
+    """Currency mentions in text order: names, symbols and known codes anywhere; ambiguous short words and
+    other three-letter codes only next to a number."""
+    found = [(m.start(), m[0]) for m in _CURRENCY_NAMES.finditer(text)]
+    found += [(m.start(), m[0]) for m in _NEAR_NUMBER.finditer(text)]
+    return [m for _, m in sorted(found)]
 
 
 def _shape_pattern(example: str) -> str:
@@ -1269,86 +1593,120 @@ def _shape_pattern(example: str) -> str:
     return rf"(?<![\w-]){body}(?![\w-])"
 
 
-def _has_name(text: str) -> bool:
-    """A capitalised word (not all caps) or a short run of CJK/Hangul: a name, as far as text can show."""
-    words = re.findall(r"[^\W\d_][^\W\d_'’.-]*", text)
-    if any(w[0].isupper() and not w.isupper() for w in words if not re.search(_CJK, w)):
-        return True
-    return bool(re.search(_CJK, text)) and len(text.strip()) <= 12
+def _name_like(text: str, brands: set[str]) -> bool:
+    """Whether `text` is a person's name: 1-4 capitalised words (titles and initials allowed), none of them
+    boilerplate ("Team", "Support"), a brand from the call's own prompt ("HelpHub") or a lowercase word; or
+    a CJK/Hangul run of at most 4 characters that is not a closing phrase ("以上", "谢谢")."""
+    if re.search(_CJK, text):
+        core = "".join(re.findall(_CJK, text))
+        return bool(core) and core not in _CLOSERS and len(core) <= 4
+    words = re.findall(r"[^\W\d_][\w'’.-]*", text)
+    names = [w for w in words if w.rstrip(".").casefold() not in _TITLES]
+    if not names or len(words) > 4:
+        return False
+    for word in names:
+        bare = word.rstrip(".'’")
+        if bare.casefold() in _NOT_NAMES or bare.casefold() in brands:
+            return False
+        if not word[0].isupper() or (bare.isupper() and len(bare) > 1):
+            return False
+    return True
 
 
-def _name_found(text: str) -> str | None:
-    """Where an input names its sender: a From display name, a signature after a sign-off ("Thanks,\\nPriya",
-    "Gracias, Hanako"), a short last line ("Priya"), or a self-introduction ("I'm Priya", "ich bin Jürgen").
-    """
-    for value in _FROM.findall(text):
-        display = value.split("<")[0] if "<" in value else ("" if "@" in value else value)
-        if _has_name(display):
-            return display.strip()
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+def _person_names(text: str, brands: set[str]) -> list[str]:
+    """Where an input names a person: a From display name, a greeting ("Hi Priya,", "> Dear Mr. Tanaka"), a
+    label line ("Name: Priya Nair"), a signature (after a sign-off, or a short last line), "Priya here", a
+    self-introduction ("I'm Priya"), a CJK name with an honorific ("田中様")."""
+    found = []
+    lines = [line.strip().lstrip(">").strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    for line in lines:
+        key = _header_key(line)
+        if key in ("from", "de", "von", "da", "van", "差出人", "送信者"):
+            value = line.split(":", 1)[-1].split("：", 1)[-1].strip()
+            display = value.split("<")[0] if "<" in value else ("" if "@" in value else value)
+            if display and _name_like(display, brands):
+                found.append(display.strip())
+            continue
+        for pattern in (_GREETING, _LABEL):
+            match = pattern.match(line)
+            if match and _name_like(match["rest"].strip(), brands):
+                found.append(match["rest"].strip())
     for i, line in enumerate(lines):
-        signoff = re.fullmatch(rf"{_SIGNOFF}[\s,.!。、]*(?P<rest>.*)", line, re.IGNORECASE)
-        if signoff:
-            rest = signoff["rest"]
-            if rest and _has_name(rest):
-                return rest
-            if not rest and i + 1 < len(lines) and len(lines[i + 1]) <= 40 and _has_name(lines[i + 1]):
-                return lines[i + 1]
+        signoff = _SIGNOFF.match(line)
+        if not signoff:
+            continue
+        rest = signoff["rest"].strip()
+        if rest and _name_like(rest, brands):
+            found.append(rest)
+        elif not rest and i + 1 < len(lines) and not _DEVICE.match(lines[i + 1]):
+            if len(lines[i + 1]) <= 40 and _name_like(lines[i + 1], brands):
+                found.append(lines[i + 1])
     last = lines[-1] if lines else ""
     if (
         len(last) <= 30
-        and len(last.split()) <= 3
-        and not re.search(r"[.!?。:：]$|[\d:：]", last)  # "Tracking: RB123456789GB" is no signature
-        and not re.fullmatch(rf"{_SIGNOFF}.*", last, re.IGNORECASE)
-        and not _FROM.match(last)
-        and _has_name(last)
+        and not re.search(r"[.!?。:：\d]", last)
+        and not _SIGNOFF.match(last)
+        and not _DEVICE.match(last)
+        and not _header_key(last)
+        and _name_like(last, brands)
     ):
-        return last
-    intro = _INTRODUCTION.search(text)
-    return intro[1] if intro and intro[1][0].isupper() else None
+        found.append(last)
+    found += [m[1] for m in _HERE.finditer(text) if _name_like(m[1], brands)]
+    found += [m[1] for m in _INTRODUCTION.finditer(text) if m[1][0].isupper() and _name_like(m[1], brands)]
+    found += [m[1] for m in _HONORIFIC.finditer(text) if m[1] not in _CLOSERS]
+    return found
 
 
-def _date_found(text: str) -> str | None:
-    """Any date in common written forms: 2025-03-12, 2025/3/12, 12.03.2025, 03/12/2025, 2025年3月12日,
-    3月12日, 12 March 2025, 12. März, 5 de marzo, March 12 / July 20, 2025."""
-    months = "|".join(sorted({w for m in _MONTHS for w in m.split()}, key=len, reverse=True))
-    patterns = [
-        r"(?<!\d)\d{4}-\d{1,2}-\d{1,2}(?!\d)",
-        r"(?<!\d)\d{4}/\d{1,2}/\d{1,2}(?!\d)",
-        r"(?<![\d.,])\d{1,2}[./]\d{1,2}[./]\d{2,4}(?!\d)",
-        r"\d{4}\s*年\s*\d{1,2}\s*月",
-        r"\d{1,2}\s*月\s*\d{1,2}\s*日",
-        rf"(?<!\d)\d{{1,2}}(?:st|nd|rd|th)?\.?\s+(?:de\s+)?(?:{months})(?![^\W\d_])",
-        rf"(?<![^\W\d_])(?:{months})\.?\s+\d{{1,2}}(?!\d)",
-    ]
-    found = (re.search(p, text, re.IGNORECASE) for p in patterns)
-    return next((m[0] for m in found if m), None)
+def _date_matches(text: str) -> list[str]:
+    """Dates in common written forms (ISO, numeric, 年月日, en/de/es/fr/pt/it month names), in text order."""
+    found = sorted((m.start(), m[0]) for pattern in _DATE_FORMS for m in pattern.finditer(text))
+    return [m for _, m in found]
 
 
-def _amount_found(text: str) -> str | None:
-    """A number next to a currency marker: "£34.90", "34,90 Euro", "₹ 3490"."""
-    markers = _all_currency_markers()
-    match = re.search(rf"(?:{markers})\s?\d[\d.,']*|\d[\d.,']*\s?(?:{markers})", text, re.IGNORECASE)
-    return match[0] if match else None
-
-
-def _null_found(kind: str, pattern: str | None, text: str) -> str | None:
-    """What in `text` states a field of this kind, or None. Dates ignore the message's own Date header."""
-    if kind == "email":
-        return next(iter(_customer_emails(text)), None)
-    if kind == "name":
-        return _name_found(text)
-    if kind == "date":
-        return _date_found(_without_date_headers(text))
-    if kind == "currency":
-        match = re.search(_all_currency_markers(), text, re.IGNORECASE)
-        return match[0] if match else None
+def _same_value(kind: str, found: str, value: Any) -> bool:
+    """Whether a detected mention is just a seeded (non-null) value of the record, e.g. the order date when
+    the delivery date is null, or the customer's own address when a cc address is null."""
+    if value is None or isinstance(value, bool | dict | list):
+        return False
+    if kind == "date":  # a mention without a year ("12 March") compares on day and month
+        if not (isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)):
+            return False
+        return _date_stated(value, found if re.search(r"\d{4}", found) else f"{found} {value[:4]}")
     if kind == "amount":
-        return _amount_found(text)
-    if kind == "id" and pattern:
-        match = re.search(pattern, text, re.IGNORECASE)
-        return match[0] if match else None
-    return None
+        return isinstance(value, int | float) and Decimal(str(value)) in _numbers(found)
+    if kind == "currency":
+        return isinstance(value, str) and len(value) == 3 and _currency_named(value, found)
+    seeded = _squash(str(value))
+    return bool(seeded) and (_squash(found) == seeded or (kind == "name" and _squash(found) in seeded))
+
+
+def _null_found(
+    kind: str, pattern: str | None, text: str, present: list[Any] = (), brands: set[str] = frozenset()
+) -> str | None:
+    """The first mention in `text` of a field of this kind that is not one of the record's seeded values, or
+    None. Dates ignore the message's own Date header."""
+    if kind == "email":
+        matches = _customer_emails(text)
+    elif kind == "name":
+        matches = _person_names(text, brands)
+    elif kind == "date":
+        matches = _date_matches(_without_date_headers(text))
+    elif kind == "currency":
+        matches = _currency_matches(text)
+    elif kind == "amount":
+        matches = [m[0] for m in _AMOUNT.finditer(text)]
+    elif kind == "id" and pattern:
+        matches = [m[0] for m in re.finditer(pattern, text, re.IGNORECASE)]
+    else:
+        matches = []
+    return next((m for m in matches if not any(_same_value(kind, m, v) for v in present)), None)
+
+
+def _brands(site: CallSite) -> set[str]:
+    """Words the call's own prompt capitalises (the product, the desk): not a customer's name."""
+    texts = [site.template.system or "", site.template.user] if site.template else []
+    return {w.casefold() for t in texts for w in re.findall(r"[^\W\d_]+", t) if any(c.isupper() for c in w)}
 
 
 def record_problem(
@@ -1388,8 +1746,9 @@ def record_problem(
     problems += [
         f"states a value no input should decide ({v!r})" for v in seed.undetermined if _given_away(written, v)
     ]
+    brands = _brands(site) if seed.absent else set()
     for name, kind, pattern in seed.absent:
-        found = _null_found(kind, pattern, everything)
+        found = _null_found(kind, pattern, everything, seed.present, brands)
         if found:
             problems.append(f"states {name} although it is null ({found!r})")
     return "; ".join(problems) or None

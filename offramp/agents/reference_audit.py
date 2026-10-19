@@ -388,8 +388,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     evals = args.repo / "evals"
+    site_ids = [s.strip() for s in args.sites.split(",") if s.strip()] if args.sites else None
+    unknown = sorted(set(site_ids or []) - {s.id for s in baselines.load_sites(evals)})
+    if unknown:
+        print(f"unknown site id(s): {', '.join(unknown)}", file=sys.stderr)
+        return 2
     if args.export_blind:
-        print(export_blind_audit(args.repo, args.out, args.sites.split(",") if args.sites else None))
+        print(export_blind_audit(args.repo, args.out, site_ids))
         return 0
     if args.closed:
         result = ingest_blind_audit(args.closed, args.repo, args.model)
@@ -400,7 +405,7 @@ def main(argv: list[str] | None = None) -> int:
         from offramp.tf import Budget, TFClient
 
         llm = TFClient(budget=Budget())
-    counts = audit_repo(evals, llm, args.sites.split(",") if args.sites else None)
+    counts = audit_repo(evals, llm, site_ids)
     print(json.dumps(counts, indent=1))
     return 0
 

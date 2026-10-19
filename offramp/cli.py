@@ -52,6 +52,11 @@ def prepare(args: argparse.Namespace) -> int:
     client = _client(args)
     result = scan_repo(args.path)
     if args.site:  # regenerate only these sites; the others' files stay as they are
+        unknown = sorted(set(args.site) - {s.id for s in result.sites})
+        if unknown:
+            known = ", ".join(s.id for s in result.sites)
+            print(f"unknown site id(s): {', '.join(unknown)} (this repo has: {known})", file=sys.stderr)
+            return 2
         result.sites = [s for s in result.sites if s.id in args.site]
     result.sites = label_contracts(result.sites, client, root=args.path)
     print(json.dumps(prepare_repo(args.path, result, client), indent=1))
