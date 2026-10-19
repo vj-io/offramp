@@ -90,6 +90,7 @@ class ScanResult(BaseModel):
     repo: str
     commit_sha: str | None = None
     sites: list[CallSite]
+    warnings: list[str] = Field(default_factory=list)  # files skipped (syntax error, recursion limit), etc.
 
 
 # ---------------------------------------------------------------- cases & baselines (§6.2, §6.3)
