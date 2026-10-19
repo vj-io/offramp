@@ -1192,3 +1192,262 @@ def test_record_case_gen_cassettes(tmp_path):
 
 def test_case_gen_never_uses_the_eval_target_role():
     assert "eval_target" not in Path(cg.__file__).read_text()
+
+
+# ---------------------------------------------------------------- Task 7b: null-seeded fields stay unstated
+
+ORDER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "order_id": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "description": "Order id such as HH-48213",
+        },
+        "customer_name": {"anyOf": [{"type": "string"}, {"type": "null"}], "description": "Full name"},
+        "customer_email": {"anyOf": [{"type": "string"}, {"type": "null"}], "description": "Email address"},
+        "order_date": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "description": "Order date as YYYY-MM-DD",
+        },
+        "total_amount": {"anyOf": [{"type": "number"}, {"type": "null"}], "description": "Order total"},
+        "currency": {
+            "anyOf": [{"type": "string"}, {"type": "null"}],
+            "description": "ISO 4217 currency code",
+        },
+        "issue": {"enum": ["damaged", "late_delivery", "other"], "type": "string"},
+    },
+    "required": [
+        "order_id",
+        "customer_name",
+        "customer_email",
+        "order_date",
+        "total_amount",
+        "currency",
+        "issue",
+    ],
+}
+FULL = {
+    "order_id": "HH-15874",
+    "customer_name": "Priya Nair",
+    "customer_email": "priya.n7@example.com",
+    "order_date": "2025-03-12",
+    "total_amount": 34.9,
+    "currency": "EUR",
+    "issue": "damaged",
+}
+
+
+def email_site() -> CallSite:
+    return CallSite(
+        id="cs_03",
+        file="x.py",
+        lines=[1, 2],
+        sdk="anthropic",
+        call="c",
+        prompt_source="fstring",
+        template=PromptTemplate(user="Email:\n{email}", variables=["email"]),
+        contract=Contract(task_type="json_extraction", output="json_schema", json_schema=ORDER_SCHEMA),
+    )
+
+
+def email_problem(record: dict, email: str) -> str | None:
+    seed = cg.json_seed(record, ORDER_SCHEMA)
+    return cg.record_problem(email_site(), [cg.Recipe(var="email", field="text")], seed, {"text": email})
+
+
+BODY = "Order HH-15874, placed on 2025-03-12, arrived broken. I paid 34,90 EUR.\n"
+
+
+@pytest.mark.parametrize(
+    "field, email, flagged",
+    [
+        # customer_email: any address anywhere, headers included
+        (
+            "customer_email",
+            "From: Priya Nair <priya.n7@example.com>\n\n" + BODY + "Thanks,\nPriya Nair",
+            True,
+        ),
+        ("customer_email", "From: Priya Nair\n\n" + BODY + "Thanks,\nPriya Nair", False),
+        # customer_name: From display name, signature (alone, after a sign-off, same line), introduction
+        ("customer_name", "From: Priya Nair <priya.n7@example.com>\n\n" + BODY, True),
+        ("customer_name", "From: priya.n7@example.com\n\n" + BODY + "Gracias,\nHanako", True),
+        ("customer_name", "From: priya.n7@example.com\n\n" + BODY + "Thanks, Priya 😊", True),
+        ("customer_name", "From: priya.n7@example.com\n\n" + BODY + "\nPriya", True),
+        ("customer_name", "From: priya.n7@example.com\n\nHi, I'm Priya. " + BODY, True),
+        ("customer_name", "From: priya.n7@example.com\n\n" + BODY + "よろしくお願いします。\n田中", True),
+        ("customer_name", "From: priya.n7@example.com\n\n" + BODY + "Thanks,\n🌟", False),
+        ("customer_name", "From: priya.n7@example.com\n\nI am writing because " + BODY + "Thanks!", False),
+        # order_date: any date in the body in common forms; the message's own Date header is not one
+        (
+            "order_date",
+            "From: priya.n7@example.com\nDate: Wed, 12 Mar 2025 10:00:00 +0000\n\nOrder HH-15874 broke.",
+            False,
+        ),
+        ("order_date", "Order HH-15874 from 2025-03-12 broke.", True),
+        ("order_date", "Order HH-15874 from 12 March 2025 broke.", True),
+        ("order_date", "Order HH-15874 from 03/12/2025 broke.", True),
+        ("order_date", "注文 HH-15874（2025年3月12日）が壊れていました。", True),
+        ("order_date", "Bestellung HH-15874 vom 12. März 2025 ist kaputt.", True),
+        # currency: codes, symbols and names; "Europe" is no euro
+        ("currency", "Order HH-15874 broke, I paid 34,90 €.", True),
+        ("currency", "Order HH-15874 broke, I paid 34.90 EUR.", True),
+        ("currency", "Order HH-15874 broke, I paid 34.90 euros.", True),
+        ("currency", "Order HH-15874 broke, I paid ₹ 3490.", True),
+        ("currency", "Order HH-15874 shipped from Europe and broke.", False),
+        # total_amount: a number next to a currency marker
+        ("total_amount", "Order HH-15874 broke. It cost £34.90.", True),
+        ("total_amount", "Order HH-15874 broke. It cost 34,90 Euro.", True),
+        ("total_amount", "Order HH-15874 broke, all 3 cups.", False),
+        # order_id: the schema example's shape (letters-digits), not other references
+        ("order_id", "HH-9912 arrived broken.", True),
+        ("order_id", "My parcel (tracking TRK-9944) arrived broken.", False),
+    ],
+)
+def test_a_null_seeded_field_must_not_be_stated_anywhere(field, email, flagged):
+    problem = email_problem({k: None for k in FULL} | {"issue": "damaged"}, email)
+
+    assert (problem is not None and field in problem) is flagged, problem
+
+
+@pytest.mark.parametrize(
+    "field, value, email, ok",
+    [
+        # a seeded date must be stated in the body: the Date header is when the email was sent
+        (
+            "order_date",
+            "2025-08-03",
+            "Date: Sun, 3 Aug 2025 10:30:00 +0000\n\nMy last order is wrong.",
+            False,
+        ),
+        (
+            "order_date",
+            "2025-08-03",
+            "Datum: So, 3 Aug 2025\n\nMeine Bestellung vom 3. August 2025 ist falsch.",
+            True,
+        ),
+        # a seeded currency in any recognisable form
+        ("currency", "EUR", "I paid 367,97 € for it.", True),
+        ("currency", "EUR", "I paid 367,97 euros for it.", True),
+        ("currency", "JPY", "代金は367円でした。", True),
+        ("currency", "EUR", "I paid a lot, shipped from Europe.", False),
+    ],
+)
+def test_a_seeded_date_or_currency_must_be_stated_in_a_recognisable_form(field, value, email, ok):
+    problem = email_problem({k: None for k in FULL} | {"issue": "other", field: value}, email) or ""
+
+    assert (f"does not state {field}" not in problem) is ok, problem
+
+
+def test_the_writer_is_told_which_fields_are_null():
+    import random
+
+    site = email_site()
+    seeds = cg.make_seeds(site, 12, random.Random(3))
+
+    with_nulls = [s for s in seeds if None in json.loads(s.output.text).values()]
+    assert with_nulls
+    for seed in with_nulls:
+        nulls = [k for k, v in json.loads(seed.output.text).items() if v is None]
+        assert "must not appear anywhere" in seed.shown and all(k in seed.shown for k in nulls)
+    rule = cg._Writer(
+        site, cg.FixtureMapping(None, [cg.Recipe(var="email", field="email")]), [], FakeLLM(), {}, []
+    ).prompt([(with_nulls[0], "length:short")], False)
+    assert "signature" in rule and "Date" in rule  # where null fields hide, and what a Date header is
+
+
+def test_prepare_cli_can_regenerate_one_site(tmp_path, monkeypatch):
+    from offramp import cli
+    from offramp.agents import scanner
+
+    sites = [
+        CallSite(
+            id=f"cs_0{i}",
+            file=f"{i}.py",
+            lines=[1, 2],
+            sdk="openai",
+            call="c",
+            prompt_source="literal",
+            template=PromptTemplate(user="x"),
+        )
+        for i in (1, 2, 3)
+    ]
+    seen = {}
+    monkeypatch.setattr(scanner, "scan_repo", lambda path: ScanResult(repo=str(path), sites=sites))
+    monkeypatch.setattr(scanner, "label_contracts", lambda s, client, root: seen.setdefault("labelled", s))
+    monkeypatch.setattr(
+        cg, "prepare_repo", lambda path, scan, client: seen.setdefault("prepared", scan) and {}
+    )
+    monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path))
+
+    assert cli.main(["prepare", str(tmp_path), "--site", "cs_03", "--cache-only"]) == 0
+
+    assert [s.id for s in seen["labelled"]] == ["cs_03"]  # no labelling call for the other sites
+    assert [s.id for s in seen["prepared"].sites] == ["cs_03"]
+
+
+def test_a_seeded_email_belongs_to_the_seeded_name():
+    # Live pilot: seeded "Fatima Zahra El Idrissi" with "kwame24@example.de"; the writer "corrected" the
+    # address to one that fits the name twice, so the record never stated the seed.
+    import random
+    import unicodedata
+
+    seeds = cg.make_seeds(email_site(), 40, random.Random(7))
+
+    both = [
+        r for r in (json.loads(s.output.text) for s in seeds) if r["customer_name"] and r["customer_email"]
+    ]
+    assert both
+    for r in both:
+        ascii_name = (
+            unicodedata.normalize("NFKD", r["customer_name"]).encode("ascii", "ignore").decode().lower()
+        )
+        local = r["customer_email"].split("@")[0]
+        words = [w for w in __import__("re").findall(r"[a-z]+", ascii_name)]
+        assert not words or any(w in local or local.startswith(w[0]) for w in words), r
+
+
+@pytest.mark.parametrize(
+    "field, email, flagged",
+    [
+        # recipients are not the customer: the support address in To/Para/Cc never counts (live run)
+        (
+            "customer_email",
+            "From: Fatima Zahra El Idrissi\nTo: support@helphub.example\n\nHH-55639 broke.",
+            False,
+        ),
+        (
+            "customer_email",
+            "De: María José García\nPara: soporte@helphub.example\nCc: ops@helphub.example\n\nHola.",
+            False,
+        ),
+        (
+            "customer_email",
+            "From: Fatima\nReply-To: fatima@example.com\nTo: support@helphub.example\n\nHi.",
+            True,
+        ),
+        # only the leading header block holds the message's own Date; a "日付:" line in a note is a value
+        ("order_date", "注文番号: HH-26501\n日付: 2026-07-25\n金額: 237.24 JPY", True),
+        (
+            "order_date",
+            "From: a@example.com\nDate: Sat, 25 Jul 2026 10:00:00 +0000\n\nHH-26501 is wrong.",
+            False,
+        ),
+        # a last line with digits or a colon is no signature
+        (
+            "customer_name",
+            "From: kurier@example.jp\n\nYour parcel HH-60365 is late.\n\nTracking: RB123456789GB",
+            False,
+        ),
+    ],
+)
+def test_null_detectors_skip_recipients_note_lines_and_reference_lines(field, email, flagged):
+    problem = email_problem({k: None for k in FULL} | {"issue": "damaged"}, email)
+
+    assert (problem is not None and field in problem) is flagged, problem
+
+
+def test_a_seeded_date_in_a_structured_note_is_stated():
+    record = {k: None for k in FULL} | {"issue": "other", "order_date": "2026-07-25"}
+    problem = email_problem(record, "注文番号: HH-26501\n日付: 2026-07-25\n金額: 237.24 JPY") or ""
+
+    assert "does not state order_date" not in problem

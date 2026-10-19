@@ -1,0 +1,89 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write realistic test inputs for one LLM call inside a software product. Each input is a JSON record in the same shape as the product's own test fixtures. Reply with JSON only."
+      },
+      {
+        "role": "user",
+        "content": "## The call's system message\nExtract the order from the email as one JSON object matching the schema.\nUse null for anything the email does not state. Reply with the JSON object only.\n\n## The call's user message template (fields of the record fill the placeholders)\nSchema:\n{{\"properties\": {{\"order_id\": {{\"anyOf\": [{{\"type\": \"string\"}}, {{\"type\": \"null\"}}], \"description\": \"Order id such as SH-1234, null if not stated\", \"title\": \"Order Id\"}}, \"total\": {{\"anyOf\": [{{\"type\": \"number\"}}, {{\"type\": \"null\"}}], \"description\": \"Order total as a plain number, null if not stated\", \"title\": \"Total\"}}, \"currency\": {{\"anyOf\": [{{\"type\": \"string\"}}, {{\"type\": \"null\"}}], \"description\": \"ISO 4217 currency code, e.g. EUR\", \"title\": \"Currency\"}}, \"issue\": {{\"enum\": [\"damaged\", \"late\", \"other\"], \"title\": \"Issue\", \"type\": \"string\"}}}}, \"required\": [\"order_id\", \"total\", \"currency\", \"issue\"], \"title\": \"OrderInfo\", \"type\": \"object\"}}\n\nEmail:\n{email}\n\n## Example records from the product's test fixtures\n{\"text\": \"From: Ana Ruiz <ana@example.com>\\nSubject: Broken lamp\\n\\nHi, order SH-5120 arrived with the lamp shade cracked. I paid 42.00 EUR.\\nAna\\n\"}\n{\"text\": \"From: Ken Ito <ken@example.jp>\\nSubject: 遅延\\n\\n注文がまだ届きません。いつ届きますか？\\n\"}\n\n## Items\n1. Expected output: JSON {\"order_id\": \"SH-4801\", \"total\": 474.96, \"currency\": \"GBP\", \"issue\": \"damaged\"}. Style: locale:es — written in Spanish.\n2. Expected output: JSON {\"order_id\": \"SH-1259\", \"total\": null, \"currency\": null, \"issue\": \"other\"}; null fields, which must not appear anywhere in the record: total, currency. Style: locale:ja — written in Japanese.\n3. Expected output: JSON {\"order_id\": \"SH-3596\", \"total\": null, \"currency\": null, \"issue\": \"other\"}; null fields, which must not appear anywhere in the record: total, currency. Style: malformed — messy: typos, broken line breaks, missing punctuation, stray pasted text.\n4. Expected output: JSON {\"order_id\": \"SH-9921\", \"total\": 306.28, \"currency\": \"JPY\", \"issue\": \"damaged\"}. Style: locale:de — written in German.\n5. Expected output: JSON {\"order_id\": \"SH-4998\", \"total\": 170.84, \"currency\": \"JPY\", \"issue\": \"late\"}. Style: empty — as terse as possible: the bare minimum of text that still determines the answer.\n6. Expected output: JSON {\"order_id\": null, \"total\": 16.74, \"currency\": \"USD\", \"issue\": \"late\"}; null fields, which must not appear anywhere in the record: order_id. Style: length:short — very short: one line, the way people type on a phone.\n\n## Rules\n- Write exactly 6 records, record i for item i, each with exactly the fields [\"text\"] as in the examples; reply {\"records\": [...]}.\n- For each item, the call's correct output for your record must be exactly the item's expected output, unambiguously, under the system message's instructions. Never give the answer away in what the person writes (no label or tool names, no JSON); write like a real person or document.\n- Make the records realistic and varied: different names, ids, amounts and topics from each other and from the examples.\n- Follow each item's style.\n- Where a field holds reference documents or other context (as in the examples), reuse passages from the examples verbatim instead of inventing new facts.\n- Every non-null value of the expected JSON must be stated in the record (it may be phrased or formatted differently, e.g. a local date format). A field that is null must not appear ANYWHERE in the record: not in headers (From, To, Subject), signatures, greetings, sign-offs or quoted text. For example: no email address when the email is null, not even a first name when the name is null, no currency code, symbol or name when the currency is null, no order number when the order id is null. A Date: header is when the message was sent, never a value of the record: write a non-null date in the body, and write no date in the body when the date is null."
+      }
+    ],
+    "params": {
+      "max_tokens": 5600,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "response",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "records": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "text"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "records"
+            ]
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-bc8df7e72cda254f",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"records\": [{\"text\": \"De: María López <maria@tienda.es>\\nAsunto: Recepción defectuosa\\n\\nHola, el pedido SH-4801 llegó con la pantalla del televisor rota. El importe fue 474,96 GBP.\\nUn saludo,\\nMaría\"}, {\"text\": \"From: 田中 健 <tanaka@example.jp>\\nSubject: 問い合わせ\\n\\n注文番号 SH-1259 について、詳細を教えてください。\\nよろしくお願いします。\"}, {\"text\": \"From: user@example.com\\nSubject: help me pls\\n\\nmy order sh-3596 is messed up i dont know what happened halp\\n\\nsome random text here and there lorem ipsum dolor sit amet\"}, {\"text\": \"Von: Klaus Müller <klaus@shop.de>\\nBetreff: Beschädigte Ware\\n\\nSehr geehrte Damen und Herren,\\nmeine Bestellung SH-9921 ist beschädigt eingetroffen. Der Betrag beträgt 306,28 JPY.\\nMit freundlichen Grüßen\\nKlaus Müller\"}, {\"text\": \"From: Lena Schmidt <lena@shop.jp>\\nSubject: SH-4998 verspätet\\n\\nDie Lieferung kam zu spät. Preis: 170,84 JPY.\"}, {\"text\": \"From: Alex Chen <alex@example.com>\\nSubject: Late delivery\\n\\nOrder took too long. Paid 16.74 USD.\"}]}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792446458,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 341,
+      "prompt_tokens": 1124,
+      "total_tokens": 1465,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 1124
+    }
+  },
+  "latency_ms": 7917,
+  "usage": {
+    "prompt_tokens": 1124,
+    "completion_tokens": 341
+  },
+  "created_at": "2026-10-19T21:47:40.759625+00:00"
+}

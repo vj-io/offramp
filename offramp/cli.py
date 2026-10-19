@@ -51,11 +51,15 @@ def prepare(args: argparse.Namespace) -> int:
 
     client = _client(args)
     result = scan_repo(args.path)
+    if args.site:  # regenerate only these sites; the others' files stay as they are
+        result.sites = [s for s in result.sites if s.id in args.site]
     result.sites = label_contracts(result.sites, client, root=args.path)
     print(json.dumps(prepare_repo(args.path, result, client), indent=1))
     print(_spend(client), file=sys.stderr)
     print(
-        f"next: python -m offramp.agents.reference_audit {args.path} --export-blind  (blind reference audit)",
+        f"next: python -m offramp.agents.reference_audit {args.path} --export-blind"
+        + (f" --sites {','.join(args.site)}" if args.site else "")
+        + "  (blind reference audit)",
         file=sys.stderr,
     )
     return 0
@@ -150,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("prepare", help="generate eval cases and references into <path>/evals")
     p.add_argument("path", type=Path)
+    p.add_argument("--site", action="append", help="only this call site (repeatable), e.g. --site cs_03")
     tf_options(p)
     p.set_defaults(func=prepare)
 
