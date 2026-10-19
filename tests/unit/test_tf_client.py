@@ -1,6 +1,7 @@
 """TFClient against httpx.MockTransport: no network, no key."""
 
 import json
+import logging
 import sys
 import time
 import types
@@ -10,6 +11,7 @@ import openai
 import pytest
 from pydantic import BaseModel
 
+from offramp.integrations import keys
 from offramp.schemas import ModelOutput, Tier
 from offramp.tf import Budget, BudgetExceeded, CacheMiss, ChatResult, FakeLLM, TFClient
 from offramp.tf import tiers as tiers_module
@@ -75,9 +77,11 @@ def chat(client, **kw):
 def hermetic_env(monkeypatch):
     """Nothing in the developer's shell (model overrides, keys, tracing) may change these tests."""
     ambient = [f"OFFRAMP_MODEL_{t.name}" for t in Tier]
-    ambient += ["NEBIUS_API_KEY", "NEBIUS_BASE_URL", "LANGSMITH_TRACING", "OFFRAMP_DATA_DIR"]
+    ambient += ["NEBIUS_API_KEY", "NEBIUS_API_KEY_FALLBACK", "NEBIUS_BASE_URL", "LANGSMITH_TRACING"]
+    ambient += ["OFFRAMP_DATA_DIR"]
     for name in ambient:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(keys, "_exhausted", set())  # the primary->fallback switch is process-wide state
 
 
 @pytest.fixture(autouse=True)
@@ -592,6 +596,115 @@ def test_base_url_and_key_come_from_the_environment(tmp_path, monkeypatch):
 def test_default_base_url_is_token_factory(monkeypatch):
     monkeypatch.delenv("NEBIUS_BASE_URL", raising=False)
     assert TFClient(api_key="k").base_url == "https://api.tokenfactory.nebius.com/v1"
+
+
+# ------------------------------------------------------------------ fallback key (Global Constraint 28)
+
+
+class AuthServer:
+    """Scripted Token Factory that records the bearer token of every request.
+    A reply is a chat.completion body (200) or a (status, error message) pair."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.tokens: list[str] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.tokens.append(request.headers["authorization"].removeprefix("Bearer "))
+        reply = self.replies.pop(0)
+        if isinstance(reply, tuple):
+            return httpx.Response(reply[0], json={"error": {"message": reply[1]}})
+        return httpx.Response(200, json=reply)
+
+
+def keyed_client(tmp_path, server, key="primary-key"):
+    return TFClient(
+        api_key=key,
+        base_url="https://tf.test/v1",
+        cache_dir=tmp_path / "cache",
+        http_client=httpx.Client(transport=httpx.MockTransport(server)),
+    )
+
+
+def switch_logs(caplog):
+    return [r.getMessage() for r in caplog.records if r.name == keys.log.name]
+
+
+@pytest.fixture
+def fallback(monkeypatch):
+    monkeypatch.setenv("NEBIUS_API_KEY_FALLBACK", "fallback-key")
+
+
+EXHAUSTED = [
+    (401, "Incorrect API key"),
+    (402, "Payment required"),
+    (403, "Forbidden"),
+    (429, "You exceeded your current quota"),
+    (429, "Insufficient balance"),
+    (429, "Your credit is exhausted"),
+]
+
+
+@pytest.mark.parametrize("status,message", EXHAUSTED)
+def test_rejected_primary_key_retries_once_on_the_fallback_and_stays_there(
+    tmp_path, caplog, fallback, status, message
+):
+    sdk_retries = 4 if status == 429 else 1  # the SDK backs off on 429 (1 attempt + 3 retries) before raising
+    server = AuthServer(*[(status, message)] * sdk_retries, completion("ok"))
+    with caplog.at_level(logging.INFO):
+        assert chat(keyed_client(tmp_path, server)).output.text == "ok"
+    assert server.tokens == ["primary-key"] * sdk_retries + ["fallback-key"]
+    assert switch_logs(caplog) == ["nebius: primary key exhausted, using fallback"]
+    assert "primary-key" not in caplog.text and "fallback-key" not in caplog.text
+
+    # the rest of the process stays on the fallback, new clients included, with no failing request first
+    again = AuthServer(completion("again"))
+    assert chat(keyed_client(tmp_path / "other", again)).output.text == "again"
+    assert again.tokens == ["fallback-key"]
+    assert len(switch_logs(caplog)) == 1
+
+
+def test_plain_rate_limit_429_keeps_the_backoff_on_the_same_key(tmp_path, caplog, fallback):
+    server = AuthServer((429, "Rate limit reached, slow down"), completion("ok"))
+    assert chat(keyed_client(tmp_path, server)).output.text == "ok"
+    assert server.tokens == ["primary-key"] * 2
+
+    stuck = AuthServer(*[(429, "Rate limit reached, slow down")] * 4)
+    with pytest.raises(openai.RateLimitError):
+        chat(keyed_client(tmp_path / "other", stuck))
+    assert stuck.tokens == ["primary-key"] * 4
+    assert switch_logs(caplog) == []
+
+
+def test_other_client_errors_do_not_switch_keys(tmp_path, fallback):
+    server = AuthServer((400, "bad request"))
+    with pytest.raises(openai.BadRequestError):
+        chat(keyed_client(tmp_path, server))
+    assert server.tokens == ["primary-key"]
+
+
+def test_rejected_key_without_a_fallback_raises_as_before(tmp_path, caplog):
+    server = AuthServer((401, "Incorrect API key"))
+    with pytest.raises(openai.AuthenticationError) as err:
+        chat(keyed_client(tmp_path, server))
+    assert server.tokens == ["primary-key"]
+    assert "primary-key" not in str(err.value) and switch_logs(caplog) == []
+
+
+def test_a_rejected_fallback_is_not_retried_again(tmp_path, fallback):
+    server = AuthServer((401, "Incorrect API key"), (401, "Incorrect API key"), completion("never"))
+    with pytest.raises(openai.AuthenticationError):
+        chat(keyed_client(tmp_path, server))
+    assert server.tokens == ["primary-key", "fallback-key"]
+
+
+def test_the_api_key_is_never_part_of_the_cache_key_or_the_cassette(tmp_path):
+    for key in ("first-key", "second-key"):
+        chat(keyed_client(tmp_path / key, AuthServer(completion("ok")), key=key))
+    first = sorted((tmp_path / "first-key" / "cache").glob("*.json"))
+    second = sorted((tmp_path / "second-key" / "cache").glob("*.json"))
+    assert [p.name for p in first] == [p.name for p in second] and len(first) == 1
+    assert "first-key" not in first[0].read_text() and "second-key" not in second[0].read_text()
 
 
 # ------------------------------------------------------------------ optional LangSmith tracing

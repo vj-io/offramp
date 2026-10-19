@@ -1,0 +1,188 @@
+{
+  "recorded_at": "2026-10-19T08:03:16.750730+00:00",
+  "status": 200,
+  "request": {
+    "query": "o3 (o3) API pricing: input and output price per 1M tokens (MTok); deprecation, retirement or shutdown date",
+    "search_depth": "basic",
+    "max_results": 20,
+    "include_answer": true,
+    "include_domains": [
+      "openai.com",
+      "platform.openai.com",
+      "developers.openai.com"
+    ],
+    "exclude_domains": [
+      "community.openai.com"
+    ]
+  },
+  "response": {
+    "query": "o3 (o3) API pricing: input and output price per 1M tokens (MTok); deprecation, retirement or shutdown date",
+    "follow_up_questions": null,
+    "answer": "For the o3 model, the input price per 1M tokens is $2.00 and the output price per 1M tokens is $80.00. The sources do not provide information regarding the deprecation, retirement, or shutdown date for the o3 API.",
+    "images": [],
+    "results": [
+      {
+        "url": "https://platform.openai.com/docs/models/o3-pro",
+        "title": "o3-pro Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\n\u2219\n\nBatch API price\n\nInput\n\n$20.00\n\nOutput\n\n$80.00\n\nQuick comparison\n\nInput\n\nOutput\n\no3-pro\n\n$20.00\n\no3\n\n$2.00\n\no3-mini\n\n$1.10\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nInput only\n\nAudio\n\nNot supported\n\nVideo\n\nNot supported\n\nEndpoints\n\nLive [...] o3-pro is available in the Responses API only to enable support for multi-turn model interactions before responding to API requests, and other advanced API features in the future. Since o3-pro is designed to tackle tough problems, some requests may take several minutes to finish. To avoid timeouts, try using background mode.\n\n200,000 context window\n\n100,000 max output tokens\n\nJun 01, 2024 knowledge cutoff\n\nReasoning token support\n\nPricing [...] ### Spaces\n\n Events\n Developer Forum\n Discord\n Reddit\n X\n\nAPI Dashboard\n\nTry ChatGPT\n\nModels\n\no3-pro\n\no3-pro\n\nDefault\n\nVersion of o3 with more compute for better responses\n\nVersion of o3 with more compute for better responses\n\nReasoning\n\nHighest\n\nSpeed\n\nSlowest\n\nPrice\n\n$20\u2022$80\n\nInput\u2022Output\n\nInput\n\nText, Image\n\nOutput\n\nText",
+        "score": 0.73891455,
+        "raw_content": null,
+        "id": "bb1396-00"
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/models/o3-pro",
+        "title": "o3-pro Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\n\u2219\n\nBatch API price\n\nInput\n\n$20.00\n\nOutput\n\n$80.00\n\nQuick comparison\n\nInput\n\nOutput\n\no3-pro\n\n$20.00\n\no3\n\n$2.00\n\no3-mini\n\n$1.10\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nInput only\n\nAudio\n\nNot supported\n\nVideo\n\nNot supported\n\nEndpoints\n\nLive [...] Default\n\nVersion of o3 with more compute for better responses\n\nVersion of o3 with more compute for better responses\n\nReasoning\n\nHighest\n\nSpeed\n\nSlowest\n\nPrice\n\n$20\u2022$80\n\nInput\u2022Output\n\nInput\n\nText, Image\n\nOutput\n\nText\n\nThe o-series of models are trained with reinforcement learning to think before they answer and perform complex reasoning. The o3-pro model uses more compute to think harder and provide consistently better answers. [...] o3-pro is available in the Responses API only to enable support for multi-turn model interactions before responding to API requests, and other advanced API features in the future. Since o3-pro is designed to tackle tough problems, some requests may take several minutes to finish. To avoid timeouts, try using background mode.\n\n200,000 context window\n\n100,000 max output tokens\n\nJun 01, 2024 knowledge cutoff\n\nReasoning token support\n\nPricing",
+        "score": 0.73891455,
+        "raw_content": null,
+        "id": "121fd3-01"
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/models/o3-mini",
+        "title": "o3-mini Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\n\u2219\n\nBatch API price\n\nInput\n\n$1.10\n\nCached input\n\n$0.55\n\nOutput\n\n$4.40\n\nQuick comparison\n\nInput\n\nCached input\n\nOutput\n\no3-mini\n\n$1.10\n\no1-mini\n\n$1.10\n\nGPT-4o Mini\n\n$0.15\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nNot supported\n\nAudio\n\nNot supported [...] Default\n\nA small model alternative to o3\n\nA small model alternative to o3\n\nReasoning\n\nHigher\n\nSpeed\n\nMedium\n\nPrice\n\n$1.1\u2022$4.4\n\nInput\u2022Output\n\nInput\n\nText\n\nOutput\n\nText\n\nPrompt example\n\nLanding Page Generation\n\nPrompt example\n\nAnalyze Return Policy\n\nPrompt example\n\nText to SQL\n\nPrompt example\n\nGraph Entity Extraction [...] o3-mini is our newest small reasoning model, providing high intelligence at the same cost and latency targets of o1-mini. o3-mini supports key developer features, like Structured Outputs, function calling, and Batch API.\n\n200,000 context window\n\n100,000 max output tokens\n\nOct 01, 2023 knowledge cutoff\n\nReasoning token support\n\nPricing",
+        "score": 0.6907474,
+        "raw_content": null,
+        "id": "278031-02"
+      },
+      {
+        "url": "https://platform.openai.com/docs/models/o3-mini?ref=getdeploying",
+        "title": "o3-mini Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\n\u2219\n\nBatch API price\n\nInput\n\n$1.10\n\nCached input\n\n$0.55\n\nOutput\n\n$4.40\n\nQuick comparison\n\nInput\n\nCached input\n\nOutput\n\no3-mini\n\n$1.10\n\no1-mini\n\n$1.10\n\nGPT-4o Mini\n\n$0.15\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nNot supported\n\nAudio\n\nNot supported [...] Default\n\nA small model alternative to o3\n\nA small model alternative to o3\n\nReasoning\n\nHigher\n\nSpeed\n\nMedium\n\nPrice\n\n$1.1\u2022$4.4\n\nInput\u2022Output\n\nInput\n\nText\n\nOutput\n\nText\n\nPrompt example\n\nLanding Page Generation\n\nPrompt example\n\nAnalyze Return Policy\n\nPrompt example\n\nText to SQL\n\nPrompt example\n\nGraph Entity Extraction [...] o3-mini is our newest small reasoning model, providing high intelligence at the same cost and latency targets of o1-mini. o3-mini supports key developer features, like Structured Outputs, function calling, and Batch API.\n\n200,000 context window\n\n100,000 max output tokens\n\nOct 01, 2023 knowledge cutoff\n\nReasoning token support\n\nPricing",
+        "score": 0.6907474,
+        "raw_content": null,
+        "id": "9a4792-03"
+      },
+      {
+        "url": "https://platform.openai.com/docs/models/o3-mini",
+        "title": "o3-mini Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\n\u2219\n\nBatch API price\n\nInput\n\n$1.10\n\nCached input\n\n$0.55\n\nOutput\n\n$4.40\n\nQuick comparison\n\nInput\n\nCached input\n\nOutput\n\no3-mini\n\n$1.10\n\no1-mini\n\n$1.10\n\nGPT-4o Mini\n\n$0.15\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nNot supported\n\nAudio\n\nNot supported [...] Default\n\nA small model alternative to o3\n\nA small model alternative to o3\n\nReasoning\n\nHigher\n\nSpeed\n\nMedium\n\nPrice\n\n$1.1\u2022$4.4\n\nInput\u2022Output\n\nInput\n\nText\n\nOutput\n\nText\n\nPrompt example\n\nLanding Page Generation\n\nPrompt example\n\nAnalyze Return Policy\n\nPrompt example\n\nText to SQL\n\nPrompt example\n\nGraph Entity Extraction [...] o3-mini is our newest small reasoning model, providing high intelligence at the same cost and latency targets of o1-mini. o3-mini supports key developer features, like Structured Outputs, function calling, and Batch API.\n\n200,000 context window\n\n100,000 max output tokens\n\nOct 01, 2023 knowledge cutoff\n\nReasoning token support\n\nPricing",
+        "score": 0.6907474,
+        "raw_content": null,
+        "id": "5c15d4-04"
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/models/o3-deep-research",
+        "title": "o3-deep-research Model | OpenAI API",
+        "content": "Learn more about getting started with this model in our deep research guide.\n\n200,000 context window\n\n100,000 max output tokens\n\nJun 01, 2024 knowledge cutoff\n\nReasoning token support\n\nPricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\n\u2219\n\nBatch API price\n\nInput\n\n$10.00\n\nCached input\n\n$2.50\n\nOutput [...] $2.50\n\nOutput\n\n$40.00\n\nQuick comparison\n\nInput\n\nCached input\n\nOutput\n\no1\n\n$15.00\n\no3-deep-research\n\n$10.00\n\no4-mini\n\n$1.10\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nInput only\n\nAudio\n\nNot supported\n\nVideo\n\nNot supported\n\nEndpoints\n\nLive\n\nv1/live/sessions\n\nChat Completions\n\nv1/chat/completions\n\nResponses\n\nv1/responses\n\nRealtime\n\nv1/realtime\n\nRealtime translation\n\nv1/realtime/translations\n\nRealtime transcription\n\nv1/realtime/transcription\\_sessions\n\nAssistants\n\nv1/assistants\n\nBatch\n\nv1/batch [...] Deprecated\n\nDefault\n\nOur most powerful deep research model\n\nOur most powerful deep research model\n\nReasoning\n\nHighest\n\nSpeed\n\nSlowest\n\nPrice\n\n$10\u2022$40\n\nInput\u2022Output\n\nInput\n\nText, Image\n\nOutput\n\nText\n\no3-deep-research is our most advanced model for deep research, designed to tackle complex, multi-step research tasks. It can search and synthesize information from across the internet as well as from your own data\u2014brought in through MCP connectors.",
+        "score": 0.6202772,
+        "raw_content": null,
+        "id": "f2bacf-05"
+      },
+      {
+        "url": "http://openai.com/index/introducing-o3-and-o4-mini",
+        "title": "Introducing OpenAI o3 and o4-mini | OpenAI",
+        "content": "Support\n   Help Center(opens in a new window)\n   OpenAI Status(opens in a new window)\n\nMore\n   Stories\n   Academy\n   Supply Co.\n   Livestreams\n   Podcast\n   RSS\n\nTerms & Policies\n   Terms of Use\n   Privacy Policy\n   Other Policies\n\n(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)\n\nOpenAI \u00a9 2015\u20132026 Your privacy choices\n\nEnglish United States\n\n## OpenAI o3 [...] The availability information reflects the April 2025 launch. o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API. See the API deprecation schedule\u2060(opens in a new window).\n\nFor the current experience:\n\nView current API models(opens in a new window)\n\nTry ChatGPT(opens in a new window)\n\nLoading\u2026\n\nAudio 1\n\nShare\n\nWhat\u2019s changed [...] Both o3 and o4-mini are also available to developers today via the Chat Completions API and Responses API (some developers will need to verify their organizations\u2060(opens in a new window) to access these models). The Responses API supports reasoning summaries, the ability to preserve reasoning tokens around function calls for better performance, and will soon support built-in tools like web search, file search, and code interpreter within the model\u2019s reasoning. To get started, explore our",
+        "score": 0.24863952,
+        "raw_content": null,
+        "id": "1b7a18-06"
+      },
+      {
+        "url": "https://openai.com/index/introducing-o3-and-o4-mini#whats-changed",
+        "title": "Introducing OpenAI o3 and o4-mini | OpenAI",
+        "content": "Support\n   Help Center(opens in a new window)\n   OpenAI Status(opens in a new window)\n\nMore\n   Stories\n   Academy\n   Supply Co.\n   Livestreams\n   Podcast\n   RSS\n\nTerms & Policies\n   Terms of Use\n   Privacy Policy\n   Other Policies\n\n(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)\n\nOpenAI \u00a9 2015\u20132026 Your privacy choices\n\nEnglish United States\n\n## OpenAI o3 [...] The availability information reflects the April 2025 launch. o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API. See the API deprecation schedule\u2060(opens in a new window).\n\nFor the current experience:\n\nView current API models(opens in a new window)\n\nTry ChatGPT(opens in a new window)\n\nLoading\u2026\n\nAudio 1\n\nShare\n\nWhat\u2019s changed [...] Both o3 and o4-mini are also available to developers today via the Chat Completions API and Responses API (some developers will need to verify their organizations\u2060(opens in a new window) to access these models). The Responses API supports reasoning summaries, the ability to preserve reasoning tokens around function calls for better performance, and will soon support built-in tools like web search, file search, and code interpreter within the model\u2019s reasoning. To get started, explore our",
+        "score": 0.24863952,
+        "raw_content": null,
+        "id": "2c2050-07"
+      },
+      {
+        "url": "https://openai.com/index/introducing-o3-and-o4-mini#continuing-to-scale-reinforcement-learning",
+        "title": "Introducing OpenAI o3 and o4-mini | OpenAI",
+        "content": "Support\n   Help Center(opens in a new window)\n   OpenAI Status(opens in a new window)\n\nMore\n   Stories\n   Academy\n   Supply Co.\n   Livestreams\n   Podcast\n   RSS\n\nTerms & Policies\n   Terms of Use\n   Privacy Policy\n   Other Policies\n\n(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)\n\nOpenAI \u00a9 2015\u20132026 Your privacy choices\n\nEnglish United States\n\n## OpenAI o3 [...] The availability information reflects the April 2025 launch. o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API. See the API deprecation schedule\u2060(opens in a new window).\n\nFor the current experience:\n\nView current API models(opens in a new window)\n\nTry ChatGPT(opens in a new window)\n\nLoading\u2026\n\nAudio 1\n\nShare\n\nWhat\u2019s changed [...] Both o3 and o4-mini are also available to developers today via the Chat Completions API and Responses API (some developers will need to verify their organizations\u2060(opens in a new window) to access these models). The Responses API supports reasoning summaries, the ability to preserve reasoning tokens around function calls for better performance, and will soon support built-in tools like web search, file search, and code interpreter within the model\u2019s reasoning. To get started, explore our",
+        "score": 0.24863952,
+        "raw_content": null,
+        "id": "780800-08"
+      },
+      {
+        "url": "https://openai.com/index/introducing-o3-and-o4-mini#codex-cli-frontier-reasoning-in-the-terminal",
+        "title": "Introducing OpenAI o3 and o4-mini | OpenAI",
+        "content": "Support\n   Help Center(opens in a new window)\n   OpenAI Status(opens in a new window)\n\nMore\n   Stories\n   Academy\n   Supply Co.\n   Livestreams\n   Podcast\n   RSS\n\nTerms & Policies\n   Terms of Use\n   Privacy Policy\n   Other Policies\n\n(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)\n\nOpenAI \u00a9 2015\u20132026 Your privacy choices\n\nEnglish United States\n\n## OpenAI o3 [...] The availability information reflects the April 2025 launch. o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API. See the API deprecation schedule\u2060(opens in a new window).\n\nFor the current experience:\n\nView current API models(opens in a new window)\n\nTry ChatGPT(opens in a new window)\n\nLoading\u2026\n\nAudio 1\n\nShare\n\nWhat\u2019s changed [...] Both o3 and o4-mini are also available to developers today via the Chat Completions API and Responses API (some developers will need to verify their organizations\u2060(opens in a new window) to access these models). The Responses API supports reasoning summaries, the ability to preserve reasoning tokens around function calls for better performance, and will soon support built-in tools like web search, file search, and code interpreter within the model\u2019s reasoning. To get started, explore our",
+        "score": 0.24863952,
+        "raw_content": null,
+        "id": "a82650-09"
+      },
+      {
+        "url": "https://openai.com/index/introducing-o3-and-o4-mini#benchmarks",
+        "title": "Introducing OpenAI o3 and o4-mini",
+        "content": "Support\n   Help Center(opens in a new window)\n   OpenAI Status(opens in a new window)\n\nMore\n   Stories\n   Academy\n   Supply Co.\n   Livestreams\n   Podcast\n   RSS\n\nTerms & Policies\n   Terms of Use\n   Privacy Policy\n   Other Policies\n\n(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)\n\nOpenAI \u00a9 2015\u20132026 Your privacy choices\n\nEnglish United States\n\n## OpenAI o3 [...] The availability information reflects the April 2025 launch. o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API. See the API deprecation schedule\u2060(opens in a new window).\n\nFor the current experience:\n\nView current API models(opens in a new window)\n\nTry ChatGPT(opens in a new window)\n\nLoading\u2026\n\nAudio 1\n\nShare\n\nWhat\u2019s changed [...] Both o3 and o4-mini are also available to developers today via the Chat Completions API and Responses API (some developers will need to verify their organizations\u2060(opens in a new window) to access these models). The Responses API supports reasoning summaries, the ability to preserve reasoning tokens around function calls for better performance, and will soon support built-in tools like web search, file search, and code interpreter within the model\u2019s reasoning. To get started, explore our",
+        "score": 0.2426006,
+        "raw_content": null,
+        "id": "72a3ae-10"
+      },
+      {
+        "url": "https://openai.com/index/introducing-o3-and-o4-mini#access",
+        "title": "Introducing OpenAI o3 and o4-mini | OpenAI",
+        "content": "Support\n   Help Center(opens in a new window)\n   OpenAI Status(opens in a new window)\n\nMore\n   Stories\n   Academy\n   Supply Co.\n   Livestreams\n   Podcast\n   RSS\n\nTerms & Policies\n   Terms of Use\n   Privacy Policy\n   Other Policies\n\n(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)\n\nOpenAI \u00a9 2015\u20132026 Manage Cookies\n\nEnglish United States\n\n## OpenAI o3 [...] The availability information reflects the April 2025 launch. o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API. See the API deprecation schedule\u2060(opens in a new window).\n\nFor the current experience:\n\nView current API models(opens in a new window)\n\nTry ChatGPT(opens in a new window)\n\nLoading\u2026\n\nAudio 1\n\nShare\n\nWhat\u2019s changed [...] Both o3 and o4-mini are also available to developers today via the Chat Completions API and Responses API (some developers will need to verify their organizations\u2060(opens in a new window) to access these models). The Responses API supports reasoning summaries, the ability to preserve reasoning tokens around function calls for better performance, and will soon support built-in tools like web search, file search, and code interpreter within the model\u2019s reasoning. To get started, explore our",
+        "score": 0.20515321,
+        "raw_content": null,
+        "id": "7eff63-11"
+      },
+      {
+        "url": "https://openai.com/index/introducing-o3-and-o4-mini#livestream-replay",
+        "title": "Introducing OpenAI o3 and o4-mini",
+        "content": "Support\n   Help Center(opens in a new window)\n   OpenAI Status(opens in a new window)\n\nMore\n   Stories\n   Academy\n   Supply Co.\n   Livestreams\n   Podcast\n   RSS\n\nTerms & Policies\n   Terms of Use\n   Privacy Policy\n   Other Policies\n\n(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)\n\nOpenAI \u00a9 2015\u20132026 Your privacy choices\n\nEnglish United States [...] The availability information reflects the April 2025 launch. o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API. See the API deprecation schedule\u2060(opens in a new window).\n\nFor the current experience:\n\nView current API models(opens in a new window)\n\nTry ChatGPT(opens in a new window)\n\nLoading\u2026\n\nAudio 1\n\nShare\n\nWhat\u2019s changed [...] Both o3 and o4-mini are also available to developers today via the Chat Completions API and Responses API (some developers will need to verify their organizations\u2060(opens in a new window) to access these models). The Responses API supports reasoning summaries, the ability to preserve reasoning tokens around function calls for better performance, and will soon support built-in tools like web search, file search, and code interpreter within the model\u2019s reasoning. To get started, explore our",
+        "score": 0.16628273,
+        "raw_content": null,
+        "id": "3c52db-12"
+      },
+      {
+        "url": "https://openai.com/index/introducing-o3-and-o4-mini#safety",
+        "title": "Introducing OpenAI o3 and o4-mini",
+        "content": "Support\n   Help Center(opens in a new window)\n   OpenAI Status(opens in a new window)\n\nMore\n   Stories\n   Academy\n   Supply Co.\n   Livestreams\n   Podcast\n   RSS\n\nTerms & Policies\n   Terms of Use\n   Privacy Policy\n   Other Policies\n\n(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)\n\nOpenAI \u00a9 2015\u20132026 Your privacy choices\n\nEnglish United States [...] The availability information reflects the April 2025 launch. o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API. See the API deprecation schedule\u2060(opens in a new window).\n\nFor the current experience:\n\nView current API models(opens in a new window)\n\nTry ChatGPT(opens in a new window)\n\nLoading\u2026\n\nAudio 1\n\nShare\n\nWhat\u2019s changed [...] Both o3 and o4-mini are also available to developers today via the Chat Completions API and Responses API (some developers will need to verify their organizations\u2060(opens in a new window) to access these models). The Responses API supports reasoning summaries, the ability to preserve reasoning tokens around function calls for better performance, and will soon support built-in tools like web search, file search, and code interpreter within the model\u2019s reasoning. To get started, explore our",
+        "score": 0.16628273,
+        "raw_content": null,
+        "id": "7ee880-13"
+      },
+      {
+        "url": "https://openai.com/index/introducing-o3-and-o4-mini#main",
+        "title": "Introducing OpenAI o3 and o4-mini",
+        "content": "Support\n   Help Center(opens in a new window)\n   OpenAI Status(opens in a new window)\n\nMore\n   Stories\n   Academy\n   Supply Co.\n   Livestreams\n   Podcast\n   RSS\n\nTerms & Policies\n   Terms of Use\n   Privacy Policy\n   Other Policies\n\n(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)\n\nOpenAI \u00a9 2015\u20132026 Your privacy choices\n\nEnglish United States [...] The availability information reflects the April 2025 launch. o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API. See the API deprecation schedule\u2060(opens in a new window).\n\nFor the current experience:\n\nView current API models(opens in a new window)\n\nTry ChatGPT(opens in a new window)\n\nLoading\u2026\n\nAudio 1\n\nShare\n\nWhat\u2019s changed [...] Both o3 and o4-mini are also available to developers today via the Chat Completions API and Responses API (some developers will need to verify their organizations\u2060(opens in a new window) to access these models). The Responses API supports reasoning summaries, the ability to preserve reasoning tokens around function calls for better performance, and will soon support built-in tools like web search, file search, and code interpreter within the model\u2019s reasoning. To get started, explore our",
+        "score": 0.16628273,
+        "raw_content": null,
+        "id": "f2aff5-14"
+      },
+      {
+        "url": "https://openai.com/index/introducing-o3-and-o4-mini#whats-next",
+        "title": "Introducing OpenAI o3 and o4-mini",
+        "content": "Support\n   Help Center(opens in a new window)\n   OpenAI Status(opens in a new window)\n\nMore\n   Stories\n   Academy\n   Supply Co.\n   Livestreams\n   Podcast\n   RSS\n\nTerms & Policies\n   Terms of Use\n   Privacy Policy\n   Other Policies\n\n(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)\n\nOpenAI \u00a9 2015\u20132026 Your privacy choices\n\nEnglish United States [...] The availability information reflects the April 2025 launch. o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API. See the API deprecation schedule\u2060(opens in a new window).\n\nFor the current experience:\n\nView current API models(opens in a new window)\n\nTry ChatGPT(opens in a new window)\n\nLoading\u2026\n\nAudio 1\n\nShare\n\nWhat\u2019s changed [...] Both o3 and o4-mini are also available to developers today via the Chat Completions API and Responses API (some developers will need to verify their organizations\u2060(opens in a new window) to access these models). The Responses API supports reasoning summaries, the ability to preserve reasoning tokens around function calls for better performance, and will soon support built-in tools like web search, file search, and code interpreter within the model\u2019s reasoning. To get started, explore our",
+        "score": 0.16628273,
+        "raw_content": null,
+        "id": "5b0e81-15"
+      },
+      {
+        "url": "https://www.openai.com/index/introducing-o3-and-o4-mini",
+        "title": "Introducing OpenAI o3 and o4-mini",
+        "content": "The availability information reflects the April 2025 launch. o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API. See the API deprecation schedule\u2060(opens in a new window).\n\nFor the current experience:\n\nView current API models(opens in a new window)\n\nTry ChatGPT(opens in a new window)\n\nLoading\u2026\n\nAudio 1\n\nShare\n\nWhat\u2019s changed [...] Support\n   Help Center(opens in a new window)\n   OpenAI Status(opens in a new window)\n\nMore\n   Stories\n   Academy\n   Supply Co.\n   Livestreams\n   Podcast\n   RSS\n\nTerms & Policies\n   Terms of Use\n   Privacy Policy\n   Other Policies\n\n(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)(opens in a new window)\n\nOpenAI \u00a9 2015\u20132026 Manage Cookies\n\nEnglish United States [...] Both o3 and o4-mini are also available to developers today via the Chat Completions API and Responses API (some developers will need to verify their organizations\u2060(opens in a new window) to access these models). The Responses API supports reasoning summaries, the ability to preserve reasoning tokens around function calls for better performance, and will soon support built-in tools like web search, file search, and code interpreter within the model\u2019s reasoning. To get started, explore our",
+        "score": 0.14360783,
+        "raw_content": null,
+        "id": "f711d7-16"
+      },
+      {
+        "url": "https://openai.com/uk-UA/index/introducing-o3-and-o4-mini",
+        "title": "\u041f\u0440\u0435\u0434\u0441\u0442\u0430\u0432\u043b\u044f\u0454\u043c\u043e OpenAI o3 \u0442\u0430 o4-mini",
+        "content": "The availability information reflects the April 2025 launch. o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API. See the API deprecation schedule\u2060(\u0432\u0456\u0434\u043a\u0440\u0438\u0432\u0430\u0454\u0442\u044c\u0441\u044f \u0443 \u043d\u043e\u0432\u043e\u043c\u0443 \u0432\u0456\u043a\u043d\u0456).\n\nFor the current experience:\n\nView current API models(\u0432\u0456\u0434\u043a\u0440\u0438\u0432\u0430\u0454\u0442\u044c\u0441\u044f \u0443 \u043d\u043e\u0432\u043e\u043c\u0443 \u0432\u0456\u043a\u043d\u0456)\n\nTry ChatGPT(\u0432\u0456\u0434\u043a\u0440\u0438\u0432\u0430\u0454\u0442\u044c\u0441\u044f \u0443 \u043d\u043e\u0432\u043e\u043c\u0443 \u0432\u0456\u043a\u043d\u0456)\n\n\u0417\u0430\u0432\u0430\u043d\u0442\u0430\u0436\u0435\u043d\u043d\u044f\u2026\n\nAudio 1\n\n\u041f\u043e\u0448\u0438\u0440\u0438\u0442\u0438\n\nWhat\u2019s changed [...] (\u0432\u0456\u0434\u043a\u0440\u0438\u0432\u0430\u0454\u0442\u044c\u0441\u044f \u0443 \u043d\u043e\u0432\u043e\u043c\u0443 \u0432\u0456\u043a\u043d\u0456)(\u0432\u0456\u0434\u043a\u0440\u0438\u0432\u0430\u0454\u0442\u044c\u0441\u044f \u0443 \u043d\u043e\u0432\u043e\u043c\u0443 \u0432\u0456\u043a\u043d\u0456)(\u0432\u0456\u0434\u043a\u0440\u0438\u0432\u0430\u0454\u0442\u044c\u0441\u044f \u0443 \u043d\u043e\u0432\u043e\u043c\u0443 \u0432\u0456\u043a\u043d\u0456)(\u0432\u0456\u0434\u043a\u0440\u0438\u0432\u0430\u0454\u0442\u044c\u0441\u044f \u0443 \u043d\u043e\u0432\u043e\u043c\u0443 \u0432\u0456\u043a\u043d\u0456)(\u0432\u0456\u0434\u043a\u0440\u0438\u0432\u0430\u0454\u0442\u044c\u0441\u044f \u0443 \u043d\u043e\u0432\u043e\u043c\u0443 \u0432\u0456\u043a\u043d\u0456)(\u0432\u0456\u0434\u043a\u0440\u0438\u0432\u0430\u0454\u0442\u044c\u0441\u044f \u0443 \u043d\u043e\u0432\u043e\u043c\u0443 \u0432\u0456\u043a\u043d\u0456)(\u0432\u0456\u0434\u043a\u0440\u0438\u0432\u0430\u0454\u0442\u044c\u0441\u044f \u0443 \u043d\u043e\u0432\u043e\u043c\u0443 \u0432\u0456\u043a\u043d\u0456)\n\nOpenAI \u00a9 2015\u20132026 \u041a\u0435\u0440\u0443\u0432\u0430\u043d\u043d\u044f \u0444\u0430\u0439\u043b\u0430\u043c\u0438 cookie\n\n\u0443\u043a\u0440\u0430\u0457\u043d\u0441\u044c\u043a\u0430 [...] Both o3 and o4-mini are also available to developers today via the Chat Completions API and Responses API (some developers will need to verify their organizations\u2060(\u0432\u0456\u0434\u043a\u0440\u0438\u0432\u0430\u0454\u0442\u044c\u0441\u044f \u0443 \u043d\u043e\u0432\u043e\u043c\u0443 \u0432\u0456\u043a\u043d\u0456) to access these models). The Responses API supports reasoning summaries, the ability to preserve reasoning tokens around function calls for better performance, and will soon support built-in tools like web search, file search, and code interpreter within the model\u2019s reasoning. To get started, explore our",
+        "score": 0.13745166,
+        "raw_content": null,
+        "id": "067b08-17"
+      },
+      {
+        "url": "https://openai.com/index/introducing-o3-and-o4-mini#thinking-with-images",
+        "title": "Introducing OpenAI o3 and o4-mini",
+        "content": "Title: Introducing OpenAI o3 and o4-mini\n*   Foundation(opens in a new window). Log inTry ChatGPT(opens in a new window). Try ChatGPT(opens in a new window)Login. # Introducing OpenAI o3 and o4-mini. Our smartest and most capable models to date with full tool access. Try on ChatGPT(opens in a new window). ## This post introduced OpenAI o3 and o4-mini. o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API. See the API deprecation schedule\u2060(opens in a new window). View current API models(opens in a new window). _**Update on June 10, 2025:**_**_OpenAI o3\u2011pro is now available to Pro users in ChatGPT, as well as in our API_**_. Like OpenAI o1\u2011pro, o3\u2011pro is a version of our most intelligent model, OpenAI o3, designed to think longer and provide the most reliable responses. Full details can be found in our__release notes_\u2060(opens in a new window)_._. Today, we\u2019re releasing OpenAI **o3** and **o4-mini,** the latest in our o-series of models trained to think for longer before responding. For the first time, our reasoning models can agentically use and combine every tool within ChatGPT\u2014this includes searching the web, analyzing uploaded files and other data with Python, reasoning deeply about visual inputs, and even generating images. Critically, these models are trained to reason about when and how to use tools to produce detailed and thoughtful answers in the right output formats, typically in under a minute, to solve more complex problems. **OpenAI o4-mini** is a smaller model optimized for fast, cost-efficient reasoning\u2014it achieves remarkable performance for its size and cost, particularly in **math, coding, and visual tasks**. While these results should not be compared to the performance of models without tool access, they are one example of how effectively o4-mini leverages available tools; o3 shows similar improvements on AIME 2025 from tool use (98.4% pass@1, 100% consensus@8). x \\left.\\right) \\textrm{ }\\textrm{ } - \\textrm{ }\\textrm{ } p \\left(\\right. x , \\textrm{ } a \\left.\\right) = 2 , \\textrm{ }\\textrm{ } D_{1} \\textrm{ }\u2063 \\left(\\right. x , \\textrm{ } a \\left.\\right) = x , \\textrm{ }\\textrm{ } D_{n} \\textrm{ }\u2063 \\left(\\right. x , \\textrm{ } a \\left.\\right) = x \\textrm{ } D_{n - 1} \\textrm{ }\u2063 \\left(\\right. x , \\textrm{ } a \\left.\\right) \\left(\\right.",
+        "score": 0.09736483,
+        "raw_content": null,
+        "id": "10d05c-18"
+      },
+      {
+        "url": "https://openai.com/api/pricing?hubs_content=www.hubspot.de%252F&hubs_content-cta=Blog",
+        "title": "Business Pricing",
+        "content": "based on features in use and any memory content._ [...] All data is encrypted in transit (TLS 1.2). Data at rest is encrypted at rest (AES-256), and strict access controls are used to limit who can access data. Our security team has an on-call rotation that has 24/7/365 coverage and is paged in case of any potential security incident. We offer a Bug Bounty Program for responsible disclosure of vulnerabilities discovered on our platform and products. Please visit our Trust Portal\u2060(opens in a new window) for more details. [...] 24/7 priority support, SLAs, custom legal terms, and access to AI advisors (eligible customers)\n\n   Invoicing and billing, volume discounts\n\nCredit-based\u2060\u2060(opens in a new window) pricing and token-based\u2060(opens in a new window) pricing are available for Enterprise plans.\n\n### Not sure whether Business or Enterprise fits?\n\nAsk about seats, security, deployment, or purchasing.\n\nChat with buying agent(opens in a new window)\n\nCompare all features\n\nPricing\n\n## Compare features across plans",
+        "score": 0.07407731,
+        "raw_content": null,
+        "id": "728730-19"
+      }
+    ],
+    "response_time": 0.0,
+    "request_id": "07b2b553-b734-4f03-82f5-0ccfe1f05b5a"
+  }
+}

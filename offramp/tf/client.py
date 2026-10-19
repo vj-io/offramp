@@ -15,9 +15,10 @@ from typing import Any, Literal, Protocol
 
 import httpx
 import jsonschema
-from openai import OpenAI
+from openai import APIStatusError, OpenAI
 from pydantic import BaseModel
 
+from offramp.integrations import keys
 from offramp.schemas import ModelOutput, Tier, ToolCall
 from offramp.tf.budget import Budget
 from offramp.tf.cache import Cache, cache_key
@@ -217,13 +218,15 @@ class TFClient:
         self.budget = budget
         self._http_client = http_client  # tests inject httpx.MockTransport here
         self._sdk: OpenAI | None = None
+        self._sdk_key: str | None = None  # the key _sdk was built with (never logged)
 
     def _openai(self) -> OpenAI:
         if self._sdk is None:  # built lazily so live=False (cassette replay) never needs a key
-            if not self.api_key:
+            key = keys.current("nebius", self.api_key)
+            if not key:
                 raise RuntimeError("NEBIUS_API_KEY is not set (live=False replays the cache without a key)")
             sdk = OpenAI(
-                api_key=self.api_key,
+                api_key=key,
                 base_url=self.base_url,
                 max_retries=MAX_RETRIES,
                 timeout=TIMEOUT_S,
@@ -236,8 +239,19 @@ class TFClient:
                     pass
                 else:
                     sdk = wrap_openai(sdk)
-            self._sdk = sdk
+            self._sdk, self._sdk_key = sdk, key
         return self._sdk
+
+    def _create(self, model: str, messages: list[dict[str, Any]], params: dict[str, Any]) -> Any:
+        """chat.completions.create; a rejected / out-of-credit primary key moves the process to the
+        NEBIUS_API_KEY_FALLBACK and retries the same request once (Global Constraint 28)."""
+        try:
+            return self._openai().chat.completions.create(model=model, messages=messages, **params)
+        except APIStatusError as e:
+            if not keys.switch_to_fallback("nebius", self._sdk_key, *keys.status_and_body(e)):
+                raise
+            self._sdk = None  # rebuilt on the fallback key
+            return self._openai().chat.completions.create(model=model, messages=messages, **params)
 
     def _complete(
         self, role: str, info: TierInfo, messages: list[dict[str, Any]], params: dict[str, Any]
@@ -253,7 +267,7 @@ class TFClient:
         if self.budget:
             self.budget.check(role, info.tier)
         started = time.perf_counter()
-        resp = self._openai().chat.completions.create(model=info.model_id, messages=messages, **params)
+        resp = self._create(info.model_id, messages, params)
         latency_ms = round((time.perf_counter() - started) * 1000)
         raw = resp.model_dump(mode="json", exclude_none=True)
         usage = raw.get("usage") or {}
