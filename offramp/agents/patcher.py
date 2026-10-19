@@ -156,13 +156,16 @@ def copy_repo(src: Path, dst: Path) -> list[str]:
             path = Path(dirpath) / name
             if not path.is_symlink():
                 continue
+            why = None
             try:
                 path.resolve(strict=True)  # 3.12 raises RuntimeError on a loop, 3.13 OSError (ELOOP)
-                why = None if path.resolve().is_relative_to(root) else "it points outside the repository"
             except FileNotFoundError:  # dangling: judged by where it points
-                why = None if path.resolve().is_relative_to(root) else "it points outside the repository"
+                pass
             except (OSError, RuntimeError):
                 why = "it is a symlink loop"
+            # os.path.realpath never raises on a loop; 3.12's non-strict Path.resolve can (dangling + loop)
+            if why is None and not Path(os.path.realpath(path)).is_relative_to(root):
+                why = "it points outside the repository"
             if why:
                 path.unlink()
                 warnings.append(f"dropped symlink {path.relative_to(dst).as_posix()}: {why}")

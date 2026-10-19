@@ -535,8 +535,8 @@ def demo_inputs():
 
 
 def run_demo(live: bool):
-    if not (docker_available() or os.environ.get("OFFRAMP_ALLOW_LOCAL_SANDBOX") == "1"):
-        pytest.skip("the demo replay needs a sandbox: docker, or OFFRAMP_ALLOW_LOCAL_SANDBOX=1")
+    if not docker_available():  # the recorded cassette keys name the docker sandbox's output
+        pytest.skip("the demo replay needs docker")
     if not live and not any(CASSETTES.glob("*.json")):
         pytest.skip("demo patcher cassettes not recorded for the current patcher prompt: pytest --live")
     repo = demo_repo()
@@ -806,6 +806,7 @@ def test_a_symlink_loop_is_dropped_not_fatal():
     (src / "tinyapp" / "a").symlink_to("b")
     (src / "tinyapp" / "b").symlink_to("a")
     (src / "tinyapp" / "self").symlink_to("self")
+    (src / "tinyapp" / "0x").symlink_to("missing/../a")  # dangling prefix, then the a/b loop (3.12 re-review)
 
     warnings = copy_repo(src, src.parent / "copy")
 
