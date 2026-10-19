@@ -110,6 +110,13 @@ produced for the demo. Never fabricate closed-model outputs, latencies or costs.
     toward `max_tokens`: when thinking is on, budget ≥ 2000. Lightning with thinking on leaks reasoning prose into
     `content`; never evaluate Lightning with thinking on unless the adapter explicitly chose it.
 26. **TF spend:** $25 total. Dev runs reuse the cache; never re-run a full live matrix without need.
+27. **Closed reference via Claude Code (user decision, 2026-10-19):** no closed API keys, but a Claude Sonnet 5.5
+    subagent run inside the build session may answer the exact rendered `input_messages` of eval cases. Its outputs are
+    stored as `BaselineResult(source="closed_model", model="claude-sonnet-5.5 (via Claude Code; not the repo's source
+    model)")` with latency/tokens/cost None. Uses: (a) free-text references for cs_04/cs_06 → PRD's pairwise rule
+    (candidate mean ≥ reference mean − 0.3 and ≥ 4.0) applies; (b) the independent blind auditor for seed references
+    (GC18) — Sonnet, not Ultra, so Nemotron never grades its own gold; (c) a closed-model comparison row per site
+    ("closed reference scores X% on the same references") shown next to KEEP_CLOSED verdicts. Always labelled as above.
 
 ---
 
