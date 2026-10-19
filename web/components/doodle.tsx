@@ -145,7 +145,7 @@ export function Note({
 export function Stamp({ children, rotate = -4, big = false }: { children: ReactNode; rotate?: number; big?: boolean }) {
   return (
     <span
-      className={`stamp hl-chip inline-block self-start border-[3px] border-[var(--on-hl)] font-mono font-bold tracking-wide ${big ? "px-3.5 py-1.5 text-lg sm:text-xl" : "px-2.5 py-1 text-sm"}`}
+      className={`stamp hl-chip inline-block self-start border-[3px] border-[var(--on-hl)] font-mono font-bold tracking-wide max-w-full ${big ? "px-3 py-1.5 text-base sm:text-xl" : "px-2.5 py-1 text-sm"}`}
       style={{ "--mark": "var(--hl-pink)", rotate: `${rotate}deg` } as CSSProperties}
     >
       {children}

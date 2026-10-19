@@ -16,9 +16,10 @@ export default function NewRunPage() {
           Prove which LLM calls can <Swipe mark="var(--hl-lime)">move to Nemotron.</Swipe>
         </h1>
         <p className="max-w-xl text-lg leading-relaxed font-medium">
-          Offramp finds every OpenAI and Anthropic call in a Python repo, replays each one on NVIDIA Nemotron through
-          Nebius Token Factory, and opens a pull request for the calls that match the original model. Calls that
-          don&apos;t match stay where they are, with the numbers that show why.
+          Offramp finds every OpenAI and Anthropic call in a Python repo and proves which ones NVIDIA Nemotron on Nebius
+          Token Factory can take over, by checking them against reference answers with known ground truth. It opens a
+          pull request for the calls that reach the parity bar. The rest stay on their source model, with the numbers
+          that show why.
         </p>
         <div className="flex flex-col gap-2">
           <p className="font-hand text-xl text-muted">Each call tries the cheapest tier first:</p>

@@ -1,6 +1,6 @@
 {
  "fixture": true,
- "note": "DEV FIXTURE: made-up numbers for building and testing the dashboard. Not a measured Offramp run; never serve it at /replay/. The config object on the QUEUED stage payload is a proposed contract extension, not something the API emits yet.",
+ "note": "DEV FIXTURE: made-up numbers for building and testing the dashboard. Not a measured Offramp run; never serve it at /replay/ (the replay loader refuses it).",
  "events": [
   {
    "run_id": "fixture-dev-001",
@@ -72,7 +72,7 @@
    "call_site_id": "cs_01",
    "payload": {
     "id": "cs_01",
-    "file": "app/triage.py",
+    "file": "helphub/inbox/triage.py",
     "lines": [
      14,
      22
@@ -114,24 +114,24 @@
    "call_site_id": "cs_02",
    "payload": {
     "id": "cs_02",
-    "file": "app/summarize.py",
+    "file": "helphub/ops/agent_step.py",
     "lines": [
      30,
-     41
+     58
     ],
     "kind": "chat",
     "sdk": "anthropic",
     "call": "client.messages.create",
-    "function": "summarize_thread",
-    "source_model": "claude-haiku-4-5",
+    "function": "next_action",
+    "source_model": "claude-sonnet-4-5",
     "prompt_source": "literal",
     "prompt_ref": null,
     "template": null,
     "params": {},
     "contract": {
-     "task_type": "free_text",
-     "output": "text",
-     "tools": false,
+     "task_type": "tool_call",
+     "output": "tool_call",
+     "tools": true,
      "streaming": false,
      "latency_budget_ms": null,
      "reasoning_heavy": false,
@@ -151,15 +151,15 @@
    "call_site_id": "cs_03",
    "payload": {
     "id": "cs_03",
-    "file": "app/extract.py",
+    "file": "helphub/orders/extract.py",
     "lines": [
-     55,
-     78
+     41,
+     70
     ],
     "kind": "chat",
     "sdk": "anthropic",
     "call": "client.messages.create",
-    "function": "extract_invoice",
+    "function": "extract_order",
     "source_model": "claude-sonnet-4-5",
     "prompt_source": "literal",
     "prompt_ref": null,
@@ -190,24 +190,24 @@
    "call_site_id": "cs_04",
    "payload": {
     "id": "cs_04",
-    "file": "app/route_tools.py",
+    "file": "helphub/qa/rag_answer.py",
     "lines": [
-     12,
-     40
+     18,
+     39
     ],
     "kind": "chat",
     "sdk": "openai",
     "call": "client.chat.completions.create",
-    "function": "route_request",
+    "function": "answer_question",
     "source_model": "gpt-4o",
     "prompt_source": "literal",
     "prompt_ref": null,
     "template": null,
     "params": {},
     "contract": {
-     "task_type": "tool_call",
-     "output": "tool_call",
-     "tools": true,
+     "task_type": "free_text",
+     "output": "text",
+     "tools": false,
      "streaming": false,
      "latency_budget_ms": null,
      "reasoning_heavy": false,
@@ -227,7 +227,7 @@
    "call_site_id": "cs_05",
    "payload": {
     "id": "cs_05",
-    "file": "app/plan.py",
+    "file": "helphub/refunds/plan.py",
     "lines": [
      20,
      52
@@ -235,7 +235,7 @@
     "kind": "chat",
     "sdk": "openai",
     "call": "client.chat.completions.create",
-    "function": "plan_budget",
+    "function": "plan_refund",
     "source_model": "o3",
     "prompt_source": "literal",
     "prompt_ref": null,
@@ -264,32 +264,28 @@
    "call_site_id": "cs_06",
    "payload": {
     "id": "cs_06",
-    "file": "app/tagging.py",
+    "file": "helphub/summaries/summarize.py",
     "lines": [
-     8,
-     19
+     9,
+     27
     ],
     "kind": "chat",
-    "sdk": "openai",
-    "call": "client.chat.completions.create",
-    "function": "tag_article",
-    "source_model": "gpt-4o-mini",
+    "sdk": "anthropic",
+    "call": "client.messages.create",
+    "function": "summarize_thread",
+    "source_model": "claude-haiku-4-5",
     "prompt_source": "literal",
     "prompt_ref": null,
     "template": null,
     "params": {},
     "contract": {
-     "task_type": "classification",
-     "output": "label",
+     "task_type": "free_text",
+     "output": "text",
      "tools": false,
      "streaming": false,
      "latency_budget_ms": null,
      "reasoning_heavy": false,
-     "labels": [
-      "news",
-      "opinion",
-      "howto"
-     ],
+     "labels": [],
      "json_schema": null
     },
     "confidence": 0.95,
@@ -305,7 +301,7 @@
    "call_site_id": null,
    "payload": {
     "stage": "BASELINED",
-    "detail": "Loaded recorded baselines"
+    "detail": "References ready"
    }
   },
   {
@@ -319,7 +315,17 @@
     "site_id": "cs_01",
     "dev": 28,
     "holdout": 12,
-    "baselines": 40
+    "references": 40,
+    "reference_methods": {
+     "reference:seed": 40
+    },
+    "audit": {
+     "checked": 40,
+     "agreed": 39,
+     "dropped": 1,
+     "human_verified": 0,
+     "auditor": "claude-sonnet-5.5 (via Claude Code)"
+    }
    }
   },
   {
@@ -331,9 +337,19 @@
    "call_site_id": "cs_02",
    "payload": {
     "site_id": "cs_02",
-    "dev": 21,
-    "holdout": 9,
-    "baselines": 30
+    "dev": 25,
+    "holdout": 11,
+    "references": 36,
+    "reference_methods": {
+     "reference:seed": 36
+    },
+    "audit": {
+     "checked": 36,
+     "agreed": 35,
+     "dropped": 1,
+     "human_verified": 2,
+     "auditor": "claude-sonnet-5.5 (via Claude Code)"
+    }
    }
   },
   {
@@ -347,7 +363,17 @@
     "site_id": "cs_03",
     "dev": 32,
     "holdout": 14,
-    "baselines": 46
+    "references": 46,
+    "reference_methods": {
+     "reference:seed": 46
+    },
+    "audit": {
+     "checked": 46,
+     "agreed": 46,
+     "dropped": 0,
+     "human_verified": 0,
+     "auditor": "claude-sonnet-5.5 (via Claude Code)"
+    }
    }
   },
   {
@@ -359,9 +385,19 @@
    "call_site_id": "cs_04",
    "payload": {
     "site_id": "cs_04",
-    "dev": 25,
-    "holdout": 11,
-    "baselines": 36
+    "dev": 21,
+    "holdout": 9,
+    "references": 30,
+    "reference_methods": {
+     "reference:seed": 30
+    },
+    "audit": {
+     "checked": 30,
+     "agreed": 28,
+     "dropped": 2,
+     "human_verified": 0,
+     "auditor": "claude-sonnet-5.5 (via Claude Code)"
+    }
    }
   },
   {
@@ -375,7 +411,17 @@
     "site_id": "cs_05",
     "dev": 24,
     "holdout": 10,
-    "baselines": 34
+    "references": 34,
+    "reference_methods": {
+     "reference:oracle": 34
+    },
+    "audit": {
+     "checked": 0,
+     "agreed": 0,
+     "dropped": 0,
+     "human_verified": 0,
+     "auditor": null
+    }
    }
   },
   {
@@ -389,7 +435,17 @@
     "site_id": "cs_06",
     "dev": 18,
     "holdout": 8,
-    "baselines": 26
+    "references": 26,
+    "reference_methods": {
+     "reference:seed": 26
+    },
+    "audit": {
+     "checked": 26,
+     "agreed": 26,
+     "dropped": 0,
+     "human_verified": 0,
+     "auditor": "claude-sonnet-5.5 (via Claude Code)"
+    }
    }
   },
   {
@@ -440,13 +496,13 @@
     "adapter_version": 0,
     "split": "dev",
     "passed": true,
-    "score": 0.99,
+    "score": 4.5,
     "metrics": {
-     "p50_ms": 205,
-     "p95_ms": 390,
+     "p50_ms": 610,
+     "p95_ms": 1159,
      "tokens_in": 41000,
      "tokens_out": 6200,
-     "cost_per_1k_calls_usd": 0.02
+     "cost_per_1k_calls_usd": 0.04
     },
     "failing_case_ids": []
    }
@@ -464,17 +520,17 @@
     "adapter_version": 0,
     "split": "dev",
     "passed": false,
-    "score": 3.6,
+    "score": 0.88,
     "metrics": {
-     "p50_ms": 640,
-     "p95_ms": 1216,
+     "p50_ms": 520,
+     "p95_ms": 988,
      "tokens_in": 41000,
      "tokens_out": 6200,
-     "cost_per_1k_calls_usd": 0.09
+     "cost_per_1k_calls_usd": 0.11
     },
     "failing_case_ids": [
-     "cs_02:004",
-     "cs_02:011"
+     "cs_02:003",
+     "cs_02:015"
     ]
    }
   },
@@ -519,17 +575,17 @@
     "adapter_version": 0,
     "split": "dev",
     "passed": false,
-    "score": 0.88,
+    "score": 3.6,
     "metrics": {
-     "p50_ms": 520,
-     "p95_ms": 988,
+     "p50_ms": 640,
+     "p95_ms": 1216,
      "tokens_in": 41000,
      "tokens_out": 6200,
-     "cost_per_1k_calls_usd": 0.11
+     "cost_per_1k_calls_usd": 0.09
     },
     "failing_case_ids": [
-     "cs_04:003",
-     "cs_04:015"
+     "cs_04:004",
+     "cs_04:011"
     ]
    }
   },
@@ -565,109 +621,6 @@
    "run_id": "fixture-dev-001",
    "seq": 24,
    "ts": "2026-10-19T10:00:43.300Z",
-   "stage": "EVALUATING",
-   "type": "tier_result",
-   "call_site_id": "cs_02",
-   "payload": {
-    "site_id": "cs_02",
-    "tier": "super",
-    "adapter_version": 0,
-    "split": "dev",
-    "passed": true,
-    "score": 4.4,
-    "metrics": {
-     "p50_ms": 980,
-     "p95_ms": 1862,
-     "tokens_in": 41000,
-     "tokens_out": 6200,
-     "cost_per_1k_calls_usd": 0.36
-    },
-    "failing_case_ids": []
-   }
-  },
-  {
-   "run_id": "fixture-dev-001",
-   "seq": 25,
-   "ts": "2026-10-19T10:00:44.400Z",
-   "stage": "EVALUATING",
-   "type": "tier_result",
-   "call_site_id": "cs_04",
-   "payload": {
-    "site_id": "cs_04",
-    "tier": "super",
-    "adapter_version": 0,
-    "split": "dev",
-    "passed": true,
-    "score": 0.97,
-    "metrics": {
-     "p50_ms": 860,
-     "p95_ms": 1634,
-     "tokens_in": 41000,
-     "tokens_out": 6200,
-     "cost_per_1k_calls_usd": 0.41
-    },
-    "failing_case_ids": []
-   }
-  },
-  {
-   "run_id": "fixture-dev-001",
-   "seq": 26,
-   "ts": "2026-10-19T10:00:50.400Z",
-   "stage": "EVALUATING",
-   "type": "tier_result",
-   "call_site_id": "cs_05",
-   "payload": {
-    "site_id": "cs_05",
-    "tier": "super",
-    "adapter_version": 0,
-    "split": "dev",
-    "passed": false,
-    "score": 0.58,
-    "metrics": {
-     "p50_ms": 2100,
-     "p95_ms": 3990,
-     "tokens_in": 41000,
-     "tokens_out": 6200,
-     "cost_per_1k_calls_usd": 0.55
-    },
-    "failing_case_ids": [
-     "cs_05:001",
-     "cs_05:006"
-    ]
-   }
-  },
-  {
-   "run_id": "fixture-dev-001",
-   "seq": 27,
-   "ts": "2026-10-19T10:00:50.800Z",
-   "stage": "EVALUATING",
-   "type": "tier_result",
-   "call_site_id": "cs_05",
-   "payload": {
-    "site_id": "cs_05",
-    "tier": "ultra",
-    "adapter_version": 0,
-    "split": "dev",
-    "passed": false,
-    "score": 0.64,
-    "metrics": {
-     "p50_ms": 4200,
-     "p95_ms": 7980,
-     "tokens_in": 41000,
-     "tokens_out": 6200,
-     "cost_per_1k_calls_usd": 1.9
-    },
-    "failing_case_ids": [
-     "cs_05:001",
-     "cs_05:006",
-     "cs_05:013"
-    ]
-   }
-  },
-  {
-   "run_id": "fixture-dev-001",
-   "seq": 28,
-   "ts": "2026-10-19T10:00:51.700Z",
    "stage": "ITERATING",
    "type": "stage",
    "call_site_id": null,
@@ -677,8 +630,8 @@
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 29,
-   "ts": "2026-10-19T10:00:53.300Z",
+   "seq": 25,
+   "ts": "2026-10-19T10:00:44.400Z",
    "stage": "ITERATING",
    "type": "iteration",
    "call_site_id": "cs_03",
@@ -713,8 +666,8 @@
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 30,
-   "ts": "2026-10-19T10:00:55.800Z",
+   "seq": 26,
+   "ts": "2026-10-19T10:00:50.400Z",
    "stage": "ITERATING",
    "type": "tier_result",
    "call_site_id": "cs_03",
@@ -740,15 +693,15 @@
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 31,
-   "ts": "2026-10-19T10:00:56.400Z",
+   "seq": 27,
+   "ts": "2026-10-19T10:00:50.800Z",
    "stage": "ITERATING",
    "type": "iteration",
    "call_site_id": "cs_05",
    "payload": {
     "site_id": "cs_05",
     "version": 1,
-    "tier": "ultra",
+    "tier": "lightning",
     "spec": {
      "system_prompt": null,
      "user_prefix": "",
@@ -758,7 +711,7 @@
      "json_mode_fallback": false,
      "tools": null,
      "tool_choice": null,
-     "reasoning": "medium",
+     "reasoning": "off",
      "max_tokens": 512,
      "temperature": 0,
      "extra_body": {}
@@ -767,41 +720,41 @@
     "notes": [],
     "risk_flags": [],
     "change_log": [
-     "Raised reasoning budget to medium"
+     "Asked for the final amount on its own last line"
     ]
    }
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 32,
-   "ts": "2026-10-19T10:00:59.600Z",
+   "seq": 28,
+   "ts": "2026-10-19T10:00:51.700Z",
    "stage": "ITERATING",
    "type": "tier_result",
    "call_site_id": "cs_05",
    "payload": {
     "site_id": "cs_05",
-    "tier": "ultra",
+    "tier": "lightning",
     "adapter_version": 1,
     "split": "dev",
     "passed": false,
-    "score": 0.68,
+    "score": 0.45,
     "metrics": {
-     "p50_ms": 5100,
-     "p95_ms": 9690,
+     "p50_ms": 950,
+     "p95_ms": 1805,
      "tokens_in": 41000,
      "tokens_out": 6200,
-     "cost_per_1k_calls_usd": 2.1
+     "cost_per_1k_calls_usd": 0.1
     },
     "failing_case_ids": [
      "cs_05:001",
-     "cs_05:013"
+     "cs_05:006"
     ]
    }
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 33,
-   "ts": "2026-10-19T10:01:00.100Z",
+   "seq": 29,
+   "ts": "2026-10-19T10:00:53.300Z",
    "stage": "ITERATING",
    "type": "iteration",
    "call_site_id": "cs_03",
@@ -835,8 +788,8 @@
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 34,
-   "ts": "2026-10-19T10:01:01.200Z",
+   "seq": 30,
+   "ts": "2026-10-19T10:00:55.800Z",
    "stage": "ITERATING",
    "type": "tier_result",
    "call_site_id": "cs_03",
@@ -859,8 +812,502 @@
   },
   {
    "run_id": "fixture-dev-001",
+   "seq": 31,
+   "ts": "2026-10-19T10:00:56.400Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_03",
+   "payload": {
+    "site_id": "cs_03",
+    "tier": "lightning",
+    "adapter_version": 2,
+    "split": "holdout",
+    "passed": true,
+    "score": 0.962,
+    "metrics": {
+     "p50_ms": 1400,
+     "p95_ms": 2660,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.12
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 32,
+   "ts": "2026-10-19T10:00:59.600Z",
+   "stage": "ITERATING",
+   "type": "iteration",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "version": 2,
+    "tier": "lightning",
+    "spec": {
+     "system_prompt": null,
+     "user_prefix": "",
+     "user_suffix": "",
+     "few_shot": [],
+     "response_format": null,
+     "json_mode_fallback": false,
+     "tools": null,
+     "tool_choice": null,
+     "reasoning": "off",
+     "max_tokens": 512,
+     "temperature": 0,
+     "extra_body": {}
+    },
+    "patch": null,
+    "notes": [],
+    "risk_flags": [],
+    "change_log": [
+     "Added a worked refund example"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 33,
+   "ts": "2026-10-19T10:01:00.100Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "lightning",
+    "adapter_version": 2,
+    "split": "dev",
+    "passed": false,
+    "score": 0.48,
+    "metrics": {
+     "p50_ms": 980,
+     "p95_ms": 1862,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.1
+    },
+    "failing_case_ids": [
+     "cs_05:001",
+     "cs_05:006"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 34,
+   "ts": "2026-10-19T10:01:01.200Z",
+   "stage": "ITERATING",
+   "type": "iteration",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "version": 3,
+    "tier": "lightning",
+    "spec": {
+     "system_prompt": null,
+     "user_prefix": "",
+     "user_suffix": "",
+     "few_shot": [],
+     "response_format": null,
+     "json_mode_fallback": false,
+     "tools": null,
+     "tool_choice": null,
+     "reasoning": "off",
+     "max_tokens": 512,
+     "temperature": 0,
+     "extra_body": {}
+    },
+    "patch": null,
+    "notes": [],
+    "risk_flags": [],
+    "change_log": [
+     "Spelled out the proration rule"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
    "seq": 35,
    "ts": "2026-10-19T10:01:07.200Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "lightning",
+    "adapter_version": 3,
+    "split": "dev",
+    "passed": false,
+    "score": 0.5,
+    "metrics": {
+     "p50_ms": 990,
+     "p95_ms": 1881,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.1
+    },
+    "failing_case_ids": [
+     "cs_05:001"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 36,
+   "ts": "2026-10-19T10:01:07.600Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_02",
+   "payload": {
+    "site_id": "cs_02",
+    "tier": "super",
+    "adapter_version": 0,
+    "split": "dev",
+    "passed": true,
+    "score": 0.97,
+    "metrics": {
+     "p50_ms": 860,
+     "p95_ms": 1634,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.41
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 37,
+   "ts": "2026-10-19T10:01:08.500Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_04",
+   "payload": {
+    "site_id": "cs_04",
+    "tier": "super",
+    "adapter_version": 0,
+    "split": "dev",
+    "passed": true,
+    "score": 4.4,
+    "metrics": {
+     "p50_ms": 980,
+     "p95_ms": 1862,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.36
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 38,
+   "ts": "2026-10-19T10:01:10.100Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "super",
+    "adapter_version": 0,
+    "split": "dev",
+    "passed": false,
+    "score": 0.58,
+    "metrics": {
+     "p50_ms": 2100,
+     "p95_ms": 3990,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.55
+    },
+    "failing_case_ids": [
+     "cs_05:001",
+     "cs_05:006"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 39,
+   "ts": "2026-10-19T10:01:12.600Z",
+   "stage": "ITERATING",
+   "type": "iteration",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "version": 1,
+    "tier": "super",
+    "spec": {
+     "system_prompt": null,
+     "user_prefix": "",
+     "user_suffix": "",
+     "few_shot": [],
+     "response_format": null,
+     "json_mode_fallback": false,
+     "tools": null,
+     "tool_choice": null,
+     "reasoning": "medium",
+     "max_tokens": 512,
+     "temperature": 0,
+     "extra_body": {}
+    },
+    "patch": null,
+    "notes": [],
+    "risk_flags": [],
+    "change_log": [
+     "Raised reasoning budget to medium"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 40,
+   "ts": "2026-10-19T10:01:13.200Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "super",
+    "adapter_version": 1,
+    "split": "dev",
+    "passed": false,
+    "score": 0.61,
+    "metrics": {
+     "p50_ms": 2300,
+     "p95_ms": 4370,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.55
+    },
+    "failing_case_ids": [
+     "cs_05:001"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 41,
+   "ts": "2026-10-19T10:01:16.400Z",
+   "stage": "ITERATING",
+   "type": "iteration",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "version": 2,
+    "tier": "super",
+    "spec": {
+     "system_prompt": null,
+     "user_prefix": "",
+     "user_suffix": "",
+     "few_shot": [],
+     "response_format": null,
+     "json_mode_fallback": false,
+     "tools": null,
+     "tool_choice": null,
+     "reasoning": "medium",
+     "max_tokens": 512,
+     "temperature": 0,
+     "extra_body": {}
+    },
+    "patch": null,
+    "notes": [],
+    "risk_flags": [],
+    "change_log": [
+     "Asked for intermediate amounts"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 42,
+   "ts": "2026-10-19T10:01:16.900Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "super",
+    "adapter_version": 2,
+    "split": "dev",
+    "passed": false,
+    "score": 0.63,
+    "metrics": {
+     "p50_ms": 2300,
+     "p95_ms": 4370,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.55
+    },
+    "failing_case_ids": [
+     "cs_05:001"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 43,
+   "ts": "2026-10-19T10:01:18.000Z",
+   "stage": "ITERATING",
+   "type": "iteration",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "version": 3,
+    "tier": "super",
+    "spec": {
+     "system_prompt": null,
+     "user_prefix": "",
+     "user_suffix": "",
+     "few_shot": [],
+     "response_format": null,
+     "json_mode_fallback": false,
+     "tools": null,
+     "tool_choice": null,
+     "reasoning": "medium",
+     "max_tokens": 512,
+     "temperature": 0,
+     "extra_body": {}
+    },
+    "patch": null,
+    "notes": [],
+    "risk_flags": [],
+    "change_log": [
+     "Added a second worked example"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 44,
+   "ts": "2026-10-19T10:01:24.000Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "super",
+    "adapter_version": 3,
+    "split": "dev",
+    "passed": false,
+    "score": 0.64,
+    "metrics": {
+     "p50_ms": 2300,
+     "p95_ms": 4370,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.55
+    },
+    "failing_case_ids": [
+     "cs_05:001"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 45,
+   "ts": "2026-10-19T10:01:24.400Z",
+   "stage": "ITERATING",
+   "type": "log",
+   "call_site_id": "cs_05",
+   "payload": {
+    "level": "warn",
+    "message": "cs_05: Ultra agent calls 31 of 40 used"
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 46,
+   "ts": "2026-10-19T10:01:25.300Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "ultra",
+    "adapter_version": 0,
+    "split": "dev",
+    "passed": false,
+    "score": 0.64,
+    "metrics": {
+     "p50_ms": 4200,
+     "p95_ms": 7980,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 1.9
+    },
+    "failing_case_ids": [
+     "cs_05:001",
+     "cs_05:006",
+     "cs_05:013"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 47,
+   "ts": "2026-10-19T10:01:26.900Z",
+   "stage": "ITERATING",
+   "type": "iteration",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "version": 1,
+    "tier": "ultra",
+    "spec": {
+     "system_prompt": null,
+     "user_prefix": "",
+     "user_suffix": "",
+     "few_shot": [],
+     "response_format": null,
+     "json_mode_fallback": false,
+     "tools": null,
+     "tool_choice": null,
+     "reasoning": "high",
+     "max_tokens": 512,
+     "temperature": 0,
+     "extra_body": {}
+    },
+    "patch": null,
+    "notes": [],
+    "risk_flags": [],
+    "change_log": [
+     "Raised reasoning budget to high"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 48,
+   "ts": "2026-10-19T10:01:29.400Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "ultra",
+    "adapter_version": 1,
+    "split": "dev",
+    "passed": false,
+    "score": 0.68,
+    "metrics": {
+     "p50_ms": 6900,
+     "p95_ms": 13110,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 2.4
+    },
+    "failing_case_ids": [
+     "cs_05:001"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 49,
+   "ts": "2026-10-19T10:01:30.000Z",
    "stage": "ITERATING",
    "type": "iteration",
    "call_site_id": "cs_05",
@@ -886,14 +1333,14 @@
     "notes": [],
     "risk_flags": [],
     "change_log": [
-     "Asked for the final answer on its own last line"
+     "Asked for the final amount on its own last line"
     ]
    }
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 36,
-   "ts": "2026-10-19T10:01:07.600Z",
+   "seq": 50,
+   "ts": "2026-10-19T10:01:33.200Z",
    "stage": "ITERATING",
    "type": "tier_result",
    "call_site_id": "cs_05",
@@ -912,27 +1359,14 @@
      "cost_per_1k_calls_usd": 2.4
     },
     "failing_case_ids": [
-     "cs_05:001",
-     "cs_05:013"
+     "cs_05:001"
     ]
    }
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 37,
-   "ts": "2026-10-19T10:01:08.500Z",
-   "stage": "ITERATING",
-   "type": "log",
-   "call_site_id": "cs_05",
-   "payload": {
-    "level": "warn",
-    "message": "cs_05: Ultra agent calls 31 of 40 used"
-   }
-  },
-  {
-   "run_id": "fixture-dev-001",
-   "seq": 38,
-   "ts": "2026-10-19T10:01:10.100Z",
+   "seq": 51,
+   "ts": "2026-10-19T10:01:33.700Z",
    "stage": "ITERATING",
    "type": "iteration",
    "call_site_id": "cs_05",
@@ -958,14 +1392,14 @@
     "notes": [],
     "risk_flags": [],
     "change_log": [
-     "Added a worked example of multi-step budget arithmetic"
+     "Added a worked example of multi-step refund arithmetic"
     ]
    }
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 39,
-   "ts": "2026-10-19T10:01:12.600Z",
+   "seq": 52,
+   "ts": "2026-10-19T10:01:34.800Z",
    "stage": "ITERATING",
    "type": "tier_result",
    "call_site_id": "cs_05",
@@ -977,8 +1411,8 @@
     "passed": false,
     "score": 0.72,
     "metrics": {
-     "p50_ms": 7000,
-     "p95_ms": 13300,
+     "p50_ms": 6900,
+     "p95_ms": 13110,
      "tokens_in": 41000,
      "tokens_out": 6200,
      "cost_per_1k_calls_usd": 2.4
@@ -990,8 +1424,8 @@
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 40,
-   "ts": "2026-10-19T10:01:13.200Z",
+   "seq": 53,
+   "ts": "2026-10-19T10:01:40.800Z",
    "stage": "VERDICTS",
    "type": "stage",
    "call_site_id": null,
@@ -1001,8 +1435,8 @@
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 41,
-   "ts": "2026-10-19T10:01:16.400Z",
+   "seq": 54,
+   "ts": "2026-10-19T10:01:41.200Z",
    "stage": "VERDICTS",
    "type": "tier_result",
    "call_site_id": "cs_01",
@@ -1025,61 +1459,13 @@
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 42,
-   "ts": "2026-10-19T10:01:16.900Z",
+   "seq": 55,
+   "ts": "2026-10-19T10:01:42.100Z",
    "stage": "VERDICTS",
    "type": "tier_result",
    "call_site_id": "cs_02",
    "payload": {
     "site_id": "cs_02",
-    "tier": "super",
-    "adapter_version": 0,
-    "split": "holdout",
-    "passed": true,
-    "score": 4.3,
-    "metrics": {
-     "p50_ms": 970,
-     "p95_ms": 1843,
-     "tokens_in": 41000,
-     "tokens_out": 6200,
-     "cost_per_1k_calls_usd": 0.36
-    },
-    "failing_case_ids": []
-   }
-  },
-  {
-   "run_id": "fixture-dev-001",
-   "seq": 43,
-   "ts": "2026-10-19T10:01:18.000Z",
-   "stage": "VERDICTS",
-   "type": "tier_result",
-   "call_site_id": "cs_03",
-   "payload": {
-    "site_id": "cs_03",
-    "tier": "lightning",
-    "adapter_version": 2,
-    "split": "holdout",
-    "passed": true,
-    "score": 0.962,
-    "metrics": {
-     "p50_ms": 1400,
-     "p95_ms": 2660,
-     "tokens_in": 41000,
-     "tokens_out": 6200,
-     "cost_per_1k_calls_usd": 0.12
-    },
-    "failing_case_ids": []
-   }
-  },
-  {
-   "run_id": "fixture-dev-001",
-   "seq": 44,
-   "ts": "2026-10-19T10:01:24.000Z",
-   "stage": "VERDICTS",
-   "type": "tier_result",
-   "call_site_id": "cs_04",
-   "payload": {
-    "site_id": "cs_04",
     "tier": "super",
     "adapter_version": 0,
     "split": "holdout",
@@ -1097,8 +1483,32 @@
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 45,
-   "ts": "2026-10-19T10:01:24.400Z",
+   "seq": 56,
+   "ts": "2026-10-19T10:01:43.700Z",
+   "stage": "VERDICTS",
+   "type": "tier_result",
+   "call_site_id": "cs_04",
+   "payload": {
+    "site_id": "cs_04",
+    "tier": "super",
+    "adapter_version": 0,
+    "split": "holdout",
+    "passed": true,
+    "score": 4.3,
+    "metrics": {
+     "p50_ms": 970,
+     "p95_ms": 1843,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.36
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 57,
+   "ts": "2026-10-19T10:01:46.200Z",
    "stage": "VERDICTS",
    "type": "tier_result",
    "call_site_id": "cs_05",
@@ -1125,8 +1535,8 @@
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 46,
-   "ts": "2026-10-19T10:01:25.300Z",
+   "seq": 58,
+   "ts": "2026-10-19T10:01:46.800Z",
    "stage": "VERDICTS",
    "type": "tier_result",
    "call_site_id": "cs_06",
@@ -1136,21 +1546,21 @@
     "adapter_version": 0,
     "split": "holdout",
     "passed": true,
-    "score": 0.985,
+    "score": 4.4,
     "metrics": {
-     "p50_ms": 205,
-     "p95_ms": 390,
+     "p50_ms": 600,
+     "p95_ms": 1140,
      "tokens_in": 41000,
      "tokens_out": 6200,
-     "cost_per_1k_calls_usd": 0.02
+     "cost_per_1k_calls_usd": 0.04
     },
     "failing_case_ids": []
    }
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 47,
-   "ts": "2026-10-19T10:01:26.900Z",
+   "seq": 59,
+   "ts": "2026-10-19T10:01:50.000Z",
    "stage": "VERDICTS",
    "type": "tier_result",
    "call_site_id": "cs_06",
@@ -1160,21 +1570,21 @@
     "adapter_version": 0,
     "split": "holdout",
     "passed": true,
-    "score": 0.985,
+    "score": 4.4,
     "metrics": {
-     "p50_ms": 205,
-     "p95_ms": 390,
+     "p50_ms": 600,
+     "p95_ms": 1140,
      "tokens_in": 41000,
      "tokens_out": 6200,
-     "cost_per_1k_calls_usd": 0.02
+     "cost_per_1k_calls_usd": 0.04
     },
     "failing_case_ids": []
    }
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 48,
-   "ts": "2026-10-19T10:01:29.400Z",
+   "seq": 60,
+   "ts": "2026-10-19T10:01:50.500Z",
    "stage": "VERDICTS",
    "type": "verdict",
    "call_site_id": "cs_01",
@@ -1185,40 +1595,48 @@
     "best_tier": null,
     "best_score": null,
     "iterations": 0,
-    "latency_delta_ms": -30,
+    "latency_delta_ms": null,
     "cost_before_per_1k": 0.21,
+    "cost_before_note": "est.: gpt-4o-mini $0.15/$0.60 per 1M (FIXTURE price, https://example.com/pricing, fetched 2026-10-19) x tokens measured on the Token Factory call",
     "cost_after_per_1k": 0.03,
+    "sunset_risk": null,
+    "closed_reference_model": null,
+    "closed_reference_parity_pct": null,
     "site_id": "cs_01",
     "decision": "MIGRATE",
-    "reason": "Lightning matched the baseline labels on the holdout split."
+    "reason": "Lightning matches the reference labels on the held-out cases."
    }
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 49,
-   "ts": "2026-10-19T10:01:30.000Z",
+   "seq": 61,
+   "ts": "2026-10-19T10:01:51.600Z",
    "stage": "VERDICTS",
    "type": "verdict",
    "call_site_id": "cs_02",
    "payload": {
     "tier": "super",
     "model": "nvidia/nemotron-3-super-120b-a12b",
-    "parity_pct": 96,
+    "parity_pct": 95.8,
     "best_tier": null,
     "best_score": null,
     "iterations": 0,
-    "latency_delta_ms": -220,
-    "cost_before_per_1k": 1.2,
-    "cost_after_per_1k": 0.36,
+    "latency_delta_ms": null,
+    "cost_before_per_1k": 2.5,
+    "cost_before_note": "est.: claude-sonnet-4-5 $3.00/$15.00 per 1M (FIXTURE price, https://example.com/pricing, fetched 2026-10-19) x tokens measured on the Token Factory call",
+    "cost_after_per_1k": 0.41,
+    "sunset_risk": null,
+    "closed_reference_model": null,
+    "closed_reference_parity_pct": null,
     "site_id": "cs_02",
     "decision": "MIGRATE",
-    "reason": "Super summaries scored within 0.3 of the baseline on the judge rubric."
+    "reason": "Super picks the reference tool with equal arguments on the held-out cases."
    }
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 50,
-   "ts": "2026-10-19T10:01:33.200Z",
+   "seq": 62,
+   "ts": "2026-10-19T10:01:57.600Z",
    "stage": "VERDICTS",
    "type": "verdict",
    "call_site_id": "cs_03",
@@ -1229,40 +1647,48 @@
     "best_tier": null,
     "best_score": null,
     "iterations": 2,
-    "latency_delta_ms": -500,
+    "latency_delta_ms": null,
     "cost_before_per_1k": 3.1,
+    "cost_before_note": "est.: claude-sonnet-4-5 $3.00/$15.00 per 1M (FIXTURE price, https://example.com/pricing, fetched 2026-10-19) x tokens measured on the Token Factory call",
     "cost_after_per_1k": 0.12,
+    "sunset_risk": null,
+    "closed_reference_model": null,
+    "closed_reference_parity_pct": null,
     "site_id": "cs_03",
     "decision": "MIGRATE",
-    "reason": "Lightning passed after two adapter iterations added a schema and examples."
+    "reason": "Lightning matches the reference records after two adapter iterations added a schema and examples."
    }
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 51,
-   "ts": "2026-10-19T10:01:33.700Z",
+   "seq": 63,
+   "ts": "2026-10-19T10:01:58.000Z",
    "stage": "VERDICTS",
    "type": "verdict",
    "call_site_id": "cs_04",
    "payload": {
     "tier": "super",
     "model": "nvidia/nemotron-3-super-120b-a12b",
-    "parity_pct": 95.8,
+    "parity_pct": 96,
     "best_tier": null,
     "best_score": null,
     "iterations": 0,
-    "latency_delta_ms": 40,
-    "cost_before_per_1k": 2.5,
-    "cost_after_per_1k": 0.41,
+    "latency_delta_ms": null,
+    "cost_before_per_1k": 1.9,
+    "cost_before_note": "est.: gpt-4o $2.50/$10.00 per 1M (FIXTURE price, https://example.com/pricing, fetched 2026-10-19) x tokens measured on the Token Factory call",
+    "cost_after_per_1k": 0.36,
+    "sunset_risk": "FIXTURE: example deprecation notice for the source model (https://example.com/deprecations, 2026-10-19)",
+    "closed_reference_model": null,
+    "closed_reference_parity_pct": null,
     "site_id": "cs_04",
     "decision": "MIGRATE",
-    "reason": "Super picked the same tool with equal arguments on the holdout split."
+    "reason": "Super answers scored 4.3 on the groundedness rubric against the knowledge-base evidence."
    }
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 52,
-   "ts": "2026-10-19T10:01:34.800Z",
+   "seq": 64,
+   "ts": "2026-10-19T10:01:58.900Z",
    "stage": "VERDICTS",
    "type": "verdict",
    "call_site_id": "cs_05",
@@ -1275,38 +1701,46 @@
     "iterations": 3,
     "latency_delta_ms": null,
     "cost_before_per_1k": 8.8,
+    "cost_before_note": "est.: o3 $2.00/$8.00 per 1M (FIXTURE price, https://example.com/pricing, fetched 2026-10-19) x tokens measured on the Token Factory call",
     "cost_after_per_1k": null,
+    "sunset_risk": null,
+    "closed_reference_model": "claude-sonnet-5.5 (via Claude Code; not the repo's source model)",
+    "closed_reference_parity_pct": 88,
     "site_id": "cs_05",
     "decision": "KEEP_CLOSED",
-    "reason": "Multi-step budget arithmetic: best Nemotron parity was 71.0% on Ultra after 3 adapter iterations, below the 90% reasoning threshold. Next step: LoRA distillation on Token Factory."
+    "reason": "Multi-step refund arithmetic: parity vs reference 71.0% < 90% on Ultra after 3 adapter iterations. Next step: LoRA distillation on Token Factory."
    }
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 53,
-   "ts": "2026-10-19T10:01:40.800Z",
+   "seq": 65,
+   "ts": "2026-10-19T10:02:00.500Z",
    "stage": "VERDICTS",
    "type": "verdict",
    "call_site_id": "cs_06",
    "payload": {
     "tier": "lightning",
     "model": "nvidia/Nemotron-3_5-Lightning",
-    "parity_pct": 98.5,
+    "parity_pct": 97,
     "best_tier": null,
     "best_score": null,
     "iterations": 0,
-    "latency_delta_ms": -45,
+    "latency_delta_ms": null,
     "cost_before_per_1k": 0.18,
-    "cost_after_per_1k": 0.02,
+    "cost_before_note": "est.: claude-haiku-4-5 $1.00/$5.00 per 1M (FIXTURE price, https://example.com/pricing, fetched 2026-10-19) x tokens measured on the Token Factory call",
+    "cost_after_per_1k": 0.04,
+    "sunset_risk": null,
+    "closed_reference_model": null,
+    "closed_reference_parity_pct": null,
     "site_id": "cs_06",
     "decision": "MIGRATE",
-    "reason": "Lightning matched the baseline labels on the holdout split."
+    "reason": "Lightning summaries scored 4.4 on the rubric against the thread evidence."
    }
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 54,
-   "ts": "2026-10-19T10:01:41.200Z",
+   "seq": 66,
+   "ts": "2026-10-19T10:02:03.000Z",
    "stage": "PATCHED",
    "type": "stage",
    "call_site_id": null,
@@ -1317,8 +1751,8 @@
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 55,
-   "ts": "2026-10-19T10:01:42.100Z",
+   "seq": 67,
+   "ts": "2026-10-19T10:02:03.600Z",
    "stage": "PATCHED",
    "type": "pr",
    "call_site_id": null,
@@ -1329,8 +1763,8 @@
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 56,
-   "ts": "2026-10-19T10:01:43.700Z",
+   "seq": 68,
+   "ts": "2026-10-19T10:02:06.800Z",
    "stage": "PR_OPENED",
    "type": "stage",
    "call_site_id": null,
@@ -1340,8 +1774,8 @@
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 57,
-   "ts": "2026-10-19T10:01:46.200Z",
+   "seq": 69,
+   "ts": "2026-10-19T10:02:07.300Z",
    "stage": "DONE",
    "type": "stage",
    "call_site_id": null,
@@ -1351,8 +1785,8 @@
   },
   {
    "run_id": "fixture-dev-001",
-   "seq": 58,
-   "ts": "2026-10-19T10:01:46.800Z",
+   "seq": 70,
+   "ts": "2026-10-19T10:02:08.400Z",
    "stage": "DONE",
    "type": "done",
    "call_site_id": null,
@@ -1367,8 +1801,8 @@
      "tokens_out": 120456,
      "ultra_agent_calls": 31,
      "tf_spend_usd": 1.84,
-     "est_cost_before_per_1k": 15.99,
-     "est_cost_after_per_1k": 9.74
+     "est_cost_before_per_1k": 16.69,
+     "est_cost_after_per_1k": 9.76
     }
    }
   }

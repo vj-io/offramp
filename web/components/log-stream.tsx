@@ -23,7 +23,7 @@ function describe(e: RunEvent, sites: Record<string, CallSite>): string {
     }
     case "case_summary": {
       const c = p as unknown as CaseSummary;
-      return `${c.site_id}: ${c.dev} dev + ${c.holdout} holdout cases, ${c.baselines} baselines`;
+      return `${c.site_id}: ${c.dev} dev + ${c.holdout} holdout cases, ${c.references} references`;
     }
     case "tier_result": {
       const r = p as unknown as TierResult;

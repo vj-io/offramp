@@ -1,8 +1,8 @@
 import type { CSSProperties } from "react";
-import { keepClosedStamp, scoreText, TASK_NAME, TIER_NAME, TIER_SHORT } from "@/lib/format";
+import { closedReferenceText, keepClosedStamp, referencesText, scoreText, TASK_NAME, TIER_NAME, TIER_SHORT } from "@/lib/format";
 import type { SiteView } from "@/lib/run-state";
 import { TIER_ORDER, type RunConfig, type TaskType, type Verdict } from "@/lib/types";
-import { BrandBadges } from "./badges";
+import { BrandBadges, SunsetRisk } from "./badges";
 import { checkPath, crossPath, DECISION_HL, DECISION_NOTE, InkIcon, Note, Stamp, TIER_HL, TIER_NOTE, tiltFor } from "./doodle";
 
 const mark = (m: string) => ({ "--mark": m }) as CSSProperties;
@@ -28,7 +28,10 @@ export function VerdictChip({
       {verdict.decision === "KEEP_CLOSED" && (
         <>
           <Stamp>{keepClosedStamp(verdict, task, config)}</Stamp>
-          <span className="font-hand text-lg">Stays on {sourceModel ?? "the original model"}</span>
+          <span className="font-hand text-lg">Stays on {sourceModel ?? "its source model"}</span>
+          {closedReferenceText(verdict) && (
+            <span className="font-hand text-base leading-snug text-muted">{closedReferenceText(verdict)}</span>
+          )}
         </>
       )}
       {verdict.decision === "MANUAL_REVIEW" && (
@@ -36,6 +39,7 @@ export function VerdictChip({
           Manual review: {verdict.reason}
         </span>
       )}
+      {verdict.sunset_risk && <SunsetRisk note={verdict.sunset_risk} />}
       <BrandBadges small />
     </div>
   );
@@ -51,8 +55,8 @@ export function SiteCard({ view, index, config }: { view: SiteView; index: numbe
         <span className="font-bold">{site.id}</span> {site.file}:{site.lines.join("–")}
       </h3>
       <p className="font-hand text-lg leading-snug">
-        {task ? TASK_NAME[task] : "unlabelled"} call, recorded on{" "}
-        <span className="font-mono text-sm">{site.source_model ?? "unknown model"}</span>
+        {task ? TASK_NAME[task] : "unlabelled"} call, source model{" "}
+        <span className="font-mono text-sm">{site.source_model ?? "unknown"}</span>
       </p>
       <ul className="flex flex-col gap-1.5" aria-label={`${site.id} results per tier`}>
         {TIER_ORDER.map((t) => {
@@ -95,6 +99,16 @@ export function SiteCard({ view, index, config }: { view: SiteView; index: numbe
           </>
         )}
       </p>
+      {cases && (
+        <p className="font-hand text-base leading-snug text-muted">
+          Parity vs {referencesText(cases)}
+          {cases.audit?.checked > 0 && (
+            <>
+              , audit {cases.audit.agreed} of {cases.audit.checked} agreed
+            </>
+          )}
+        </p>
+      )}
       {verdict && <VerdictChip verdict={verdict} task={task} sourceModel={site.source_model} config={config} />}
     </Note>
   );

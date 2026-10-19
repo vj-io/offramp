@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useReducer, useRef, useState } from "react";
-import { applyEvents, initialRunState, replayDelays, toSnapshot, type RunSource } from "./run-state";
+import { applyEvents, initialRunState, parseRecording, replayDelays, toSnapshot, type RunSource } from "./run-state";
 import { EVENT_TYPES, type RunEvent, type RunReport } from "./types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/+$/, "");
 
-/** Recorded events for replay/fixture runs, or null when no demo run has been recorded yet. */
+/** Recorded events for replay/fixture runs, or null when no demo run has been recorded yet
+ *  (a missing replay file, or one holding fixture data). */
 async function loadRecording(source: Exclude<RunSource, "api">): Promise<RunEvent[] | null> {
   if (source === "fixture") {
     // Dev-only: the import is compiled out of production builds.
@@ -19,8 +20,7 @@ async function loadRecording(source: Exclude<RunSource, "api">): Promise<RunEven
   const res = await fetch("/replay/demo-events.json", { cache: "no-store" });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Could not load /replay/demo-events.json (HTTP ${res.status}).`);
-  const body = await res.json();
-  return Array.isArray(body) ? body : body.events;
+  return parseRecording(await res.json());
 }
 
 export type RunStatus =

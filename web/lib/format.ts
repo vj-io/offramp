@@ -1,4 +1,4 @@
-import type { Decision, RunConfig, Stage, TaskType, Tier, TierResult, Verdict } from "./types";
+import type { CaseSummary, Decision, ReferenceAudit, RunConfig, Stage, TaskType, Tier, TierResult, Verdict } from "./types";
 
 export const TIER_NAME: Record<Tier, string> = {
   lightning: "Nemotron 3.5 Lightning",
@@ -11,7 +11,7 @@ export const STAGE_NAME: Record<Stage, string> = {
   QUEUED: "Queued",
   CLONED: "Cloned",
   SCANNED: "Scanned",
-  BASELINED: "Baselined",
+  BASELINED: "References",
   EVALUATING: "Evaluating",
   ITERATING: "Iterating",
   VERDICTS: "Verdicts",
@@ -70,4 +70,37 @@ export function parityTint(r: TierResult, task: TaskType | undefined, config: Ru
   const bar = task === "free_text" ? 0.8 : (thresholdFor(task, config) ?? (task === "reasoning" ? 0.9 : 0.95));
   const depth = Math.min(1, Math.max(0, (bar - scoreFraction(r, task)) / 0.3));
   return `color-mix(in srgb, var(--hl-pink) ${Math.round(30 + depth * 70)}%, #fff)`;
+}
+
+// p50 latency cell. "Before" was never measured under Amendment A (delta null): show "—", never a guess.
+export function latencyText(deltaMs: number | null | undefined, afterP50: number | null): string {
+  if (deltaMs != null && afterP50 != null) return `${ms(afterP50 - deltaMs)} → ${ms(afterP50)}`;
+  if (afterP50 != null) return `— → ${ms(afterP50)}`;
+  return deltaMs != null ? signedMs(deltaMs) : "—";
+}
+
+// "How parity was measured", labelled exactly as the run reports it; absent parts are omitted.
+export function referencesText(c: CaseSummary): string {
+  const methods = Object.entries(c.reference_methods ?? {}).map(([m, n]) => `${m} ${n}`);
+  return `${c.references} references${methods.length ? ` (${methods.join(", ")})` : ""}`;
+}
+
+export function auditText(a: ReferenceAudit | undefined): string | null {
+  if (!a || (a.checked === 0 && a.human_verified === 0)) return null;
+  const counts = `${a.checked} checked, ${a.agreed} agreed, ${a.dropped} dropped, ${a.human_verified} human-verified`;
+  return a.auditor ? `${counts}, auditor ${a.auditor}` : counts;
+}
+
+// GC27(c): the closed reference's parity on the same references, only when the verdict carries it.
+export function closedReferenceText(v: Verdict): string | null {
+  if (!v.closed_reference_model || v.closed_reference_parity_pct == null) return null;
+  return `${v.closed_reference_model} scores ${pct100(v.closed_reference_parity_pct)} on the same references`;
+}
+
+// Split a note into text and http(s) links; anything else (bare domains) stays plain text.
+export function linkParts(text: string): { text: string; href?: string }[] {
+  return text
+    .split(/(https?:\/\/[^\s,)]+)/)
+    .filter(Boolean)
+    .map((part) => (/^https?:\/\//.test(part) ? { text: part, href: part } : { text: part }));
 }

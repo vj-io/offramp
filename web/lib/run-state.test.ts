@@ -2,15 +2,25 @@ import { describe, expect, it } from "vitest";
 import fixtureFile from "../fixtures/dev-events.json";
 import {
   applyEvents,
+  downloadPayload,
   initialRunState,
+  parseRecording,
   pickSource,
   replayDelays,
   siteView,
   stageProgress,
   toSnapshot,
 } from "./run-state";
-import { keepClosedStamp, thresholdFor } from "./format";
-import { STAGE_ORDER, type RunEvent, type Verdict } from "./types";
+import {
+  auditText,
+  closedReferenceText,
+  keepClosedStamp,
+  latencyText,
+  linkParts,
+  referencesText,
+  thresholdFor,
+} from "./format";
+import { STAGE_ORDER, type CaseSummary, type RunEvent, type Verdict } from "./types";
 
 const events = fixtureFile.events as unknown as RunEvent[];
 const final = applyEvents(initialRunState, events);
@@ -30,6 +40,16 @@ describe("dev fixture covers the brief", () => {
     expect(twoIter).toBeDefined();
     expect(new Set(final.tierResults.map((r) => r.tier))).toEqual(new Set(["lightning", "super", "ultra"]));
     expect(ofType("pr")).toHaveLength(1);
+  });
+  it("uses the amended shapes: references, null latency, est. cost notes, a multi-tier iteration site", () => {
+    for (const e of ofType("case_summary")) expect(e.payload).toHaveProperty("references");
+    const verdicts = Object.values(final.verdicts);
+    expect(verdicts.every((v) => v.latency_delta_ms === null)).toBe(true);
+    expect(verdicts.every((v) => v.cost_before_note?.startsWith("est.:"))).toBe(true);
+    expect(verdicts.some((v) => v.sunset_risk)).toBe(true);
+    const tiersIterated = new Set(final.iterations.filter((a) => a.site_id === "cs_05").map((a) => a.tier));
+    expect(tiersIterated.size).toBeGreaterThan(1);
+    expect(ofType("stage")[0].payload.config).toBeDefined();
   });
 });
 
@@ -87,6 +107,18 @@ describe("siteView", () => {
     for (const r of Object.values(view.perTier)) expect(r?.passed).toBe(false);
   });
 
+  it("counts iterations on the current tier only, matching Verdict.iterations", () => {
+    const v = final.verdicts.cs_05;
+    const all = final.iterations.filter((a) => a.site_id === "cs_05").length;
+    expect(all).toBeGreaterThan(v.iterations); // the fixture iterates on several tiers
+    expect(siteView(final, "cs_05").iterations).toBe(v.iterations);
+    const before = applyEvents(initialRunState, events.filter((e) => e.seq < ofType("verdict")[0].seq));
+    const view = siteView(before, "cs_05");
+    const onTier = before.iterations.filter((a) => a.site_id === "cs_05" && a.tier === view.currentTier).length;
+    expect(view.iterations).toBe(onTier);
+    expect(view.iterations).toBeLessThan(all);
+  });
+
   it("before any tier result, current tier is null and chips are empty", () => {
     const early = applyEvents(initialRunState, events.filter((e) => e.type === "site"));
     const view = siteView(early, "cs_01");
@@ -140,6 +172,7 @@ describe("toSnapshot", () => {
     expect(snap.verdicts).toHaveLength(ofType("verdict").length);
     expect(snap.artifacts.pr_url).toBe(final.pr?.url);
     expect(snap.totals).toEqual(final.totals);
+    expect(snap.case_summaries).toHaveLength(ofType("case_summary").length);
   });
 });
 
@@ -151,6 +184,30 @@ describe("replayDelays (Global Constraint 14)", () => {
   it("finishes the fixture in under 90 s", () => {
     const total = replayDelays(events).reduce((a, b) => a + b, 0);
     expect(total).toBeLessThan(90_000);
+  });
+});
+
+describe("parseRecording (replay file)", () => {
+  it("accepts an array or {events}", () => {
+    const real = events.map((e) => ({ ...e, run_id: "run-abc" }));
+    expect(parseRecording(real)).toEqual(real);
+    expect(parseRecording({ events: real })).toEqual(real);
+  });
+  it("refuses fixture data, so it can never play as the recorded demo", () => {
+    expect(parseRecording(fixtureFile)).toBeNull();
+    expect(parseRecording(events)).toBeNull(); // run ids start with "fixture-"
+    expect(parseRecording({ events: [{ ...events[0], run_id: "run-1" }], fixture: true })).toBeNull();
+  });
+  it("throws on a body that is not an event log", () => {
+    expect(() => parseRecording({ hello: 1 })).toThrow();
+  });
+});
+
+describe("downloadPayload", () => {
+  const report = { snapshot: toSnapshot(final), pr_body_markdown: null };
+  it("marks fixture downloads as fixture data", () => {
+    expect(downloadPayload(report, "fixture")).toMatchObject({ fixture: true });
+    expect(downloadPayload(report, "replay")).not.toHaveProperty("fixture");
   });
 });
 
@@ -175,5 +232,35 @@ describe("KEEP_CLOSED stamp", () => {
     expect(thresholdFor("reasoning", null)).toBeNull();
     expect(keepClosedStamp(v, "reasoning", null)).toBe("NOT MIGRATED · best parity 71.0%");
     expect(keepClosedStamp({ ...v, parity_pct: null }, "reasoning", final.config)).toBe("NOT MIGRATED");
+  });
+});
+
+describe("evidence text", () => {
+  it("latency: before is never invented", () => {
+    expect(latencyText(null, 412)).toBe("— → 412 ms");
+    expect(latencyText(-30, 380)).toBe("410 ms → 380 ms");
+    expect(latencyText(null, null)).toBe("—");
+    expect(latencyText(40, null)).toBe("+40 ms");
+  });
+  it("references and audit come from the case summary, and an empty audit is omitted", () => {
+    const c = ofType("case_summary").find((e) => e.call_site_id === "cs_01")!.payload as unknown as CaseSummary;
+    expect(referencesText(c)).toBe("40 references (reference:seed 40)");
+    expect(auditText(c.audit)).toBe("40 checked, 39 agreed, 1 dropped, 0 human-verified, auditor claude-sonnet-5.5 (via Claude Code)");
+    const oracle = ofType("case_summary").find((e) => e.call_site_id === "cs_05")!.payload as unknown as CaseSummary;
+    expect(auditText(oracle.audit)).toBeNull();
+    expect(referencesText({ ...c, reference_methods: {} })).toBe("40 references");
+  });
+  it("closed-reference comparison only when the verdict carries it", () => {
+    expect(closedReferenceText(final.verdicts.cs_05)).toBe(
+      "claude-sonnet-5.5 (via Claude Code; not the repo's source model) scores 88.0% on the same references",
+    );
+    expect(closedReferenceText(final.verdicts.cs_01)).toBeNull();
+  });
+  it("links only http(s) URLs in notes", () => {
+    expect(linkParts("est. (see https://example.com/p, fetched) or openai.com/x")).toEqual([
+      { text: "est. (see " },
+      { text: "https://example.com/p", href: "https://example.com/p" },
+      { text: ", fetched) or openai.com/x" },
+    ]);
   });
 });

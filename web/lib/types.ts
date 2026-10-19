@@ -95,6 +95,30 @@ export interface Adapter {
   change_log: string[];
 }
 
+export interface ToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface ModelOutput {
+  text: string | null;
+  tool_calls: ToolCall[];
+}
+
+// Expected output for one case (PLAN Amendment A). Not sent over SSE; mirrored for completeness.
+export interface BaselineResult {
+  case_id: string;
+  source: "reference" | "closed_model";
+  model: string; // "reference:seed" | "reference:oracle" | "reference:human" | a closed model
+  output: ModelOutput;
+  latency_ms: number | null; // null for references: nothing was measured
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_usd: number | null;
+  verified_by: string[]; // e.g. ["blind:nemotron-ultra", "human:tendem"]
+  recorded_at: string;
+}
+
 export interface CaseScore {
   case_id: string;
   passed: boolean;
@@ -123,6 +147,7 @@ export interface TierResult {
   case_scores?: CaseScore[]; // omitted in SSE payloads
 }
 
+// The four optional fields arrived with Amendment A; optional so older recordings still type.
 export interface Verdict {
   site_id: string;
   decision: Decision;
@@ -132,9 +157,13 @@ export interface Verdict {
   best_tier: Tier | null;
   best_score: number | null;
   iterations: number;
-  latency_delta_ms: number | null; // p50 after - before
+  latency_delta_ms: number | null; // p50 after - before; null when "before" was never measured
   cost_before_per_1k: number | null;
+  cost_before_note?: string | null; // "est.: <model> $in/$out per 1M (<source>, <date>) x tokens …"
   cost_after_per_1k: number | null;
+  sunset_risk?: string | null; // deprecation notice for the source model, with URL
+  closed_reference_model?: string | null; // GC27(c), e.g. "claude-sonnet-5.5 (via Claude Code; …)"
+  closed_reference_parity_pct?: number | null; // that model's holdout parity on the same references
   reason: string;
 }
 
@@ -172,11 +201,23 @@ export interface RunEvent {
   payload: Record<string, unknown>;
 }
 
+// GC18: blind check of seed references by an independent model; human audit when available.
+export interface ReferenceAudit {
+  checked: number;
+  agreed: number;
+  dropped: number;
+  human_verified: number;
+  auditor: string | null;
+}
+
+// `case_summary` event payload.
 export interface CaseSummary {
   site_id: string;
   dev: number;
   holdout: number;
-  baselines: number;
+  references: number;
+  reference_methods: Record<string, number>; // {"reference:seed": 20, ...}
+  audit: ReferenceAudit;
 }
 
 export interface RunTotals {
@@ -214,6 +255,8 @@ export interface RunSnapshot {
   verdicts: Verdict[];
   totals: RunTotals | null;
   artifacts: { pr_url?: string; report_url?: string };
+  // Not in GC13's snapshot yet (proposed): filled when the snapshot is rebuilt from the event log.
+  case_summaries?: CaseSummary[];
 }
 
 // GET /api/runs/{id}/report

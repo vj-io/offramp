@@ -150,7 +150,6 @@ body {
     position: relative;
     background: var(--note, var(--note-plain));
     rotate: var(--tilt, 0deg);
-    overflow-x: clip; /* a stamp landing at 2.4x never widens the page */
     box-shadow: 0 1px 0 rgb(0 0 0 / 0.08), 0 10px 18px -12px rgb(0 0 0 / 0.45);
   }
   .note::before {
@@ -220,10 +219,11 @@ body {
     color: var(--ink);
   }
 }
+/* A short thud that stays inside the card: a bigger start scale would overflow (and get clipped) on phones. */
 @keyframes stamp {
   from {
     opacity: 0;
-    scale: 2.4;
+    scale: 1.12;
   }
 }
 @keyframes spring-in {

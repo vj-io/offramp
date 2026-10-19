@@ -9,6 +9,7 @@ import {
   type CaseSummary,
   type RunConfig,
   type RunEvent,
+  type RunReport,
   type RunSnapshot,
   type RunTotals,
   type Stage,
@@ -23,7 +24,7 @@ export interface RunState {
   stage: Stage | null;
   lastActiveStage: Stage | null; // last stage before FAILED
   failure: { stage: Stage; reason: string } | null;
-  config: RunConfig | null; // only when the stream carries it (see fixtures note)
+  config: RunConfig | null; // from the QUEUED stage payload (GC13); null for older recordings
   sites: Record<string, CallSite>; // insertion order = scanner order
   cases: Record<string, CaseSummary>;
   tierResults: TierResult[]; // latest emission last
@@ -142,12 +143,15 @@ export function siteView(s: RunState, siteId: string): SiteView {
     TIER_ORDER.map((t) => [t, results.findLast((r) => r.tier === t) ?? null]),
   ) as Record<Tier, TierResult | null>;
   const verdict = s.verdicts[siteId] ?? null;
+  const currentTier = verdict?.tier ?? verdict?.best_tier ?? results.at(-1)?.tier ?? null;
+  // The router iterates on each tier it tries; like Verdict.iterations, count the current tier only.
+  const onTier = s.iterations.filter((a) => a.site_id === siteId && a.tier === currentTier && a.version > 0);
   return {
     site: s.sites[siteId],
     cases: s.cases[siteId] ?? null,
     perTier,
-    currentTier: verdict?.tier ?? verdict?.best_tier ?? results.at(-1)?.tier ?? null,
-    iterations: s.iterations.filter((a) => a.site_id === siteId && a.version > 0).length,
+    currentTier,
+    iterations: verdict ? verdict.iterations : onTier.length,
     verdict,
   };
 }
@@ -162,6 +166,7 @@ export function toSnapshot(s: RunState): RunSnapshot {
     verdicts: Object.values(s.verdicts),
     totals: s.totals,
     artifacts: s.pr ? { pr_url: s.pr.url } : {},
+    case_summaries: Object.values(s.cases),
   };
 }
 
@@ -172,7 +177,22 @@ export function replayDelays(es: RunEvent[]): number[] {
   );
 }
 
+/** Events from a replay file (array or {events}). Fixture data is refused (null), so the dev
+ *  fixture can never play as the recorded demo even if someone copies it to /replay/. */
+export function parseRecording(body: unknown): RunEvent[] | null {
+  const events = Array.isArray(body) ? body : (body as { events?: unknown })?.events;
+  if (!Array.isArray(events)) throw new Error("The replay file is not a recorded Offramp event log.");
+  const isFixture =
+    (body as { fixture?: unknown }).fixture === true ||
+    events.some((e: Partial<RunEvent>) => String(e?.run_id ?? "").startsWith("fixture-"));
+  return isFixture ? null : (events as RunEvent[]);
+}
+
 export type RunSource = "api" | "replay" | "fixture";
+
+/** What "Download JSON" saves: the report, marked when it was built from fixture data. */
+export const downloadPayload = (report: RunReport, source: RunSource) =>
+  source === "fixture" ? { fixture: true, ...report } : report;
 
 export function pickSource(q: URLSearchParams): RunSource {
   if (q.get("live") === "1") return "api";

@@ -3,13 +3,17 @@
 import type { CSSProperties } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
-import { BrandBadges } from "@/components/badges";
+import { BrandBadges, LinkedText, SunsetRisk } from "@/components/badges";
 import { DECISION_NOTE, Note, Stamp, Swipe, TIER_HL } from "@/components/doodle";
 import { NoRecording, NoticeNote, SourceLabel } from "@/components/run-notices";
 import {
+  auditText,
+  closedReferenceText,
   keepClosedStamp,
+  latencyText,
   ms,
   pct100,
+  referencesText,
   signedMs,
   TASK_NAME,
   thresholdFor,
@@ -17,8 +21,8 @@ import {
   TIER_SHORT,
   usd,
 } from "@/lib/format";
-import { pickSource, type RunSource } from "@/lib/run-state";
-import type { CallSite, RunReport, TierResult, Verdict } from "@/lib/types";
+import { downloadPayload, pickSource, type RunSource } from "@/lib/run-state";
+import type { CallSite, CaseSummary, RunReport, TierResult, Verdict } from "@/lib/types";
 import { API_URL, useReport } from "@/lib/use-run";
 
 export function ReportView() {
@@ -44,13 +48,24 @@ function holdoutResult(results: TierResult[], v: Verdict) {
   return results.findLast((r) => r.site_id === v.site_id && r.tier === v.tier && r.split === "holdout") ?? null;
 }
 
-function download(report: RunReport) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(report, null, 2)], { type: "application/json" }));
+function download(report: RunReport, source: RunSource) {
+  const json = JSON.stringify(downloadPayload(report, source), null, 2);
+  const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
   const a = Object.assign(document.createElement("a"), { href: url, download: `offramp-run-${report.snapshot.run_id}.json` });
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000); // revoking synchronously can cancel the download
-
 }
+
+const EVIDENCE_COLUMNS = [
+  "Site",
+  "File",
+  "Task",
+  "Before",
+  "After",
+  "Parity vs reference (holdout)",
+  "p50 latency (after)",
+  "$/1k calls before (est.) → after",
+];
 
 function Report({ report, id, source, query }: { report: RunReport; id: string; source: RunSource; query: string }) {
   const snap = report.snapshot;
@@ -60,6 +75,7 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
   const migrated = verdicts.filter((v) => v.decision === "MIGRATE");
   const kept = verdicts.filter((v) => v.decision === "KEEP_CLOSED");
   const review = verdicts.filter((v) => v.decision === "MANUAL_REVIEW");
+  const costNotes = verdicts.filter((v) => v.cost_before_note);
   const totals = snap.totals;
   const saving =
     totals && totals.est_cost_before_per_1k > 0
@@ -87,15 +103,15 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
         <p className="max-w-3xl font-hand text-2xl leading-snug">
           {kept.length > 0 && (
             <>
-              {kept.length} {kept.length === 1 ? "stays" : "stay"} on the original model because Nemotron did not match it
-              on the holdout cases.{" "}
+              {kept.length} {kept.length === 1 ? "stays on its source model" : "stay on their source models"}: Nemotron
+              did not reach the parity bar on held-out reference cases.{" "}
             </>
           )}
           {review.length > 0 && <>{review.length} need a manual review. </>}
           {totals && saving !== null && (
             <>
               Estimated cost per 1,000 calls goes from{" "}
-              <span className="font-mono text-xl">{usd(totals.est_cost_before_per_1k)}</span> to{" "}
+              <span className="font-mono text-xl">{usd(totals.est_cost_before_per_1k)}</span> (est.) to{" "}
               <span className="font-mono text-xl">{usd(totals.est_cost_after_per_1k)}</span>:{" "}
               <Swipe mark="var(--hl-lime)">
                 <span className="font-mono text-xl font-bold">{saving > 0 ? `−${saving}%` : `${-saving}% more`}</span>
@@ -118,7 +134,7 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
           )}
           <button
             type="button"
-            onClick={() => download(report)}
+            onClick={() => download(report, source)}
             className="sketch cursor-pointer px-4 py-2 font-hand text-xl hover:bg-note-plain"
           >
             Download JSON
@@ -137,6 +153,7 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
           <ul className="grid gap-6 md:grid-cols-2">
             {kept.map((v, i) => {
               const site = sites[v.site_id];
+              const closedRef = closedReferenceText(v);
               return (
                 <Note key={v.site_id} as="li" note={DECISION_NOTE.KEEP_CLOSED} tilt={i % 2 ? 0.8 : -0.8} className="flex flex-col gap-3 p-5 pt-6">
                   <Stamp rotate={-3} big>
@@ -146,7 +163,7 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
                     <span className="font-bold">{v.site_id}</span> {site?.file}
                   </p>
                   <p className="text-xl font-extrabold tracking-tight">
-                    Stays on <span className="font-mono text-lg">{site?.source_model ?? "the original model"}</span>
+                    Stays on <span className="font-mono text-lg">{site?.source_model ?? "its source model"}</span>
                   </p>
                   <p className="font-hand text-lg leading-snug">{v.reason}</p>
                   {v.best_tier && (
@@ -160,6 +177,8 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
                       )}
                     </p>
                   )}
+                  {closedRef && <p className="font-hand text-lg leading-snug">For comparison: {closedRef}.</p>}
+                  {v.sunset_risk && <SunsetRisk note={v.sunset_risk} />}
                   <BrandBadges small />
                 </Note>
               );
@@ -173,11 +192,11 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
           Evidence
         </h2>
         <div role="region" tabIndex={0} aria-label="Evidence table, scrolls sideways" className="relative overflow-x-auto pb-2">
-          <table className="w-full min-w-[56rem] border-collapse text-left">
+          <table className="w-full min-w-[60rem] border-collapse text-left">
             <thead className="font-hand text-lg">
               <tr className="border-b-2 border-ink">
-                {["Site", "File", "Task", "Before", "After", "Parity (holdout)", "p50 latency", "$/1k calls before → after"].map((h) => (
-                  <th key={h} scope="col" className="px-2 py-2 font-normal">
+                {EVIDENCE_COLUMNS.map((h) => (
+                  <th key={h} scope="col" className="px-2 py-2 align-bottom font-normal">
                     {h}
                   </th>
                 ))}
@@ -190,18 +209,75 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
             </tbody>
           </table>
         </div>
+        {costNotes.length > 0 && (
+          <div className="mt-4 max-w-4xl">
+            <h3 className="font-hand text-lg">Cost before is an estimate. Price sources:</h3>
+            <ul className="mt-1 flex flex-col gap-1 font-mono text-xs leading-relaxed text-muted">
+              {costNotes.map((v) => (
+                <li key={v.site_id} id={`cost-note-${v.site_id}`}>
+                  <span className="font-bold text-ink">{v.site_id}</span> <LinkedText text={v.cost_before_note!} />
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </section>
+
+      <HowMeasured summaries={snap.case_summaries} verdicts={verdicts} />
 
       <div className="grid gap-12 lg:grid-cols-2">
         <CostBars verdicts={verdicts} totals={totals} />
-        <LatencyDeltas verdicts={verdicts} results={snap.tier_results} />
+        <LatencyAfter verdicts={verdicts} results={snap.tier_results} />
       </div>
 
       <p className="font-hand text-lg text-muted">
         Every number on this page comes from run <span className="font-mono text-sm text-ink">{snap.run_id}</span>
-        {source === "fixture" ? ", which is fixture data." : "."}
+        {source === "fixture" ? ", which is fixture data" : ""}. Costs before are estimates from published prices; latency
+        before was not measured.
       </p>
     </div>
+  );
+}
+
+function HowMeasured({ summaries, verdicts }: { summaries: CaseSummary[] | undefined; verdicts: Verdict[] }) {
+  const closedRefs = verdicts.filter((v) => closedReferenceText(v));
+  return (
+    <section aria-labelledby="measured-h" className="max-w-4xl">
+      <h2 id="measured-h" className="text-3xl font-extrabold tracking-tight">
+        How parity was measured
+      </h2>
+      <p className="mt-2 font-hand text-xl leading-snug">
+        Parity is agreement with reference answers whose ground truth is known, scored on held-out cases. The source
+        model&apos;s own outputs were never recorded.
+      </p>
+      {summaries && summaries.length > 0 && (
+        <ul className="mt-4 flex flex-col gap-3">
+          {summaries.map((c) => {
+            const audit = auditText(c.audit);
+            return (
+              <li key={c.site_id} className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-3">
+                <span className="font-mono text-sm font-bold">{c.site_id}</span>
+                <span className="font-hand text-lg leading-snug">
+                  {referencesText(c)}, <span className="font-mono text-sm">{c.dev}</span> dev /{" "}
+                  <span className="font-mono text-sm">{c.holdout}</span> holdout.
+                  {audit && <> Reference audit: {audit}.</>}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {closedRefs.length > 0 && (
+        <ul className="mt-4 flex flex-col gap-2">
+          {closedRefs.map((v) => (
+            <li key={v.site_id} className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-3">
+              <span className="font-mono text-sm font-bold">{v.site_id}</span>
+              <span className="font-hand text-lg leading-snug">Closed reference: {closedReferenceText(v)}.</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -220,14 +296,19 @@ function EvidenceRow({ v, site, results, report }: { v: Verdict; site: CallSite 
       </th>
       <td className="px-2 py-3 font-mono text-sm whitespace-nowrap">{site?.file}</td>
       <td className="px-2 py-3 font-hand text-lg">{task ? TASK_NAME[task] : "—"}</td>
-      <td className="px-2 py-3 font-mono text-sm">{site?.source_model ?? "—"}</td>
+      <td className="max-w-[15rem] px-2 py-3">
+        <span className="flex flex-col items-start gap-2">
+          <span className="font-mono text-sm whitespace-nowrap">{site?.source_model ?? "—"}</span>
+          {v.sunset_risk && <SunsetRisk note={v.sunset_risk} />}
+        </span>
+      </td>
       <td className="px-2 py-3">
         {v.decision === "MIGRATE" && v.tier ? (
           <span className="flex flex-col items-start gap-0.5">
             <span className="text-lg font-extrabold tracking-tight whitespace-nowrap">
               <Swipe mark={TIER_HL[v.tier]}>{TIER_NAME[v.tier]}</Swipe>
             </span>
-            {v.model && <span className="font-mono text-xs break-all text-muted">{v.model}</span>}
+            {v.model && <span className="font-mono text-xs whitespace-nowrap text-muted">{v.model}</span>}
           </span>
         ) : isKept ? (
           <Stamp rotate={-2}>NOT MIGRATED</Stamp>
@@ -238,7 +319,7 @@ function EvidenceRow({ v, site, results, report }: { v: Verdict; site: CallSite 
         )}
       </td>
       <td className="px-2 py-3 font-mono text-sm">
-        {v.parity_pct === null ? (
+        {v.parity_pct == null ? (
           "—"
         ) : isKept ? (
           bar !== null ? (
@@ -261,18 +342,19 @@ function EvidenceRow({ v, site, results, report }: { v: Verdict; site: CallSite 
         )}
       </td>
       <td className="px-2 py-3 font-mono text-sm whitespace-nowrap">
-        {r && v.latency_delta_ms !== null
-          ? `${ms(r.metrics.p50_ms - v.latency_delta_ms)} → ${ms(r.metrics.p50_ms)}`
-          : v.latency_delta_ms !== null
-            ? signedMs(v.latency_delta_ms)
-            : "—"}
+        {latencyText(v.latency_delta_ms, r?.metrics.p50_ms ?? null)}
       </td>
       <td className="px-2 py-3 font-mono text-sm whitespace-nowrap">
-        {v.cost_before_per_1k !== null && v.cost_after_per_1k !== null
+        {v.cost_before_per_1k != null && v.cost_after_per_1k != null
           ? `${usd(v.cost_before_per_1k)} → ${usd(v.cost_after_per_1k)}`
-          : v.cost_before_per_1k !== null
+          : v.cost_before_per_1k != null
             ? `${usd(v.cost_before_per_1k)}, unchanged`
             : "—"}
+        {v.cost_before_note && (
+          <a href={`#cost-note-${v.site_id}`} className="ml-1 font-hand text-base text-bluepen underline underline-offset-2">
+            source
+          </a>
+        )}
       </td>
     </tr>
   );
@@ -284,11 +366,11 @@ function BarRow({ label, before, after, mark }: { label: string; before: number;
       <span className="row-span-2 font-mono text-sm font-bold">{label}</span>
       <span className="flex items-center gap-2">
         <span aria-hidden="true" className="sketch-box h-3.5 w-full max-w-[70%] border-2 bg-[repeating-linear-gradient(135deg,transparent_0_5px,color-mix(in_srgb,var(--ink)_25%,transparent)_5px_7px)]" />
-        <span className="font-mono text-xs whitespace-nowrap">{usd(before)}</span>
+        <span className="font-mono text-xs whitespace-nowrap">{usd(before)} est.</span>
       </span>
       <span className="flex items-center gap-2">
         {after === null || mark === null ? (
-          <span className="font-hand text-base text-muted">unchanged, stays on the original model</span>
+          <span className="font-hand text-base text-muted">unchanged, stays on its source model</span>
         ) : (
           <>
             <span
@@ -305,15 +387,15 @@ function BarRow({ label, before, after, mark }: { label: string; before: number;
 }
 
 function CostBars({ verdicts, totals }: { verdicts: Verdict[]; totals: RunReport["snapshot"]["totals"] }) {
-  const rows = verdicts.filter((v) => v.cost_before_per_1k !== null && v.cost_before_per_1k > 0);
+  const rows = verdicts.filter((v) => v.cost_before_per_1k != null && v.cost_before_per_1k > 0);
   return (
     <section aria-labelledby="cost-h">
       <h2 id="cost-h" className="text-3xl font-extrabold tracking-tight">
         Cost per 1,000 calls
       </h2>
       <p className="mt-1 mb-5 font-hand text-lg text-muted">
-        Hatched bar: the original model. Coloured bar: the Nemotron tier it moved to. Each row is scaled to its own
-        before cost.
+        Hatched bar: estimated cost on the source model, from its published price. Coloured bar: the Nemotron tier it
+        moved to. Each row is scaled to its own before cost.
       </p>
       <ul className="flex flex-col gap-4">
         {rows.map((v) => (
@@ -333,22 +415,27 @@ function CostBars({ verdicts, totals }: { verdicts: Verdict[]; totals: RunReport
   );
 }
 
-function LatencyDeltas({ verdicts, results }: { verdicts: Verdict[]; results: TierResult[] }) {
-  const rows = verdicts.filter((v) => v.latency_delta_ms !== null);
-  const max = Math.max(1, ...rows.map((v) => Math.abs(v.latency_delta_ms!)));
+// Measured Nemotron p50 on the chosen tier's holdout run. "Before" was not measured, so there is no before bar.
+function LatencyAfter({ verdicts, results }: { verdicts: Verdict[]; results: TierResult[] }) {
+  const rows = verdicts.flatMap((v) => {
+    const r = v.decision === "MIGRATE" ? holdoutResult(results, v) : null;
+    return r && v.tier ? [{ v, tier: v.tier, p50: r.metrics.p50_ms }] : [];
+  });
+  const max = Math.max(1, ...rows.map((x) => x.p50));
   return (
     <section aria-labelledby="lat-h">
       <h2 id="lat-h" className="text-3xl font-extrabold tracking-tight">
-        Latency, p50
+        Latency on Nemotron, p50
       </h2>
-      <p className="mt-1 mb-5 font-hand text-lg text-muted">Change after moving each call to its Nemotron tier.</p>
+      <p className="mt-1 mb-5 font-hand text-lg text-muted">
+        Measured on each call&apos;s chosen tier over its holdout cases. Latency before was not measured.
+      </p>
       {rows.length === 0 ? (
-        <p className="font-hand text-lg text-muted">No latency was measured for migrated calls.</p>
+        <p className="font-hand text-lg text-muted">No call was migrated, so there is no Nemotron latency to show.</p>
       ) : (
         <ul className="flex flex-col gap-3">
-          {rows.map((v) => {
-            const d = v.latency_delta_ms!;
-            const r = holdoutResult(results, v);
+          {rows.map(({ v, tier, p50 }) => {
+            const d = v.latency_delta_ms;
             return (
               <li key={v.site_id} className="grid grid-cols-[3.5rem_minmax(0,1fr)] items-center gap-3">
                 <span className="font-mono text-sm font-bold">{v.site_id}</span>
@@ -356,12 +443,12 @@ function LatencyDeltas({ verdicts, results }: { verdicts: Verdict[]; results: Ti
                   <span
                     aria-hidden="true"
                     className="sketch-box h-3.5 border-2 bg-[var(--mark)]"
-                    style={{ "--mark": d <= 0 ? "var(--hl-lime)" : "var(--hl-orange)", width: `${Math.max(4, (Math.abs(d) / max) * 55)}%` } as CSSProperties}
+                    style={{ "--mark": TIER_HL[tier], width: `${Math.max(4, (p50 / max) * 55)}%` } as CSSProperties}
                   />
-                  <span className="font-mono text-sm">{signedMs(d)}</span>
+                  <span className="font-mono text-sm">{ms(p50)}</span>
                   <span className="font-hand text-base">
-                    {d < 0 ? "faster" : d > 0 ? "slower" : "same"}
-                    {r && v.tier ? ` on ${TIER_SHORT[v.tier]}` : ""}
+                    on {TIER_SHORT[tier]}
+                    {d != null && `, ${signedMs(d)} ${d < 0 ? "faster" : d > 0 ? "slower" : "same"}`}
                   </span>
                 </span>
               </li>
