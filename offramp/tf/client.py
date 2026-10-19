@@ -222,7 +222,8 @@ class TFClient:
     def _connection(self) -> tuple[OpenAI, str]:
         """The SDK client and the key it carries, as one pair: a thread that has sent a request with this
         client must know which key that was even if another thread has since moved on to the fallback."""
-        if self._conn is None:  # built lazily so live=False (cassette replay) never needs a key
+        conn = self._conn
+        if conn is None:  # built lazily so live=False (cassette replay) never needs a key
             key = keys.current("nebius", self.api_key)
             if not key:
                 raise RuntimeError("NEBIUS_API_KEY is not set (live=False replays the cache without a key)")
@@ -240,8 +241,8 @@ class TFClient:
                     pass
                 else:
                     sdk = wrap_openai(sdk)
-            self._conn = sdk, key
-        return self._conn
+            self._conn = conn = sdk, key
+        return conn  # the pair held here, not a re-read of the attribute another thread may have reset
 
     def _openai(self) -> OpenAI:
         return self._connection()[0]

@@ -238,13 +238,27 @@ def _mentions(text: str, model: str) -> list[re.Match]:
 
 
 # Prices count only as `$` amounts, in one of the shapes the vendors print them: a labelled list
-# ("Input ... $3 ... Output ... $15", cached-input lines skipped) or a "$3 / $15" pair in the model's row.
+# ("Input ... $3 ... Output ... $15"; batch and cached lines skipped) or a "$3 / $15" pair in the model's row.
 _AMOUNT = r"\$\s*(\d[\d,]*(?:\.\d+)?)"
 _LABELLED = re.compile(
-    rf"(?<![\w-])(cached\s+)?(input|output)(?:\s+(?:price|pricing|tokens?))?[^\w$]{{0,12}}{_AMOUNT}", re.I
+    rf"(?<![\w-])((?:cached|batch)(?:\s+api)?\s+)?(input|output)(?:\s+(?:price|pricing|tokens?))?"
+    rf"[^\w$]{{0,12}}{_AMOUNT}",
+    re.I,
 )
 _PAIR = re.compile(rf"{_AMOUNT}\s*(?:/|\u2022)\s*{_AMOUNT}")
-_ROW_END = re.compile(r"\n+|\|\.\s")  # markdown rows, or rows flattened to "|. "
+# A row ends at a newline, at "|. " (rows flattened into one line) and at "[...]", which is how Tavily joins
+# its excerpts: what follows a join is another part of the page.
+_ROW_END = re.compile(r"\n+|\|\.\s|\[\.\.\.\]")
+_SIZE_CELL = re.compile(
+    r"\s*(?:[\d.,]+\s*[KMBkmb]?|[\u2014\u2013-]|N/A)?\s*"
+)  # "200K", "1M", a dash: skipped
+_LABEL_CELL = re.compile(
+    r"\s*(?:(?:cached|batch)\s+)?(?:input|output)(?:\s+(?:price|pricing|tokens?))?\s*:?\s*", re.I
+)
+_PRICE_WORDS = re.compile(
+    r"\$\s*\d[\d,.]*|\b\d[\d,.]*\s*[mkb]?\b|\b(?:cached|batch|input|output|price|pricing|tokens?|mtok|million|per|api)\b",
+    re.I,
+)
 
 
 def _number(text: str) -> float:
@@ -252,7 +266,7 @@ def _number(text: str) -> float:
 
 
 def _input_then_output(text: str) -> tuple[float, float] | None:
-    """The first two labelled amounts in `text`, only if they are input then output."""
+    """The first two standard (not batch, cached) labelled amounts in `text`, only if input then output."""
     labelled = [(m.group(2).lower(), _number(m.group(3))) for m in _LABELLED.finditer(text) if not m.group(1)]
     if len(labelled) >= 2 and labelled[0][0] == "input" and labelled[1][0] == "output":
         return labelled[0][1], labelled[1][1]
@@ -270,27 +284,50 @@ def _is_model_page(url: str, model: str) -> bool:
     return slug != "" and slug in (base, base.removeprefix("claude-"))
 
 
+def _is_price_cell(cell: str) -> bool:
+    """A table cell that holds only prices: amounts, "/", units and input/output labels, no other words."""
+    if _LABEL_CELL.fullmatch(cell):
+        return True
+    return "$" in cell and not re.search(r"[A-Za-z]", _PRICE_WORDS.sub(" ", cell))
+
+
+def _row_prices(row: str, model: str) -> tuple[float, float] | None:
+    """The prices in the cells right behind the cell that names this model: size cells ("200K") are skipped,
+    then consecutive price cells are read; the first other cell (a name, prose, text) ends the row."""
+    mention = next(iter(_mentions(row, model)), None)
+    if mention is None or "|" not in row:  # table rows only: a prose sentence can price two models at once
+        return None
+    cells, starts, at = row.split("|"), [], 0
+    for cell in cells:
+        starts.append(at)
+        at += len(cell) + 1
+    index = max(i for i, begin in enumerate(starts) if begin <= mention.start())  # the cell naming the model
+    rest = cells[index + 1 :]
+    skip = 0
+    while skip < len(rest) and _SIZE_CELL.fullmatch(rest[skip]):
+        skip += 1
+    priced = []
+    for cell in rest[skip:]:
+        if not _is_price_cell(cell):
+            break
+        priced.append(cell)
+    tail = " | ".join(priced)
+    found = _input_then_output(tail)
+    if not found and len(re.findall(_AMOUNT, tail)) == 2 and (pair := _PAIR.search(tail)):
+        found = _number(pair.group(1)), _number(pair.group(2))
+    return found
+
+
 def _page_price(model: str, url: str, page: str) -> tuple[float, float] | None:
     """(input, output) USD per 1M that `page` prints for exactly this model, None when it prints none or is
-    ambiguous. Either the vendor's own model page (the first labelled input then output amounts), or the
-    model's own table row (amounts AFTER the model's name in that row: labelled input then output, or one
+    ambiguous. Either the vendor's own model page (the first standard labelled input then output amounts), or
+    the model's own table row (the price cells right behind its name: labelled input then output, or one
     "$in / $out" pair); prose, other rows, other models' pages and replacement columns never count."""
     if _is_model_page(url, model) and _mentions(page, model):
         found = _input_then_output(page)
         if found:
             return found
-    rows = set()
-    for row in _ROW_END.split(page):
-        mention = next(iter(_mentions(row, model)), None)
-        # table rows only: a prose sentence can price two models at once
-        if mention is None or "|" not in row:
-            continue
-        tail = row[mention.end() :]
-        found = _input_then_output(tail)
-        if not found and len(re.findall(_AMOUNT, tail)) == 2 and (pair := _PAIR.search(tail)):
-            found = _number(pair.group(1)), _number(pair.group(2))
-        if found:
-            rows.add(found)
+    rows = {found for row in _ROW_END.split(page) if (found := _row_prices(row, model))}
     return rows.pop() if len(rows) == 1 else None
 
 
@@ -322,17 +359,36 @@ _NOT_ABOUT_IT = re.compile(
 )
 _DELAYED = re.compile(r"\b(?:no|not) (?:sooner|earlier|before)\b", re.I)  # "retired no sooner than 2027"
 _MAX_SUBJECT_GAP = 80  # characters between the model's name and the retirement word
+# What a model name looks like: "gpt-4-32k", "o4-mini", "Claude Sonnet 5.5". Any such name between the model
+# and the retirement word is another subject ("Migrate to gpt-4o: gpt-4-32k is deprecated"), unless it only
+# joins a list of co-subjects ("o3 and o4-mini are deprecated").
+_OTHER_MODEL = re.compile(
+    r"\b(?=[\w.-]*\d)[a-z][\w.]*(?:-[\w.]+)+\b|\b(?:claude|gpt|gemini|llama)\s+(?:[a-z]+\s+)?\d[\d.]*\b|"
+    r"\b(?:opus|sonnet|haiku)\s+\d[\d.]*\b",
+    re.I,
+)
+_LIST_GLUE = re.compile(r"[\s,&]*(?:(?:and|or|are|were)[\s,&]*)*")
+# Right before the name: it is where the reader is sent, not what is retired.
+_TARGET_BEFORE = re.compile(
+    r"(?:migrat\w*\s+to|switch\w*\s+to|upgrad\w*\s+to|mov\w*\s+to|replace[sd]?\s+(?:by|with)|replacement"
+    r"|recommended|instead of|use|try)\W*$",
+    re.I,
+)
 
 
 def _is_subject_of_notice(quote: str, model: str) -> bool:
     """The model is what the notice says is deprecated or retired: its name comes first, then the retirement
     word in the same sentence or row ("o3 and o4-mini are ... deprecated", "| claude-x | Deprecated |"), not
-    as a recommended replacement or in a negation."""
+    as a recommended replacement or migration target, not behind another model's name, not in a negation."""
     for mention in _mentions(quote, model):
         notice = _NOTICE.search(quote, mention.end())
         if not notice or notice.start() - mention.end() > _MAX_SUBJECT_GAP:
             continue
-        if _NOT_ABOUT_IT.search(quote[mention.end() : notice.start()]):
+        between = quote[mention.end() : notice.start()]
+        before = quote[max(0, mention.start() - 40) : mention.start()]
+        if _NOT_ABOUT_IT.search(between) or _TARGET_BEFORE.search(before):
+            continue
+        if _OTHER_MODEL.search(between) and not _LIST_GLUE.fullmatch(_OTHER_MODEL.sub("", between)):
             continue
         if not _DELAYED.search(quote[notice.end() : notice.end() + 30]):
             return True

@@ -822,9 +822,16 @@ def test_recorded_pages_still_verify_the_genuine_price(model, url):
 def test_no_recorded_page_prints_anything_but_the_genuine_price_for_any_model(model):
     """Every page of every recording, asked about every recorded model: only the genuine price comes out."""
     for page in recorded_results(model):
-        for asked in MODELS:
-            printed = tavily._page_price(asked, page["url"], page["content"])
-            assert printed in (None, pricing.price(asked)), (asked, page["url"], printed)
+        variants = [
+            page["content"],
+            page["content"].replace("\n", " [...] "),  # excerpt joins everywhere
+            page["content"].replace("\n", " | "),  # a table flattened into one line
+            page["content"].replace("\n\n", " | [...] | "),
+        ]
+        for text in variants:
+            for asked in MODELS:
+                printed = tavily._page_price(asked, page["url"], text)
+                assert printed in (None, pricing.price(asked)), (asked, page["url"], printed)
 
 
 def test_o3_and_gpt_4o_have_no_verifiable_price_in_their_recordings():
@@ -898,6 +905,69 @@ def test_the_models_own_page_is_told_from_a_siblings_by_its_url_slug():
     assert priced(row.replace("|", "")) is None  # the same words as prose
 
 
+# ---- review N1: a row ends at Tavily's "[...]" excerpt join and at the next cell that is not a value
+
+GPT_4O_TABLE = (
+    "| 2024-06-13 | gpt-4-0314 | $30.00 / $60.00 | gpt-4o | [...] | "
+    "2025-06-06 | gpt-4-32k | $60.00 / $120.00 | gpt-4-turbo |"
+)
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        GPT_4O_TABLE,  # gpt-4-32k's price, behind the excerpt join, must not become gpt-4o's
+        GPT_4O_TABLE.replace(" [...] ", "\n"),
+        "| 2026-01-01 | gpt-4o | gpt-5 | $1.25 / $10.00 |",  # another model's cell comes first
+        "| gpt-4o | gpt-4-turbo | $10 / $30 |",
+        "| gpt-4o | Extended | $2.50 / $10.00 |",  # a text cell between the name and the prices
+        "| gpt-4o | cheaper than o3 ($2 / $8) |",  # prose inside a cell
+        "gpt-4o | cheaper than Opus ($10 / $50)",  # a stray pipe does not make prose a table row
+        "| gpt-4o | $2.50 / $10.00 | $3 / $15 |",  # two pairs
+    ],
+)
+def test_a_table_row_ends_at_the_excerpt_join_and_at_the_next_name(page):
+    assert priced(page, "gpt-4o", O3_URL) is None
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        "| gpt-4o | $2.50 / $10.00 | [...] | gpt-4-32k | $60.00 / $120.00 |",
+        "| gpt-4o | Input $2.50 | Output $10.00 | [...] | gpt-4-32k | $60 / $120 |",
+        "| gpt-4o | Input | $2.50 | Output | $10.00 | gpt-5 | $1 / $5 |",
+        "| gpt-4o | 128K | 16K | $2.50 / $10.00 | Extended | gpt-5 | $1.25 / $10 |",
+        "| gpt-4-32k | $60 / $120 | [...] | gpt-4o | $2.50 / $10.00 |",
+        "| gpt-4o | $2.50 / $10.00 |. | gpt-4-32k | $60 / $120 |",
+        "| gpt-4o | $2.50 / $10.00 [...] $60.00 / $120.00 |",  # a join inside a cell ends the row there
+    ],
+)
+def test_a_models_own_row_still_parses_next_to_other_rows_and_joins(page):
+    assert priced(page, "gpt-4o", O3_URL) == (2.5, 10.0)
+
+
+# ---- review M3: on the model's own page only the standard Input then Output amounts count
+
+GPT_4O_PAGE = "https://developers.openai.com/api/docs/models/gpt-4o"
+
+
+@pytest.mark.parametrize(
+    "page,expected",
+    [
+        ("GPT-4o\nBatch input\n$1.25\nBatch output\n$5.00\nInput\n$2.50\nOutput\n$10.00", (2.5, 10.0)),
+        ("GPT-4o\nCached input $1.25 Input $2.50 Output $10.00", (2.5, 10.0)),
+        (
+            "GPT-4o\nBatch API price\n\nInput\n\n$2.50\n\nCached input\n\n$1.25\n\nOutput\n\n$10.00",
+            (2.5, 10.0),
+        ),
+        ("GPT-4o\nBatch Input: $1.25\nBatch Output: $5.00", None),  # only batch prices on the page
+        ("GPT-4o\nBatch API input $1.25 Output $10.00", None),  # a batch input is not the input price
+    ],
+)
+def test_batch_and_cached_amounts_are_not_the_standard_price(page, expected):
+    assert priced(page, "gpt-4o", GPT_4O_PAGE) == expected
+
+
 # ------------------------------------------------------------------ deprecation: the model is the subject
 
 
@@ -913,6 +983,8 @@ REAL_NOTICES = [
         "| claude-sonnet-4-5-20250929 | Deprecated | September 30, 2026 | November 30, 2026 |",
     ),
     ("claude-3-7-sonnet", "| claude-3-7-sonnet-20250219 | Retired | October 28, 2025 | February 19, 2026 |"),
+    ("o3", "o3, o4-mini and o3-pro are no longer available in ChatGPT"),  # a list of co-subjects
+    ("o4-mini", "o3, o4-mini and o3-pro are no longer available in ChatGPT"),
 ]
 NOT_ABOUT_THE_MODEL = [
     ("claude-sonnet-5-5", "Claude Sonnet 5.5 replaces Claude 3.7 Sonnet, which is deprecated."),
@@ -936,6 +1008,16 @@ NOT_ABOUT_THE_MODEL = [
     ("claude-haiku-4-5", "| claude-haiku-4-5 | Active | N/A |"),
     ("o3", "o3-mini is deprecated"),
     ("o3", "o3-pro is deprecated"),
+    ("gpt-4o", "Migrate to gpt-4o: gpt-4-32k is deprecated."),  # gpt-4o is the migration target
+    ("gpt-4o", "Migrate to gpt-4o. gpt-4-32k is deprecated."),
+    ("gpt-4o", "Use gpt-4o, gpt-4-turbo is retired"),
+    (
+        "gpt-4o",
+        "Replaced with gpt-4o and deprecated since 2025.",
+    ),  # the target of a replacement, whatever follows
+    ("gpt-4o", "Switch to gpt-4o instead: gpt-4-32k will be shut down on 2025-06-06"),
+    ("gpt-4o", "| gpt-4o | gpt-4-32k | Deprecated |"),  # another model's cell between the name and the status
+    ("claude-sonnet-5-5", "Upgrade to Claude Sonnet 5.5; Claude Sonnet 4.5 is deprecated"),
     (  # the retirement word is a whole clause away from the name
         "claude-x",
         "claude-x is offered on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, "

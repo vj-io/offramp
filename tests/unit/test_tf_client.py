@@ -743,6 +743,27 @@ def test_a_request_that_fails_on_the_primary_after_another_thread_switched_still
     assert tokens == ["primary-key", "primary-key", "fallback-key", "fallback-key"]
 
 
+def test_the_connection_pair_is_returned_even_if_another_thread_resets_it_right_after_it_is_built():
+    """Review M1: `return self._conn` re-read the attribute, which a switching thread may have set to None."""
+
+    class Reset(TFClient):  # the attribute reads None once, right after being set: another thread's reset
+        _stored, _reset_next = None, False
+
+        @property
+        def _conn(self):
+            if self._reset_next:
+                self._reset_next = False
+                return None
+            return self._stored
+
+        @_conn.setter
+        def _conn(self, value):
+            self._stored, self._reset_next = value, value is not None
+
+    sdk, key = Reset(api_key="primary-key", cache_dir="unused")._connection()
+    assert key == "primary-key" and sdk is not None
+
+
 def test_concurrent_rejections_all_get_the_fallback_but_the_switch_is_logged_once(caplog, fallback):
     barrier = threading.Barrier(16)
     answers = []
