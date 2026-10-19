@@ -117,6 +117,12 @@ produced for the demo. Never fabricate closed-model outputs, latencies or costs.
     (candidate mean ≥ reference mean − 0.3 and ≥ 4.0) applies; (b) the independent blind auditor for seed references
     (GC18) — Sonnet, not Ultra, so Nemotron never grades its own gold; (c) a closed-model comparison row per site
     ("closed reference scores X% on the same references") shown next to KEEP_CLOSED verdicts. Always labelled as above.
+28. **Fallback keys (user decision, 2026-10-19):** every provider key has an optional `<NAME>_FALLBACK` twin
+    (`NEBIUS_API_KEY_FALLBACK`, `TAVILY_API_KEY_FALLBACK`, `LANGSMITH_API_KEY_FALLBACK`, `TENDEM_API_KEY_FALLBACK`).
+    A client switches to the fallback for the rest of the process when the primary is rejected or out of credit
+    (HTTP 401/402/403, or 429 whose body mentions quota/credit/balance/insufficient), retries the same request once
+    with it, and logs `"<provider>: primary key exhausted, using fallback"` (never the key). Plain rate-limit 429s keep
+    the normal backoff on the same key. Cache keys never include the API key.
 
 ---
 
