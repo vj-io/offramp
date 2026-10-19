@@ -1,0 +1,1376 @@
+{
+ "fixture": true,
+ "note": "DEV FIXTURE: made-up numbers for building and testing the dashboard. Not a measured Offramp run; never serve it at /replay/. The config object on the QUEUED stage payload is a proposed contract extension, not something the API emits yet.",
+ "events": [
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 0,
+   "ts": "2026-10-19T10:00:00.400Z",
+   "stage": "QUEUED",
+   "type": "stage",
+   "call_site_id": null,
+   "payload": {
+    "stage": "QUEUED",
+    "detail": "Run accepted",
+    "config": {
+     "repo_url": "https://github.com/example/offramp-fixture-app",
+     "threshold": 0.95,
+     "reasoning_threshold": 0.9,
+     "tiers": [
+      "lightning",
+      "super",
+      "ultra"
+     ],
+     "max_iterations": 3,
+     "open_pr": true,
+     "live": true
+    }
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 1,
+   "ts": "2026-10-19T10:00:01.300Z",
+   "stage": "CLONED",
+   "type": "stage",
+   "call_site_id": null,
+   "payload": {
+    "stage": "CLONED",
+    "detail": "Cloned example/offramp-fixture-app at 3f9c2e1"
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 2,
+   "ts": "2026-10-19T10:00:02.900Z",
+   "stage": "CLONED",
+   "type": "log",
+   "call_site_id": null,
+   "payload": {
+    "level": "info",
+    "message": "Scanning Python files for openai and anthropic calls"
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 3,
+   "ts": "2026-10-19T10:00:05.400Z",
+   "stage": "SCANNED",
+   "type": "stage",
+   "call_site_id": null,
+   "payload": {
+    "stage": "SCANNED",
+    "detail": "6 call sites found"
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 4,
+   "ts": "2026-10-19T10:00:06.000Z",
+   "stage": "SCANNED",
+   "type": "site",
+   "call_site_id": "cs_01",
+   "payload": {
+    "id": "cs_01",
+    "file": "app/triage.py",
+    "lines": [
+     14,
+     22
+    ],
+    "kind": "chat",
+    "sdk": "openai",
+    "call": "client.chat.completions.create",
+    "function": "classify_ticket",
+    "source_model": "gpt-4o-mini",
+    "prompt_source": "literal",
+    "prompt_ref": null,
+    "template": null,
+    "params": {},
+    "contract": {
+     "task_type": "classification",
+     "output": "label",
+     "tools": false,
+     "streaming": false,
+     "latency_budget_ms": null,
+     "reasoning_heavy": false,
+     "labels": [
+      "billing",
+      "bug",
+      "feature",
+      "other"
+     ],
+     "json_schema": null
+    },
+    "confidence": 0.95,
+    "flags": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 5,
+   "ts": "2026-10-19T10:00:09.200Z",
+   "stage": "SCANNED",
+   "type": "site",
+   "call_site_id": "cs_02",
+   "payload": {
+    "id": "cs_02",
+    "file": "app/summarize.py",
+    "lines": [
+     30,
+     41
+    ],
+    "kind": "chat",
+    "sdk": "anthropic",
+    "call": "client.messages.create",
+    "function": "summarize_thread",
+    "source_model": "claude-haiku-4-5",
+    "prompt_source": "literal",
+    "prompt_ref": null,
+    "template": null,
+    "params": {},
+    "contract": {
+     "task_type": "free_text",
+     "output": "text",
+     "tools": false,
+     "streaming": false,
+     "latency_budget_ms": null,
+     "reasoning_heavy": false,
+     "labels": [],
+     "json_schema": null
+    },
+    "confidence": 0.95,
+    "flags": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 6,
+   "ts": "2026-10-19T10:00:09.700Z",
+   "stage": "SCANNED",
+   "type": "site",
+   "call_site_id": "cs_03",
+   "payload": {
+    "id": "cs_03",
+    "file": "app/extract.py",
+    "lines": [
+     55,
+     78
+    ],
+    "kind": "chat",
+    "sdk": "anthropic",
+    "call": "client.messages.create",
+    "function": "extract_invoice",
+    "source_model": "claude-sonnet-4-5",
+    "prompt_source": "literal",
+    "prompt_ref": null,
+    "template": null,
+    "params": {},
+    "contract": {
+     "task_type": "json_extraction",
+     "output": "json_schema",
+     "tools": false,
+     "streaming": false,
+     "latency_budget_ms": null,
+     "reasoning_heavy": false,
+     "labels": [],
+     "json_schema": {
+      "type": "object"
+     }
+    },
+    "confidence": 0.95,
+    "flags": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 7,
+   "ts": "2026-10-19T10:00:10.800Z",
+   "stage": "SCANNED",
+   "type": "site",
+   "call_site_id": "cs_04",
+   "payload": {
+    "id": "cs_04",
+    "file": "app/route_tools.py",
+    "lines": [
+     12,
+     40
+    ],
+    "kind": "chat",
+    "sdk": "openai",
+    "call": "client.chat.completions.create",
+    "function": "route_request",
+    "source_model": "gpt-4o",
+    "prompt_source": "literal",
+    "prompt_ref": null,
+    "template": null,
+    "params": {},
+    "contract": {
+     "task_type": "tool_call",
+     "output": "tool_call",
+     "tools": true,
+     "streaming": false,
+     "latency_budget_ms": null,
+     "reasoning_heavy": false,
+     "labels": [],
+     "json_schema": null
+    },
+    "confidence": 0.95,
+    "flags": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 8,
+   "ts": "2026-10-19T10:00:16.800Z",
+   "stage": "SCANNED",
+   "type": "site",
+   "call_site_id": "cs_05",
+   "payload": {
+    "id": "cs_05",
+    "file": "app/plan.py",
+    "lines": [
+     20,
+     52
+    ],
+    "kind": "chat",
+    "sdk": "openai",
+    "call": "client.chat.completions.create",
+    "function": "plan_budget",
+    "source_model": "o3",
+    "prompt_source": "literal",
+    "prompt_ref": null,
+    "template": null,
+    "params": {},
+    "contract": {
+     "task_type": "reasoning",
+     "output": "text",
+     "tools": false,
+     "streaming": false,
+     "latency_budget_ms": null,
+     "reasoning_heavy": true,
+     "labels": [],
+     "json_schema": null
+    },
+    "confidence": 0.95,
+    "flags": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 9,
+   "ts": "2026-10-19T10:00:17.200Z",
+   "stage": "SCANNED",
+   "type": "site",
+   "call_site_id": "cs_06",
+   "payload": {
+    "id": "cs_06",
+    "file": "app/tagging.py",
+    "lines": [
+     8,
+     19
+    ],
+    "kind": "chat",
+    "sdk": "openai",
+    "call": "client.chat.completions.create",
+    "function": "tag_article",
+    "source_model": "gpt-4o-mini",
+    "prompt_source": "literal",
+    "prompt_ref": null,
+    "template": null,
+    "params": {},
+    "contract": {
+     "task_type": "classification",
+     "output": "label",
+     "tools": false,
+     "streaming": false,
+     "latency_budget_ms": null,
+     "reasoning_heavy": false,
+     "labels": [
+      "news",
+      "opinion",
+      "howto"
+     ],
+     "json_schema": null
+    },
+    "confidence": 0.95,
+    "flags": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 10,
+   "ts": "2026-10-19T10:00:18.100Z",
+   "stage": "BASELINED",
+   "type": "stage",
+   "call_site_id": null,
+   "payload": {
+    "stage": "BASELINED",
+    "detail": "Loaded recorded baselines"
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 11,
+   "ts": "2026-10-19T10:00:19.700Z",
+   "stage": "BASELINED",
+   "type": "case_summary",
+   "call_site_id": "cs_01",
+   "payload": {
+    "site_id": "cs_01",
+    "dev": 28,
+    "holdout": 12,
+    "baselines": 40
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 12,
+   "ts": "2026-10-19T10:00:22.200Z",
+   "stage": "BASELINED",
+   "type": "case_summary",
+   "call_site_id": "cs_02",
+   "payload": {
+    "site_id": "cs_02",
+    "dev": 21,
+    "holdout": 9,
+    "baselines": 30
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 13,
+   "ts": "2026-10-19T10:00:22.800Z",
+   "stage": "BASELINED",
+   "type": "case_summary",
+   "call_site_id": "cs_03",
+   "payload": {
+    "site_id": "cs_03",
+    "dev": 32,
+    "holdout": 14,
+    "baselines": 46
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 14,
+   "ts": "2026-10-19T10:00:26.000Z",
+   "stage": "BASELINED",
+   "type": "case_summary",
+   "call_site_id": "cs_04",
+   "payload": {
+    "site_id": "cs_04",
+    "dev": 25,
+    "holdout": 11,
+    "baselines": 36
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 15,
+   "ts": "2026-10-19T10:00:26.500Z",
+   "stage": "BASELINED",
+   "type": "case_summary",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "dev": 24,
+    "holdout": 10,
+    "baselines": 34
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 16,
+   "ts": "2026-10-19T10:00:27.600Z",
+   "stage": "BASELINED",
+   "type": "case_summary",
+   "call_site_id": "cs_06",
+   "payload": {
+    "site_id": "cs_06",
+    "dev": 18,
+    "holdout": 8,
+    "baselines": 26
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 17,
+   "ts": "2026-10-19T10:00:33.600Z",
+   "stage": "EVALUATING",
+   "type": "stage",
+   "call_site_id": null,
+   "payload": {
+    "stage": "EVALUATING"
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 18,
+   "ts": "2026-10-19T10:00:34.000Z",
+   "stage": "EVALUATING",
+   "type": "tier_result",
+   "call_site_id": "cs_01",
+   "payload": {
+    "site_id": "cs_01",
+    "tier": "lightning",
+    "adapter_version": 0,
+    "split": "dev",
+    "passed": true,
+    "score": 0.978,
+    "metrics": {
+     "p50_ms": 380,
+     "p95_ms": 722,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.03
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 19,
+   "ts": "2026-10-19T10:00:34.900Z",
+   "stage": "EVALUATING",
+   "type": "tier_result",
+   "call_site_id": "cs_06",
+   "payload": {
+    "site_id": "cs_06",
+    "tier": "lightning",
+    "adapter_version": 0,
+    "split": "dev",
+    "passed": true,
+    "score": 0.99,
+    "metrics": {
+     "p50_ms": 205,
+     "p95_ms": 390,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.02
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 20,
+   "ts": "2026-10-19T10:00:36.500Z",
+   "stage": "EVALUATING",
+   "type": "tier_result",
+   "call_site_id": "cs_02",
+   "payload": {
+    "site_id": "cs_02",
+    "tier": "lightning",
+    "adapter_version": 0,
+    "split": "dev",
+    "passed": false,
+    "score": 3.6,
+    "metrics": {
+     "p50_ms": 640,
+     "p95_ms": 1216,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.09
+    },
+    "failing_case_ids": [
+     "cs_02:004",
+     "cs_02:011"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 21,
+   "ts": "2026-10-19T10:00:39.000Z",
+   "stage": "EVALUATING",
+   "type": "tier_result",
+   "call_site_id": "cs_03",
+   "payload": {
+    "site_id": "cs_03",
+    "tier": "lightning",
+    "adapter_version": 0,
+    "split": "dev",
+    "passed": false,
+    "score": 0.81,
+    "metrics": {
+     "p50_ms": 1380,
+     "p95_ms": 2622,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.12
+    },
+    "failing_case_ids": [
+     "cs_03:002",
+     "cs_03:007",
+     "cs_03:019"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 22,
+   "ts": "2026-10-19T10:00:39.600Z",
+   "stage": "EVALUATING",
+   "type": "tier_result",
+   "call_site_id": "cs_04",
+   "payload": {
+    "site_id": "cs_04",
+    "tier": "lightning",
+    "adapter_version": 0,
+    "split": "dev",
+    "passed": false,
+    "score": 0.88,
+    "metrics": {
+     "p50_ms": 520,
+     "p95_ms": 988,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.11
+    },
+    "failing_case_ids": [
+     "cs_04:003",
+     "cs_04:015"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 23,
+   "ts": "2026-10-19T10:00:42.800Z",
+   "stage": "EVALUATING",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "lightning",
+    "adapter_version": 0,
+    "split": "dev",
+    "passed": false,
+    "score": 0.42,
+    "metrics": {
+     "p50_ms": 900,
+     "p95_ms": 1710,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.1
+    },
+    "failing_case_ids": [
+     "cs_05:001",
+     "cs_05:002",
+     "cs_05:006"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 24,
+   "ts": "2026-10-19T10:00:43.300Z",
+   "stage": "EVALUATING",
+   "type": "tier_result",
+   "call_site_id": "cs_02",
+   "payload": {
+    "site_id": "cs_02",
+    "tier": "super",
+    "adapter_version": 0,
+    "split": "dev",
+    "passed": true,
+    "score": 4.4,
+    "metrics": {
+     "p50_ms": 980,
+     "p95_ms": 1862,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.36
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 25,
+   "ts": "2026-10-19T10:00:44.400Z",
+   "stage": "EVALUATING",
+   "type": "tier_result",
+   "call_site_id": "cs_04",
+   "payload": {
+    "site_id": "cs_04",
+    "tier": "super",
+    "adapter_version": 0,
+    "split": "dev",
+    "passed": true,
+    "score": 0.97,
+    "metrics": {
+     "p50_ms": 860,
+     "p95_ms": 1634,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.41
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 26,
+   "ts": "2026-10-19T10:00:50.400Z",
+   "stage": "EVALUATING",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "super",
+    "adapter_version": 0,
+    "split": "dev",
+    "passed": false,
+    "score": 0.58,
+    "metrics": {
+     "p50_ms": 2100,
+     "p95_ms": 3990,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.55
+    },
+    "failing_case_ids": [
+     "cs_05:001",
+     "cs_05:006"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 27,
+   "ts": "2026-10-19T10:00:50.800Z",
+   "stage": "EVALUATING",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "ultra",
+    "adapter_version": 0,
+    "split": "dev",
+    "passed": false,
+    "score": 0.64,
+    "metrics": {
+     "p50_ms": 4200,
+     "p95_ms": 7980,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 1.9
+    },
+    "failing_case_ids": [
+     "cs_05:001",
+     "cs_05:006",
+     "cs_05:013"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 28,
+   "ts": "2026-10-19T10:00:51.700Z",
+   "stage": "ITERATING",
+   "type": "stage",
+   "call_site_id": null,
+   "payload": {
+    "stage": "ITERATING"
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 29,
+   "ts": "2026-10-19T10:00:53.300Z",
+   "stage": "ITERATING",
+   "type": "iteration",
+   "call_site_id": "cs_03",
+   "payload": {
+    "site_id": "cs_03",
+    "version": 1,
+    "tier": "lightning",
+    "spec": {
+     "system_prompt": null,
+     "user_prefix": "",
+     "user_suffix": "",
+     "few_shot": [],
+     "response_format": {
+      "type": "json_schema"
+     },
+     "json_mode_fallback": false,
+     "tools": null,
+     "tool_choice": null,
+     "reasoning": "off",
+     "max_tokens": 512,
+     "temperature": 0,
+     "extra_body": {}
+    },
+    "patch": null,
+    "notes": [],
+    "risk_flags": [],
+    "change_log": [
+     "Set response_format to the extracted JSON schema",
+     "Moved field descriptions into the system prompt"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 30,
+   "ts": "2026-10-19T10:00:55.800Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_03",
+   "payload": {
+    "site_id": "cs_03",
+    "tier": "lightning",
+    "adapter_version": 1,
+    "split": "dev",
+    "passed": false,
+    "score": 0.9,
+    "metrics": {
+     "p50_ms": 1400,
+     "p95_ms": 2660,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.12
+    },
+    "failing_case_ids": [
+     "cs_03:007",
+     "cs_03:019"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 31,
+   "ts": "2026-10-19T10:00:56.400Z",
+   "stage": "ITERATING",
+   "type": "iteration",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "version": 1,
+    "tier": "ultra",
+    "spec": {
+     "system_prompt": null,
+     "user_prefix": "",
+     "user_suffix": "",
+     "few_shot": [],
+     "response_format": null,
+     "json_mode_fallback": false,
+     "tools": null,
+     "tool_choice": null,
+     "reasoning": "medium",
+     "max_tokens": 512,
+     "temperature": 0,
+     "extra_body": {}
+    },
+    "patch": null,
+    "notes": [],
+    "risk_flags": [],
+    "change_log": [
+     "Raised reasoning budget to medium"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 32,
+   "ts": "2026-10-19T10:00:59.600Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "ultra",
+    "adapter_version": 1,
+    "split": "dev",
+    "passed": false,
+    "score": 0.68,
+    "metrics": {
+     "p50_ms": 5100,
+     "p95_ms": 9690,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 2.1
+    },
+    "failing_case_ids": [
+     "cs_05:001",
+     "cs_05:013"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 33,
+   "ts": "2026-10-19T10:01:00.100Z",
+   "stage": "ITERATING",
+   "type": "iteration",
+   "call_site_id": "cs_03",
+   "payload": {
+    "site_id": "cs_03",
+    "version": 2,
+    "tier": "lightning",
+    "spec": {
+     "system_prompt": null,
+     "user_prefix": "",
+     "user_suffix": "",
+     "few_shot": [],
+     "response_format": {
+      "type": "json_schema"
+     },
+     "json_mode_fallback": false,
+     "tools": null,
+     "tool_choice": null,
+     "reasoning": "off",
+     "max_tokens": 512,
+     "temperature": 0,
+     "extra_body": {}
+    },
+    "patch": null,
+    "notes": [],
+    "risk_flags": [],
+    "change_log": [
+     "Added two few-shot examples for nested line items"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 34,
+   "ts": "2026-10-19T10:01:01.200Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_03",
+   "payload": {
+    "site_id": "cs_03",
+    "tier": "lightning",
+    "adapter_version": 2,
+    "split": "dev",
+    "passed": true,
+    "score": 0.97,
+    "metrics": {
+     "p50_ms": 1400,
+     "p95_ms": 2660,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.12
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 35,
+   "ts": "2026-10-19T10:01:07.200Z",
+   "stage": "ITERATING",
+   "type": "iteration",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "version": 2,
+    "tier": "ultra",
+    "spec": {
+     "system_prompt": null,
+     "user_prefix": "",
+     "user_suffix": "",
+     "few_shot": [],
+     "response_format": null,
+     "json_mode_fallback": false,
+     "tools": null,
+     "tool_choice": null,
+     "reasoning": "high",
+     "max_tokens": 512,
+     "temperature": 0,
+     "extra_body": {}
+    },
+    "patch": null,
+    "notes": [],
+    "risk_flags": [],
+    "change_log": [
+     "Asked for the final answer on its own last line"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 36,
+   "ts": "2026-10-19T10:01:07.600Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "ultra",
+    "adapter_version": 2,
+    "split": "dev",
+    "passed": false,
+    "score": 0.7,
+    "metrics": {
+     "p50_ms": 6900,
+     "p95_ms": 13110,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 2.4
+    },
+    "failing_case_ids": [
+     "cs_05:001",
+     "cs_05:013"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 37,
+   "ts": "2026-10-19T10:01:08.500Z",
+   "stage": "ITERATING",
+   "type": "log",
+   "call_site_id": "cs_05",
+   "payload": {
+    "level": "warn",
+    "message": "cs_05: Ultra agent calls 31 of 40 used"
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 38,
+   "ts": "2026-10-19T10:01:10.100Z",
+   "stage": "ITERATING",
+   "type": "iteration",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "version": 3,
+    "tier": "ultra",
+    "spec": {
+     "system_prompt": null,
+     "user_prefix": "",
+     "user_suffix": "",
+     "few_shot": [],
+     "response_format": null,
+     "json_mode_fallback": false,
+     "tools": null,
+     "tool_choice": null,
+     "reasoning": "high",
+     "max_tokens": 512,
+     "temperature": 0,
+     "extra_body": {}
+    },
+    "patch": null,
+    "notes": [],
+    "risk_flags": [],
+    "change_log": [
+     "Added a worked example of multi-step budget arithmetic"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 39,
+   "ts": "2026-10-19T10:01:12.600Z",
+   "stage": "ITERATING",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "ultra",
+    "adapter_version": 3,
+    "split": "dev",
+    "passed": false,
+    "score": 0.72,
+    "metrics": {
+     "p50_ms": 7000,
+     "p95_ms": 13300,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 2.4
+    },
+    "failing_case_ids": [
+     "cs_05:001"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 40,
+   "ts": "2026-10-19T10:01:13.200Z",
+   "stage": "VERDICTS",
+   "type": "stage",
+   "call_site_id": null,
+   "payload": {
+    "stage": "VERDICTS"
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 41,
+   "ts": "2026-10-19T10:01:16.400Z",
+   "stage": "VERDICTS",
+   "type": "tier_result",
+   "call_site_id": "cs_01",
+   "payload": {
+    "site_id": "cs_01",
+    "tier": "lightning",
+    "adapter_version": 0,
+    "split": "holdout",
+    "passed": true,
+    "score": 0.975,
+    "metrics": {
+     "p50_ms": 380,
+     "p95_ms": 722,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.03
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 42,
+   "ts": "2026-10-19T10:01:16.900Z",
+   "stage": "VERDICTS",
+   "type": "tier_result",
+   "call_site_id": "cs_02",
+   "payload": {
+    "site_id": "cs_02",
+    "tier": "super",
+    "adapter_version": 0,
+    "split": "holdout",
+    "passed": true,
+    "score": 4.3,
+    "metrics": {
+     "p50_ms": 970,
+     "p95_ms": 1843,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.36
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 43,
+   "ts": "2026-10-19T10:01:18.000Z",
+   "stage": "VERDICTS",
+   "type": "tier_result",
+   "call_site_id": "cs_03",
+   "payload": {
+    "site_id": "cs_03",
+    "tier": "lightning",
+    "adapter_version": 2,
+    "split": "holdout",
+    "passed": true,
+    "score": 0.962,
+    "metrics": {
+     "p50_ms": 1400,
+     "p95_ms": 2660,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.12
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 44,
+   "ts": "2026-10-19T10:01:24.000Z",
+   "stage": "VERDICTS",
+   "type": "tier_result",
+   "call_site_id": "cs_04",
+   "payload": {
+    "site_id": "cs_04",
+    "tier": "super",
+    "adapter_version": 0,
+    "split": "holdout",
+    "passed": true,
+    "score": 0.958,
+    "metrics": {
+     "p50_ms": 850,
+     "p95_ms": 1615,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.41
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 45,
+   "ts": "2026-10-19T10:01:24.400Z",
+   "stage": "VERDICTS",
+   "type": "tier_result",
+   "call_site_id": "cs_05",
+   "payload": {
+    "site_id": "cs_05",
+    "tier": "ultra",
+    "adapter_version": 3,
+    "split": "holdout",
+    "passed": false,
+    "score": 0.71,
+    "metrics": {
+     "p50_ms": 7000,
+     "p95_ms": 13300,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 2.4
+    },
+    "failing_case_ids": [
+     "cs_05:004",
+     "cs_05:009",
+     "cs_05:021"
+    ]
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 46,
+   "ts": "2026-10-19T10:01:25.300Z",
+   "stage": "VERDICTS",
+   "type": "tier_result",
+   "call_site_id": "cs_06",
+   "payload": {
+    "site_id": "cs_06",
+    "tier": "lightning",
+    "adapter_version": 0,
+    "split": "holdout",
+    "passed": true,
+    "score": 0.985,
+    "metrics": {
+     "p50_ms": 205,
+     "p95_ms": 390,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.02
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 47,
+   "ts": "2026-10-19T10:01:26.900Z",
+   "stage": "VERDICTS",
+   "type": "tier_result",
+   "call_site_id": "cs_06",
+   "payload": {
+    "site_id": "cs_06",
+    "tier": "lightning",
+    "adapter_version": 0,
+    "split": "holdout",
+    "passed": true,
+    "score": 0.985,
+    "metrics": {
+     "p50_ms": 205,
+     "p95_ms": 390,
+     "tokens_in": 41000,
+     "tokens_out": 6200,
+     "cost_per_1k_calls_usd": 0.02
+    },
+    "failing_case_ids": []
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 48,
+   "ts": "2026-10-19T10:01:29.400Z",
+   "stage": "VERDICTS",
+   "type": "verdict",
+   "call_site_id": "cs_01",
+   "payload": {
+    "tier": "lightning",
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "parity_pct": 97.5,
+    "best_tier": null,
+    "best_score": null,
+    "iterations": 0,
+    "latency_delta_ms": -30,
+    "cost_before_per_1k": 0.21,
+    "cost_after_per_1k": 0.03,
+    "site_id": "cs_01",
+    "decision": "MIGRATE",
+    "reason": "Lightning matched the baseline labels on the holdout split."
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 49,
+   "ts": "2026-10-19T10:01:30.000Z",
+   "stage": "VERDICTS",
+   "type": "verdict",
+   "call_site_id": "cs_02",
+   "payload": {
+    "tier": "super",
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "parity_pct": 96,
+    "best_tier": null,
+    "best_score": null,
+    "iterations": 0,
+    "latency_delta_ms": -220,
+    "cost_before_per_1k": 1.2,
+    "cost_after_per_1k": 0.36,
+    "site_id": "cs_02",
+    "decision": "MIGRATE",
+    "reason": "Super summaries scored within 0.3 of the baseline on the judge rubric."
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 50,
+   "ts": "2026-10-19T10:01:33.200Z",
+   "stage": "VERDICTS",
+   "type": "verdict",
+   "call_site_id": "cs_03",
+   "payload": {
+    "tier": "lightning",
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "parity_pct": 96.2,
+    "best_tier": null,
+    "best_score": null,
+    "iterations": 2,
+    "latency_delta_ms": -500,
+    "cost_before_per_1k": 3.1,
+    "cost_after_per_1k": 0.12,
+    "site_id": "cs_03",
+    "decision": "MIGRATE",
+    "reason": "Lightning passed after two adapter iterations added a schema and examples."
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 51,
+   "ts": "2026-10-19T10:01:33.700Z",
+   "stage": "VERDICTS",
+   "type": "verdict",
+   "call_site_id": "cs_04",
+   "payload": {
+    "tier": "super",
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "parity_pct": 95.8,
+    "best_tier": null,
+    "best_score": null,
+    "iterations": 0,
+    "latency_delta_ms": 40,
+    "cost_before_per_1k": 2.5,
+    "cost_after_per_1k": 0.41,
+    "site_id": "cs_04",
+    "decision": "MIGRATE",
+    "reason": "Super picked the same tool with equal arguments on the holdout split."
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 52,
+   "ts": "2026-10-19T10:01:34.800Z",
+   "stage": "VERDICTS",
+   "type": "verdict",
+   "call_site_id": "cs_05",
+   "payload": {
+    "tier": null,
+    "model": null,
+    "parity_pct": 71,
+    "best_tier": "ultra",
+    "best_score": 0.71,
+    "iterations": 3,
+    "latency_delta_ms": null,
+    "cost_before_per_1k": 8.8,
+    "cost_after_per_1k": null,
+    "site_id": "cs_05",
+    "decision": "KEEP_CLOSED",
+    "reason": "Multi-step budget arithmetic: best Nemotron parity was 71.0% on Ultra after 3 adapter iterations, below the 90% reasoning threshold. Next step: LoRA distillation on Token Factory."
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 53,
+   "ts": "2026-10-19T10:01:40.800Z",
+   "stage": "VERDICTS",
+   "type": "verdict",
+   "call_site_id": "cs_06",
+   "payload": {
+    "tier": "lightning",
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "parity_pct": 98.5,
+    "best_tier": null,
+    "best_score": null,
+    "iterations": 0,
+    "latency_delta_ms": -45,
+    "cost_before_per_1k": 0.18,
+    "cost_after_per_1k": 0.02,
+    "site_id": "cs_06",
+    "decision": "MIGRATE",
+    "reason": "Lightning matched the baseline labels on the holdout split."
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 54,
+   "ts": "2026-10-19T10:01:41.200Z",
+   "stage": "PATCHED",
+   "type": "stage",
+   "call_site_id": null,
+   "payload": {
+    "stage": "PATCHED",
+    "detail": "Patched 5 call sites; cs_05 left unchanged with a comment"
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 55,
+   "ts": "2026-10-19T10:01:42.100Z",
+   "stage": "PATCHED",
+   "type": "pr",
+   "call_site_id": null,
+   "payload": {
+    "url": "https://github.com/example/offramp-fixture-app/pull/1",
+    "title": "Offramp: migrate 5/6 LLM call sites to Nemotron on Nebius Token Factory (fixture)"
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 56,
+   "ts": "2026-10-19T10:01:43.700Z",
+   "stage": "PR_OPENED",
+   "type": "stage",
+   "call_site_id": null,
+   "payload": {
+    "stage": "PR_OPENED"
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 57,
+   "ts": "2026-10-19T10:01:46.200Z",
+   "stage": "DONE",
+   "type": "stage",
+   "call_site_id": null,
+   "payload": {
+    "stage": "DONE"
+   }
+  },
+  {
+   "run_id": "fixture-dev-001",
+   "seq": 58,
+   "ts": "2026-10-19T10:01:46.800Z",
+   "stage": "DONE",
+   "type": "done",
+   "call_site_id": null,
+   "payload": {
+    "totals": {
+     "sites": 6,
+     "migrated": 5,
+     "kept_closed": 1,
+     "manual_review": 0,
+     "cases": 212,
+     "tokens_in": 812345,
+     "tokens_out": 120456,
+     "ultra_agent_calls": 31,
+     "tf_spend_usd": 1.84,
+     "est_cost_before_per_1k": 15.99,
+     "est_cost_after_per_1k": 9.74
+    }
+   }
+  }
+ ]
+}
