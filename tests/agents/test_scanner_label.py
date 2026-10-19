@@ -1,48 +1,23 @@
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from offramp.agents.scanner import ContractLabel, label_contracts, scan_repo
 from offramp.schemas import CallSite, Contract, Tier
+from offramp.tf.client import TFClient
+from offramp.tf.fake import FakeLLM
 
-REPO = Path(__file__).parents[1] / "fixtures" / "scanner" / "repo"
+FIXTURES = Path(__file__).parents[1] / "fixtures"
+REPO = FIXTURES / "scanner" / "repo"
+# Call-site files of offramp-demo-app at 2e746d9, copied so the cassette keys (prompt = facts + code snippet)
+# do not move when the demo repo changes.
+HELPHUB = FIXTURES / "scanner" / "helphub"
+CASSETTES = FIXTURES / "cassettes" / "scanner"
 FREE_TEXT = Contract(task_type="free_text", output="text")
 
 
-class FakeLLM:
-    """Minimal stand-in for Task 1's LLM protocol (controller swaps in offramp.tf.fake.FakeLLM at merge)."""
-
-    def __init__(self, label: ContractLabel):
-        self.label = label
-        self.calls: list[dict] = []
-
-    def chat(
-        self,
-        *,
-        role,
-        tier,
-        messages,
-        max_tokens,
-        temperature=0.0,
-        response_model=None,
-        json_schema=None,
-        tools=None,
-        tool_choice=None,
-        reasoning="off",
-        extra_body=None,
-    ):
-        self.calls.append(
-            dict(
-                role=role,
-                tier=tier,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                response_model=response_model,
-            )
-        )
-        return SimpleNamespace(parsed=self.label, cached=False)
+def fake(label: ContractLabel | str, n: int = 1) -> FakeLLM:
+    return FakeLLM({"scanner": [label] * n})
 
 
 @pytest.fixture(scope="module")
@@ -52,7 +27,7 @@ def sites():
 
 @pytest.fixture
 def labelled(sites):
-    llm = FakeLLM(ContractLabel(contract=FREE_TEXT, confidence=0.7))
+    llm = fake(ContractLabel(contract=FREE_TEXT, confidence=0.7), n=18)
     out = label_contracts(sites, llm, root=REPO)
     return llm, {s.id: s for s in out}, out
 
@@ -62,7 +37,12 @@ def test_one_super_call_per_chat_site(sites, labelled):
     chat = [s for s in sites if s.kind == "chat"]
     assert len(llm.calls) == len(chat) == 18
     for call in llm.calls:
-        assert (call["role"], call["tier"], call["temperature"]) == ("scanner", Tier.SUPER, 0.0)
+        assert (call["role"], call["tier"], call["temperature"], call["reasoning"]) == (
+            "scanner",
+            Tier.SUPER,
+            0.0,
+            "off",
+        )
         assert call["response_model"] is ContractLabel
         assert 0 < call["max_tokens"] <= 2048
     assert [s.id for s in out] == [s.id for s in sites]
@@ -79,13 +59,8 @@ def test_prompt_carries_snippet_and_params(labelled):
     assert '"max_tokens": 5' in user and "Subject: {subject}" in user
 
 
-@pytest.mark.parametrize(
-    "params",
-    [{"tools": "<expr>"}, {"response_format": "<expr>"}, {"response_format": {"type": "<expr>"}}],
-    ids=["tools", "response_format", "response_format-type"],
-)
-def test_unresolved_params_do_not_force_a_contract(params):
-    site = CallSite(
+def _site(**params) -> CallSite:
+    return CallSite(
         id="cs_01",
         file="x.py",
         lines=[1, 1],
@@ -94,8 +69,21 @@ def test_unresolved_params_do_not_force_a_contract(params):
         prompt_source="literal",
         params=params,
     )
-    [out] = label_contracts([site], FakeLLM(ContractLabel(contract=FREE_TEXT, confidence=0.4)))
+
+
+@pytest.mark.parametrize(
+    "params",
+    [{"tools": "<expr>"}, {"response_format": "<expr>"}, {"response_format": {"type": "<expr>"}}],
+    ids=["tools", "response_format", "response_format-type"],
+)
+def test_unresolved_params_do_not_force_a_contract(params):
+    [out] = label_contracts([_site(**params)], fake(ContractLabel(contract=FREE_TEXT, confidence=0.4)))
     assert (out.contract, out.confidence) == (FREE_TEXT, 0.4)
+
+
+def test_invalid_reply_flags_manual_review():
+    [out] = label_contracts([_site()], fake("not a contract"))
+    assert (out.contract, out.confidence, out.flags) == (None, 0.0, ["MANUAL_REVIEW"])
 
 
 def test_embeddings_are_not_labelled(labelled):
@@ -130,18 +118,41 @@ def test_literal_json_schema_is_copied_and_stream_sets_streaming(labelled):
     _, by_id, _ = labelled
     assert by_id["cs_03"].contract.streaming is True
     schema = {"type": "object", "properties": {"label": {"type": "string"}}}
-    site = CallSite(
-        id="cs_01",
-        file="x.py",
-        lines=[1, 1],
-        sdk="openai",
-        call="c.responses.create",
-        prompt_source="literal",
-        params={"text": {"format": {"type": "json_schema", "name": "x", "schema": schema}}},
-    )
-    [out] = label_contracts([site], FakeLLM(ContractLabel(contract=FREE_TEXT, confidence=0.4)))
+    site = _site(text={"format": {"type": "json_schema", "name": "x", "schema": schema}})
+    [out] = label_contracts([site], fake(ContractLabel(contract=FREE_TEXT, confidence=0.4)))
     assert (out.contract.task_type, out.contract.json_schema, out.confidence) == (
         "json_extraction",
         schema,
         1.0,
     )
+
+
+# ---------------------------------------------------------------- Super on the demo repo (recorded cassette)
+
+DEMO_TASK_TYPES = {
+    "cs_01": "classification",
+    "cs_02": "tool_call",
+    "cs_03": "json_extraction",
+    "cs_04": "free_text",
+    "cs_05": "reasoning",
+    "cs_06": "free_text",
+}
+
+
+def _label_helphub(live: bool) -> dict[str, CallSite]:
+    scan = scan_repo(HELPHUB)
+    return {
+        s.id: s for s in label_contracts(scan.sites, TFClient(cache_dir=CASSETTES, live=live), root=scan.repo)
+    }
+
+
+@pytest.mark.live
+def test_record_helphub_cassette():
+    """Re-record: `uv run pytest --live -k record_helphub` with NEBIUS_API_KEY set (cache hits are free)."""
+    by_id = _label_helphub(live=True)
+    assert all(by_id[site_id].contract is not None for site_id in DEMO_TASK_TYPES)
+
+
+def test_helphub_labels_replay_from_cassette():
+    by_id = _label_helphub(live=False)
+    assert {site_id: by_id[site_id].contract.task_type for site_id in DEMO_TASK_TYPES} == DEMO_TASK_TYPES

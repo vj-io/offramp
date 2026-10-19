@@ -21,6 +21,7 @@ from typing import Any, NamedTuple
 from pydantic import BaseModel, Field
 
 from offramp.schemas import CallSite, Contract, PromptTemplate, ScanResult, Tier
+from offramp.tf.client import LLM
 
 EXPR = "<expr>"  # a value the scanner could not resolve statically
 PARAM_KEYS = (
@@ -71,24 +72,27 @@ def scan_repo(path: str | Path) -> ScanResult:
     """Every closed-LLM call site under `path`. Deterministic, no LLM."""
     root = Path(path)
     found: list[CallSite] = []
+    warnings: list[str] = []
     for file in _py_files(root):
         rel = file.relative_to(root).as_posix()
         try:
             tree = ast.parse(file.read_bytes())  # bytes, so a BOM or a coding cookie is honoured
         except (SyntaxError, ValueError, RecursionError) as exc:
-            log.warning("scanner: skipped %s, not parseable as Python 3.12 (%s)", rel, type(exc).__name__)
+            warnings.append(f"skipped {rel}: not parseable as Python 3.12 ({type(exc).__name__})")
             continue
         try:
             found += _Module(tree).sites(rel)
         except RecursionError:
-            log.warning("scanner: skipped %s, expressions nested too deeply to analyse", rel)
+            warnings.append(f"skipped {rel}: nested too deeply to analyse (RecursionError)")
+    for warning in warnings:
+        log.warning("scanner: %s", warning)
     found.sort(key=lambda s: (s.file, s.lines))
     chat = [s for s in found if s.kind == "chat"]
     embeddings = [s for s in found if s.kind == "embedding"]
     for prefix, group in (("cs", chat), ("emb", embeddings)):
         for i, site in enumerate(group, 1):
             site.id = f"{prefix}_{i:02d}"
-    return ScanResult(repo=str(path), sites=chat + embeddings)
+    return ScanResult(repo=str(path), sites=chat + embeddings, warnings=warnings)
 
 
 def _py_files(root: Path) -> Iterator[Path]:
@@ -629,7 +633,7 @@ class _Module:
 
 # ---------------------------------------------------------------- Super labelling
 
-SCANNER_MAX_TOKENS = 1024
+SCANNER_MAX_TOKENS = 1024  # thinking is off, so this budget holds only the ContractLabel JSON
 SNIPPET_BEFORE, SNIPPET_AFTER = 20, 15  # lines of code around the call shown to the labeller
 
 LABEL_SYSTEM = """\
@@ -660,11 +664,12 @@ class ContractLabel(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)  # the labeller's confidence that task_type is right
 
 
-def label_contracts(sites: list[CallSite], llm: Any, root: str | Path | None = None) -> list[CallSite]:
+def label_contracts(sites: list[CallSite], llm: LLM, root: str | Path | None = None) -> list[CallSite]:
     """Fill `contract` and `confidence` on every chat site, one Super call each (PRD §6.1 step 3).
 
-    `llm` implements offramp.tf.client.LLM. `root` is the scanned repo (ScanResult.repo); when given, the code
-    around each call goes into the prompt. Parameters that settle the task type override the model.
+    `root` is the scanned repo (ScanResult.repo); when given, the code around each call goes into the prompt.
+    Parameters that settle the task type override the model. A reply that does not validate leaves the
+    contract empty, confidence 0 and the site flagged MANUAL_REVIEW.
     """
     out = []
     for site in sites:
@@ -681,8 +686,14 @@ def label_contracts(sites: list[CallSite], llm: Any, root: str | Path | None = N
             max_tokens=SCANNER_MAX_TOKENS,
             temperature=0.0,
             response_model=ContractLabel,
+            reasoning="off",  # Nemotron thinks by default (docs/plan/tf-probe.md); labelling needs none
         )
-        contract, confidence = _apply_hints(site, result.parsed.contract, result.parsed.confidence)
+        label: ContractLabel | None = result.parsed
+        if label is None:
+            flags = site.flags if "MANUAL_REVIEW" in site.flags else [*site.flags, "MANUAL_REVIEW"]
+            out.append(site.model_copy(update={"contract": None, "confidence": 0.0, "flags": flags}))
+            continue
+        contract, confidence = _apply_hints(site, label.contract, label.confidence)
         out.append(site.model_copy(update={"contract": contract, "confidence": confidence}))
     return out
 

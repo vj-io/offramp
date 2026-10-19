@@ -1,0 +1,168 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You label one LLM call site from a Python codebase with its output contract, so its behaviour can be\nre-tested on another model. Return JSON with `contract` and `confidence`.\n\ncontract.task_type, one of:\n- classification: picks one label from a fixed set (put the labels, verbatim, in contract.labels)\n- json_extraction: returns JSON with a fixed set of fields\n- tool_call: is given tools and must call one\n- free_text: prose such as answers, replies or summaries\n- reasoning: multi-step math or logic whose final answer is checked\ncontract.output: label | json_schema | json | tool_call | text (json_schema when the code supplies a schema).\ncontract.tools / contract.streaming: whether the call passes tools / streams its response.\ncontract.reasoning_heavy: true when the task needs multi-step reasoning.\ncontract.latency_budget_ms: only when the code states a timeout, else null.\ncontract.json_schema: only when the prompt or code spells out the output fields, else null.\nconfidence: your probability, 0 to 1, that task_type is right.\n\nIn the prompt template, {name} placeholders are runtime inputs. \"<expr>\" marks a value the scanner could not\nresolve and \"<pydantic:Name>\" stands for that Pydantic model's JSON schema."
+      },
+      {
+        "role": "user",
+        "content": "Call site:\n{\n  \"file\": \"helphub/inbox/triage.py\",\n  \"lines\": [\n    31,\n    39\n  ],\n  \"sdk\": \"openai\",\n  \"call\": \"client.chat.completions.create\",\n  \"function\": \"triage_ticket\",\n  \"source_model\": \"gpt-4o-mini\",\n  \"prompt_source\": \"fstring\",\n  \"template\": {\n    \"system\": \"You are the ticket router for HelpHub, a customer support platform.\\nClassify the customer's ticket into exactly one queue:\\n\\n- billing: charges, invoices, payment methods, subscription pricing\\n- shipping: delivery status, tracking, delays, lost parcels, address changes\\n- returns_refunds: returns, exchanges, damaged or wrong items, refund requests\\n- technical_support: bugs, errors, integrations, API and webhook problems\\n- account_access: login, password reset, two-factor, locked or compromised accounts\\n- general: anything else, including feedback, partnerships and sales questions\\n\\nReply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation.\",\n    \"user\": \"Subject: {subject}\\n\\n{body}\",\n    \"variables\": [\n      \"subject\",\n      \"body\"\n    ]\n  },\n  \"params\": {\n    \"max_tokens\": 16,\n    \"temperature\": 0\n  },\n  \"flags\": []\n}\n\nCode:\n```python\n- shipping: delivery status, tracking, delays, lost parcels, address changes\n- returns_refunds: returns, exchanges, damaged or wrong items, refund requests\n- technical_support: bugs, errors, integrations, API and webhook problems\n- account_access: login, password reset, two-factor, locked or compromised accounts\n- general: anything else, including feedback, partnerships and sales questions\n\nReply with the queue name only, exactly one of: billing, shipping, returns_refunds, \\\ntechnical_support, account_access, general. No punctuation, no explanation.\"\"\"\n\n\ndef parse_queue(text: str | None) -> Queue:\n    \"\"\"Map the model's reply to a queue; anything unrecognised goes to `general`.\"\"\"\n    label = (text or \"\").strip().lower()\n    for queue in Queue:\n        if queue.value in label:\n            return queue\n    return Queue.GENERAL\n\n\ndef triage_ticket(client: OpenAI, subject: str, body: str) -> Queue:\n    response = client.chat.completions.create(\n        model=\"gpt-4o-mini\",\n        temperature=0,\n        max_tokens=16,\n        messages=[\n            {\"role\": \"system\", \"content\": TRIAGE_SYSTEM_PROMPT},\n            {\"role\": \"user\", \"content\": f\"Subject: {subject}\\n\\n{body}\"},\n        ],\n    )\n    return parse_queue(response.choices[0].message.content)\n```"
+      }
+    ],
+    "params": {
+      "max_tokens": 1024,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "ContractLabel",
+          "schema": {
+            "$defs": {
+              "Contract": {
+                "properties": {
+                  "task_type": {
+                    "enum": [
+                      "classification",
+                      "json_extraction",
+                      "tool_call",
+                      "free_text",
+                      "reasoning"
+                    ],
+                    "title": "Task Type",
+                    "type": "string"
+                  },
+                  "output": {
+                    "enum": [
+                      "text",
+                      "label",
+                      "json_schema",
+                      "json",
+                      "tool_call"
+                    ],
+                    "title": "Output",
+                    "type": "string"
+                  },
+                  "tools": {
+                    "default": false,
+                    "title": "Tools",
+                    "type": "boolean"
+                  },
+                  "streaming": {
+                    "default": false,
+                    "title": "Streaming",
+                    "type": "boolean"
+                  },
+                  "latency_budget_ms": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Latency Budget Ms"
+                  },
+                  "reasoning_heavy": {
+                    "default": false,
+                    "title": "Reasoning Heavy",
+                    "type": "boolean"
+                  },
+                  "labels": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Labels",
+                    "type": "array"
+                  },
+                  "json_schema": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Json Schema"
+                  }
+                },
+                "required": [
+                  "task_type",
+                  "output"
+                ],
+                "title": "Contract",
+                "type": "object"
+              }
+            },
+            "description": "Super's answer for one call site.",
+            "properties": {
+              "contract": {
+                "$ref": "#/$defs/Contract"
+              },
+              "confidence": {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "title": "Confidence",
+                "type": "number"
+              }
+            },
+            "required": [
+              "contract",
+              "confidence"
+            ],
+            "title": "ContractLabel",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-8d15818af7fe245d",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"contract\": {\"task_type\": \"classification\", \"output\": \"label\", \"labels\": [\"billing\", \"shipping\", \"returns_refunds\", \"technical_support\", \"account_access\", \"general\"], \"json_schema\": null}, \"confidence\": 0.95}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792396829,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 62,
+      "prompt_tokens": 930,
+      "total_tokens": 992,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 930
+    }
+  },
+  "latency_ms": 2227,
+  "usage": {
+    "prompt_tokens": 930,
+    "completion_tokens": 62
+  },
+  "created_at": "2026-10-19T08:00:30.460637+00:00"
+}

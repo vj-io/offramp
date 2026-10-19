@@ -301,7 +301,7 @@ def scan():
 
 
 def test_exact_call_site_list(scan):
-    assert scan.repo == str(REPO)
+    assert (scan.repo, scan.warnings) == (str(REPO), [])
     assert scan.sites == EXPECTED
 
 
@@ -346,7 +346,9 @@ def test_walk_skips_tests_hidden_venv_and_unparseable(tmp_path):
     for rel, text in files.items():
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text(text)
-    assert [s.file for s in scan_repo(tmp_path).sites] == ["app/main.py"]
+    scan = scan_repo(tmp_path)
+    assert [s.file for s in scan.sites] == ["app/main.py"]
+    assert scan.warnings == ["skipped app/broken.py: not parseable as Python 3.12 (SyntaxError)"]
 
 
 def test_client_tracking_rejects_wrong_sdk_and_accepts_inline_constructor(tmp_path):
@@ -524,6 +526,7 @@ def test_recursion_error_skips_only_that_file(tmp_path, caplog):
     (tmp_path / "deep.py").write_text("x = " + " + ".join(["1"] * 3000) + "\n")
     (tmp_path / "ok.py").write_text(OPENAI_FILE)
     with caplog.at_level("WARNING", logger="offramp.agents.scanner"):
-        sites = scan_repo(tmp_path).sites
-    assert [s.file for s in sites] == ["ok.py"]
+        scan = scan_repo(tmp_path)
+    assert [s.file for s in scan.sites] == ["ok.py"]
+    assert scan.warnings == ["skipped deep.py: nested too deeply to analyse (RecursionError)"]
     assert "deep.py" in caplog.text
