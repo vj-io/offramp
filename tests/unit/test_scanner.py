@@ -194,8 +194,55 @@ EXPECTED = [
             }
         },
     ),
+    # providers/router.py: `client` and `self.client` each bound to both SDKs, in different scopes
     CallSite(
         id="cs_12",
+        file="shopdesk/providers/router.py",
+        lines=[9, 9],
+        sdk="openai",
+        call="client.chat.completions.create",
+        function="ask_openai",
+        source_model="gpt-4o-mini",
+        prompt_source="variable",
+        template=tpl("{question}", None, "question"),
+    ),
+    CallSite(
+        id="cs_13",
+        file="shopdesk/providers/router.py",
+        lines=[15, 17],
+        sdk="anthropic",
+        call="client.messages.create",
+        function="ask_claude",
+        source_model="claude-haiku-4-5",
+        prompt_source="variable",
+        template=tpl("{question}", None, "question"),
+        params={"max_tokens": 200},
+    ),
+    CallSite(
+        id="cs_14",
+        file="shopdesk/providers/router.py",
+        lines=[26, 26],
+        sdk="openai",
+        call="self.client.chat.completions.create",
+        function="complete",
+        source_model="gpt-4o",
+        prompt_source="variable",
+        template=tpl("{prompt}", None, "prompt"),
+    ),
+    CallSite(
+        id="cs_15",
+        file="shopdesk/providers/router.py",
+        lines=[35, 37],
+        sdk="anthropic",
+        call="self.client.messages.create",
+        function="complete",
+        source_model="claude-sonnet-4-5",
+        prompt_source="variable",
+        template=tpl("{prompt}", None, "prompt"),
+        params={"max_tokens": 300},
+    ),
+    CallSite(
+        id="cs_16",
         file="shopdesk/qa/answer.py",
         lines=[12, 19],
         sdk="openai",
@@ -208,7 +255,7 @@ EXPECTED = [
         params={"temperature": 0.2},
     ),
     CallSite(
-        id="cs_13",
+        id="cs_17",
         file="shopdesk/refunds/plan.py",
         lines=[15, 20],
         sdk="openai",
@@ -221,7 +268,7 @@ EXPECTED = [
         params={"max_completion_tokens": 4000, "reasoning_effort": "high"},
     ),
     CallSite(
-        id="cs_14",
+        id="cs_18",
         file="shopdesk/summaries/summarize.py",
         lines=[10, 15],
         sdk="anthropic",
@@ -316,3 +363,167 @@ def test_client_tracking_rejects_wrong_sdk_and_accepts_inline_constructor(tmp_pa
         "literal",
     )
     assert site.template == tpl("hi")
+
+
+def _scan_module(tmp_path, source: str) -> list[CallSite]:
+    (tmp_path / "m.py").write_text(source)
+    return scan_repo(tmp_path).sites
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "from openai import OpenAI as OA\nc = OA()\nc.chat.completions.create(model='m', messages=[])\n",
+            [("c.chat.completions.create", "openai")],
+        ),
+        (
+            "import openai as oai\nc = oai.OpenAI()\n\n\ndef f():\n"
+            "    c.chat.completions.create(model='m', messages=[])\n"
+            "    oai.chat.completions.create(model='m', messages=[])\n",
+            [("c.chat.completions.create", "openai"), ("oai.chat.completions.create", "openai")],
+        ),
+        (
+            "from openai import AsyncOpenAI\nac = AsyncOpenAI()\n\n\nasync def f():\n"
+            "    return await ac.chat.completions.create(model='m', messages=[])\n",
+            [("ac.chat.completions.create", "openai")],
+        ),
+        (  # a parameter shadowing the module name is an injected client
+            "import openai\n\n\ndef f(openai):\n"
+            "    return openai.chat.completions.create(model='m', messages=[])\n",
+            [("openai.chat.completions.create", "openai")],
+        ),
+        (
+            "from openai import OpenAI\nwith OpenAI() as c:\n"
+            "    c.chat.completions.create(model='m', messages=[])\n",
+            [("c.chat.completions.create", "openai")],
+        ),
+        (  # an untyped parameter shadows a module-level client of the other SDK
+            "import openai\nfrom anthropic import Anthropic\nclient = Anthropic()\n\n\ndef f(client):\n"
+            "    return client.chat.completions.create(model='m', messages=[])\n",
+            [("client.chat.completions.create", "openai")],
+        ),
+    ],
+    ids=[
+        "from-import-alias",
+        "module-alias",
+        "async-await",
+        "shadowed-module-name",
+        "with-as",
+        "param-shadow",
+    ],
+)
+def test_import_and_binding_shapes(tmp_path, source, expected):
+    assert [(s.call, s.sdk) for s in _scan_module(tmp_path, source)] == expected
+
+
+FSTRING_MODULE = """\
+from openai import OpenAI
+
+client = OpenAI()
+{prelude}
+
+
+def f(i, s, price, req, req_id, x, width):
+    return client.chat.completions.create(model="m", messages=[{{"role": "user", "content": {body}}}])
+"""
+
+
+@pytest.mark.parametrize(
+    ("prelude", "body", "user", "variables", "specs"),
+    [
+        ("", 'f"Item {i + 1}: {s}"', "Item {i_1}: {s}", ["i_1", "s"], {}),
+        ("", 'f"Total {1 + 1}: {s}"', "Total 2: {s}", ["s"], {}),
+        ("N = 3", 'f"Top {N * 2} of {s}"', "Top 6 of {s}", ["s"], {}),
+        ("CAP = 5", 'f"{CAP:03d} {s}"', "005 {s}", ["s"], {}),
+        ('QUEUES = ["a", "b"]', 'f"Pick one of {QUEUES}: {s}"', "Pick one of ['a', 'b']: {s}", ["s"], {}),
+        (
+            'LIMIT = 10000\nRULE = f"At most {LIMIT:,} chars"',
+            'f"{RULE}. {s}"',
+            "At most 10,000 chars. {s}",
+            ["s"],
+            {},
+        ),
+        ("", 'f"{price:.2f} {s!r}"', "{price} {s}", ["price", "s"], {"price": ":.2f", "s": "!r"}),
+        ("", 'f"{s!r:>10}"', "{s}", ["s"], {"s": "!r:>10"}),
+        (
+            "",
+            '"{a:>8} {b!s}".format(a=price, b=s)',
+            "{price} {s}",
+            ["price", "s"],
+            {"price": ":>8", "s": "!s"},
+        ),
+        ("WIDTH = 4", '"{a:0{w}d}".format(a=7, w=WIDTH)', None, None, None),  # nested spec: dynamic
+        ("", 'f"{req.id} {req_id}"', None, None, None),  # two expressions, one placeholder name
+        ("", 'f"{x} {x:.2f}"', None, None, None),  # one placeholder, two formats
+        ("", 'f"{x:{width}}"', None, None, None),  # runtime format spec
+    ],
+)
+def test_fstring_fields(tmp_path, prelude, body, user, variables, specs):
+    [site] = _scan_module(tmp_path, FSTRING_MODULE.format(prelude=prelude, body=body))
+    if user is None:
+        assert (site.prompt_source, site.template, site.flags) == ("dynamic", None, ["NEEDS_RUNTIME_CAPTURE"])
+        return
+    assert (site.template.user, site.template.variables) == (user, variables)
+    assert site.params.get("template_format_specs", {}) == specs
+
+
+MUTATION_MODULE = """\
+from openai import OpenAI
+
+client = OpenAI()
+SYSTEM = "base"
+TOOLS = [{{"name": "a"}}]
+RF = {{"type": "json_object"}}
+{mutation}
+
+
+def f(q):
+    return client.chat.completions.create(
+        model="m",
+        messages=[{{"role": "system", "content": SYSTEM}}, {{"role": "user", "content": q}}],
+        tools=TOOLS,
+        response_format=RF,
+    )
+"""
+X = "<expr>"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "tools", "rf", "system"),
+    [
+        ("", [{"name": "a"}], {"type": "json_object"}, "base"),
+        ('TOOLS.append({"name": "b"})', X, {"type": "json_object"}, "base"),
+        ("\n\ndef g():\n    TOOLS.extend([])", X, {"type": "json_object"}, "base"),
+        ("\n\ndef g():\n    return TOOLS.pop()", X, {"type": "json_object"}, "base"),
+        ('TOOLS[0]["name"] = "c"', X, {"type": "json_object"}, "base"),
+        ('RF["type"] = "json_schema"', [{"name": "a"}], X, "base"),
+        ('del RF["type"]', [{"name": "a"}], X, "base"),
+        (
+            '\n\ndef g():\n    global SYSTEM\n    SYSTEM = "override"',
+            [{"name": "a"}],
+            {"type": "json_object"},
+            None,
+        ),
+    ],
+    ids=["none", "append", "extend-in-fn", "pop-in-fn", "nested-item", "item", "del-item", "global-rebind"],
+)
+def test_mutated_module_constants_stay_unresolved(tmp_path, mutation, tools, rf, system):
+    [site] = _scan_module(tmp_path, MUTATION_MODULE.format(mutation=mutation))
+    assert (site.params["tools"], site.params["response_format"]) == (tools, rf)
+    assert (site.template.system if site.template else None) == system
+
+
+def test_bom_and_coding_cookie_files_parse(tmp_path):
+    (tmp_path / "bom.py").write_bytes(b"\xef\xbb\xbf" + OPENAI_FILE.encode())
+    (tmp_path / "latin1.py").write_bytes(b"# -*- coding: latin-1 -*-\n# caf\xe9\n" + OPENAI_FILE.encode())
+    assert [s.file for s in scan_repo(tmp_path).sites] == ["bom.py", "latin1.py"]
+
+
+def test_recursion_error_skips_only_that_file(tmp_path, caplog):
+    (tmp_path / "deep.py").write_text("x = " + " + ".join(["1"] * 3000) + "\n")
+    (tmp_path / "ok.py").write_text(OPENAI_FILE)
+    with caplog.at_level("WARNING", logger="offramp.agents.scanner"):
+        sites = scan_repo(tmp_path).sites
+    assert [s.file for s in sites] == ["ok.py"]
+    assert "deep.py" in caplog.text

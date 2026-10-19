@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
+import operator
 import os
 import re
 import string
@@ -48,11 +50,18 @@ METHODS = {  # attribute chain after a client -> (sdk, kind)
     ("embeddings", "create"): ("openai", "embedding"),
     ("messages", "create"): ("anthropic", "chat"),
 }
-MUTATORS = {"append", "extend", "insert", "update"}
+MUTATORS = {
+    "append", "extend", "insert", "update", "pop", "popitem", "remove", "clear", "setdefault", "add",
+    "discard", "sort", "reverse",
+}  # fmt: skip
+ARITH = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul}
+CONVERSIONS = {"r": repr, "s": str, "a": ascii}
 KINDS = ["literal", "variable", "fstring"]  # prompt_source of renderable prompts, weakest first
 PARAM = object()  # _lookup result for an unassigned function parameter
 
 Fn = ast.FunctionDef | ast.AsyncFunctionDef
+Scope = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | None  # None: module level
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------- scan
@@ -63,11 +72,16 @@ def scan_repo(path: str | Path) -> ScanResult:
     root = Path(path)
     found: list[CallSite] = []
     for file in _py_files(root):
+        rel = file.relative_to(root).as_posix()
         try:
-            tree = ast.parse(file.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError, ValueError):
-            continue  # not parseable as Python 3.12: nothing to scan
-        found += _Module(tree).sites(file.relative_to(root).as_posix())
+            tree = ast.parse(file.read_bytes())  # bytes, so a BOM or a coding cookie is honoured
+        except (SyntaxError, ValueError, RecursionError) as exc:
+            log.warning("scanner: skipped %s, not parseable as Python 3.12 (%s)", rel, type(exc).__name__)
+            continue
+        try:
+            found += _Module(tree).sites(rel)
+        except RecursionError:
+            log.warning("scanner: skipped %s, expressions nested too deeply to analyse", rel)
     found.sort(key=lambda s: (s.file, s.lines))
     chat = [s for s in found if s.kind == "chat"]
     embeddings = [s for s in found if s.kind == "embedding"]
@@ -89,12 +103,35 @@ def _py_files(root: Path) -> Iterator[Path]:
         yield from (Path(dirpath, f) for f in filenames if f.endswith(".py"))
 
 
-def _calls(node: ast.AST, fn: Fn | None = None) -> Iterator[tuple[ast.Call, Fn | None]]:
-    """Every call with its innermost enclosing function, in source order."""
+def _walk(
+    node: ast.AST, fn: Fn | None = None, scope: Scope = None, cls: ast.ClassDef | None = None
+) -> Iterator[tuple[ast.AST, Fn | None, Scope, ast.ClassDef | None]]:
+    """Every node with its enclosing function, name scope (function or class body) and class, in order."""
     for child in ast.iter_child_nodes(node):
-        if isinstance(child, ast.Call):
-            yield child, fn
-        yield from _calls(child, child if isinstance(child, Fn) else fn)
+        yield child, fn, scope, cls
+        if isinstance(child, Fn):
+            yield from _walk(child, child, child, cls)
+        elif isinstance(child, ast.ClassDef):
+            yield from _walk(child, fn, child, child)
+        else:
+            yield from _walk(child, fn, scope, cls)
+
+
+def _mutated(node: ast.AST) -> list[str]:
+    """Names whose binding or object `node` changes: x.append(), x[k] = v, x.a = v, del x, global x."""
+    if isinstance(node, ast.Global):
+        return node.names
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Del):
+        return [node.id]
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in MUTATORS:
+        target = node.func.value
+    elif isinstance(node, ast.Subscript | ast.Attribute) and isinstance(node.ctx, ast.Store | ast.Del):
+        target = node.value
+    else:
+        return []
+    while isinstance(target, ast.Subscript | ast.Attribute):
+        target = target.value
+    return [target.id] if isinstance(target, ast.Name) else []
 
 
 def _assigned(node: ast.AST) -> tuple[str, ast.expr] | None:
@@ -117,29 +154,62 @@ def _scalar(value: Any) -> bool:
     return isinstance(value, str | int | float) and value != EXPR
 
 
+def _known(value: Any) -> bool:
+    """Fully resolved: no EXPR anywhere inside."""
+    if isinstance(value, str):
+        return value != EXPR
+    if isinstance(value, list | tuple):
+        return all(map(_known, value))
+    if isinstance(value, dict):
+        return all(map(_known, [*value, *value.values()]))
+    return value is None or isinstance(value, int | float)
+
+
+def _formatted(value: Any, conversion: str | None, spec: Any) -> str | None:
+    """The text of one f-string field, `format(value!conversion, spec)`, or None when it is not known."""
+    if not (_known(value) and isinstance(spec, str) and spec != EXPR):
+        return None
+    try:
+        return format(CONVERSIONS.get(conversion, lambda v: v)(value), spec)
+    except (TypeError, ValueError):
+        return None
+
+
+def _conversion(code: int) -> str | None:
+    return None if code == -1 else chr(code)
+
+
 class _Text(NamedTuple):
     """A rendered prompt fragment."""
 
     text: str  # str.format template
-    variables: list[str]
+    slots: dict[str, tuple[str, str]]  # placeholder -> (source expression, "!r:.2f"-style format or "")
     kind: str  # one of KINDS
     ref: str | None = None  # module constant that holds this fragment
 
 
 def _lit(text: str, kind: str = "literal") -> _Text:
-    return _Text(text.replace("{", "{{").replace("}", "}}"), [], kind)
+    return _Text(text.replace("{", "{{").replace("}", "}}"), {}, kind)
 
 
-def _slot(name: str, kind: str) -> _Text:
-    return _Text("{" + name + "}", [name], kind)
+def _slot(source: str, kind: str, fmt: str = "") -> _Text:
+    """One placeholder for a runtime expression, named from its source text."""
+    name = re.sub(r"\W+", "_", source).strip("_")
+    name = name if name.isidentifier() else f"v_{name}"
+    return _Text("{" + name + "}", {name: (source, fmt)}, kind)
 
 
 def _join(parts: list[_Text | None], sep: str = "", kind: str | None = None) -> _Text | None:
     if any(p is None for p in parts):
         return None
+    slots: dict[str, tuple[str, str]] = {}
+    for p in parts:
+        for name, info in p.slots.items():
+            if slots.setdefault(name, info) != info:
+                return None  # one placeholder name for two expressions or two formats
     return _Text(
         sep.join(p.text for p in parts),
-        list(dict.fromkeys(v for p in parts for v in p.variables)),
+        slots,
         kind or max((p.kind for p in parts), key=KINDS.index, default="literal"),
         next((p.ref for p in parts if p.ref), None),
     )
@@ -149,7 +219,6 @@ class _Module:
     """One parsed file: its SDK imports, client variables, module constants and the call sites they reveal."""
 
     def __init__(self, tree: ast.Module):
-        self.tree = tree
         self.refs: dict[str, tuple[str, str]] = {}  # local name -> (sdk, "module"|"client"|"completion"|...)
         self.imported: set[str] = set()
         for node in ast.walk(tree):
@@ -180,23 +249,30 @@ class _Module:
             )
             if assigned := _assigned(stmt):
                 consts[assigned[0]] = assigned[1]
-        self.consts = {k: v for k, v in consts.items() if stores[k] == 1}
+        # A constant mutated or rebound anywhere in the file (also inside functions) is not a constant.
+        changed = {name for n in ast.walk(tree) for name in _mutated(n)}
+        self.consts = {k: v for k, v in consts.items() if stores[k] == 1 and k not in changed}
 
-        # Client variables through simple assignment, in source order: `client = OpenAI()`,
-        # `self.client = client or Anthropic()`, and parameters annotated `client: OpenAI | None`.
-        self.clients: dict[str, str] = {}  # receiver source text -> sdk
-        nodes = [n for n in ast.walk(tree) if isinstance(n, ast.Assign | ast.AnnAssign | ast.arg)]
-        for n in sorted(nodes, key=lambda n: (n.lineno, n.col_offset)):
-            if isinstance(n, ast.arg):
-                targets, sdk = [n.arg], n.annotation and self._client_sdk(n.annotation)
-            elif isinstance(n, ast.AnnAssign):
-                targets = [ast.unparse(n.target)]
-                sdk = self._client_sdk(n.annotation) or (n.value and self._client_sdk(n.value))
-            else:
-                targets, sdk = [ast.unparse(t) for t in n.targets], self._client_sdk(n.value)
-            if sdk:
-                self.clients.update(dict.fromkeys(targets, sdk))
+        self.nodes = list(_walk(tree))
+        self.parent: dict[Fn, Fn | None] = {n: fn for n, fn, _, _ in self.nodes if isinstance(n, Fn)}
         self._scopes: dict[Fn, tuple[dict[str, ast.expr], Counter[str], set[str]]] = {}
+        # Client bindings per scope, in source order: `client = OpenAI()` (module or function),
+        # `self.client = client or Anthropic()` (class), parameters annotated `client: OpenAI | None`.
+        self.clients: dict[tuple[Scope, str], set[str]] = {}  # (scope, receiver source text) -> sdks
+        for n, fn, scope, cls in self.nodes:
+            if isinstance(n, ast.arg):
+                pairs = [(n.arg, n.annotation)]
+            elif isinstance(n, ast.AnnAssign):
+                pairs = [(ast.unparse(n.target), n.annotation), (ast.unparse(n.target), n.value)]
+            elif isinstance(n, ast.Assign):
+                pairs = [
+                    (ast.unparse(t), n.value) for t in n.targets if isinstance(t, ast.Name | ast.Attribute)
+                ]
+            else:
+                continue
+            for text, value in pairs:
+                if value is not None and (sdks := self._client_sdks(value, fn, cls)):
+                    self.clients.setdefault(self._key(text, scope, cls), set()).update(sdks)
 
     # ------------------------------------------------------------ detection
 
@@ -210,14 +286,40 @@ class _Module:
                 return mod[0], SDK_EXPORTS[mod[0]][node.attr]
         return None
 
-    def _client_sdk(self, node: ast.AST) -> str | None:
-        """SDK of a client expression: `OpenAI()`, a tracked name, `x or Anthropic()`, `OpenAI | None`."""
+    @staticmethod
+    def _key(text: str, scope: Scope, cls: ast.ClassDef | None) -> tuple[Scope, str]:
+        if text.startswith("self."):
+            return cls, text
+        if isinstance(scope, ast.ClassDef):  # class attribute, read through self
+            return scope, f"self.{text}"
+        return scope, text
+
+    def _bound(self, node: ast.Name | ast.Attribute, fn: Fn | None, cls: ast.ClassDef | None) -> set[str]:
+        """SDKs a receiver was bound to as a client, resolved like Python from the function outwards."""
+        text = ast.unparse(node)
+        if text.startswith("self."):
+            return self.clients.get((cls, text), set())
+        head = node
+        while isinstance(head, ast.Attribute):
+            head = head.value
+        scope = fn
+        while scope is not None:
+            if (scope, text) in self.clients:
+                return self.clients[(scope, text)]
+            _, counts, params = self._scope(scope)
+            if isinstance(head, ast.Name) and (head.id in counts or head.id in params):
+                return set()  # a local of this function that holds no known client
+            scope = self.parent[scope]
+        return self.clients.get((None, text), set())
+
+    def _client_sdks(self, node: ast.AST, fn: Fn | None, cls: ast.ClassDef | None) -> set[str]:
+        """SDKs a client expression can hold: `OpenAI()`, a bound name, `x or Anthropic()`, `T | None`."""
         if isinstance(node, ast.Call):
             ref = self._ref(node.func)
-            return ref[0] if ref and ref[1] == "client" else None
+            return {ref[0]} if ref and ref[1] == "client" else set()
         if isinstance(node, ast.Name | ast.Attribute):
             ref = self._ref(node)
-            return ref[0] if ref and ref[1] == "client" else self.clients.get(ast.unparse(node))
+            return {ref[0]} if ref and ref[1] == "client" else self._bound(node, fn, cls)
         if isinstance(node, ast.BoolOp):
             kids = node.values
         elif isinstance(node, ast.IfExp):
@@ -227,21 +329,21 @@ class _Module:
         elif isinstance(node, ast.Subscript):
             kids = [node.slice]
         else:
-            return None
-        return next(filter(None, map(self._client_sdk, kids)), None)
+            return set()
+        return set().union(*(self._client_sdks(k, fn, cls) for k in kids))
 
-    def _receiver_is(self, node: ast.expr, sdk: str) -> bool:
+    def _receiver_is(self, node: ast.expr, sdk: str, fn: Fn | None, cls: ast.ClassDef | None) -> bool:
         ref = self._ref(node)
         if ref:
             return ref == (sdk, "module")  # openai.chat.completions.create(...)
-        tracked = self._client_sdk(node)
-        if tracked:
-            return tracked == sdk
+        bound = self._client_sdks(node, fn, cls)
+        if bound:
+            return sdk in bound
         # ponytail: an untracked receiver (injected client, factory result) counts when this file imports the
         # SDK; a client used in a file that never imports its SDK is missed (add cross-module tracking then).
         return sdk in self.imported
 
-    def _match(self, call: ast.Call) -> tuple[str, str] | None:
+    def _match(self, call: ast.Call, fn: Fn | None, cls: ast.ClassDef | None) -> tuple[str, str] | None:
         ref = self._ref(call.func)
         if ref and ref[1] == "completion":
             return ref[0], "chat"
@@ -252,13 +354,15 @@ class _Module:
         while isinstance(node, ast.Attribute):
             chain, node = (node.attr, *chain), node.value
             hit = METHODS.get(chain)
-            if hit and self._receiver_is(node, hit[0]):
+            if hit and self._receiver_is(node, hit[0], fn, cls):
                 return hit
         return None
 
     def sites(self, file: str) -> list[CallSite]:
         return [
-            self._site(file, call, fn, *hit) for call, fn in _calls(self.tree) if (hit := self._match(call))
+            self._site(file, node, fn, *hit)
+            for node, fn, _, cls in self.nodes
+            if isinstance(node, ast.Call) and (hit := self._match(node, fn, cls))
         ]
 
     def _site(self, file: str, call: ast.Call, fn: Fn | None, sdk: str, kind: str) -> CallSite:
@@ -274,7 +378,9 @@ class _Module:
             flags.append("EMBEDDINGS")
         elif rendered is None:
             flags.append("NEEDS_RUNTIME_CAPTURE")
-        template, source, ref = rendered or (None, "dynamic", None)
+        template, source, ref, specs = rendered or (None, "dynamic", None, {})
+        if specs:  # case rendering pre-formats these values the way the code would
+            params["template_format_specs"] = specs
         return CallSite(
             id="",
             file=file,
@@ -301,20 +407,9 @@ class _Module:
             for n in ast.walk(fn):
                 if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
                     counts[n.id] += 1
-                elif (
-                    isinstance(n, ast.Subscript)
-                    and isinstance(n.ctx, ast.Store)
-                    and isinstance(n.value, ast.Name)
-                ):
-                    counts[n.value.id] += 2
-                elif (
-                    isinstance(n, ast.Call)
-                    and isinstance(n.func, ast.Attribute)
-                    and n.func.attr in MUTATORS
-                    and isinstance(n.func.value, ast.Name)
-                ):
-                    counts[n.func.value.id] += 2
-                elif assigned := _assigned(n):
+                for name in _mutated(n):
+                    counts[name] += 2
+                if assigned := _assigned(n):
                     values[assigned[0]] = assigned[1]
             a = fn.args
             params = {p.arg for p in [*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg] if p}
@@ -349,20 +444,32 @@ class _Module:
             if found is None or found is PARAM:
                 return EXPR
             return self.resolve(found[0], found[1], (*seen, node.id))
-        if isinstance(node, ast.List | ast.Tuple):
+        if isinstance(node, ast.List):
             return [self.resolve(e, fn, seen) for e in node.elts]
+        if isinstance(node, ast.Tuple):
+            return tuple(self.resolve(e, fn, seen) for e in node.elts)
         if isinstance(node, ast.Dict):
             d = _dict(node)
             return EXPR if d is None else {k: self.resolve(v, fn, seen) for k, v in d.items()}
         if isinstance(node, ast.JoinedStr):
-            parts = [
-                self.resolve(v.value if isinstance(v, ast.FormattedValue) else v, fn, seen)
-                for v in node.values
-            ]
-            return "".join(map(str, parts)) if all(map(_scalar, parts)) else EXPR
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            texts = []
+            for v in node.values:
+                if isinstance(v, ast.FormattedValue):
+                    spec = "" if v.format_spec is None else self.resolve(v.format_spec, fn, seen)
+                    text = _formatted(self.resolve(v.value, fn, seen), _conversion(v.conversion), spec)
+                else:
+                    text = v.value
+                if text is None:
+                    return EXPR
+                texts.append(text)
+            return "".join(texts)
+        if isinstance(node, ast.BinOp) and type(node.op) in ARITH:
             a, b = self.resolve(node.left, fn, seen), self.resolve(node.right, fn, seen)
-            return a + b if type(a) is type(b) and isinstance(a, str | list) and EXPR not in (a, b) else EXPR
+            if all(isinstance(x, int | float) and not isinstance(x, bool) for x in (a, b)):
+                return ARITH[type(node.op)](a, b)
+            if isinstance(node.op, ast.Add) and type(a) is type(b) and isinstance(a, str | list | tuple):
+                return a + b if EXPR not in (a, b) else EXPR
+            return EXPR
         if isinstance(node, ast.Call):
             return self._fold_call(node, fn, seen)
         try:
@@ -387,7 +494,12 @@ class _Module:
             return EXPR if EXPR in text else text
         if name in ("os.getenv", "os.environ.get") and len(args) == 2:
             return args[1]
-        if isinstance(f, ast.Attribute) and f.attr == "join" and len(args) == 1 and isinstance(args[0], list):
+        if (
+            isinstance(f, ast.Attribute)
+            and f.attr == "join"
+            and len(args) == 1
+            and isinstance(args[0], list | tuple)
+        ):
             sep = self.resolve(f.value, fn, seen)
             if (
                 _scalar(sep)
@@ -401,8 +513,9 @@ class _Module:
 
     def _template(
         self, kw: dict[str, ast.expr], fn: Fn | None
-    ) -> tuple[PromptTemplate, str, str | None] | None:
-        """The prompt as one system + one user message; None when it cannot be known statically."""
+    ) -> tuple[PromptTemplate, str, str | None, dict[str, str]] | None:
+        """(template, prompt_source, prompt_ref, placeholder formats) with the prompt as one system + one user
+        message; None when it cannot be known statically."""
         msgs = kw.get("messages", kw.get("input"))
         turns = None if msgs is None else self._messages(msgs, fn)
         if turns is None and "input" in kw:  # Responses API: input="..."
@@ -421,9 +534,10 @@ class _Module:
         if whole is None:
             return None
         template = PromptTemplate(
-            system=system_text.text if system_text else None, user=user[0].text, variables=whole.variables
+            system=system_text.text if system_text else None, user=user[0].text, variables=list(whole.slots)
         )
-        return template, whole.kind, whole.ref
+        specs = {name: fmt for name, (_, fmt) in whole.slots.items() if fmt}
+        return template, whole.kind, whole.ref, specs
 
     def _messages(self, node: ast.expr, fn: Fn | None) -> list[tuple[Any, _Text | None]] | None:
         node, fn = self._deref(node, fn)
@@ -463,24 +577,35 @@ class _Module:
             parts = []
             for v in node.values:
                 if isinstance(v, ast.FormattedValue):
-                    t = self._render(v.value, fn, seen)
-                    t = t or _slot(re.sub(r"\W+", "_", ast.unparse(v.value)).strip("_"), "fstring")
-                    parts.append(
-                        t._replace(ref=None)
-                    )  # a constant spliced into an f-string does not hold the prompt
+                    spec = "" if v.format_spec is None else self.resolve(v.format_spec, fn)
+                    parts.append(self._field(v.value, _conversion(v.conversion), spec, fn))
                 else:
                     parts.append(_lit(v.value))
             return _join(parts, kind="fstring")
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):  # both sides render, so both are str
             t = _join([self._render(node.left, fn, seen), self._render(node.right, fn, seen)])
-            return t._replace(kind="fstring") if t and t.variables else t
+            return t._replace(kind="fstring") if t and t.slots else t
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format":
-            return self._format(node, fn, seen)
+            return self._format(node, fn)
         text = self.resolve(node, fn)
         return _lit(str(text)) if _scalar(text) else None
 
-    def _format(self, call: ast.Call, fn: Fn | None, seen: tuple[str, ...]) -> _Text | None:
-        """TEMPLATE.format(name=value): the template's fields, each filled with its rendered argument."""
+    def _field(self, expr: ast.expr, conversion: str | None, spec: Any, fn: Fn | None) -> _Text | None:
+        """One f-string or str.format field: its exact text when every name in it is a known constant, else
+        one placeholder named from its source, with any conversion/spec recorded for case rendering."""
+        if not (isinstance(spec, str) and spec != EXPR and "{" not in spec):
+            return None  # the format spec itself is decided at runtime
+        text = _formatted(self.resolve(expr, fn), conversion, spec)
+        if text is not None:
+            return _lit(text, "fstring")
+        return _slot(
+            ast.unparse(expr),
+            "fstring",
+            (f"!{conversion}" if conversion else "") + (f":{spec}" if spec else ""),
+        )
+
+    def _format(self, call: ast.Call, fn: Fn | None) -> _Text | None:
+        """TEMPLATE.format(name=value): literal text kept, each field rendered like an f-string field."""
         base = call.func.value
         template = self.resolve(base, fn)
         kwargs = {k.arg: k.value for k in call.keywords}
@@ -491,15 +616,12 @@ class _Module:
         except ValueError:
             return None
         parts = []
-        for literal, field, _spec, _conversion in fields:
+        for literal, field, spec, conversion in fields:
             parts.append(_lit(literal, "fstring"))
-            if field is None:
-                continue
-            if not field.isidentifier():
-                return None
-            arg = kwargs.get(field)
-            t = None if arg is None else self._render(arg, fn, seen)
-            parts.append((t or _slot(field, "fstring"))._replace(ref=None))
+            if field is not None:
+                if field not in kwargs:  # positional, indexed or attribute field, or a KeyError at runtime
+                    return None
+                parts.append(self._field(kwargs[field], conversion, spec, fn))
         t = _join(parts, kind="fstring")
         ref = base.id if isinstance(base, ast.Name) and base.id in self.consts else None
         return t and t._replace(ref=ref)
@@ -597,7 +719,8 @@ def _apply_hints(site: CallSite, contract: Contract, confidence: float) -> tuple
     if not isinstance(fmt, dict) and isinstance(p.get("text"), dict):
         fmt = p["text"].get("format")  # Responses API: text={"format": {...}}
     update: dict[str, Any] = {}
-    if p.get("tools"):  # a list, or EXPR when present but unresolved
+    tools = p.get("tools")
+    if isinstance(tools, list | tuple) and tools:  # an unresolved (EXPR) list may be empty at runtime
         update = {"task_type": "tool_call", "output": "tool_call", "tools": True}
     elif isinstance(fmt, dict) and fmt.get("type") == "json_schema":
         inner = fmt.get("json_schema")  # chat: {"json_schema": {"schema": ...}}; Responses: {"schema": ...}

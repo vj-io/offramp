@@ -60,7 +60,7 @@ def labelled(sites):
 def test_one_super_call_per_chat_site(sites, labelled):
     llm, _, out = labelled
     chat = [s for s in sites if s.kind == "chat"]
-    assert len(llm.calls) == len(chat) == 14
+    assert len(llm.calls) == len(chat) == 18
     for call in llm.calls:
         assert (call["role"], call["tier"], call["temperature"]) == ("scanner", Tier.SUPER, 0.0)
         assert call["response_model"] is ContractLabel
@@ -70,9 +70,32 @@ def test_one_super_call_per_chat_site(sites, labelled):
 
 def test_prompt_carries_snippet_and_params(labelled):
     llm, _, _ = labelled
-    user = llm.calls[3]["messages"][-1]["content"]  # cs_04, classify.py
+    [user] = [
+        c["messages"][-1]["content"]
+        for c in llm.calls
+        if '"file": "shopdesk/inbox/classify.py"' in c["messages"][-1]["content"]
+    ]
     assert "def classify_ticket" in user and "client.chat.completions.create(" in user
     assert '"max_tokens": 5' in user and "Subject: {subject}" in user
+
+
+@pytest.mark.parametrize(
+    "params",
+    [{"tools": "<expr>"}, {"response_format": "<expr>"}, {"response_format": {"type": "<expr>"}}],
+    ids=["tools", "response_format", "response_format-type"],
+)
+def test_unresolved_params_do_not_force_a_contract(params):
+    site = CallSite(
+        id="cs_01",
+        file="x.py",
+        lines=[1, 1],
+        sdk="openai",
+        call="c.chat.completions.create",
+        prompt_source="literal",
+        params=params,
+    )
+    [out] = label_contracts([site], FakeLLM(ContractLabel(contract=FREE_TEXT, confidence=0.4)))
+    assert (out.contract, out.confidence) == (FREE_TEXT, 0.4)
 
 
 def test_embeddings_are_not_labelled(labelled):
