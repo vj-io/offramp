@@ -1,0 +1,154 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You grade answers written by an AI assistant.\n\nFor every case you get the evidence: the full input the assistant received (its instructions, any knowledge-base snippets or conversation thread, and the request). Then you get two answers, A and B, written for that input.\n\nScore each answer on three criteria, each an integer from 1 to 5:\n- groundedness: every factual claim is supported by the evidence. 5 = fully supported; 3 = one unsupported or doubtful claim; 1 = invents facts or contradicts the evidence.\n- completeness: it does what the request asks, with the details from the evidence the reader needs. 5 = complete; 3 = misses something that matters; 1 = does not address the request.\n- format: it follows the format, length, tone and language the instructions ask for. 5 = exactly; 3 = noticeable deviations; 1 = ignores them.\n\nGrade each answer on its own merits against the evidence. Position and length are not quality. Identical answers get identical scores.\nReturn one entry per case: \"case\" is the case number; write \"note\" before the scores, one short sentence naming the main problem or \"no issues\"; then the scores of answer A in \"a\" and of answer B in \"b\"."
+      },
+      {
+        "role": "user",
+        "content": "Case 1\n<evidence>\n[system]\nYou are HelpHub's support assistant. Answer the customer using only the knowledge-base snippets provided. If the snippets do not cover the question, say so. Answer in at most two sentences.\n\n[user]\nKB [refunds-1]: Annual plans can be refunded in full within 30 days of purchase. Monthly plans are not refundable.\nCustomer: I bought the annual plan 10 days ago. Can I get my money back?\n</evidence>\n<answer_a>\nYes. Annual plans are fully refundable within 30 days of purchase, and you are at day 10, so you qualify for a full refund.\n</answer_a>\n<answer_b>\nYes, you can: annual plans get a full refund within 30 days of purchase, and you bought yours 10 days ago.\n</answer_b>\n\nCase 2\n<evidence>\n[system]\nYou are HelpHub's support assistant. Answer the customer using only the knowledge-base snippets provided. If the snippets do not cover the question, say so. Answer in at most two sentences.\n\n[user]\nKB [seats-2]: Admins can add seats under Settings > Billing > Seats. Each added seat is billed pro rata for the rest of the billing period.\nCustomer: How do I add two more seats for my team?\n</evidence>\n<answer_a>\nGo to Settings > Billing > Seats and add two seats; each one is billed pro rata for the rest of your current billing period.\n</answer_a>\n<answer_b>\nAs an admin, open Settings > Billing > Seats and add the two seats. They are charged pro rata for the remainder of the billing period.\n</answer_b>\n\nCase 3\n<evidence>\n[system]\nYou are HelpHub's support assistant. Answer the customer using only the knowledge-base snippets provided. If the snippets do not cover the question, say so. Answer in at most two sentences.\n\n[user]\nKB [password-3]: Password reset links expire 24 hours after they are sent. Request a new link from the sign-in page if yours expired.\nCustomer: My reset link from yesterday doesn't work anymore.\n</evidence>\n<answer_a>\nReset links stay valid for 7 days, so yours should still work; if not, call our 24/7 support phone line and an agent will reset it for you.\n</answer_a>\n<answer_b>\nReset links expire 24 hours after they are sent, so yesterday's link has likely expired. Request a new one from the sign-in page.\n</answer_b>\n\nCase 4\n<evidence>\n[system]\nYou are HelpHub's support assistant. Answer the customer using only the knowledge-base snippets provided. If the snippets do not cover the question, say so. Answer in at most two sentences.\n\n[user]\nKB [export-4]: Workspace owners can export all tickets as CSV from Settings > Data > Export. Exports over 50,000 tickets are emailed as a download link.\nCustomer: Can I export our tickets?\n</evidence>\n<answer_a>\nYes. A workspace owner can export all tickets as CSV from Settings > Data > Export; exports over 50,000 tickets arrive by email as a download link.\n</answer_a>\n<answer_b>\nYes, workspace owners can export every ticket as a CSV under Settings > Data > Export. Large exports (over 50,000 tickets) are emailed as a download link.\n</answer_b>\n\nCase 5\n<evidence>\n[system]\nYou are HelpHub's support assistant. Answer the customer using only the knowledge-base snippets provided. If the snippets do not cover the question, say so. Answer in at most two sentences.\n\n[user]\nKB [sso-5]: SAML single sign-on is available on the Enterprise plan. It is configured by an admin under Settings > Security > SSO.\nCustomer: Do you support SSO?\n</evidence>\n<answer_a>\nGreat question! Here is everything you need to know about single sign-on:\n\n- **Plan:** SAML SSO is part of the Enterprise plan.\n- **Who sets it up:** an admin.\n- **Where:** Settings > Security > SSO.\n- **Next steps:** check your plan, then ask your admin.\n\nLet me know if there is anything else I can help you with today!\n</answer_a>\n<answer_b>\nYes, SAML single sign-on is available on the Enterprise plan. An admin configures it under Settings > Security > SSO.\n</answer_b>"
+      }
+    ],
+    "params": {
+      "max_tokens": 1150,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "PairBatch",
+          "schema": {
+            "$defs": {
+              "PairItem": {
+                "properties": {
+                  "case": {
+                    "title": "Case",
+                    "type": "integer"
+                  },
+                  "note": {
+                    "title": "Note",
+                    "type": "string"
+                  },
+                  "a": {
+                    "$ref": "#/$defs/Rubric"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/Rubric"
+                  }
+                },
+                "required": [
+                  "case",
+                  "note",
+                  "a",
+                  "b"
+                ],
+                "title": "PairItem",
+                "type": "object"
+              },
+              "Rubric": {
+                "properties": {
+                  "groundedness": {
+                    "enum": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      5
+                    ],
+                    "title": "Groundedness",
+                    "type": "integer"
+                  },
+                  "completeness": {
+                    "enum": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      5
+                    ],
+                    "title": "Completeness",
+                    "type": "integer"
+                  },
+                  "format": {
+                    "enum": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      5
+                    ],
+                    "title": "Format",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "groundedness",
+                  "completeness",
+                  "format"
+                ],
+                "title": "Rubric",
+                "type": "object"
+              }
+            },
+            "properties": {
+              "scores": {
+                "items": {
+                  "$ref": "#/$defs/PairItem"
+                },
+                "title": "Scores",
+                "type": "array"
+              }
+            },
+            "required": [
+              "scores"
+            ],
+            "title": "PairBatch",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-a20677bb5da6c6a4",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"scores\": [{\"case\": 1, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 2, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 3, \"note\": \"A invents a 7-day validity and a phone line not in KB; B is correct\", \"a\": {\"groundedness\": 1, \"completeness\": 1, \"format\": 1}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 4, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 5, \"note\": \"A exceeds two-sentence limit and adds fluff; B is concise and accurate\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 1}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}]}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792397102,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 354,
+      "prompt_tokens": 1260,
+      "total_tokens": 1614,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 1260
+    }
+  },
+  "latency_ms": 2869,
+  "usage": {
+    "prompt_tokens": 1260,
+    "completion_tokens": 354
+  },
+  "created_at": "2026-10-19T08:05:03.251177+00:00"
+}

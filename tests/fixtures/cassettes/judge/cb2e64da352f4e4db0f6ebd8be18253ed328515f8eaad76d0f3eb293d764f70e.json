@@ -1,0 +1,154 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You grade answers written by an AI assistant.\n\nFor every case you get the evidence: the full input the assistant received (its instructions, any knowledge-base snippets or conversation thread, and the request). Then you get two answers, A and B, written for that input.\n\nScore each answer on three criteria, each an integer from 1 to 5:\n- groundedness: every factual claim is supported by the evidence. 5 = fully supported; 3 = one unsupported or doubtful claim; 1 = invents facts or contradicts the evidence.\n- completeness: it does what the request asks, with the details from the evidence the reader needs. 5 = complete; 3 = misses something that matters; 1 = does not address the request.\n- format: it follows the format, length, tone and language the instructions ask for. 5 = exactly; 3 = noticeable deviations; 1 = ignores them.\n\nGrade each answer on its own merits against the evidence. Position and length are not quality. Identical answers get identical scores.\nReturn one entry per case: \"case\" is the case number; write \"note\" before the scores, one short sentence naming the main problem or \"no issues\"; then the scores of answer A in \"a\" and of answer B in \"b\"."
+      },
+      {
+        "role": "user",
+        "content": "Case 1\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nI was charged twice for invoice 991 this month.\n</evidence>\n<answer_a>\nbilling\n</answer_a>\n<answer_b>\nbilling\n</answer_b>\n\nCase 2\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nThe export button does nothing when I click it in Firefox; the console shows a TypeError.\n</evidence>\n<answer_a>\nbug\n</answer_a>\n<answer_b>\nbug\n</answer_b>\n\nCase 3\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nI can't log in - it says my account is locked after too many attempts.\n</evidence>\n<answer_a>\naccount\n</answer_a>\n<answer_b>\naccount\n</answer_b>\n\nCase 4\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nIt would be great if you supported dark mode in the dashboard.\n</evidence>\n<answer_a>\nfeature_request\n</answer_a>\n<answer_b>\nfeature_request\n</answer_b>\n\nCase 5\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nPlease update the VAT number on our invoices to DE811234567.\n</evidence>\n<answer_a>\nbilling\n</answer_a>\n<answer_b>\nbilling\n</answer_b>\n\nCase 6\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nSince yesterday's update the mobile app crashes as soon as I open a ticket.\n</evidence>\n<answer_a>\nbug\n</answer_a>\n<answer_b>\nbug\n</answer_b>\n\nCase 7\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nHow do I change the email address on my profile? I no longer use the old one.\n</evidence>\n<answer_a>\naccount\n</answer_a>\n<answer_b>\naccount\n</answer_b>\n\nCase 8\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nCould you add a Slack integration so new tickets get posted to a channel?\n</evidence>\n<answer_a>\nfeature_request\n</answer_a>\n<answer_b>\nfeature_request\n</answer_b>\n\nCase 9\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nMy card was declined but the money still left my bank account.\n</evidence>\n<answer_a>\nbilling\n</answer_a>\n<answer_b>\nbilling\n</answer_b>\n\nCase 10\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nSearch returns no results for any query containing an apostrophe, e.g. O'Brien.\n</evidence>\n<answer_a>\nbug\n</answer_a>\n<answer_b>\nbug\n</answer_b>\n\nCase 11\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nPlease delete my account and all my personal data.\n</evidence>\n<answer_a>\naccount\n</answer_a>\n<answer_b>\naccount\n</answer_b>\n\nCase 12\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nWe'd love an API endpoint to bulk-close tickets.\n</evidence>\n<answer_a>\nfeature_request\n</answer_a>\n<answer_b>\nfeature_request\n</answer_b>\n\nCase 13\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nOur renewal went through at the old price even though we downgraded last week; please refund the difference.\n</evidence>\n<answer_a>\nfeature_request\n</answer_a>\n<answer_b>\nbilling\n</answer_b>\n\nCase 14\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nAttachments larger than 2 MB fail to upload with a 500 error.\n</evidence>\n<answer_a>\nbilling\n</answer_a>\n<answer_b>\nbug\n</answer_b>\n\nCase 15\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nI need to transfer ownership of the workspace to my colleague before I leave.\n</evidence>\n<answer_a>\nbug\n</answer_a>\n<answer_b>\naccount\n</answer_b>\n\nCase 16\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nPlease let us schedule reports to be emailed every Monday.\n</evidence>\n<answer_a>\naccount\n</answer_a>\n<answer_b>\nfeature_request\n</answer_b>\n\nCase 17\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nThe date picker shows February 30 as a selectable day.\n</evidence>\n<answer_a>\nfeature_request\n</answer_a>\n<answer_b>\nbug\n</answer_b>\n\nCase 18\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nWhy was I billed for 12 seats when we only have 9 users?\n</evidence>\n<answer_a>\naccount\n</answer_a>\n<answer_b>\nbilling\n</answer_b>\n\nCase 19\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nI keep getting the two-factor code by SMS even though I switched to the authenticator app.\n</evidence>\n<answer_a>\nThe ticket is about the customer's sign-in settings, so the label is account.\n</answer_a>\n<answer_b>\naccount\n</answer_b>\n\nCase 20\n<evidence>\n[system]\nClassify the support ticket into exactly one of: billing, bug, account, feature_request. Reply with the label only.\n\n[user]\nYour pricing page says annual plans get 20% off but I was charged the full price.\n</evidence>\n<answer_a>\nBilling.\n</answer_a>\n<answer_b>\nbilling\n</answer_b>"
+      }
+    ],
+    "params": {
+      "max_tokens": 3400,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "PairBatch",
+          "schema": {
+            "$defs": {
+              "PairItem": {
+                "properties": {
+                  "case": {
+                    "title": "Case",
+                    "type": "integer"
+                  },
+                  "note": {
+                    "title": "Note",
+                    "type": "string"
+                  },
+                  "a": {
+                    "$ref": "#/$defs/Rubric"
+                  },
+                  "b": {
+                    "$ref": "#/$defs/Rubric"
+                  }
+                },
+                "required": [
+                  "case",
+                  "note",
+                  "a",
+                  "b"
+                ],
+                "title": "PairItem",
+                "type": "object"
+              },
+              "Rubric": {
+                "properties": {
+                  "groundedness": {
+                    "enum": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      5
+                    ],
+                    "title": "Groundedness",
+                    "type": "integer"
+                  },
+                  "completeness": {
+                    "enum": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      5
+                    ],
+                    "title": "Completeness",
+                    "type": "integer"
+                  },
+                  "format": {
+                    "enum": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      5
+                    ],
+                    "title": "Format",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "groundedness",
+                  "completeness",
+                  "format"
+                ],
+                "title": "Rubric",
+                "type": "object"
+              }
+            },
+            "properties": {
+              "scores": {
+                "items": {
+                  "$ref": "#/$defs/PairItem"
+                },
+                "title": "Scores",
+                "type": "array"
+              }
+            },
+            "required": [
+              "scores"
+            ],
+            "title": "PairBatch",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-8873eaa031878b31",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"scores\": [{\"case\": 1, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 2, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 3, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 4, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 5, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 6, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 7, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 8, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 9, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 10, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 11, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 12, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 13, \"note\": \"A misclassifies a billing issue (refund request) as feature_request; B correctly labels it billing.\", \"a\": {\"groundedness\": 1, \"completeness\": 1, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 14, \"note\": \"A misclassifies an upload error as billing; B correctly labels it bug.\", \"a\": {\"groundedness\": 1, \"completeness\": 1, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 15, \"note\": \"A misclassifies a workspace ownership transfer as bug; B correctly labels it account.\", \"a\": {\"groundedness\": 1, \"completeness\": 1, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 16, \"note\": \"A misclassifies a scheduling feature request as account; B correctly labels it feature_request.\", \"a\": {\"groundedness\": 1, \"completeness\": 1, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 17, \"note\": \"A misclassifies a date-picker defect as feature_request; B correctly labels it bug.\", \"a\": {\"groundedness\": 1, \"completeness\": 1, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 18, \"note\": \"A misclassifies a seat-count billing question as account; B correctly labels it billing.\", \"a\": {\"groundedness\": 1, \"completeness\": 1, \"format\": 5}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 19, \"note\": \"A adds explanatory text violating the 'label only' format; B complies.\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 1}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 20, \"note\": \"A uses capitalized 'Billing.' instead of the exact label 'billing'; B complies.\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 3}, \"b\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}]}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792397108,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 1400,
+      "prompt_tokens": 1912,
+      "total_tokens": 3312,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 1912
+    }
+  },
+  "latency_ms": 4268,
+  "usage": {
+    "prompt_tokens": 1912,
+    "completion_tokens": 1400
+  },
+  "created_at": "2026-10-19T08:05:10.943097+00:00"
+}
