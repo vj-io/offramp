@@ -169,6 +169,7 @@ def _target_python(repo: Path) -> tuple[list[str], dict[str, str]]:
     path sources are never installed, since an editable setuptools install writes <name>.egg-info/ into the
     target; their code imports from PYTHONPATH (_import_roots). Every run uses --no-sync; a changed lock or
     pyproject re-syncs the env."""
+    repo = repo.resolve()  # commands below run with cwd=repo or the env dir: a relative path breaks both
     path = os.pathsep.join(str(p) for p in _import_roots(repo))
     base = _target_env() | {"PYTHONPATH": path}
     if not (repo / "pyproject.toml").exists():

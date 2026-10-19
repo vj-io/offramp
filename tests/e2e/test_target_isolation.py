@@ -53,3 +53,25 @@ def test_a_target_module_imported_for_its_schema_sees_no_secret(tmp_path, monkey
     assert not seen & set(SECRETS)
     assert not [name for name in seen if any(s in name for s in ("KEY", "TOKEN", "LANGSMITH", "FALLBACK"))]
     assert {"PATH", "HOME", "PYTHONPATH"} <= seen
+
+
+def test_a_relative_repo_path_reaches_uv_as_an_absolute_project(tmp_path, monkeypatch):
+    """`offramp prepare ../repo` handed the relative path to `uv run --project`, whose cwd is the repo itself:
+    "Project directory `../offramp-demo-app` does not exist"."""
+    monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path / "data"))
+    (tmp_path / "target").mkdir()
+    (tmp_path / "target" / "pyproject.toml").write_text('[project]\nname = "t"\nversion = "0"\n')
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+
+    def fake_run(command, cwd, **kwargs):  # no env build in this test: `uv venv <dir>` just makes the dir
+        case_gen.Path(command[-1]).mkdir(parents=True, exist_ok=True)
+        return ""
+
+    monkeypatch.setattr(case_gen, "_run", fake_run)
+
+    command, env = case_gen._target_python(case_gen.Path("../target"))
+
+    project = command[command.index("--project") + 1]
+    assert project == str((tmp_path / "target").resolve())
+    assert all(case_gen.Path(p).is_absolute() for p in env["PYTHONPATH"].split(case_gen.os.pathsep))
