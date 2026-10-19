@@ -435,15 +435,21 @@ def _apply(edits: list[Edit], files: dict[str, str]) -> list[str]:
 
 
 def _bound(tree: ast.Module) -> set[str]:
-    """Names a module binds at top level: imports, defs, classes, assignments."""
-    bound = set()
-    for n in tree.body:
+    """Names a module binds at module level, wherever: imports, defs, classes, (annotated) assignments, also
+    inside top-level `if` / `try` / `with` / `for`. Function and class bodies are not entered."""
+    bound, stack = set(), list(tree.body)
+    while stack:
+        n = stack.pop()
         if isinstance(n, ast.Import | ast.ImportFrom):
             bound |= {(a.asname or a.name).split(".")[0] for a in n.names}
         elif isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             bound.add(n.name)
-        elif isinstance(n, ast.Assign):
-            bound |= {t.id for t in n.targets if isinstance(t, ast.Name)}
+            continue
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+            bound.add(n.id)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            bound.add(n.name)
+        stack.extend(ast.iter_child_nodes(n))
     return bound
 
 
@@ -486,6 +492,8 @@ def add_fixtures(source: str) -> str:
     """Add a built-in pytest fixture as a parameter to a test function that uses it without requesting or
     binding it (e.g. `monkeypatch.setattr(...)` in `def test_x():`)."""
     tree = ast.parse(source)
+    if any(isinstance(n, ast.ImportFrom) and any(a.name == "*" for a in n.names) for n in tree.body):
+        return source  # a star import may well provide the name: never guess
     lines = source.splitlines(keepends=True)
     module = _bound(tree)  # a module-level name of the same spelling is what the test means
     tests = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
@@ -500,7 +508,10 @@ def add_fixtures(source: str) -> str:
         if not missing or args.vararg or args.kwarg or args.kwonlyargs or body_at < fn.lineno:
             continue
         head = "".join(lines[fn.lineno - 1 : body_at])
-        opened, close = _parameter_list(head)
+        try:
+            opened, close = _parameter_list(head)
+        except (tokenize.TokenError, ValueError, SyntaxError):  # e.g. the body on the `):` line: leave it
+            continue
         sep = "" if head[opened + 1 : close].strip() == "" else ", "
         head = head[:close].rstrip().rstrip(",") + sep + ", ".join(missing) + head[close:]
         lines[fn.lineno - 1 : body_at] = [head]
@@ -1013,10 +1024,14 @@ def _attempt(
     for p in changed:
         write(p, new[p])
     box.tidy(changed, format_code=formatted)
+    rewrapped = []
     for p in changed:  # after formatting, whose indentation is final: wrap over-long strings
         text = (repo / p).read_text()
         if (wrapped := _wrap(job, p, text)) != text:
             (repo / p).write_text(wrapped)
+            rewrapped.append(p)
+    if formatted and rewrapped:  # the pieces no longer fit on one line, so formatting keeps them split
+        box.tidy(rewrapped, format_code=True)
     result: CheckResult = box.check()
     patched = {p: (repo / p).read_text() for p in changed}
     for p in changed:  # every site is checked against the same base
@@ -1133,7 +1148,7 @@ def compose_patches(
             site, tier, adapter.spec, params, constants, system_name, editable, client, client_at, width
         )
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
-        failure, patched, last = None, {}, None
+        failure, patched, tried = None, {}, []
         for attempt in range(1 + REPAIRS):
             try:
                 res = llm.chat(
@@ -1148,10 +1163,10 @@ def compose_patches(
                 failure = f"patch not composed: {e}"
                 break
             edits = parse_edits(res.output.text or "").edits
-            if attempt and edits == last:  # the same patch again: the sandbox would say the same
-                failure = f"repair produced no change; first try: {failure}"
+            if edits in tried:  # a patch already tried (A-B-A too): the sandbox would say the same again
+                failure = f"repair produced no change; last failure: {failure}"
                 break
-            last = edits
+            tried.append(edits)
             failure, patched = _attempt(job, res.output.text or "", repo, box, formatted, write)
             if failure is None:
                 break

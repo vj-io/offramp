@@ -246,9 +246,7 @@ def test_failing_repo_tests_downgrade_the_site_and_drop_its_patch():
     )
     llm = patcher_llm(migrate("tinyapp/greet.py"), breaking, breaking)  # shout: first try + repair round
 
-    result = run(
-        llm, results=[True, True, True, False, False, True]
-    )  # untouched, +client, greet, shout x2, all
+    result = run(llm, results=[True, True, True, False])  # untouched, + client, greet, shout (then a repeat)
 
     shout = verdict(result, "cs_03")
     assert shout.decision == "MANUAL_REVIEW"
@@ -950,7 +948,7 @@ def test_a_repair_that_repeats_the_failed_patch_stops_without_another_check():
     result = run(llm, results=[True, True, False, True, True], sandboxes=boxes)
 
     assert verdict(result, "cs_01").reason.startswith(
-        "repair produced no change; first try: repo checks failed"
+        "repair produced no change; last failure: repo checks failed"
     )
     assert len(boxes[0].checks) == 4  # untouched, base, greet's one try, shout (no combined: one site)
     repair = llm.calls[1]
@@ -1041,3 +1039,63 @@ def test_fixture_parameters_land_in_the_signature_even_with_a_comment_or_in_a_cl
 
     assert "    def test_m(self, monkeypatch):  # covers (a) and (b): done\n" in fixed
     assert "        with open('f'):\n" in fixed
+
+
+def test_a_test_body_on_the_signature_line_does_not_crash_the_run():
+    """A model reply put the body on the `):` line: locating the signature must not raise (TokenError)."""
+    source = "def test_x(\n    a,\n): monkeypatch.setattr('x', 1)\n"
+    assert add_fixtures(source) == source
+
+    odd_test = "def test_motto_returns_the_reply(\n): monkeypatch.setenv('A', '1')\n\n\ndef _unused():\n"
+    odd = Edit(path="tests/test_tinyapp.py", search="def test_motto_returns_the_reply():\n", replace=odd_test)
+    llm = patcher_llm(migrate("tinyapp/greet.py", extra=[odd]), migrate("tinyapp/shout.py"))
+
+    result = run(llm)
+
+    assert (
+        verdict(result, "cs_01").decision == "MIGRATE"
+    )  # decided, not crashed (the fake sandbox says green)
+
+
+def test_two_repair_rounds_each_see_the_last_failure():
+    first = migrate("tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace="")])
+    second = migrate(
+        "tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace=".lower()")]
+    )
+    llm = patcher_llm(first, second, migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"))
+
+    result = run(llm, results=[True, True, False, False, True, True, True])
+
+    assert verdict(result, "cs_01").decision == "MIGRATE" and result.alone["cs_01"]
+    third = llm.calls[2]
+    assert third["max_tokens"] == 12000 and len(third["messages"]) == 6
+    assert third["messages"][-2]["content"] == edits_text(second)
+
+
+def test_a_repair_that_returns_to_an_earlier_patch_stops_too():
+    a = migrate("tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace="")])
+    b = migrate(
+        "tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace=".lower()")]
+    )
+    boxes = []
+
+    result = run(patcher_llm(a, b, a, migrate("tinyapp/shout.py")), results=[True, True, False, False, True],
+                 sandboxes=boxes)  # fmt: skip
+
+    assert verdict(result, "cs_01").reason.startswith("repair produced no change; last failure:")
+    assert len(boxes[0].checks) == 5  # untouched, base, a, b, shout: the repeated a was never checked
+
+
+@pytest.mark.parametrize(
+    "module_binding",
+    [
+        "tmp_path: str = 'x'\n",
+        "try:\n    tmp_path = 1\nexcept ImportError:\n    pass\n",
+        "from helpers import *\n",
+    ],
+    ids=["annotated", "inside-try", "star-import"],
+)
+def test_a_module_name_that_might_be_the_fixture_is_never_shadowed(module_binding):
+    source = f"{module_binding}\n\ndef test_x():\n    assert tmp_path\n"
+
+    assert add_fixtures(source) == source
