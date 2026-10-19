@@ -506,3 +506,47 @@ def test_budget_exceeded_in_judge_returns_budget_stop():
     result = _run(client, [case], [], site=_site("free_text"))
     assert isinstance(result, BudgetStop)
     assert result.reason == "budget: Ultra agent call cap reached (40)"
+
+
+# ------------------------------------------------------------------ default build_request (Task 6)
+
+
+def test_default_build_request_is_task6_translate():
+    from offramp.agents.translate import max_tokens_for
+
+    spec = AdapterSpec(
+        system_prompt="Reply with one label: billing or bug.", user_suffix="\nLabel:", max_tokens=16
+    )
+    adapter = Adapter(site_id="cs_01", version=1, spec=spec)
+    case = _case(1)
+    fake = FakeLLM({EVAL_TARGET_ROLE: ["billing"]})
+    result = run_tier(_site(), [case], [_ref(1)], adapter, Tier.SUPER, fake, "dev")  # no build_request=
+
+    assert (result.passed, result.score) == (True, 1.0)
+    (call,) = fake.calls
+    assert call["role"] == EVAL_TARGET_ROLE and call["tier"] == Tier.SUPER and call["reasoning"] == "off"
+    assert call["messages"] == [
+        {"role": "system", "content": "Reply with one label: billing or bug."},  # the spec replaced "sys"
+        {"role": "user", "content": "cs_01:001\nLabel:"},
+    ]
+    assert call["max_tokens"] == max_tokens_for(spec) == 16
+
+
+def test_unresolved_call_site_propagates_and_is_never_scored():
+    from offramp.agents.translate import UnresolvedCallSite
+
+    spec = AdapterSpec(
+        response_format={"type": "json_schema", "json_schema": {"name": "T", "schema": "<pydantic:T>"}}
+    )
+    fake = FakeLLM()  # a call would raise: none must be made
+    with pytest.raises(UnresolvedCallSite):
+        run_tier(
+            _site(),
+            [_case(1)],
+            [_ref(1)],
+            Adapter(site_id="cs_01", version=0, spec=spec),
+            Tier.LIGHTNING,
+            fake,
+            "dev",
+        )
+    assert fake.calls == []
