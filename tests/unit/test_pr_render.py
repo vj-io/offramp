@@ -9,6 +9,8 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from offramp.agents.pr_writer import (
     SOURCE_OUTPUTS_NOT_RECORDED,
     PRContext,
@@ -43,7 +45,8 @@ def verdict(c: PRContext, site_id: str):
 def test_body_matches_snapshot():
     body = render_pr(
         ctx(
-            site_files={"cs_02": ["helphub/ops/agent_step.py", "tests/test_agent_step.py"]}, sandbox="docker"
+            site_files={"cs_02": ["helphub/ops/agent_step.py", "tests/fakes.py", "tests/test_agent_step.py"]},
+            sandbox="docker",
         ),
         PROSE,
     ).body
@@ -142,7 +145,7 @@ def test_without_closed_references_no_closed_model_is_named():
     section = render_pr(c).body.split("## How parity was measured")[1]
 
     assert SOURCE_OUTPUTS_NOT_RECORDED in section
-    assert "were produced by" not in section and "claude-sonnet-5.5" not in section
+    assert "Reference outputs for" not in section  # the auditor may still be named in the audit column
 
 
 def test_price_sources_dates_and_langsmith_links_are_listed():
@@ -212,3 +215,45 @@ def test_free_text_tool_arguments_are_disclosed_per_site():
     assert (
         "- cs_02: free-text argument escalate_to_human.reason checked for presence, not wording." in section
     )
+
+
+def test_each_site_lists_the_test_files_its_patch_edited():
+    c = ctx(site_files={"cs_02": ["helphub/cli.py", "helphub/ops/agent_step.py", "tests/fakes.py",
+                                  "tests/test_cli.py"]})  # fmt: skip
+
+    line = next(ln for ln in render_pr(c).body.splitlines() if ln.startswith("- **cs_02**"))
+
+    assert "Files: `helphub/cli.py`, `helphub/ops/agent_step.py`." in line
+    tests = "`tests/fakes.py`, `tests/test_cli.py`."
+    assert f"Tests updated (they pinned the old provider's request or fakes): {tests}" in line
+
+
+@pytest.mark.parametrize(
+    ("path", "says"),
+    [
+        ("helphub/offramp_client.py", "inside the `helphub` package, so it ships with it"),
+        (
+            "offramp/client.py",
+            "at the repository root, because the migrated call sites are not inside one package",
+        ),
+    ],
+)
+def test_the_body_says_where_the_client_module_lives_and_why(path, says):
+    body = render_pr(ctx(client_path=path)).body
+
+    line = next(ln for ln in body.splitlines() if ln.startswith(f"- `{path}` added"))
+    assert says in line
+
+
+def test_pass_bar_names_the_pairwise_rule_for_free_text_sites_with_text_references():
+    section = render_pr(ctx()).body.split("## How parity was measured")[1]
+
+    assert (
+        "and at least the references' judge mean − 0.3 where references hold text (cs_04, cs_06)" in section
+    )
+
+
+def test_the_audit_column_names_the_auditor():
+    row = next(ln for ln in render_pr(ctx()).body.splitlines() if ln.startswith("| cs_01 | reference:seed"))
+
+    assert "26 / 25 / 1 / 0 by claude-sonnet-5.5 (via Claude Code)" in row

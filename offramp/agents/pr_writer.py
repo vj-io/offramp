@@ -12,6 +12,7 @@ from collections import Counter
 
 from pydantic import BaseModel, Field
 
+from offramp.evals.errors import ProviderError
 from offramp.pricing import entry
 from offramp.schemas import (
     TIER_ORDER,
@@ -19,13 +20,14 @@ from offramp.schemas import (
     BaselineResult,
     CallSite,
     EvalCase,
+    ReferenceAudit,
     RunConfig,
     Tier,
     TierResult,
     Verdict,
 )
 from offramp.tf.budget import BudgetExceeded
-from offramp.tf.client import LLM
+from offramp.tf.client import LLM, CacheMiss
 from offramp.tf.tiers import get_tier
 
 FREE_TEXT_TAG = "free_text_arg:"  # offramp.evals.scorers.tool_call
@@ -73,11 +75,24 @@ class PRContext(BaseModel):
     references: dict[str, dict[str, int]] = Field(
         default_factory=dict
     )  # site_id -> {BaselineResult.model: n}
-    audit: dict[str, dict[str, int]] = Field(default_factory=dict)  # evals/audit.json
+    audit: dict[str, ReferenceAudit] = Field(default_factory=dict)  # evals/audit.json (GC18)
     free_text_args: dict[str, list[str]] = Field(default_factory=dict)  # site_id -> ["tool.arg", ...]
     langsmith_links: dict[str, str] = Field(default_factory=dict)  # "project" / site_id -> share URL
     site_files: dict[str, list[str]] = Field(default_factory=dict)  # PatchResult.site_files
     sandbox: str | None = None  # PatchResult.sandbox_mode: "docker" | "local"
+    client_path: str | None = None  # PatchResult.client_path: where the Token Factory client module lives
+
+
+def is_test_path(path: str) -> bool:
+    """tests/..., test/..., test_*.py, *_test.py and conftest.py count as test code."""
+    parts = path.split("/")
+    name = parts[-1]
+    return (
+        any(p in ("tests", "test") for p in parts[:-1])
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+        or name == "conftest.py"
+    )
 
 
 def reference_summary(
@@ -219,8 +234,15 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         return f"Adapter changes: {'; '.join(a.change_log)}." if a and a.change_log else ""
 
     def files(sid: str) -> str:
-        paths = ctx.site_files.get(sid)
-        return f"Files: {', '.join(f'`{p}`' for p in paths)}." if paths else ""
+        paths = ctx.site_files.get(sid, [])
+        code = [f"`{p}`" for p in paths if not is_test_path(p)]
+        tests = [f"`{p}`" for p in paths if is_test_path(p)]
+        out = [f"Files: {', '.join(code)}."] if code else []
+        if tests:
+            out.append(
+                f"Tests updated (they pinned the old provider's request or fakes): {', '.join(tests)}."
+            )
+        return " ".join(out)
 
     out = ["## Summary", ""]
     if prose.summary:
@@ -251,8 +273,14 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         "",
     ]
     if migrated:
+        client = ctx.client_path or "offramp/client.py"
+        where = (
+            f"inside the `{client.rsplit('/', 2)[-2]}` package, so it ships with it"
+            if client.endswith("/offramp_client.py")
+            else "at the repository root, because the migrated call sites are not inside one package"
+        )
         out.append(
-            "- `offramp/client.py` added: OpenAI SDK client for Nebius Token Factory "
+            f"- `{client}` added {where}: OpenAI SDK client for Nebius Token Factory "
             "(`token_factory_client()`, reads `NEBIUS_API_KEY` and optional `NEBIUS_BASE_URL`) and the "
             "Nemotron tier constants `LIGHTNING`, `SUPER`, `ULTRA`. Every migrated call sends "
             "`chat_template_kwargs.enable_thinking` explicitly, since Nemotron reasons by default."
@@ -304,12 +332,23 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
                 closed.setdefault(model, []).append(sid)
     for model, sids in closed.items():
         out.append(f"Reference outputs for {', '.join(sids)} were produced by `{model}`.")
+    texts = [  # free-text sites whose references hold text: the pairwise rule applies (GC20, GC27)
+        s.id
+        for s in sorted(ctx.sites, key=lambda s: s.id)
+        if _task(s) == "free_text"
+        and any(m not in ("reference:seed", "reference:oracle") for m in ctx.references.get(s.id, {}))
+    ]
+    pairwise = (
+        f", and at least the references' judge mean − 0.3 where references hold text ({', '.join(texts)})"
+        if texts
+        else ""
+    )
     out += [
         "",
         "Each site's cases are split once into dev (adapter iteration) and holdout (verdict only). Pass bar: "
         f"{ctx.config.threshold * 100:g}% agreement with the references "
         f"({ctx.config.reasoning_threshold * 100:g}% for reasoning); free text: judge mean of at least 4.0 "
-        "on a 1–5 rubric.",
+        f"on a 1–5 rubric{pairwise}.",
         *(
             f"- {sid}: free-text argument{'s' if len(args) > 1 else ''} {', '.join(args)} checked for "
             "presence, not wording."
@@ -317,7 +356,7 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         ),
         "",
         "| Site | References | Cases (dev / holdout) "
-        "| Reference audit (checked / agreed / dropped / human-verified) |",
+        "| Reference audit (checked / agreed / dropped / human-verified, by) |",
         "|---|---|---|---|",
     ]
     for v in verdicts:
@@ -325,11 +364,9 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         c = ctx.case_counts.get(v.site_id)
         split = f"{c.get('dev', 0)} / {c.get('holdout', 0)}" if c else "—"
         a = ctx.audit.get(v.site_id)
-        audit = (
-            " / ".join(str(a.get(k, 0)) for k in ("checked", "agreed", "dropped", "human_verified"))
-            if a
-            else "—"
-        )
+        audit = f"{a.checked} / {a.agreed} / {a.dropped} / {a.human_verified}" if a else "—"
+        if a and a.auditor:
+            audit += f" by {a.auditor}"
         out.append("| " + " | ".join(_cell(x) for x in [v.site_id, refs, split, audit]) + " |")
 
     out += ["", "Prices (USD per 1M input / output tokens):"]
@@ -374,21 +411,33 @@ and renders every number of the PR itself from the measurements.
 Return JSON: {"summary": str, "sites": [{"site_id": str, "note": str}]}.
 - summary: two or three plain sentences for the reviewer: what this PR changes and how the evidence was \
 produced (agreement with references on a held-out split; the repo's own tests run on the patch).
-- one note per site, one sentence: MIGRATE - what changed in the call and why the function's behaviour is \
-kept; KEEP_CLOSED - why it stays and one concrete next step; MANUAL_REVIEW - what a reviewer must check.
-- Never write numbers, percentages, prices, latencies or counts: prose with a digit is discarded. \
-Identifiers such as cs_02, file names or model ids are fine.
+- one note per site, one sentence, without repeating its decision label: for a migrated site, what changed \
+in the call and why the function's behaviour is kept; for a kept site, why it stays and one concrete next \
+step; for a manual-review site, what a reviewer must check.
+- Never state a number, percentage, price, latency or count, in digits or in words ("one", "five", \
+"a dozen", "twice"): such prose is discarded. Identifiers such as cs_02, file names or model ids are fine.
+- Do not count sites: write "the refund planner stays on its model", not "one site stays".
+- Parity is agreement with references (expected outputs built for the evaluation), never with the original \
+model, whose outputs were not recorded: do not claim consistency or agreement with the original or prior \
+model.
 - Use only the facts given. No marketing language, no emoji."""
 
 _LABEL = re.compile(
     r"^\s*(MIGRATE|KEEP_CLOSED|MANUAL_REVIEW)\s*[-–—:]\s*"
 )  # the model echoing the prompt's labels
-_IDENTIFIER = re.compile(r"`[^`]*`|Nemotron 3(?:\.5)?|\b[A-Za-z_][\w.\-/]*\d[\w.\-/]*")
+# Identifiers may hold digits: `code` that starts like a name, tier names, words like cs_02 or gpt-4o-mini.
+_IDENTIFIER = re.compile(r"`[A-Za-z_][^`]*`|Nemotron 3(?:\.5)?|\b[A-Za-z_][\w.\-/]*\d[\w.\-/]*")
+_NUMBER_WORD = re.compile(
+    r"\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|"
+    r"sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundreds?|"
+    r"thousands?|millions?|billions?|dozens?|half|twice|thrice)\b",
+    re.I,
+)
 
 
 def has_number(text: str) -> bool:
-    """True if `text` states a number outside identifiers (cs_02, gpt-4o-mini, `code`, tier names)."""
-    return bool(re.search(r"\d", _IDENTIFIER.sub("", text)))
+    """True if `text` states a number: digits outside identifiers, or a number word ("five", "a dozen")."""
+    return bool(re.search(r"\d", _IDENTIFIER.sub("", text)) or _NUMBER_WORD.search(text))
 
 
 def _facts(ctx: PRContext) -> str:
@@ -425,7 +474,7 @@ def write_pr(ctx: PRContext, llm: LLM) -> PRDraft:
             response_model=PRProse,
             reasoning="off",
         )
-    except BudgetExceeded:
+    except (BudgetExceeded, CacheMiss, ProviderError):  # prose is optional: the evidence never needs it
         return render_pr(ctx)
     prose = res.parsed if isinstance(res.parsed, PRProse) else None
     if prose is None:

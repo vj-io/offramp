@@ -8,45 +8,32 @@ import ast
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import httpx
 import pytest
 
+from offramp import sandbox as sandbox_module
 from offramp.agents.patcher import (
     Edit,
     PatchEdits,
+    _summary,
     add_imports,
     call_params,
+    client_location,
     compose_patches,
     edits_text,
     keep_comment,
     parse_edits,
     py_literal,
 )
-from offramp.sandbox import CheckResult, docker_available
+from offramp.agents.translate import build_request
+from offramp.sandbox import CheckResult, Sandbox, docker_available
 from offramp.schemas import Adapter, AdapterSpec, CallSite, RunConfig, Tier, Verdict
 from offramp.tf import BudgetExceeded, FakeLLM, TFClient, get_tier
 
-try:
-    from offramp.agents.translate import build_request as BUILD  # Task 6
-except ImportError:  # Task 6 not merged on this branch: the same contract, enough for these specs
-
-    def BUILD(spec, case, tier):
-        swap = spec.tool_choice == "required" and Tier(tier) == Tier.LIGHTNING
-        return {
-            "role": "eval_target",
-            "tier": Tier(tier),
-            "messages": case.input_messages,
-            "max_tokens": (spec.max_tokens or 1024) + (2000 if spec.reasoning != "off" else 0),
-            "temperature": spec.temperature,
-            "json_schema": spec.response_format,
-            "json_mode_fallback": spec.json_mode_fallback,
-            "tools": spec.tools,
-            "tool_choice": "auto" if swap else spec.tool_choice,
-            "reasoning": spec.reasoning,
-            "extra_body": dict(spec.extra_body),
-        }
+BUILD = build_request
 
 
 ROOT = Path(__file__).parents[2]
@@ -203,12 +190,12 @@ def test_migrates_passing_sites_and_comments_kept_ones():
 
     assert [v.decision for v in result.verdicts] == ["MIGRATE", "KEEP_CLOSED", "MIGRATE"]
     assert set(result.files) == {
-        "offramp/__init__.py",
-        "offramp/client.py",
+        "tinyapp/offramp_client.py",  # inside the package that holds the sites: it ships in the wheel
         "tinyapp/greet.py",
         "tinyapp/motto.py",
         "tinyapp/shout.py",
     }
+    assert result.client_path == "tinyapp/offramp_client.py"
     assert f'model="{LIGHTNING}"' in result.files["tinyapp/greet.py"]
     assert (
         "    # offramp: kept on o3 — parity 60.0% < 95%\n    response = client"
@@ -223,14 +210,15 @@ def test_migrates_passing_sites_and_comments_kept_ones():
         "cs_03": ["tinyapp/shout.py"],
     }
     assert result.sandbox_mode == "docker"
-    assert len(boxes[0].checks) == 3  # baseline (client + comments), then one per migrated site
+    assert len(boxes[0].checks) == 4  # untouched repo, + client and comments, then one per migrated site
+    assert "tinyapp/offramp_client.py" not in boxes[0].checks[0]
     assert boxes[0].fixed == [["tinyapp/greet.py"], ["tinyapp/shout.py"]]
 
 
 def test_client_module_reads_the_key_and_pins_verified_tier_ids():
     llm = patcher_llm(migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"))
 
-    client = run(llm).files["offramp/client.py"]
+    client = run(llm).files["tinyapp/offramp_client.py"]
 
     assert 'os.environ["NEBIUS_API_KEY"]' in client
     assert '"https://api.tokenfactory.nebius.com/v1"' in client
@@ -243,6 +231,7 @@ def test_client_module_reads_the_key_and_pins_verified_tier_ids():
     assert {k: consts[k] for k in ("LIGHTNING", "SUPER", "ULTRA")} == {
         t.name: get_tier(t).model_id for t in Tier
     }
+    assert max(len(line) for line in client.splitlines()) <= 79  # clean under ruff's default line length too
 
 
 def test_failing_repo_tests_downgrade_the_site_and_drop_its_patch():
@@ -252,7 +241,7 @@ def test_failing_repo_tests_downgrade_the_site_and_drop_its_patch():
     )
     llm = patcher_llm(migrate("tinyapp/greet.py"), breaking, breaking)  # shout: first try + repair round
 
-    result = run(llm, results=[True, True, False, False])
+    result = run(llm, results=[True, True, True, False, False])  # untouched, + client, greet, shout x2
 
     shout = verdict(result, "cs_03")
     assert shout.decision == "MANUAL_REVIEW"
@@ -262,11 +251,15 @@ def test_failing_repo_tests_downgrade_the_site_and_drop_its_patch():
     assert verdict(result, "cs_01").decision == "MIGRATE"
 
 
-def test_a_red_baseline_downgrades_every_migration_and_changes_nothing():
-    result = run(FakeLLM(), results=[False])
+@pytest.mark.parametrize(
+    ("results", "step"),
+    [([False], "the untouched repo"), ([True, False], "after adding Offramp's client module")],
+)
+def test_a_red_baseline_downgrades_every_migration_names_the_step_and_changes_nothing(results, step):
+    result = run(FakeLLM(), results=results)
 
     assert [v.decision for v in result.verdicts] == ["MANUAL_REVIEW", "KEEP_CLOSED", "MANUAL_REVIEW"]
-    assert "before any call-site patch" in verdict(result, "cs_01").reason
+    assert step in verdict(result, "cs_01").reason
     assert result.files == {}
 
 
@@ -373,7 +366,7 @@ def test_patcher_call_is_super_with_thinking_off_and_shows_the_exact_request():
     assert f'model="{LIGHTNING}"' in prompt and "max_tokens=32" in prompt
     assert 'extra_body={"chat_template_kwargs": {"enable_thinking": False}}' in prompt
     assert "### tinyapp/greet.py (editable)" in prompt and "### tests/test_tinyapp.py (editable)" in prompt
-    assert "### offramp/client.py (read-only)" in prompt
+    assert "### tinyapp/offramp_client.py (read-only)" in prompt
     second = llm.calls[1]["messages"][-1]["content"]
     assert "### tinyapp/greet.py" not in second  # unrelated module: not shown
     assert "def test_greet_strips_the_reply():  # migrated" in second  # builds on the accepted patch
@@ -562,23 +555,32 @@ def test_record_demo_patches():
 
 
 def test_demo_patches_keep_the_demo_repo_green():
+    """Recorded live (Super, 2026-10-19): 3 of 5 MIGRATE sites patched green; the other 2 are honestly
+    MANUAL_REVIEW. Every accepted patch passed the demo repo's own ruff + pytest in Docker on replay."""
     result = run_demo(live=False)
 
     decisions = {v.site_id: v.decision for v in result.verdicts}
     assert decisions == {
         "cs_01": "MIGRATE",
-        "cs_02": "MIGRATE",
+        "cs_02": "MANUAL_REVIEW",
         "cs_03": "MIGRATE",
         "cs_04": "MIGRATE",
         "cs_05": "KEEP_CLOSED",
-        "cs_06": "MIGRATE",
+        "cs_06": "MANUAL_REVIEW",
     }
+    reasons = {v.site_id: v.reason for v in result.verdicts}
+    assert "E501" in reasons["cs_02"] and "repo checks failed" in reasons["cs_06"]
+    assert result.client_path == "helphub/offramp_client.py" and result.warnings == []
     assert "# offramp: kept on o3 — parity 71.4% < 90%" in result.files["helphub/refunds/plan.py"]
-    for site_id in ("cs_02", "cs_03", "cs_06"):  # the Anthropic sites now call Token Factory via OpenAI
-        assert result.adapters[site_id].patch
-    agent = result.files["helphub/ops/agent_step.py"]
-    assert "tool_calls" in agent and "messages.create" not in agent
-    assert "anthropic" not in result.files["helphub/cli.py"].lower()
+    extract = result.files["helphub/orders/extract.py"]  # an Anthropic site, now OpenAI SDK on Token Factory
+    assert "messages.create" not in extract and "nvidia/nemotron-3-super-120b-a12b" in extract
+    assert "from helphub.offramp_client import token_factory_client" in result.files["helphub/cli.py"]
+    assert (
+        "helphub/ops/agent_step.py" not in result.files
+        and "helphub/summaries/summarize.py" not in result.files
+    )
+    for site_id in ("cs_01", "cs_03", "cs_04"):
+        assert result.adapters[site_id].patch and result.site_files[site_id]
 
 
 def test_edit_blocks_round_trip_with_python_escapes_and_empty_replacements():
@@ -600,7 +602,7 @@ def test_a_failed_try_gets_one_repair_round_that_sees_the_failure():
     )
     llm = patcher_llm(breaking, migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"))
 
-    result = run(llm, results=[True, False, True, True])
+    result = run(llm, results=[True, True, False, True, True])
 
     assert verdict(result, "cs_01").decision == "MIGRATE"
     first, repair = llm.calls[0]["messages"], llm.calls[1]["messages"]
@@ -638,12 +640,150 @@ def test_a_repeated_edit_is_applied_once():
 def test_add_imports_binds_known_names_after_the_last_import():
     source = '"""Doc."""\n\nimport os\n\n\ndef f(c):\n    return json.loads(token_factory_client()), os\n'
 
-    fixed = add_imports(source)
+    fixed = add_imports(source, "helphub.offramp_client")
 
     assert fixed.splitlines()[2:5] == [
         "import os",
-        "from offramp.client import token_factory_client",
+        "from helphub.offramp_client import token_factory_client",
         "import json",
     ]
-    assert add_imports(fixed) == fixed
-    assert add_imports("import json\n\nx = json\n") == "import json\n\nx = json\n"
+    assert add_imports(fixed, "helphub.offramp_client") == fixed
+    assert add_imports("import json\n\nx = json\n", "offramp.client") == "import json\n\nx = json\n"
+
+
+def test_an_unresolved_adapter_spec_is_not_patched():
+    adapters = tiny_adapters(tool_choice="<expr>", tools=[{"type": "function", "function": {"name": "f"}}])
+    llm = patcher_llm(migrate("tinyapp/shout.py"))  # never asked for cs_01
+
+    result = run(llm, adapters=adapters)
+
+    assert verdict(result, "cs_01").decision == "MANUAL_REVIEW"
+    assert "patch not composed" in verdict(result, "cs_01").reason
+
+
+def test_a_json_object_request_is_not_patched():
+    """The eval's json_object path includes TFClient's repair retry; a patch could not ship that."""
+    schema = {"type": "json_schema", "json_schema": {"name": "x", "schema": {"type": "object"}}}
+    adapters = tiny_adapters(response_format=schema, json_mode_fallback=True)
+
+    result = run(FakeLLM(), adapters=adapters)
+
+    assert {v.decision for v in result.verdicts if v.site_id != "cs_02"} == {"MANUAL_REVIEW"}
+    assert "json_object" in verdict(result, "cs_01").reason
+
+
+@pytest.mark.parametrize(
+    ("files", "packages", "expected"),
+    [
+        (
+            ["tinyapp/greet.py", "tinyapp/sub/shout.py"],
+            ["tinyapp", "tinyapp/sub"],
+            ("tinyapp/offramp_client.py", "tinyapp.offramp_client"),
+        ),
+        (["src/pkg/a.py"], ["src/pkg"], ("src/pkg/offramp_client.py", "pkg.offramp_client")),
+        (["app.py"], [], ("offramp/client.py", "offramp.client")),
+        (["one/a.py", "two/b.py"], ["one", "two"], ("offramp/client.py", "offramp.client")),
+    ],
+    ids=["package", "src-layout", "top-level-module", "two-packages"],
+)
+def test_client_location_is_the_package_holding_the_sites(files, packages, expected):
+    repo = work_dir("location")
+    for pkg in packages:
+        (repo / pkg).mkdir(parents=True, exist_ok=True)
+        (repo / pkg / "__init__.py").write_text("")
+
+    assert client_location(repo, files) == expected
+
+
+def test_symlinks_leaving_the_repo_are_dropped_from_the_copy():
+    src = work_dir("symlinks") / "src"
+    shutil.copytree(TINY, src)
+    secret = src.parent / "environ"  # stands in for /proc/self/environ
+    secret.write_text("NEBIUS_API_KEY=canary-secret-123")
+    (src / "tinyapp" / "data.txt").symlink_to(secret)
+    (src / "tinyapp" / "alias.py").symlink_to("greet.py")  # stays inside the repo: kept, as a link
+    boxes = []
+
+    def factory(repo):
+        boxes.append(FakeSandbox(repo))
+        return boxes[-1]
+
+    llm = patcher_llm(migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"))
+    result = compose_patches(src, tiny_sites(), tiny_verdicts(), tiny_adapters(), llm, src.parent / "work",
+                             config=CONFIG, sandbox_factory=factory, build_request=BUILD)  # fmt: skip
+
+    copy = boxes[0].repo
+    assert not (copy / "tinyapp" / "data.txt").exists() and not (copy / "tinyapp" / "data.txt").is_symlink()
+    assert (copy / "tinyapp" / "alias.py").is_symlink()
+    assert not any(
+        "canary-secret-123" in f.read_text(errors="ignore") for f in copy.rglob("*") if f.is_file()
+    )
+    assert result.warnings == ["dropped symlink tinyapp/data.txt: it points outside the repository"]
+
+
+def test_docker_runs_without_secrets_and_with_resource_limits(monkeypatch, tmp_path):
+    seen = []
+
+    def fake_run(cmd, **kw):
+        seen.append((cmd, kw))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(sandbox_module.subprocess, "run", fake_run)
+    monkeypatch.setenv("NEBIUS_API_KEY", "canary-secret-123")
+
+    Sandbox(tmp_path, docker=True).check()
+
+    runs = [cmd for cmd, _ in seen if cmd[:2] == ["docker", "run"]]
+    assert runs and all("canary-secret-123" not in " ".join(c) for c in runs)
+    for cmd in runs:
+        for flag in (["--network", "none"], ["--cpus", "2"], ["--memory", "2g"], ["--pids-limit", "256"],
+                     ["--cap-drop", "ALL"], ["--security-opt", "no-new-privileges"]):  # fmt: skip
+            assert any(cmd[i : i + 2] == flag for i in range(len(cmd))), flag
+        assert "-e" not in cmd and "--env-file" not in cmd and f"{tmp_path.resolve()}:/repo:ro" in cmd
+    assert all("canary-secret-123" not in str((kw.get("env") or {}).values()) for _, kw in seen)
+
+
+def test_without_docker_or_the_local_opt_in_nothing_runs(monkeypatch):
+    monkeypatch.delenv("OFFRAMP_ALLOW_LOCAL_SANDBOX", raising=False)
+    llm = FakeLLM()  # no reply queued: the patcher must not be asked
+
+    result = compose_patches(TINY, tiny_sites(), tiny_verdicts(), tiny_adapters(), llm, work_dir("nobox"),
+                             config=CONFIG, sandbox_factory=lambda repo: Sandbox(repo, docker=False),
+                             build_request=BUILD)  # fmt: skip
+
+    assert result.sandbox_mode == "none"
+    assert {verdict(result, s).reason for s in ("cs_01", "cs_03")} == {"no sandbox (Docker unavailable)"}
+    assert result.files == {}
+
+
+def test_a_block_without_its_own_file_line_belongs_to_the_previous_file():
+    text = (
+        "FILE: a.py\n<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n>>>>>>> REPLACE\n"
+        "<<<<<<< SEARCH\ny = 1\n=======\ny = 2\n>>>>>>> REPLACE\n"
+        "FILE: b.py\n<<<<<<< SEARCH\nz = 1\n=======\nz = 2\n>>>>>>> REPLACE\nNOTES: n"
+    )
+
+    assert [(e.path, e.search) for e in parse_edits(text).edits] == [("a.py", "x = 1"), ("a.py", "y = 1"),
+                                                                      ("b.py", "z = 1")]  # fmt: skip
+
+
+def test_a_block_labelled_with_the_wrong_file_applies_where_its_text_is_unique():
+    wrong = Edit(
+        path="tests/test_tinyapp.py", search='model="gpt-4o-mini",\n        max_tokens=32,', replace=GOOD_CALL
+    )
+    llm = patcher_llm(PatchEdits(edits=[wrong]), migrate("tinyapp/shout.py"))
+
+    result = run(llm)
+
+    assert verdict(result, "cs_01").decision == "MIGRATE"
+    assert f'model="{LIGHTNING}"' in result.files["tinyapp/greet.py"]
+
+
+def test_failure_summaries_are_stable_across_runs():
+    """Repair feedback goes into the next request: run-specific text would make every replay a cache miss."""
+    tail = "\nFAILED t.py::x - boom\n1 failed in {}"
+    run_a = "E   assert isinstance(<ast.Constant object at 0x7f095ee535d0>, x)" + tail.format("5.58s")
+    run_b = "E   assert isinstance(<ast.Constant object at 0x7f3851520a10>, x)" + tail.format("0.91s")
+
+    assert _summary(run_a) == _summary(run_b)
+    assert "FAILED t.py::x - boom" in _summary(run_a)

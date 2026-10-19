@@ -857,19 +857,22 @@
         "checked": 26,
         "agreed": 25,
         "dropped": 1,
-        "human_verified": 0
+        "human_verified": 0,
+        "auditor": "claude-sonnet-5.5 (via Claude Code)"
       },
       "cs_02": {
         "checked": 26,
         "agreed": 25,
         "dropped": 1,
-        "human_verified": 0
+        "human_verified": 0,
+        "auditor": "claude-sonnet-5.5 (via Claude Code)"
       },
       "cs_03": {
         "checked": 25,
         "agreed": 22,
         "dropped": 1,
-        "human_verified": 2
+        "human_verified": 2,
+        "auditor": "claude-sonnet-5.5 (via Claude Code)"
       }
     },
     "langsmith_links": {
@@ -882,6 +885,7 @@
       "cs_02": [
         "escalate_to_human.reason"
       ]
-    }
+    },
+    "client_path": "helphub/offramp_client.py"
   }
 }

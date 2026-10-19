@@ -17,9 +17,9 @@ Offramp evaluated 6 LLM call sites against references (140 cases, 43 in the hold
 
 ## What changed
 
-- `offramp/client.py` added: OpenAI SDK client for Nebius Token Factory (`token_factory_client()`, reads `NEBIUS_API_KEY` and optional `NEBIUS_BASE_URL`) and the Nemotron tier constants `LIGHTNING`, `SUPER`, `ULTRA`. Every migrated call sends `chat_template_kwargs.enable_thinking` explicitly, since Nemotron reasons by default.
+- `helphub/offramp_client.py` added inside the `helphub` package, so it ships with it: OpenAI SDK client for Nebius Token Factory (`token_factory_client()`, reads `NEBIUS_API_KEY` and optional `NEBIUS_BASE_URL`) and the Nemotron tier constants `LIGHTNING`, `SUPER`, `ULTRA`. Every migrated call sends `chat_template_kwargs.enable_thinking` explicitly, since Nemotron reasons by default.
 - **cs_01** `helphub/inbox/triage.py` → Nemotron 3.5 Lightning. Adapter changes: v1: user suffix restates the answer format (Lightning added a sentence before the label on dev).
-- **cs_02** `helphub/ops/agent_step.py` → Nemotron 3 Super. Anthropic tool_use blocks are now read from OpenAI tool_calls. Adapter changes: v0: Anthropic tools -> OpenAI function tools; tool_choice any -> required. Files: `helphub/ops/agent_step.py`, `tests/test_agent_step.py`.
+- **cs_02** `helphub/ops/agent_step.py` → Nemotron 3 Super. Anthropic tool_use blocks are now read from OpenAI tool_calls. Adapter changes: v0: Anthropic tools -> OpenAI function tools; tool_choice any -> required. Files: `helphub/ops/agent_step.py`. Tests updated (they pinned the old provider's request or fakes): `tests/fakes.py`, `tests/test_agent_step.py`.
 - **cs_03** `helphub/orders/extract.py` → Nemotron 3 Super. Adapter changes: v0: OrderFields schema enforced with response_format json_schema (strict).
 - **cs_04** `helphub/qa/rag_answer.py` → Nemotron 3 Super. Adapter changes: v1: temperature 0.2 -> 0; v2: system prompt forbids citing ids that are not in the excerpts.
 - **cs_06** `helphub/summaries/summarize.py` → Nemotron 3.5 Lightning. Adapter changes: v1: one worked handoff note as a few-shot example.
@@ -34,14 +34,14 @@ Offramp evaluated 6 LLM call sites against references (140 cases, 43 in the hold
 The source models' own outputs were never recorded; parity is agreement with references.
 Reference outputs for cs_04, cs_06 were produced by `claude-sonnet-5.5 (via Claude Code; not the repo's source model)`.
 
-Each site's cases are split once into dev (adapter iteration) and holdout (verdict only). Pass bar: 95% agreement with the references (90% for reasoning); free text: judge mean of at least 4.0 on a 1–5 rubric.
+Each site's cases are split once into dev (adapter iteration) and holdout (verdict only). Pass bar: 95% agreement with the references (90% for reasoning); free text: judge mean of at least 4.0 on a 1–5 rubric, and at least the references' judge mean − 0.3 where references hold text (cs_04, cs_06).
 - cs_02: free-text argument escalate_to_human.reason checked for presence, not wording.
 
-| Site | References | Cases (dev / holdout) | Reference audit (checked / agreed / dropped / human-verified) |
+| Site | References | Cases (dev / holdout) | Reference audit (checked / agreed / dropped / human-verified, by) |
 |---|---|---|---|
-| cs_01 | reference:seed × 25 | 18 / 7 | 26 / 25 / 1 / 0 |
-| cs_02 | reference:seed × 25 | 17 / 8 | 26 / 25 / 1 / 0 |
-| cs_03 | reference:seed × 22, reference:human × 2 | 16 / 8 | 25 / 22 / 1 / 2 |
+| cs_01 | reference:seed × 25 | 18 / 7 | 26 / 25 / 1 / 0 by claude-sonnet-5.5 (via Claude Code) |
+| cs_02 | reference:seed × 25 | 17 / 8 | 26 / 25 / 1 / 0 by claude-sonnet-5.5 (via Claude Code) |
+| cs_03 | reference:seed × 22, reference:human × 2 | 16 / 8 | 25 / 22 / 1 / 2 by claude-sonnet-5.5 (via Claude Code) |
 | cs_04 | claude-sonnet-5.5 (via Claude Code; not the repo's source model) × 20 | 14 / 6 | — |
 | cs_05 | reference:oracle × 26 | 18 / 8 | — |
 | cs_06 | claude-sonnet-5.5 (via Claude Code; not the repo's source model) × 20 | 14 / 6 | — |

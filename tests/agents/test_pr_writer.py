@@ -6,8 +6,9 @@ from pathlib import Path
 import pytest
 
 from offramp.agents.pr_writer import PRContext, PRProse, SiteNote, render_pr, write_pr
+from offramp.evals.errors import ProviderError
 from offramp.schemas import Tier
-from offramp.tf import BudgetExceeded, FakeLLM, TFClient
+from offramp.tf import BudgetExceeded, CacheMiss, FakeLLM, TFClient
 
 FIXTURES = Path(__file__).parents[1] / "fixtures"
 CASSETTES = FIXTURES / "cassettes" / "pr_writer"
@@ -20,7 +21,7 @@ def ctx() -> PRContext:
 
 def test_prose_comes_from_super_with_thinking_off():
     prose = PRProse(
-        summary="Five call sites move to Nemotron; the refund planner stays.",
+        summary="Most call sites move to Nemotron; the refund planner stays.",
         sites=[SiteNote(site_id="cs_02", note="Tool calls are read from tool_calls now.")],
     )
     llm = FakeLLM().add("pr_writer", prose)
@@ -36,7 +37,7 @@ def test_prose_comes_from_super_with_thinking_off():
     )
     assert call["response_model"] is PRProse
     assert draft == render_pr(ctx(), prose)
-    assert "Five call sites move to Nemotron" in draft.body
+    assert "Most call sites move to Nemotron" in draft.body
 
 
 def test_prose_that_states_a_number_is_dropped():
@@ -63,7 +64,10 @@ def test_prose_for_an_unknown_site_is_ignored():
     assert "ghost" not in write_pr(ctx(), llm).body
 
 
-@pytest.mark.parametrize("failure", [BudgetExceeded("output cap"), "not json"])
+@pytest.mark.parametrize(
+    "failure",
+    [BudgetExceeded("output cap"), CacheMiss("no cassette"), ProviderError("HTTP 503", 503), "not json"],
+)
 def test_no_prose_still_renders_the_evidence(failure):
     llm = FakeLLM().add("pr_writer", failure)
 
@@ -83,8 +87,8 @@ def test_pr_prose_replays_from_cassette():
     draft = run_cassette(live=False)
 
     assert draft.title == render_pr(ctx()).title
-    summary = draft.body.split("## Summary\n\n")[1].split("\n\n")[0]
-    assert summary and summary != render_pr(ctx()).body.split("## Summary\n\n")[1].split("\n\n")[0]
+    assert draft.body != render_pr(ctx()).body  # recorded prose made it through the number filter
+    assert "prior model" not in draft.body and "original model's output" not in draft.body
 
 
 def test_a_decision_label_echoed_at_the_start_of_a_note_is_dropped():
@@ -95,3 +99,18 @@ def test_a_decision_label_echoed_at_the_start_of_a_note_is_dropped():
     body = write_pr(ctx(), llm).body
 
     assert "Nemotron 3 Super. Reads tool_calls." in body and "MIGRATE -" not in body
+
+
+@pytest.mark.parametrize(
+    "prose",
+    [
+        "Five of the six call sites move.",
+        "Parity reached `97.1%` on holdout.",
+        "One site stays on o3.",
+        "A dozen tests were updated.",
+    ],  # fmt: skip
+)
+def test_spelled_out_and_backticked_numbers_are_dropped_too(prose):
+    llm = FakeLLM().add("pr_writer", PRProse(summary=prose, sites=[SiteNote(site_id="cs_02", note=prose)]))
+
+    assert prose not in write_pr(ctx(), llm).body
