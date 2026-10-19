@@ -336,8 +336,11 @@ def test_a_hanging_langsmith_endpoint_does_not_slow_a_traced_token_factory_call(
     http = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=COMPLETION)))
     tf = TFClient(api_key="k", base_url="https://tf.test/v1", cache_dir=tmp_path, http_client=http)
 
-    started = time.perf_counter()
     with langsmith.run_project("r1") as project:
+        # The first traced call lazily imports langsmith's wrappers (~2 s on a loaded machine, independent of
+        # the hang); time only the calls after it, which is where a synchronous round trip would show.
+        tf.chat(role="scanner", tier=Tier.SUPER, messages=[{"role": "user", "content": "warm"}], max_tokens=5)
+        started = time.perf_counter()
         for n in range(3):
             reply = tf.chat(
                 role="scanner",
@@ -345,7 +348,7 @@ def test_a_hanging_langsmith_endpoint_does_not_slow_a_traced_token_factory_call(
                 messages=[{"role": "user", "content": f"hi {n}"}],
                 max_tokens=5,
             )
-    elapsed = time.perf_counter() - started
+        elapsed = time.perf_counter() - started
     recovered.set()  # let the background uploads finish: nothing may keep running or logging after the test
     for client in built:
         client.flush()
