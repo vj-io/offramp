@@ -234,7 +234,8 @@ class Verdict(BaseModel):
     # fetched via Tavily 2026-10-19) x tokens measured on the Token Factory call"
     cost_after_per_1k: float | None = None
     sunset_risk: str | None = None  # deprecation notice for the source model found via Tavily, with URL
-    closed_reference_model: str | None = None  # GC27(c): e.g. "claude-sonnet-5.5 (via Claude Code; not the repo's source model)"
+    # GC27(c): e.g. "claude-sonnet-5.5 (via Claude Code; not the repo's source model)"
+    closed_reference_model: str | None = None
     closed_reference_parity_pct: float | None = None  # that model's holdout parity on the same references
     reason: str
 
@@ -271,7 +272,7 @@ class CaseSummary(BaseModel):
     dev: int
     holdout: int
     references: int
-    reference_methods: dict[str, int] = Field(default_factory=dict)  # {"reference:seed": 20, "reference:oracle": 17}
+    reference_methods: dict[str, int] = Field(default_factory=dict)  # {"reference:seed": 20, ...}
     audit: ReferenceAudit = Field(default_factory=ReferenceAudit)
 
 
