@@ -130,7 +130,9 @@ def tree(root: Path) -> dict[str, bytes]:
     return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
 
 
-def uv_target(tmp_path, monkeypatch, module_body: str, lock: bool) -> tuple[Path, CallSite]:
+def uv_target(
+    tmp_path, monkeypatch, module_body: str, lock: bool, backend: str = "", src: bool = False
+) -> tuple[Path, CallSite]:
     import shutil as sh
     import subprocess
 
@@ -138,18 +140,25 @@ def uv_target(tmp_path, monkeypatch, module_body: str, lock: bool) -> tuple[Path
         pytest.skip("uv not installed")
     monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path / "data"))
     repo = tmp_path / "target"
-    (repo / "pkg").mkdir(parents=True)
+    pkg = repo / "src" / "pkg" if src else repo / "pkg"
+    pkg.mkdir(parents=True)
+    build = {
+        "setuptools": '[build-system]\nrequires = ["setuptools>=61"]\n'
+        'build-backend = "setuptools.build_meta"\n',
+        "hatchling": '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n',
+    }
     (repo / "pyproject.toml").write_text(
         '[project]\nname = "target"\nversion = "0"\nrequires-python = ">=3.12"\ndependencies = []\n'
+        + build.get(backend, "")
     )
-    (repo / "pkg" / "__init__.py").write_text("")
-    (repo / "pkg" / "mod.py").write_text(module_body)
-    (repo / "pkg" / "ok.py").write_text(SCHEMA_MODULE)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "mod.py").write_text(module_body)
+    (pkg / "ok.py").write_text(SCHEMA_MODULE)
     if lock:
         subprocess.run(["uv", "lock", "--quiet", "--project", str(repo)], check=True, cwd=tmp_path)
     site = CallSite(
         id="cs_01",
-        file="pkg/mod.py",
+        file="src/pkg/mod.py" if src else "pkg/mod.py",
         lines=[1, 2],
         sdk="openai",
         call="c",
@@ -164,14 +173,23 @@ SCHEMA_MODULE = (
 )
 
 
-@pytest.mark.parametrize("lock", [True, False])
-def test_resolving_schemas_writes_nothing_into_the_target(tmp_path, monkeypatch, lock):
-    repo, site = uv_target(tmp_path, monkeypatch, SCHEMA_MODULE, lock)
+@pytest.mark.parametrize(
+    "lock, backend, src",
+    [
+        (True, "", False),  # a lock, no build system
+        (True, "setuptools", False),  # an editable setuptools install would write target.egg-info/
+        (False, "hatchling", True),  # src layout without a lock: the package must still import
+        (False, "", False),
+    ],
+)
+def test_resolving_schemas_writes_nothing_into_the_target(tmp_path, monkeypatch, lock, backend, src):
+    repo, site = uv_target(tmp_path, monkeypatch, SCHEMA_MODULE, lock, backend, src)
     before = tree(repo)
 
     assert cg.resolved_schemas(site, repo) == {"Model": {"type": "object"}}
 
-    assert tree(repo) == before  # no .venv, no uv.lock, no __pycache__
+    assert tree(repo) == before  # no .venv, no uv.lock, no *.egg-info, no __pycache__
+    assert not list(repo.rglob("*.egg-info"))
     assert list((tmp_path / "data" / "envs").iterdir())  # the environment lives in Offramp's data dir
 
 
@@ -393,7 +411,8 @@ AGENT_POLICY = """Call exactly one tool per step.
 - lookup_order: when you need order details. Only use an order id from the customer's message.
 - issue_refund: only after lookup_order, when the item arrived damaged or missing, or the customer was charged
   twice. Never more than 200.00.
-- escalate_to_human: legal threats, fraud, refunds above 200.00, or no order id."""
+- escalate_to_human: legal threats, fraud, refunds above 200.00, no order id, or anything the other tools
+  cannot resolve."""
 
 
 def demo_like_agent_site() -> CallSite:
@@ -490,9 +509,12 @@ def test_tool_arguments_are_classified_by_what_can_determine_them():
 def test_an_enum_the_policy_never_mentions_is_free_whatever_the_model_says():
     # Recorded behaviour: asked which priority values the policy leads to, Super listed all three for a
     # policy that never mentions priority.
+    # The same echo for reason would admit "other", which the policy's refund sentence never allows ("other"
+    # occurs only in the escalation sentence, as in the demo: "anything the other tools cannot resolve").
+    reasons = ["damaged", "missing_item", "duplicate_charge", "other"]
     reply = {
         "enums": [
-            {"tool": "issue_refund", "arg": "reason", "values": ["damaged", "other"]},
+            {"tool": "issue_refund", "arg": "reason", "values": reasons},
             {"tool": "escalate_to_human", "arg": "priority", "values": ["low", "normal", "urgent"]},
         ]
     }
@@ -500,7 +522,141 @@ def test_an_enum_the_policy_never_mentions_is_free_whatever_the_model_says():
     rules = cg.classify_tool_args(demo_like_agent_site(), FakeLLM({"case_gen": [reply]}))
 
     assert rules["escalate_to_human"].classes["priority"] == "free"
-    assert rules["issue_refund"].allowed["reason"] == ["damaged", "other"]  # mentioned: the model narrows it
+    assert rules["issue_refund"].allowed["reason"] == ["damaged", "missing_item", "duplicate_charge"]
+    # and the model still narrows what the sentence mentions
+    narrowed = {"enums": [{"tool": "issue_refund", "arg": "reason", "values": ["damaged"]}]}
+    rules = cg.classify_tool_args(demo_like_agent_site(), FakeLLM({"case_gen": [narrowed]}))
+    assert rules["issue_refund"].allowed["reason"] == ["damaged"]
+
+
+def close_ticket_site(policy: str) -> CallSite:
+    tool = {
+        "name": "close_ticket",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string", "description": "Ticket id, e.g. TK-1001"},
+                "notify_customer": {"type": "boolean"},
+                "severity": {"type": "integer", "enum": [1, 2, 3]},
+            },
+            "required": ["ticket_id", "notify_customer", "severity"],
+        },
+    }
+    lookup = {
+        "name": "lookup_order",
+        "input_schema": {
+            "type": "object",
+            "properties": {"order_id": {"type": "string", "description": "Order id, e.g. HH-1"}},
+            "required": ["order_id"],
+        },
+    }
+    return CallSite(
+        id="cs_07",
+        file="t.py",
+        lines=[1, 2],
+        sdk="anthropic",
+        call="c",
+        prompt_source="fstring",
+        template=PromptTemplate(system=policy, user="{ticket_text}", variables=["ticket_text"]),
+        params={"tools": [tool, lookup]},
+        contract=Contract(task_type="tool_call", output="tool_call", tools=True),
+    )
+
+
+def test_only_string_arguments_can_be_free_text():
+    import random
+
+    # The policy never says how to set the boolean or the integer enum: the scorer could compare them only
+    # exactly, and no input determines them, so close_ticket is not seeded at all.
+    notes: list[str] = []
+    site = close_ticket_site(
+        "- close_ticket: when the issue is solved.\n- lookup_order: when an id is given."
+    )
+    echo = {
+        "enums": [
+            {"tool": "close_ticket", "arg": "notify_customer", "values": ["true", "false"]},
+            {"tool": "close_ticket", "arg": "severity", "values": ["1", "2", "3"]},
+        ]
+    }
+
+    rules = cg.classify_tool_args(site, FakeLLM({"case_gen": [echo]}), notes)
+    seeds = cg.make_seeds(site, 6, random.Random(0), rules)
+
+    assert rules["close_ticket"].unseedable and "notify_customer" in rules["close_ticket"].unseedable
+    assert {s.output.tool_calls[0].name for s in seeds} == {"lookup_order"}
+    assert not any(t.startswith("free_text_arg:") for s in seeds for t in s.tags)
+    assert any("close_ticket" in n and "not seeded" in n for n in notes)
+
+
+def test_a_policy_that_decides_a_boolean_and_an_integer_enum_seeds_exact_values():
+    import random
+
+    site = close_ticket_site(
+        "- close_ticket: when solved; set notify_customer to true, and severity 3 when the "
+        "customer lost data.\n- lookup_order: when an id is given."
+    )
+    reply = {
+        "enums": [
+            {"tool": "close_ticket", "arg": "notify_customer", "values": ["true"]},
+            {"tool": "close_ticket", "arg": "severity", "values": ["3"]},
+        ]
+    }
+
+    rules = cg.classify_tool_args(site, FakeLLM({"case_gen": [reply]}))
+    seeds = [
+        s
+        for s in cg.make_seeds(site, 6, random.Random(0), rules)
+        if s.output.tool_calls[0].name == "close_ticket"
+    ]
+
+    assert seeds and rules["close_ticket"].unseedable is None
+    for seed in seeds:
+        args = seed.output.tool_calls[0].arguments
+        assert args["notify_customer"] is True and args["severity"] == 3 and seed.tags == []
+        jsonschema.validate(args, site.params["tools"][0]["input_schema"])
+
+
+def test_site_notes_show_each_tools_argument_classes(tmp_path):
+    repo, scan = minirepo(tmp_path)
+    site = demo_like_agent_site()
+    shutil.rmtree(repo / "tests" / "fixtures")  # no fixtures: no mapping call
+    empty = {"records": []}
+    llm = FakeLLM({"case_gen": [POLICY_REPLY, empty, empty], "case_gen_adversarial": [empty, empty]})
+
+    summary = cg.prepare_repo(repo, scan.model_copy(update={"sites": [site]}), llm, target=4, adversarial=1)
+
+    [note] = [n for n in summary["cs_02"]["notes"] if n.startswith("tool arguments")]
+    assert (
+        "issue_refund: input order_id, amount, currency; policy reason ['damaged', 'missing_item', "
+        "'duplicate_charge']; requires lookup_order"
+    ) in note
+    assert "escalate_to_human: free reason, priority" in note and "lookup_order: input order_id" in note
+
+
+DEMO_CS02 = HERE / "demo_cs02.site.json"  # the demo repo's cs_02 as scanned (Task 3), contract attached
+
+
+def classify_demo(live: bool):
+    site = CallSite.model_validate_json(DEMO_CS02.read_text())
+    return cg.classify_tool_args(site, TFClient(cache_dir=HERE, live=live))
+
+
+def check_demo_classes(rules):
+    assert rules["issue_refund"].allowed["reason"] == ["damaged", "missing_item", "duplicate_charge"]
+    assert rules["escalate_to_human"].classes == {"reason": "free", "priority": "free"}
+    assert rules["lookup_order"].classes == {"order_id": "input"}
+    assert rules["issue_refund"].requires == ["lookup_order"]
+
+
+def test_demo_tool_policy_replays_its_recorded_classification():
+    # The recorded reply lists every value, "other" and all three priorities included: only the per-tool
+    # sentence check keeps them out.
+    check_demo_classes(classify_demo(live=False))
+
+
+@pytest.mark.live
+def test_record_demo_tool_policy_classification():
+    check_demo_classes(classify_demo(live=True))
 
 
 def test_tool_arguments_without_enums_need_no_llm():

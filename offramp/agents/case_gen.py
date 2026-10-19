@@ -144,17 +144,19 @@ def _run(
     return out
 
 
-def _target_python(repo: Path) -> tuple[list[str], dict[str, str] | None]:
+def _target_python(repo: Path) -> tuple[list[str], dict[str, str]]:
     """Command and environment for running python in the target's own dependencies without writing into the
-    target: the virtualenv lives in Offramp's data dir (UV_PROJECT_ENVIRONMENT), is synced from an existing
-    uv.lock with --frozen or else from pyproject.toml's dependencies (no lockfile is created), and every run
-    uses --no-sync. A changed lock or pyproject re-syncs it."""
+    target. The virtualenv lives in Offramp's data dir (UV_PROJECT_ENVIRONMENT) and holds the dependencies
+    only: from an existing uv.lock (--frozen --no-install-project) or else from pyproject.toml's dependencies
+    (no lockfile is created). The project itself is never installed, since an editable setuptools install
+    writes <name>.egg-info/ into the target; its code imports from PYTHONPATH (src/ and the repo root). Every
+    run uses --no-sync; a changed lock or pyproject re-syncs the env."""
+    path = os.pathsep.join(str(p) for p in (repo / "src", repo) if p.is_dir())
+    base = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"} | {"PYTHONPATH": path}
     if not (repo / "pyproject.toml").exists():
-        return [sys.executable], None  # ponytail: no project metadata to build an env from; Offramp's python
+        return [sys.executable], base  # ponytail: no project metadata to build an env from; Offramp's python
     env_dir = data_dir() / "envs" / hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:16]
-    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"} | {
-        "UV_PROJECT_ENVIRONMENT": str(env_dir)
-    }
+    env = base | {"UV_PROJECT_ENVIRONMENT": str(env_dir)}
     lock = repo / "uv.lock"
     inputs = b"".join(p.read_bytes() for p in (repo / "pyproject.toml", lock) if p.exists())
     stamp, synced = env_dir / ".offramp-synced", hashlib.sha256(inputs).hexdigest()
@@ -162,32 +164,24 @@ def _target_python(repo: Path) -> tuple[list[str], dict[str, str] | None]:
         shutil.rmtree(env_dir, ignore_errors=True)
         env_dir.parent.mkdir(parents=True, exist_ok=True)
         if lock.exists():
-            _run(
-                ["uv", "sync", "--quiet", "--frozen", "--project", str(repo)],
-                env_dir.parent,
-                env=env,
-                timeout=SETUP_TIMEOUT_S,
-            )
+            sync = ["uv", "sync", "--quiet", "--frozen", "--no-install-project", "--project", str(repo)]
+            _run(sync, env_dir.parent, env=env, timeout=SETUP_TIMEOUT_S)
         else:
             project = tomllib.loads((repo / "pyproject.toml").read_text()).get("project", {})
             python = ["--python", project["requires-python"]] if project.get("requires-python") else []
             _run(["uv", "venv", "--quiet", *python, str(env_dir)], env_dir.parent, env=env)
             if project.get("dependencies"):
-                _run(
-                    [
-                        "uv",
-                        "pip",
-                        "install",
-                        "--quiet",
-                        "--python",
-                        str(env_dir),
-                        "-r",
-                        str(repo / "pyproject.toml"),
-                    ],
-                    env_dir.parent,
-                    env=env,
-                    timeout=SETUP_TIMEOUT_S,
-                )
+                install = [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--quiet",
+                    "--python",
+                    str(env_dir),
+                    "-r",
+                    str(repo / "pyproject.toml"),
+                ]
+                _run(install, env_dir.parent, env=env, timeout=SETUP_TIMEOUT_S)
         stamp.write_text(synced)
     return ["uv", "run", "--quiet", "--no-sync", "--project", str(repo), "python"], env
 
@@ -556,7 +550,7 @@ def map_fixtures(
 # ---------------------------------------------------------------- seeds: the expected output, picked first
 
 
-ArgClass = Literal["input", "policy", "free"]
+ArgClass = Literal["input", "policy", "free", "undetermined"]
 FREE_ARG = "(free: not compared)"  # reference value of an argument tagged free_text_arg:<name>
 
 
@@ -716,20 +710,26 @@ def _cycle(values: list[Any], n: int, rng: random.Random) -> list[Any]:
 
 @dataclass
 class ToolArgs:
-    """How each required argument of one tool can be known: `input` (stated in the input: ids, amounts,
-    dates), `policy` (an enum the system prompt decides; `allowed` = values it can lead to) or `free` (free
-    text, or an enum the policy never says how to choose: tagged free_text_arg:<name>, value not compared)."""
+    """How each required argument of one tool can be known:
+    `input` - stated in the input (ids, amounts, dates);
+    `policy` - an enum (or boolean) the policy decides; `allowed` = the values its sentences about this tool
+        mention and the policy call also lists;
+    `free` - a string the policy never decides (free text, an enum it never mentions): tagged
+        free_text_arg:<name>, so the scorer checks it is a non-blank string and never compares the value;
+    `undetermined` - a boolean or non-string enum the policy never decides: the scorer compares it exactly
+        and no input determines it, so the tool gets no seeds (`unseedable` says why)."""
 
     schema: dict[str, Any]
     classes: dict[str, ArgClass]
     allowed: dict[str, list[Any]] = field(default_factory=dict)
     requires: list[str] = field(default_factory=list)  # tools the policy wants called in an earlier step
+    unseedable: str | None = None
 
 
 class _EnumRule(BaseModel):
     tool: str
     arg: str
-    values: list[str]  # values the policy can lead to; [] = the policy never says how to choose
+    values: list[Any]  # values the policy can lead to; [] = the policy never says how to choose
 
 
 class _ToolRule(BaseModel):
@@ -742,39 +742,56 @@ class _PolicyReply(BaseModel):
     tools: list[_ToolRule] = []
 
 
+def _schema_type(schema: dict[str, Any]) -> str:
+    kind = schema.get("type", "string")
+    return next((k for k in kind if k != "null"), "string") if isinstance(kind, list) else kind
+
+
 def _arg_class(name: str, schema: dict[str, Any], root: dict[str, Any]) -> ArgClass:
     schema = _flat(schema, root)
-    if "enum" in schema:
-        return "policy"  # provisional: the policy call decides, else free
-    kind = schema.get("type", "string")
-    kind = next((k for k in kind if k != "null"), "string") if isinstance(kind, list) else kind
-    if kind == "string":
+    if "enum" in schema or _schema_type(schema) == "boolean":
+        return "policy"  # provisional: only the policy can decide it (classify_tool_args)
+    if _schema_type(schema) == "string":
         return "input" if _string_kind(name, schema) else "free"
-    return "free" if kind == "boolean" else "input"
+    return "input"
 
 
 def _enum_values(schema: dict[str, Any], root: dict[str, Any]) -> list[Any]:
-    return list(_flat(schema, root).get("enum", []))
+    schema = _flat(schema, root)
+    return list(schema.get("enum", [True, False] if _schema_type(schema) == "boolean" else []))
 
 
-def _mentions(policy: str, arg: str, values: list[Any]) -> bool:
-    """Whether the policy text speaks about an enum argument at all: its name or a word (4+ letters) of one of
-    its values. A model asked "which values can the policy lead to" lists them all for an argument the policy
-    never mentions, so this deterministic gate comes first."""
-    words = {
-        arg.casefold(),
-        *(w for v in values for w in re.split(r"[_\W]+", str(v).casefold()) if len(w) >= 4),
-    }
-    return any(re.search(rf"(?<!\w){re.escape(w.replace('_', ' '))}", policy, re.IGNORECASE) for w in words)
+def _value_str(value: Any) -> str:
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+def _tool_text(policy: str, tool: str) -> str:
+    """The policy's blocks (bullets, numbered items, paragraphs) naming `tool`; the whole policy if none."""
+    blocks = re.split(r"\n\s*\n|\n(?=\s*(?:[-*•]|\d+[.)])\s)", policy)
+    named = [b for b in blocks if _verbatim(b, tool) or _verbatim(b, tool.replace("_", " "))]
+    return "\n".join(named) or policy
+
+
+def _value_mentioned(text: str, value: Any) -> bool:
+    """A word of the value occurs in `text`: words of 4+ letters as a word start ("charge" in "charged"),
+    shorter ones as whole words ("3", "low")."""
+    for word in re.split(r"[_\W]+", _value_str(value).casefold()):
+        end = "" if len(word) >= 4 else r"(?!\w)"
+        if word and re.search(rf"(?<!\w){re.escape(word)}{end}", text, re.IGNORECASE):
+            return True
+    return False
 
 
 def classify_tool_args(
     site: CallSite, llm: LLM | None, notes: list[str] | None = None
 ) -> dict[str, ToolArgs]:
-    """Per tool, the class of each required argument. Non-enum arguments are classed from their schema; for
-    enum arguments one Super call (role case_gen, thinking off) reads the policy (the system message) and
-    lists which values it can lead to per tool, and which tools it wants called first. Without an answer
-    (llm None or an invalid reply) every enum argument is free."""
+    """Per tool, the class of each required argument (see ToolArgs). Non-enum arguments are classed from
+    their schema. An enum or boolean is `policy` with the values that pass two checks: the policy's sentences
+    about that tool mention the value (deterministic: a model asked which values a policy allows tends to list
+    them all, and "other" in "the other tools" belongs to another tool's sentence), and one Super call (role
+    case_gen, thinking off) lists it as a value the policy can lead to. With no value left it is `free` when
+    it is a string, else `undetermined` and the tool is not seeded. Without an answer (llm None, invalid
+    reply) no value passes the second check."""
     rules = {}
     for name, schema in _tools(site):
         props = schema.get("properties", {})
@@ -819,19 +836,54 @@ Reply {{"enums": [{{"tool", "arg", "values"}}], "tools": [{{"tool", "requires"}}
         )
         reply = result.parsed
         if reply is None and notes is not None:
-            notes.append("tool policy reply invalid: every enum argument treated as free")
-    said = {(e.tool, e.arg): e.values for e in reply.enums} if reply else {}
+            notes.append("tool policy reply invalid: no enum or boolean argument counts as policy-decided")
+    said = (
+        {(e.tool, e.arg): {_value_str(v).casefold() for v in e.values} for e in reply.enums} if reply else {}
+    )
     policy = site.template.system or ""
     for t, a, values in enums:
-        allowed = [v for v in values if v in said.get((t, a), [])] if _mentions(policy, a, values) else []
+        text, listed = _tool_text(policy, t), said.get((t, a), set())
+        allowed = [v for v in values if _value_mentioned(text, v) and _value_str(v).casefold() in listed]
+        prop = _flat(rules[t].schema["properties"][a], rules[t].schema)
         if allowed:
             rules[t].allowed[a] = allowed
-        else:
+        elif _schema_type(prop) == "string":
             rules[t].classes[a] = "free"
+        else:
+            rules[t].classes[a] = "undetermined"
+    for t, r in rules.items():
+        undetermined = [a for a, c in r.classes.items() if c == "undetermined"]
+        if undetermined:
+            types = ", ".join(
+                f"{a} ({_schema_type(_flat(r.schema['properties'][a], r.schema))})" for a in undetermined
+            )
+            r.unseedable = (
+                f"required {types}: neither stated by an input nor decided by the policy, and only "
+                "string arguments can be compared presence-only"
+            )
+            if notes is not None:
+                notes.append(f"{t}: not seeded: {r.unseedable}")
     for rule in reply.tools if reply else []:
         if rule.tool in rules:
             rules[rule.tool].requires = [x for x in rule.requires if x in rules and x != rule.tool]
     return rules
+
+
+def describe_tool_args(rules: dict[str, ToolArgs]) -> str:
+    """One site note: per tool, its arguments by class, the allowed values of policy ones, prior tools."""
+    parts = []
+    for tool, r in rules.items():
+        groups = []
+        for cls in ("input", "policy", "free", "undetermined"):
+            names = [a for a, c in r.classes.items() if c == cls]
+            if names and cls == "policy":
+                groups.append("policy " + ", ".join(f"{a} {r.allowed[a]}" for a in names))
+            elif names:
+                groups.append(f"{cls} {', '.join(names)}")
+        if r.requires:
+            groups.append(f"requires {', '.join(r.requires)}")
+        parts.append(f"{tool}: {'; '.join(groups) or 'no arguments'}")
+    return "tool arguments: " + " | ".join(parts)
 
 
 def _tool_seed(name: str, rules: ToolArgs, rng: random.Random) -> Seed:
@@ -898,7 +950,8 @@ def make_seeds(
         ]
     if contract.task_type == "tool_call" and _tools(site):
         rules = tool_args or classify_tool_args(site, None)
-        return [_tool_seed(name, rules[name], rng) for name in _cycle(list(rules), n, rng)]
+        seedable = [name for name, r in rules.items() if r.unseedable is None]
+        return [_tool_seed(name, rules[name], rng) for name in _cycle(seedable, n, rng)] if seedable else []
     if contract.task_type == "json_extraction" and contract.json_schema:
         seeds = []
         for _ in range(n):
@@ -978,6 +1031,9 @@ def _date_stated(iso: str, text: str) -> bool:
 
 
 def _derivable(value: Any, kind: str | None, text: str) -> bool:
+    if isinstance(value, dict | list):  # every scalar inside must be stated
+        items = value.values() if isinstance(value, dict) else value
+        return all(_derivable(v, kind if isinstance(v, str) else None, text) for v in items if v is not None)
     if isinstance(value, bool):
         return True
     if isinstance(value, int | float):
@@ -1364,6 +1420,8 @@ def _generate_site(
             seeds = [None] * (n_synthetic + adversarial)
         else:
             tool_args = classify_tool_args(site, llm, notes) if kind == "tool_call" else None
+            if tool_args:
+                notes.append(describe_tool_args(tool_args))
             seeds = make_seeds(site, n_synthetic + adversarial, rng, tool_args)
             if not seeds:
                 notes.append(

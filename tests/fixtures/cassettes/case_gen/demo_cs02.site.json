@@ -1,0 +1,121 @@
+{
+ "id": "cs_02",
+ "file": "helphub/ops/agent_step.py",
+ "lines": [
+  73,
+  89
+ ],
+ "kind": "chat",
+ "sdk": "anthropic",
+ "call": "client.messages.create",
+ "function": "next_action",
+ "source_model": "claude-sonnet-4-5",
+ "prompt_source": "fstring",
+ "prompt_ref": "AGENT_SYSTEM_PROMPT",
+ "template": {
+  "system": "You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\n\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve.",
+  "user": "Customer message:\n{ticket_text}\n\nTool results so far:\n{steps}\n\nChoose the next tool.",
+  "variables": [
+   "ticket_text",
+   "steps"
+  ]
+ },
+ "params": {
+  "tools": [
+   {
+    "name": "lookup_order",
+    "description": "Fetch an order's status, items, total and charges from the order system.",
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "order_id": {
+       "type": "string",
+       "description": "Order id, e.g. HH-48213"
+      }
+     },
+     "required": [
+      "order_id"
+     ]
+    }
+   },
+   {
+    "name": "issue_refund",
+    "description": "Refund part or all of an order to the original payment method.",
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "order_id": {
+       "type": "string",
+       "description": "Order id, e.g. HH-48213"
+      },
+      "amount": {
+       "type": "number",
+       "description": "Refund amount, at most 200.00"
+      },
+      "currency": {
+       "type": "string",
+       "description": "ISO 4217 code of the order"
+      },
+      "reason": {
+       "type": "string",
+       "enum": [
+        "damaged",
+        "missing_item",
+        "duplicate_charge",
+        "other"
+       ]
+      }
+     },
+     "required": [
+      "order_id",
+      "amount",
+      "currency",
+      "reason"
+     ]
+    }
+   },
+   {
+    "name": "escalate_to_human",
+    "description": "Hand the ticket to a human support agent.",
+    "input_schema": {
+     "type": "object",
+     "properties": {
+      "reason": {
+       "type": "string",
+       "description": "One sentence for the human agent"
+      },
+      "priority": {
+       "type": "string",
+       "enum": [
+        "low",
+        "normal",
+        "urgent"
+       ]
+      }
+     },
+     "required": [
+      "reason",
+      "priority"
+     ]
+    }
+   }
+  ],
+  "tool_choice": {
+   "type": "any"
+  },
+  "max_tokens": 512,
+  "system": "You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\n\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve."
+ },
+ "contract": {
+  "task_type": "tool_call",
+  "output": "tool_call",
+  "tools": true,
+  "streaming": false,
+  "latency_budget_ms": null,
+  "reasoning_heavy": false,
+  "labels": [],
+  "json_schema": null
+ },
+ "confidence": 1.0,
+ "flags": []
+}

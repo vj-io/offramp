@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from offramp import pricing
+from offramp.agents.translate import UnresolvedCallSite
 from offramp.evals import baselines as b
 from offramp.evals.scorers import score_case
 from offramp.schemas import BaselineResult, CallSite, EvalCase, ModelOutput, ToolCall
@@ -40,16 +41,23 @@ ANTHROPIC_PARAMS = ("max_tokens", "temperature", "top_p", "tools", "tool_choice"
 
 
 def _literal_params(site: CallSite, keys: tuple[str, ...]) -> dict[str, Any]:
-    """The site's resolved call parameters; scanner placeholders ("<expr>", "<pydantic:X>") are left out."""
+    """The site's call parameters. A scanner placeholder ("<expr>", "<pydantic:X>") anywhere in one of them
+    refuses the site (UnresolvedCallSite, as Task 6's build_request does): recording the call without that
+    parameter would store a closed-model output for a different call."""
 
-    def unresolved(v: Any) -> bool:  # anywhere inside the value, e.g. a schema nested in response_format
+    def unresolved(v: Any) -> bool:
         if isinstance(v, dict):
             return any(map(unresolved, v.values()))
         if isinstance(v, list):
             return any(map(unresolved, v))
         return isinstance(v, str) and v.startswith("<") and v.endswith(">")
 
-    return {k: site.params[k] for k in keys if k in site.params and not unresolved(site.params[k])}
+    bad = [k for k in keys if k in site.params and unresolved(site.params[k])]
+    if bad:
+        raise UnresolvedCallSite(
+            f"{site.id}: unresolved scanner placeholder in {', '.join(bad)}; not recorded"
+        )
+    return {k: site.params[k] for k in keys if k in site.params}
 
 
 def _openai_output(resp: Any) -> tuple[ModelOutput, int, int]:

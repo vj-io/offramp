@@ -31,9 +31,7 @@
                     "type": "string"
                   },
                   "values": {
-                    "items": {
-                      "type": "string"
-                    },
+                    "items": {},
                     "title": "Values",
                     "type": "array"
                   }
@@ -101,7 +99,7 @@
     }
   },
   "response": {
-    "id": "chatcmpl-90c188fef952a622",
+    "id": "chatcmpl-a378664bb9e32956",
     "choices": [
       {
         "finish_reason": "stop",
@@ -112,7 +110,7 @@
         }
       }
     ],
-    "created": 1792410365,
+    "created": 1792411962,
     "model": "nvidia/nemotron-3-super-120b-a12b",
     "object": "chat.completion",
     "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
@@ -131,10 +129,10 @@
       "prompt_cache_miss_tokens": 370
     }
   },
-  "latency_ms": 7040,
+  "latency_ms": 1931,
   "usage": {
     "prompt_tokens": 370,
     "completion_tokens": 71
   },
-  "created_at": "2026-10-19T11:46:10.098792+00:00"
+  "created_at": "2026-10-19T12:12:42.887834+00:00"
 }

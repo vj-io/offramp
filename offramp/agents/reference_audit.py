@@ -332,7 +332,8 @@ def export_blind_audit(repo_path: str | Path, out_dir: str | Path | None = None)
     (out / "INSTRUCTIONS.md").write_text(_BLIND_INSTRUCTIONS.format(repo=repo.name))
     (out / "bundle.json").write_text(
         json.dumps(
-            {"repo": str(repo), "sites": [s.id for s in sites], "created_at": datetime.now(UTC).isoformat()},
+            # the repo's name only: the auditor's folder must not point at the repo (its evals/ has answers)
+            {"repo": repo.name, "sites": [s.id for s in sites], "created_at": datetime.now(UTC).isoformat()},
             indent=1,
         )
         + "\n"
@@ -342,15 +343,12 @@ def export_blind_audit(repo_path: str | Path, out_dir: str | Path | None = None)
 
 def ingest_blind_audit(
     answers_file: str | Path,
-    repo_path: str | Path | None = None,
+    repo_path: str | Path,
     model: str = baselines.CLAUDE_CODE_REFERENCE,
 ) -> dict[str, Any]:
     """Store the closed auditor's answers (labelled `model`, GC27) and audit every seed reference against them
-    with the site's own scorer. The repo defaults to the one recorded in the bundle next to `answers_file`.
-    Answers for case ids the dataset does not have are reported, not stored."""
+    with the site's own scorer. Answers for case ids the dataset does not have are reported, not stored."""
     answers_file = Path(answers_file)
-    if repo_path is None:
-        repo_path = json.loads((answers_file.parent / "bundle.json").read_text())["repo"]
     evals = Path(repo_path) / "evals"
     known = {c.id for s in baselines.load_sites(evals) for c in baselines.load_cases(evals, s.id)}
     rows = [json.loads(line) for line in answers_file.read_text().splitlines() if line.strip()]

@@ -312,7 +312,8 @@ def test_blind_bundle_holds_inputs_and_formats_but_never_references(tmp_path, mo
     out = ra.export_blind_audit(repo)
 
     assert out.is_relative_to(tmp_path / "data" / "audit") and not out.is_relative_to(repo)
-    assert json.loads((out / "bundle.json").read_text())["repo"] == str(repo.resolve())
+    assert json.loads((out / "bundle.json").read_text())["repo"] == "repo"  # a name, never a path
+    assert str(tmp_path) not in "".join(p.read_text() for p in out.rglob("*") if p.is_file())
     text = "".join(p.read_text() for p in sorted(out.rglob("*")) if p.is_file())
     assert not any(seed in text for seed in seeds) and "reference:seed" not in text
     assert '"expected' not in text and "references" not in text
@@ -365,7 +366,7 @@ def test_ingest_blind_audit_scores_answers_with_the_exact_model_label(tmp_path, 
     answers = out / "answers.jsonl"
     answers.write_text("".join(json.dumps(r) + "\n" for r in rows))
 
-    result = ra.ingest_blind_audit(answers)
+    result = ra.ingest_blind_audit(answers, repo)
 
     assert result["unknown"] == ["cs_09:001"] and result["stored"] == 4
     counts = result["counts"]
