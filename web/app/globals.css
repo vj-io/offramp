@@ -1,0 +1,243 @@
+@import "tailwindcss";
+
+/* Doodle UI kit (docs/plan/doodle-ui.md). Every highlighter carries one meaning:
+   lime = MIGRATE/pass, yellow = Lightning, cyan = Super, violet = Ultra,
+   pink = KEEP_CLOSED/fail, orange = MANUAL_REVIEW/warnings. */
+:root {
+  --paper: #f0ede8;
+  --ink: #0a0a0a;
+  --muted: #5f5c57;
+  --bluepen: #1f4fd1;
+  --redpen: #b3261e;
+  --on-hl: #0a0a0a; /* text placed on a highlighter, both themes */
+  --redpen-on-hl: #b3261e; /* failure marks drawn on a highlighter, both themes */
+
+  --hl-lime: #c8ff00;
+  --hl-yellow: #ffe94d;
+  --hl-cyan: #6fe3ff;
+  --hl-violet: #c9a7ff;
+  --hl-pink: #ff8fc7;
+  --hl-orange: #ffb05c;
+
+  --note-yellow: #fff6b0;
+  --note-pink: #ffd9ec;
+  --note-cyan: #d4f6ff;
+  --note-lime: #edffb8;
+  --note-violet: #ebdfff;
+  --note-orange: #ffe2c2;
+  --note-plain: #faf8f4;
+
+  --swipe-h: 46%;
+  --swipe-kf: swipe;
+  --swipe-ink: var(--ink);
+  --tape: rgb(255 255 255 / 0.55);
+  --to-dark: inline;
+  --to-light: none;
+  color-scheme: light;
+}
+
+/* Blackboard: system dark unless the toggle chose paper, or the toggle chose blackboard. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #161616;
+    --ink: #f0ede8;
+    --muted: #b5b0a8;
+    --bluepen: #8fb0ff;
+    --redpen: #ff8a80;
+    --note-yellow: color-mix(in srgb, var(--hl-yellow) 22%, #161616);
+    --note-pink: color-mix(in srgb, var(--hl-pink) 22%, #161616);
+    --note-cyan: color-mix(in srgb, var(--hl-cyan) 22%, #161616);
+    --note-lime: color-mix(in srgb, var(--hl-lime) 22%, #161616);
+    --note-violet: color-mix(in srgb, var(--hl-violet) 22%, #161616);
+    --note-orange: color-mix(in srgb, var(--hl-orange) 22%, #161616);
+    --note-plain: #202020;
+    --swipe-h: 100%;
+    --swipe-kf: swipe-dark;
+    --swipe-ink: var(--on-hl);
+    --tape: rgb(240 237 232 / 0.22);
+    --to-dark: none;
+    --to-light: inline;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #161616;
+  --ink: #f0ede8;
+  --muted: #b5b0a8;
+  --bluepen: #8fb0ff;
+  --redpen: #ff8a80;
+  --note-yellow: color-mix(in srgb, var(--hl-yellow) 22%, #161616);
+  --note-pink: color-mix(in srgb, var(--hl-pink) 22%, #161616);
+  --note-cyan: color-mix(in srgb, var(--hl-cyan) 22%, #161616);
+  --note-lime: color-mix(in srgb, var(--hl-lime) 22%, #161616);
+  --note-violet: color-mix(in srgb, var(--hl-violet) 22%, #161616);
+  --note-orange: color-mix(in srgb, var(--hl-orange) 22%, #161616);
+  --note-plain: #202020;
+  --swipe-h: 100%;
+  --swipe-kf: swipe-dark;
+  --swipe-ink: var(--on-hl);
+  --tape: rgb(240 237 232 / 0.22);
+  --to-dark: none;
+  --to-light: inline;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: var(--ff-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-hand: var(--ff-hand), "Comic Sans MS", cursive;
+  --font-mono: var(--ff-mono), ui-monospace, monospace;
+
+  --color-paper: var(--paper);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-bluepen: var(--bluepen);
+  --color-redpen: var(--redpen);
+  --color-on-hl: var(--on-hl);
+  --color-hl-lime: var(--hl-lime);
+  --color-hl-yellow: var(--hl-yellow);
+  --color-hl-cyan: var(--hl-cyan);
+  --color-hl-violet: var(--hl-violet);
+  --color-hl-pink: var(--hl-pink);
+  --color-hl-orange: var(--hl-orange);
+  --color-note-yellow: var(--note-yellow);
+  --color-note-pink: var(--note-pink);
+  --color-note-cyan: var(--note-cyan);
+  --color-note-lime: var(--note-lime);
+  --color-note-violet: var(--note-violet);
+  --color-note-orange: var(--note-orange);
+  --color-note-plain: var(--note-plain);
+}
+
+/* One static texture layer: fine grain + 60px grid at 7% ink. Never animated. */
+body {
+  background-color: var(--paper);
+  color: var(--ink);
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' seed='3'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .45 0 0 0 0 .4 0 0 0 1 0'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)' opacity='.12'/%3E%3C/svg%3E"),
+    linear-gradient(color-mix(in srgb, var(--ink) 7%, transparent) 1.5px, transparent 1.5px),
+    linear-gradient(90deg, color-mix(in srgb, var(--ink) 7%, transparent) 1.5px, transparent 1.5px);
+  background-size: 240px 240px, 60px 60px, 60px 60px;
+  font-family: var(--font-sans);
+}
+
+.theme-to-dark {
+  display: var(--to-dark);
+}
+.theme-to-light {
+  display: var(--to-light);
+}
+
+:focus-visible {
+  outline: 3px solid var(--ink);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 7px var(--hl-yellow);
+  border-radius: 6px;
+}
+
+@layer components {
+  /* Hand-drawn outlines: wobbly radii on small things, gentler on big boxes. */
+  .sketch {
+    border: 2.5px solid var(--ink);
+    border-radius: 255px 15px 225px 15px / 15px 225px 15px 255px;
+  }
+  .sketch-box {
+    border: 2.5px solid var(--ink);
+    border-radius: 18px 6px 22px 5px / 5px 20px 6px 18px;
+  }
+
+  /* Sticky note: pastel fill, slight tilt, a strip of tape. */
+  .note {
+    position: relative;
+    background: var(--note, var(--note-plain));
+    rotate: var(--tilt, 0deg);
+    box-shadow: 0 1px 0 rgb(0 0 0 / 0.08), 0 10px 18px -12px rgb(0 0 0 / 0.45);
+  }
+  .note::before {
+    content: "";
+    position: absolute;
+    top: -10px;
+    left: calc(50% - 38px);
+    width: 76px;
+    height: 20px;
+    background: var(--tape);
+    border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+    rotate: calc(var(--tilt, 0deg) * -3);
+  }
+
+  /* Highlighter swipe behind ink text; wraps across lines (box-decoration-break). */
+  .swipe {
+    color: var(--swipe-ink);
+    padding: 0 0.08em;
+    background-image: linear-gradient(var(--mark, var(--hl-lime)), var(--mark, var(--hl-lime)));
+    background-repeat: no-repeat;
+    background-position: 0 92%;
+    background-size: 100% var(--swipe-h);
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+    animation: var(--swipe-kf) 0.45s ease-out 0.15s both;
+  }
+
+  /* A chip that sits on a highlighter fill: ink stays #0a0a0a in both themes. */
+  .hl-chip {
+    background: var(--mark);
+    color: var(--on-hl);
+  }
+
+  .ink-stroke {
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .draw {
+    stroke-dasharray: 1 1;
+    animation: draw 0.55s ease-out both;
+  }
+  .stamp {
+    animation: stamp 0.32s cubic-bezier(0.2, 0.9, 0.3, 1.25) both;
+  }
+  .spring-in {
+    animation: spring-in 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  }
+}
+
+/* Keyframes only describe the starting point: with motion off, everything sits in its final state. */
+@keyframes draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+}
+@keyframes swipe {
+  from {
+    background-size: 0% var(--swipe-h);
+  }
+}
+/* Blackboard: the text starts in chalk so it is readable before the swipe lands. */
+@keyframes swipe-dark {
+  from {
+    background-size: 0% var(--swipe-h);
+    color: var(--ink);
+  }
+}
+/* A short thud that stays inside the card: a bigger start scale would overflow (and get clipped) on phones. */
+@keyframes stamp {
+  from {
+    opacity: 0;
+    scale: 1.12;
+  }
+}
+@keyframes spring-in {
+  from {
+    opacity: 0;
+    scale: 0.85;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
