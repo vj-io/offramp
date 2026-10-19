@@ -1,0 +1,37 @@
+title = "Offramp gitleaks config"
+
+# Everything gitleaks ships with (GitHub, AWS, OpenAI, Anthropic, generic-api-key, ...) stays on.
+[extend]
+useDefault = true
+
+# Providers Offramp talks to that the default rules may not know by prefix.
+[[rules]]
+id = "tavily-api-key"
+description = "Tavily API key"
+regex = '''\btvly-[A-Za-z0-9_-]{20,}'''
+keywords = ["tvly-"]
+
+[[rules]]
+id = "langsmith-api-key"
+description = "LangSmith API key (personal or service)"
+regex = '''\blsv2_(?:pt|sk)_[a-f0-9]{32}_[a-f0-9]{10}\b'''
+keywords = ["lsv2_"]
+
+[[rules]]
+id = "offramp-env-assignment"
+description = "A provider key assigned in .env or shell syntax (Nebius, Tavily, LangSmith, Tendem, Toloka, GitHub, plus the _FALLBACK twins)"
+regex = '''(?i)\b(?:NEBIUS|TAVILY|LANGSMITH|TENDEM|TOLOKA|GITHUB)_(?:API_KEY|TOKEN)(?:_FALLBACK)?["']?[ \t]*[:=][ \t]*["']?[A-Za-z0-9_.\-]{20,}'''
+keywords = ["_api_key", "_token"]
+
+# Two places where the entropy-only generic-api-key rule is known to cry wolf, and only that rule is
+# silenced there; every provider-specific rule above and in the default set still fails the build:
+#  - tests/fixtures/cassettes/**: recorded Token Factory responses with high-entropy ids. Checked 2026-10-19:
+#    no key, token or Authorization header in any cassette (git grep over tests/fixtures).
+#  - .env.example: every key is blank, and the regex runs across the line break into the next variable name.
+[[allowlists]]
+description = "Cassettes and .env.example: entropy-only generic-api-key false positives"
+targetRules = ["generic-api-key"]
+paths = [
+  '''^tests/fixtures/cassettes/.*\.json$''',
+  '''^\.env\.example$''',
+]

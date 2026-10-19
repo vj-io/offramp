@@ -1,0 +1,88 @@
+name: Nightly live check
+
+# Re-records the cassettes against the real Token Factory and fails when the API's answers no longer
+# satisfy our parsers (schema drift). It spends Token Factory credit on every run, so it runs only when the
+# repository has a NEBIUS_API_KEY secret; without it the live job is skipped. The fallback key is
+# deliberately not forwarded: a nightly must never spend the reserve key.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-secret:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      has_key: ${{ steps.key.outputs.has_key }}
+    steps:
+      - id: key
+        env:
+          NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+        run: |
+          if [ -n "$NEBIUS_API_KEY" ]; then
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::NEBIUS_API_KEY secret not set, skipping the live check"
+          fi
+
+  live:
+    needs: check-secret
+    if: needs.check-secret.outputs.has_key == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    env:
+      NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked
+
+      # Cache hits are free, so with the committed cassettes `pytest --live` would call nothing.
+      # Drop the recorded (non-synthetic) responses in this checkout so the recorders really call Token Factory.
+      - name: Remove recorded cassettes
+        run: make cassettes-clear
+
+      - name: pytest --live (recorders only)
+        run: uv run pytest --live -m live -q
+
+      - name: Cassettes that changed against the committed ones
+        if: always()
+        run: |
+          {
+            echo '### Cassette changes after the live run'
+            echo 'M = re-recorded (timestamps and latency always differ), D = committed cassette no current recorder reproduces (stale request), ?? = a request the committed set lacks.'
+            echo '```'
+            git status --short tests/fixtures/cassettes | cut -c1-2 | sort | uniq -c
+            git status --short tests/fixtures/cassettes | grep -v '^ M' | head -60 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: live-cassettes
+          path: tests/fixtures/cassettes
+          retention-days: 14
+
+      - name: Open an issue when the live check fails
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          open=$(gh issue list --state open --search "Nightly live check failed in:title" --json number --jq length)
+          if [ "$open" = "0" ]; then
+            gh issue create \
+              --title "Nightly live check failed ($(date -u +%F))" \
+              --body "The nightly live check failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Causes to rule out, in order: an outage or a quota or credit problem (a 4xx or 5xx in the log), then a change in Token Factory's answers that the recorders no longer accept. The re-recorded cassettes are attached to that run as live-cassettes."
+          fi
