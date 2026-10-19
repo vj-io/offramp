@@ -1,0 +1,118 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are Offramp's Adapter Agent. Offramp moves one LLM call site in a Python repo from a closed model (OpenAI or Anthropic SDK) to NVIDIA Nemotron on Nebius Token Factory, an OpenAI-compatible chat.completions API, and evaluates the migrated call before opening a pull request. The patched code sends exactly what the evaluation sends, and the code around the call does not change: the reply must stay parseable by it.\n\nA deterministic translator has already mapped the call (spec_v0): Anthropic tools to OpenAI function tools, tool_choice, system= to a system message, max_tokens, response_format and temperature. You decide only what it cannot:\n\nreasoning: \"off\", or \"low\"/\"medium\"/\"high\" for on (Token Factory has a single thinking switch, so the three levels behave the same). Nemotron thinks by default; Offramp always sends the switch explicitly and adds 2000 tokens of room when thinking is on. Thinking costs latency and output tokens. Turn it on when the task needs multi-step reasoning (arithmetic, policies with several rules, multi-constraint logic) or the source model is itself a reasoning model. Keep it off for classification, extraction, tool choice, summaries and short answers. On the Lightning tier, thinking leaks reasoning prose into the reply text.\n\noutput_mode: \"text\" keeps the call's own output format. \"json_schema\" constrains the reply to the site's JSON schema with server-side guided decoding. \"json_object\" asks for any JSON object and validates it against the schema afterwards, with one repair retry. Choose a JSON mode only when the calling code parses the reply as a JSON object; never for labels, free text or tool calls. Without a known output schema, json_schema falls back to json_object.\n\nuser_suffix: an optional instruction appended to the end of the user message to pin the exact output format the calling code parses, for example \"Reply with the queue name only.\" Leave it empty when the prompt already pins the format unambiguously. Never change the task, add facts or contradict the system prompt.\n\nnotes: up to 5 short facts for the reviewer about this migration. risk_flags: up to 5 concrete ways Nemotron's behaviour could differ from the source model at this call site, each \"short_id: explanation\".\n\nReply with one JSON object only."
+      },
+      {
+        "role": "user",
+        "content": "{\n \"site\": {\n  \"id\": \"cs_02\",\n  \"file\": \"helphub/ops/agent_step.py\",\n  \"sdk\": \"anthropic\",\n  \"call\": \"client.messages.create\",\n  \"function\": \"next_action\",\n  \"source_model\": \"claude-sonnet-4-5\",\n  \"prompt_source\": \"fstring\",\n  \"template\": {\n   \"system\": \"You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\\n\\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve.\",\n   \"user\": \"Customer message:\\n{ticket_text}\\n\\nTool results so far:\\n{steps}\\n\\nChoose the next tool.\",\n   \"variables\": [\n    \"ticket_text\",\n    \"steps\"\n   ]\n  },\n  \"params\": {\n   \"tools\": [\n    {\n     \"name\": \"lookup_order\",\n     \"description\": \"Fetch an order's status, items, total and charges from the order system.\",\n     \"input_schema\": {\n      \"type\": \"object\",\n      \"properties\": {\n       \"order_id\": {\n        \"type\": \"string\",\n        \"description\": \"Order id, e.g. HH-48213\"\n       }\n      },\n      \"required\": [\n       \"order_id\"\n      ]\n     }\n    },\n    {\n     \"name\": \"issue_refund\",\n     \"description\": \"Refund part or all of an order to the original payment method.\",\n     \"input_schema\": {\n      \"type\": \"object\",\n      \"properties\": {\n       \"order_id\": {\n        \"type\": \"string\",\n        \"description\": \"Order id, e.g. HH-48213\"\n       },\n       \"amount\": {\n        \"type\": \"number\",\n        \"description\": \"Refund amount, at most 200.00\"\n       },\n       \"currency\": {\n        \"type\": \"string\",\n        \"description\": \"ISO 4217 code of the order\"\n       },\n       \"reason\": {\n        \"type\": \"string\",\n        \"enum\": [\n         \"damaged\",\n         \"missing_item\",\n         \"duplicate_charge\",\n         \"other\"\n        ]\n       }\n      },\n      \"required\": [\n       \"order_id\",\n       \"amount\",\n       \"currency\",\n       \"reason\"\n      ]\n     }\n    },\n    {\n     \"name\": \"escalate_to_human\",\n     \"description\": \"Hand the ticket to a human support agent.\",\n     \"input_schema\": {\n      \"type\": \"object\",\n      \"properties\": {\n       \"reason\": {\n        \"type\": \"string\",\n        \"description\": \"One sentence for the human agent\"\n       },\n       \"priority\": {\n        \"type\": \"string\",\n        \"enum\": [\n         \"low\",\n         \"normal\",\n         \"urgent\"\n        ]\n       }\n      },\n      \"required\": [\n       \"reason\",\n       \"priority\"\n      ]\n     }\n    }\n   ],\n   \"tool_choice\": {\n    \"type\": \"any\"\n   },\n   \"max_tokens\": 512,\n   \"system\": \"You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\\n\\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve.\"\n  },\n  \"flags\": []\n },\n \"contract\": {\n  \"task_type\": \"tool_call\",\n  \"output\": \"tool_call\",\n  \"tools\": true,\n  \"streaming\": false,\n  \"latency_budget_ms\": null,\n  \"reasoning_heavy\": false,\n  \"labels\": [],\n  \"json_schema\": null\n },\n \"spec_v0\": {\n  \"system_prompt\": null,\n  \"user_prefix\": \"\",\n  \"user_suffix\": \"\",\n  \"few_shot\": [],\n  \"response_format\": null,\n  \"json_mode_fallback\": false,\n  \"tools\": [\n   {\n    \"type\": \"function\",\n    \"function\": {\n     \"name\": \"lookup_order\",\n     \"parameters\": {\n      \"type\": \"object\",\n      \"properties\": {\n       \"order_id\": {\n        \"type\": \"string\",\n        \"description\": \"Order id, e.g. HH-48213\"\n       }\n      },\n      \"required\": [\n       \"order_id\"\n      ]\n     },\n     \"description\": \"Fetch an order's status, items, total and charges from the order system.\"\n    }\n   },\n   {\n    \"type\": \"function\",\n    \"function\": {\n     \"name\": \"issue_refund\",\n     \"parameters\": {\n      \"type\": \"object\",\n      \"properties\": {\n       \"order_id\": {\n        \"type\": \"string\",\n        \"description\": \"Order id, e.g. HH-48213\"\n       },\n       \"amount\": {\n        \"type\": \"number\",\n        \"description\": \"Refund amount, at most 200.00\"\n       },\n       \"currency\": {\n        \"type\": \"string\",\n        \"description\": \"ISO 4217 code of the order\"\n       },\n       \"reason\": {\n        \"type\": \"string\",\n        \"enum\": [\n         \"damaged\",\n         \"missing_item\",\n         \"duplicate_charge\",\n         \"other\"\n        ]\n       }\n      },\n      \"required\": [\n       \"order_id\",\n       \"amount\",\n       \"currency\",\n       \"reason\"\n      ]\n     },\n     \"description\": \"Refund part or all of an order to the original payment method.\"\n    }\n   },\n   {\n    \"type\": \"function\",\n    \"function\": {\n     \"name\": \"escalate_to_human\",\n     \"parameters\": {\n      \"type\": \"object\",\n      \"properties\": {\n       \"reason\": {\n        \"type\": \"string\",\n        \"description\": \"One sentence for the human agent\"\n       },\n       \"priority\": {\n        \"type\": \"string\",\n        \"enum\": [\n         \"low\",\n         \"normal\",\n         \"urgent\"\n        ]\n       }\n      },\n      \"required\": [\n       \"reason\",\n       \"priority\"\n      ]\n     },\n     \"description\": \"Hand the ticket to a human support agent.\"\n    }\n   }\n  ],\n  \"tool_choice\": \"required\",\n  \"reasoning\": \"off\",\n  \"max_tokens\": 512,\n  \"temperature\": 0.0,\n  \"extra_body\": {}\n },\n \"translation_notes\": [\n  \"tools: 3 Anthropic tools -> OpenAI function tools\",\n  \"tool_choice: {'type': 'any'} -> 'required'\",\n  \"temperature: not set in source -> 0 (deterministic eval)\",\n  \"system: Anthropic system= -> leading system message (rendered into each case)\"\n ],\n \"translation_risk_flags\": [],\n \"output_schema_known\": false,\n \"json_schema_supported\": {\n  \"lightning\": true,\n  \"super\": true,\n  \"ultra\": true\n }\n}"
+      }
+    ],
+    "params": {
+      "max_tokens": 1500,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "AdapterDecision",
+          "schema": {
+            "description": "The Adapter Agent's reply: only the choices the deterministic translation cannot make.",
+            "properties": {
+              "reasoning": {
+                "enum": [
+                  "off",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "title": "Reasoning",
+                "type": "string"
+              },
+              "output_mode": {
+                "enum": [
+                  "text",
+                  "json_schema",
+                  "json_object"
+                ],
+                "title": "Output Mode",
+                "type": "string"
+              },
+              "user_suffix": {
+                "default": "",
+                "maxLength": 500,
+                "title": "User Suffix",
+                "type": "string"
+              },
+              "notes": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 5,
+                "title": "Notes",
+                "type": "array"
+              },
+              "risk_flags": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 5,
+                "title": "Risk Flags",
+                "type": "array"
+              }
+            },
+            "required": [
+              "reasoning",
+              "output_mode"
+            ],
+            "title": "AdapterDecision",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-a0c911a8479f903a",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\n  \"reasoning\": \"off\",\n  \"output_mode\": \"text\",\n  \"user_suffix\": \"\",\n  \"notes\": [\n    \"Task is single-step tool selection with clear policy rules; no multi-step reasoning needed.\",\n    \"Source model (Claude Sonnet 4.5) is not a reasoning model; temperature set to 0 for deterministic tool choice.\",\n    \"Tool_choice mapped from Anthropic 'any' to OpenAI 'required' to enforce exactly one tool call per step.\",\n    \"System prompt duplicated in spec_v0 from both template and params; will be sent once as leading system message.\",\n    \"No output schema known; the calling code parses the tool call object directly, not JSON text.\"\n  ],\n  \"risk_flags\": [\n    \"tool_call_format: Nemotron may emit tool calls with slightly different argument ordering or whitespace, but OpenAI-compatible parsing should handle it.\",\n    \"policy_edge_cases: Refund eligibility rules (damaged/missing/duplicate only, max 200) are nuanced; Nemotron might occasionally approve borderline cases Claude would reject.\",\n    \"escalation_threshold: Legal threats, fraud, chargeback claims, abusive messages, and missing order IDs trigger escalation; Nemotron may be more/less sensitive to implicit threats.\",\n    \"single_tool_enforcement: tool_choice='required' forces one call, but Nemotron might occasionally return a text refusal instead of a tool call if it judges no tool applies.\",\n    \"temperature_zero_determinism: Temperature 0 reduces variance but Nemotron's logits may still differ from Claude on ambiguous inputs, causing different tool choices.\"\n  ]\n}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792396611,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 344,
+      "prompt_tokens": 2269,
+      "total_tokens": 2613,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 2269
+    }
+  },
+  "latency_ms": 2455,
+  "usage": {
+    "prompt_tokens": 2269,
+    "completion_tokens": 344
+  },
+  "created_at": "2026-10-19T07:56:53.161895+00:00"
+}
