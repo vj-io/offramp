@@ -72,6 +72,13 @@ def test_run_needs_a_repo_or_a_known_run(tmp_path, monkeypatch, argv):
     assert cli.main(argv) == 2
 
 
+def test_run_refuses_credentials_in_the_repo_url(tmp_path, monkeypatch, capsys):
+    """The run log masks credentials, so a credentialed URL would be cloned as https://***@host."""
+    monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path))
+    assert cli.main(["run", "https://user:tok@github.com/o/r", "--cache-only"]) == 2
+    assert "GITHUB_TOKEN" in capsys.readouterr().err and not (tmp_path / "runs").exists()
+
+
 def test_resume_continues_the_stored_run(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path))
     log = finished_run(tmp_path)  # finished: resuming it is a no-op that reports DONE

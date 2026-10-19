@@ -14,6 +14,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import offramp
 from offramp import db, pipeline
@@ -85,6 +86,9 @@ def run(args: argparse.Namespace) -> int:
             print(f"no run {args.resume} under {root / 'runs'}", file=sys.stderr)
             return 2
     elif args.repo:
+        if "@" in urlsplit(args.repo).netloc:  # the run log masks credentials, so the clone would get "***"
+            print("offramp run: put credentials in GITHUB_TOKEN, not in the repo URL", file=sys.stderr)
+            return 2
         config = RunConfig(repo_url=args.repo, open_pr=not args.no_pr, live=not args.cache_only)
         log = pipeline.new_run(config, root, engine=engine, on_event=_show)
     else:
