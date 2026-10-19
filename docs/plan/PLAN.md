@@ -329,14 +329,14 @@ references with ground truth known by construction.
   `evals/manifest.json` (sha256 per file, method counts, generated_at, generator model ids), `verify_manifest()`.
 - `scripts/record_baselines.py` (GC22): unchanged purpose — teams with keys record closed-model baselines
   (`source="closed_model"`); fake SDK clients in tests; `--self-agreement`.
-- Eval-target calls are never made here. Role names: never start with `eval` (reserved for eval targets).
+- Eval-target calls are never made here. Role names: never use `eval_target` (reserved for eval targets).
 - **Done when:** tests green on cassettes/fakes; then the controller runs `offramp prepare` live once on the demo
   repo (Task 14) to produce the committed `evals/`.
 
 ### Task 8: Eval Runner + Judge Agent
 
 **Amendment A notes:** compare candidates against `BaselineResult` references (GC17–20). Eval-target calls use role
-`eval_target` (any role starting with `eval` is excluded from the Ultra agent cap). Price with
+`eval_target` (exactly this role is excluded from the Ultra agent cap; every other Ultra role counts). Price with
 `get_tier(tier)` prices, not `price(model_id)`. Judge per GC20: absolute rubric vs evidence; pairwise vs reference
 only when a human reference exists. Send `enable_thinking` explicitly per `AdapterSpec.reasoning` (GC25).
 
