@@ -1,5 +1,9 @@
-import json, os, time
+import json
+import os
+import time
+
 from openai import OpenAI
+
 c = OpenAI(api_key=os.environ["NEBIUS_API_KEY"], base_url=os.environ["NEBIUS_BASE_URL"], timeout=120)
 M = {"lightning": "nvidia/Nemotron-3_5-Lightning", "super": "nvidia/nemotron-3-super-120b-a12b", "ultra": "nvidia/Nemotron-3-Ultra-550b-a55b"}
 schema = {"name": "lbl", "strict": True, "schema": {"type": "object", "properties": {"label": {"type": "string", "enum": ["billing", "bug"]}}, "required": ["label"], "additionalProperties": False}}
