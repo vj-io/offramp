@@ -9,7 +9,8 @@ Batched: one Ultra call (role "judge") scores every case of one batch per orderi
 costs 2 Ultra agent calls when references exist, 1 when not (the 40-call cap, Global Constraint 8).
 
 Scores are always inside 1..5: anything the judge did not score validly (blank answer, invalid reply, case
-left out) counts as 1.0 for the candidate. Never 0, never clamped.
+left out, timed-out judge call) counts as 1.0 for the candidate. Never 0, never clamped. Account, credit and
+config errors raise ProviderError (offramp.evals.errors) instead.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from typing import Any, Literal, NamedTuple
 import openai
 from pydantic import BaseModel
 
+from offramp.evals.errors import is_case_failure, provider_error
 from offramp.evals.scorers.aggregate import JUDGE_FLOOR, JUDGE_MARGIN, RUBRIC_MIN, _at_least
 from offramp.schemas import CaseScore, EvalCase, ModelOutput, Tier
 from offramp.tf.client import LLM
@@ -149,8 +151,10 @@ def _ask(client: LLM, items: list[tuple[EvalCase, str, str | None]], paired: boo
             response_model=PairBatch if paired else SingleBatch,
             reasoning="off",
         )
-    except openai.APIError:  # the judge call failed after the SDK's retries: nothing judged
-        return {}
+    except openai.APIError as e:  # after the SDK's retries
+        if not is_case_failure(e):
+            raise provider_error(e) from e  # account/credit/config: a run error, not a judgement
+        return {}  # timeout / 5xx: nothing judged, the batch scores 1.0
     if result.parsed is None:
         return {}
     by_case: dict[int, Any] = {}

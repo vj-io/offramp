@@ -1,8 +1,9 @@
 """Eval runner (PRD §6.5): run one site's cases on one tier, score them, measure latency/tokens/cost.
 
 Every TierResult number shown anywhere comes from here, so the rules are strict:
-- every case of the requested split that has something to compare against is run and scored, failed calls
-  included (scored as failures, never dropped);
+- every case of the requested split is run and scored; per-request model failures (timeout, 5xx, 400) are
+  failed cases, never dropped. A deterministic case without a reference raises MissingReference, and an
+  account/credit/config error raises ProviderError: neither is ever turned into a measured result;
 - eval-target calls use role "eval_target" (the only Ultra role outside the 40-call agent cap) and send
   `reasoning` per AdapterSpec.reasoning, so enable_thinking is always explicit (Global Constraint 25);
 - cost is tokens x get_tier(tier) prices (an OFFRAMP_MODEL_* override keeps the tier price);
@@ -13,6 +14,7 @@ Every TierResult number shown anywhere comes from here, so the rules are strict:
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -21,6 +23,7 @@ from typing import Any
 import openai
 
 from offramp.agents.judge import LOW_SCORE, case_passes, judge
+from offramp.evals.errors import MissingReference, is_case_failure, provider_error
 from offramp.evals.scorers import score_case
 from offramp.evals.scorers.aggregate import CANDIDATE_ERROR, DEFAULT_THRESHOLDS, Thresholds, site_pass
 from offramp.schemas import (
@@ -73,13 +76,17 @@ def run_tier(
     thresholds: Thresholds | RunConfig = DEFAULT_THRESHOLDS,
     *,
     build_request: BuildRequest | None = None,
-) -> TierResult | BudgetStop:
+    return_candidates: bool = False,
+) -> TierResult | BudgetStop | tuple[TierResult | BudgetStop, list[CandidateResult]]:
     """Evaluate `adapter` on `tier` over the `split` cases of `site`.
 
-    Deterministic sites run the cases that have a reference (a case without one has nothing to be
-    compared with; it is left out before any call, so this cannot favour a pass). free_text sites run every
-    case; references with text make the judge pairwise. CacheMiss (replay) and errors from build_request
-    propagate: they are setup errors, not model behaviour.
+    Every case of the split is run and scored. Deterministic sites need a reference for each of them, else
+    MissingReference is raised before any call (filter out audit-dropped cases first); free_text sites run
+    without one, and references with text make the judge pairwise. ProviderError, CacheMiss (replay) and
+    errors from build_request propagate: they are run or setup errors, not model behaviour.
+
+    return_candidates=True returns (result, the CandidateResult of every case in case order) so the
+    Iterator can show failing outputs; ([] with a BudgetStop).
     """
     contract = site.contract
     if contract is None:
@@ -87,7 +94,10 @@ def run_tier(
     tier = Tier(tier)
     refs = baselines if isinstance(baselines, Mapping) else {b.case_id: b for b in baselines}
     free_text = contract.task_type == "free_text"
-    selected = [c for c in cases if c.split == split and (free_text or c.id in refs)]
+    selected = [c for c in cases if c.split == split]
+    missing = [] if free_text else [c.id for c in selected if c.id not in refs]
+    if missing:
+        raise MissingReference(missing)
 
     build = build_request or _default_build_request()
     requests = [
@@ -111,14 +121,15 @@ def run_tier(
             ]
             reference_mean = None
     except BudgetExceeded as e:
-        return BudgetStop(site_id=site.id, tier=tier, split=split, reason=f"budget: {e}")
+        stop = BudgetStop(site_id=site.id, tier=tier, split=split, reason=f"budget: {e}")
+        return (stop, []) if return_candidates else stop
     scores = [  # keep why a call failed: TierResult is the only record of it
         s.model_copy(update={"detail": f"candidate call failed: {r.error}"}) if r.error else s
         for s, r in zip(scores, results, strict=True)
     ]
 
     passed, score = site_pass(contract.task_type, scores, thresholds, reference_mean)
-    return TierResult(
+    result = TierResult(
         site_id=site.id,
         tier=tier,
         adapter_version=adapter.version,
@@ -129,6 +140,7 @@ def run_tier(
         failing_case_ids=[s.case_id for s in scores if not s.passed],
         case_scores=scores,
     )
+    return (result, results) if return_candidates else result
 
 
 def _run_calls(
@@ -137,16 +149,19 @@ def _run_calls(
     info = get_tier(tier)
 
     def call(req: dict[str, Any], case: EvalCase) -> CandidateResult:
+        started = time.perf_counter()
         try:
             r = client.chat(**req)
-        except openai.APIError as e:  # after the SDK's own retries: a failed candidate, scored as one
+        except openai.APIError as e:  # after the SDK's own retries
+            if not is_case_failure(e):
+                raise provider_error(e) from e
             return CandidateResult(
                 case_id=case.id,
                 tier=tier,
                 adapter_version=version,
                 output=None,
                 error=f"{type(e).__name__}: {e}"[:500],
-                latency_ms=0,
+                latency_ms=round((time.perf_counter() - started) * 1000),  # time until failure
                 input_tokens=0,
                 output_tokens=0,
                 cost_usd=0.0,
@@ -169,7 +184,7 @@ def _run_calls(
         futures = [pool.submit(call, req, case) for req, case in zip(requests, cases, strict=True)]
         return [f.result() for f in futures]
     finally:
-        pool.shutdown(cancel_futures=True)  # on BudgetExceeded/CacheMiss: start no further calls
+        pool.shutdown(cancel_futures=True)  # on BudgetExceeded/ProviderError/CacheMiss: no further calls
 
 
 def _judge_scores(
@@ -215,9 +230,11 @@ def _nearest_rank(sorted_values: list[int], pct: float) -> int:
 
 
 def _metrics(results: list[CandidateResult]) -> TierMetrics:
-    """Over the calls that returned (a failed call measured nothing)."""
+    """p50/p95 over every call: a returned call at its recorded latency, a failed one at its time until
+    failure (a timeout is the tail). Tokens and $/1k calls over returned calls: a failed one reports no usage.
+    """
     ok = [r for r in results if r.output is not None]
-    latencies = sorted(r.latency_ms for r in ok)
+    latencies = sorted(r.latency_ms for r in results)
     mean_cost = math.fsum(r.cost_usd for r in ok) / len(ok) if ok else 0.0
     return TierMetrics(
         p50_ms=_nearest_rank(latencies, 50),
