@@ -1,0 +1,891 @@
+{
+  "_fixture": "FIXTURE: made-up numbers for snapshot and agent tests; not a measured run. Prompt texts, tools and schema are copied from offramp-demo-app.",
+  "context": {
+    "run_id": "fixture-run",
+    "repo": "vj-io/offramp-demo-app",
+    "config": {
+      "repo_url": "https://github.com/vj-io/offramp-demo-app"
+    },
+    "sites": [
+      {
+        "id": "cs_01",
+        "file": "helphub/inbox/triage.py",
+        "lines": [
+          31,
+          39
+        ],
+        "sdk": "openai",
+        "call": "client.chat.completions.create",
+        "function": "triage_ticket",
+        "source_model": "gpt-4o-mini",
+        "prompt_source": "fstring",
+        "prompt_ref": "TRIAGE_SYSTEM_PROMPT",
+        "template": {
+          "system": "You are the ticket router for HelpHub, a customer support platform.\nClassify the customer's ticket into exactly one queue:\n\n- billing: charges, invoices, payment methods, subscription pricing\n- shipping: delivery status, tracking, delays, lost parcels, address changes\n- returns_refunds: returns, exchanges, damaged or wrong items, refund requests\n- technical_support: bugs, errors, integrations, API and webhook problems\n- account_access: login, password reset, two-factor, locked or compromised accounts\n- general: anything else, including feedback, partnerships and sales questions\n\nReply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation.",
+          "user": "Subject: {subject}\n\n{body}",
+          "variables": [
+            "subject",
+            "body"
+          ]
+        },
+        "params": {
+          "max_tokens": 16,
+          "temperature": 0
+        },
+        "contract": {
+          "task_type": "classification",
+          "output": "label",
+          "labels": [
+            "billing",
+            "shipping",
+            "returns_refunds",
+            "technical_support",
+            "account_access",
+            "general"
+          ]
+        }
+      },
+      {
+        "id": "cs_02",
+        "file": "helphub/ops/agent_step.py",
+        "lines": [
+          73,
+          89
+        ],
+        "sdk": "anthropic",
+        "call": "client.messages.create",
+        "function": "next_action",
+        "source_model": "claude-sonnet-4-5",
+        "prompt_source": "fstring",
+        "prompt_ref": "AGENT_SYSTEM_PROMPT",
+        "template": {
+          "system": "You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\n\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve.",
+          "user": "Customer message:\n{ticket_text}\n\nTool results so far:\n{steps}\n\nChoose the next tool.",
+          "variables": [
+            "ticket_text",
+            "steps"
+          ]
+        },
+        "params": {
+          "max_tokens": 512,
+          "tools": "<TOOLS>",
+          "tool_choice": {
+            "type": "any"
+          }
+        },
+        "contract": {
+          "task_type": "tool_call",
+          "output": "tool_call",
+          "tools": true
+        }
+      },
+      {
+        "id": "cs_03",
+        "file": "helphub/orders/extract.py",
+        "lines": [
+          47,
+          57
+        ],
+        "sdk": "anthropic",
+        "call": "client.messages.create",
+        "function": "extract_order",
+        "source_model": "claude-sonnet-4-5",
+        "prompt_source": "fstring",
+        "prompt_ref": "EXTRACT_SYSTEM_PROMPT",
+        "template": {
+          "system": "You extract structured order data from customer support emails.\nReply with a single JSON object that validates against the JSON schema given in the user message.\nUse null for any field the email does not state; never guess.\nWrite dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot\nas the decimal separator. Keep names exactly as written. The email may be in any language.\nDo not wrap the JSON in markdown and do not add any commentary.",
+          "user": "JSON schema:\n{schema}\n\nEmail:\n{email}",
+          "variables": [
+            "schema",
+            "email"
+          ]
+        },
+        "params": {
+          "max_tokens": 1024
+        },
+        "contract": {
+          "task_type": "json_extraction",
+          "output": "json_schema",
+          "json_schema": {
+            "properties": {
+              "order_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order id such as HH-48213, null if not stated",
+                "title": "Order Id"
+              },
+              "customer_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Full name of the customer as written",
+                "title": "Customer Name"
+              },
+              "customer_email": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Customer's email address",
+                "title": "Customer Email"
+              },
+              "order_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order date as YYYY-MM-DD, null if not stated",
+                "title": "Order Date"
+              },
+              "total_amount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order total as a plain number, no symbol",
+                "title": "Total Amount"
+              },
+              "currency": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "ISO 4217 currency code, e.g. EUR",
+                "title": "Currency"
+              },
+              "issue": {
+                "enum": [
+                  "damaged",
+                  "missing_item",
+                  "wrong_item",
+                  "late_delivery",
+                  "billing_error",
+                  "other"
+                ],
+                "title": "Issue",
+                "type": "string"
+              }
+            },
+            "required": [
+              "order_id",
+              "customer_name",
+              "customer_email",
+              "order_date",
+              "total_amount",
+              "currency",
+              "issue"
+            ],
+            "title": "OrderFields",
+            "type": "object"
+          }
+        }
+      },
+      {
+        "id": "cs_04",
+        "file": "helphub/qa/rag_answer.py",
+        "lines": [
+          24,
+          35
+        ],
+        "sdk": "openai",
+        "call": "client.chat.completions.create",
+        "function": "answer_question",
+        "source_model": "gpt-4o",
+        "prompt_source": "fstring",
+        "prompt_ref": "RAG_SYSTEM_PROMPT",
+        "template": {
+          "system": "You are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words.",
+          "user": "Knowledge-base excerpts:\n{excerpts}\n\nCustomer question: {question}",
+          "variables": [
+            "excerpts",
+            "question"
+          ]
+        },
+        "params": {
+          "max_tokens": 400,
+          "temperature": 0.2
+        },
+        "contract": {
+          "task_type": "free_text",
+          "output": "text"
+        }
+      },
+      {
+        "id": "cs_05",
+        "file": "helphub/refunds/plan.py",
+        "lines": [
+          68,
+          89
+        ],
+        "sdk": "openai",
+        "call": "client.chat.completions.create",
+        "function": "plan_refund",
+        "source_model": "o3",
+        "prompt_source": "fstring",
+        "prompt_ref": "REFUND_POLICY",
+        "template": {
+          "system": "You compute subscription refunds for HelpHub billing. Follow this policy exactly, step by step, and show your arithmetic.\n\n1. Tiered price. The list price is in USD per seat per billing period. Seats are priced in graduated tiers: seats 1-10 cost 100% of list price, seats 11-50 cost 85%, seats 51 and above cost 70%. Subtotal = sum over the tiers of (seats in that tier x list price x tier rate). Round the subtotal to 2 decimals, half up.\n2. Coupon. Take the coupon percentage off the subtotal and round to 2 decimals, half up. The result is the USD amount paid for the period.\n3. Days used. Days used = the number of days from the period start date to the cancellation date, counting both dates. Unused days = billing period days - days used, never below 0.\n4. Refundable amount in USD. If the billing period is 365 days and days used is 14 or fewer, the refundable amount is the full amount paid. Otherwise, prorated = amount paid x unused days / billing period days, rounded to 2 decimals half up; then subtract a 3% processing fee on the prorated amount, rounded to 2 decimals half up. The fee is not charged on a full refund.\n5. Prior refunds. Subtract the USD refunds already issued from the refundable amount. If the result is negative, it is 0.\n6. Currency. Multiply by the exchange rate recorded at purchase (units of the customer's currency per 1 USD) and round half up to the currency's minor unit: 2 decimals for USD, EUR and GBP, 0 decimals for JPY.\n7. Show your working, then put the final refund in the customer's currency alone on the last line as `ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator).",
+          "user": "Plan: {plan_name} ...",
+          "variables": [
+            "plan_name"
+          ]
+        },
+        "params": {
+          "max_completion_tokens": 16000
+        },
+        "contract": {
+          "task_type": "reasoning",
+          "output": "text",
+          "reasoning_heavy": true
+        }
+      },
+      {
+        "id": "cs_06",
+        "file": "helphub/summaries/summarize.py",
+        "lines": [
+          16,
+          26
+        ],
+        "sdk": "anthropic",
+        "call": "client.messages.create",
+        "function": "summarize_thread",
+        "source_model": "claude-haiku-4-5",
+        "prompt_source": "fstring",
+        "prompt_ref": "SUMMARY_SYSTEM_PROMPT",
+        "template": {
+          "system": "You write handoff notes for HelpHub support agents taking over a ticket.\nSummarise the thread in English, in at most 120 words, with three labelled parts:\nIssue, Tried so far, Next step.\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\nMention internal notes only as \"internal note\"; their wording is for agents, never the customer.",
+          "user": "Ticket thread, {n} messages:\n\n{transcript}",
+          "variables": [
+            "n",
+            "transcript"
+          ]
+        },
+        "params": {
+          "max_tokens": 400
+        },
+        "contract": {
+          "task_type": "free_text",
+          "output": "text"
+        }
+      }
+    ],
+    "verdicts": [
+      {
+        "site_id": "cs_01",
+        "decision": "MIGRATE",
+        "tier": "lightning",
+        "model": "nvidia/Nemotron-3_5-Lightning",
+        "parity_pct": 97.1,
+        "iterations": 1,
+        "cost_before_per_1k": 0.047,
+        "cost_after_per_1k": 0.019,
+        "cost_before_note": "est.: gpt-4o-mini $0.15/$0.60 per 1M (developers.openai.com/api/docs/pricing, pricing.yaml as of 2026-10-19) x tokens measured on the Token Factory call",
+        "reason": "Lightning matches the reference queue on 97.1% of holdout tickets."
+      },
+      {
+        "site_id": "cs_02",
+        "decision": "MIGRATE",
+        "tier": "super",
+        "model": "nvidia/nemotron-3-super-120b-a12b",
+        "parity_pct": 96.0,
+        "iterations": 0,
+        "cost_before_per_1k": 3.0,
+        "cost_after_per_1k": 0.26,
+        "cost_before_note": "est.: claude-sonnet-4-5 $3.00/$15.00 per 1M (platform.claude.com/docs/en/about-claude/pricing, pricing.yaml as of 2026-10-19) x tokens measured on the Token Factory call",
+        "sunset_risk": "claude-sonnet-4-5 is listed as deprecated on platform.claude.com/docs/en/about-claude/pricing",
+        "reason": "Super picks the reference tool with matching arguments on 96.0% of holdout steps."
+      },
+      {
+        "site_id": "cs_03",
+        "decision": "MIGRATE",
+        "tier": "super",
+        "model": "nvidia/nemotron-3-super-120b-a12b",
+        "parity_pct": 96.4,
+        "iterations": 0,
+        "cost_before_per_1k": 4.5,
+        "cost_after_per_1k": 0.38,
+        "cost_before_note": "est.: claude-sonnet-4-5 $3.00/$15.00 per 1M (platform.claude.com/docs/en/about-claude/pricing, pricing.yaml as of 2026-10-19) x tokens measured on the Token Factory call",
+        "sunset_risk": "claude-sonnet-4-5 is listed as deprecated on platform.claude.com/docs/en/about-claude/pricing",
+        "reason": "Every holdout reply is schema-valid and 96.4% match the reference fields."
+      },
+      {
+        "site_id": "cs_04",
+        "decision": "MIGRATE",
+        "tier": "super",
+        "model": "nvidia/nemotron-3-super-120b-a12b",
+        "parity_pct": 100.0,
+        "iterations": 2,
+        "cost_before_per_1k": 4.5,
+        "cost_after_per_1k": 0.5,
+        "cost_before_note": "est.: gpt-4o $2.50/$10.00 per 1M (developers.openai.com/api/docs/pricing, pricing.yaml as of 2026-10-19) x tokens measured on the Token Factory call",
+        "reason": "Judge mean 4.4 on holdout answers, above the 4.0 bar and within 0.3 of the reference."
+      },
+      {
+        "site_id": "cs_05",
+        "decision": "KEEP_CLOSED",
+        "best_tier": "ultra",
+        "best_score": 0.714,
+        "parity_pct": 71.4,
+        "iterations": 3,
+        "cost_before_per_1k": 34.0,
+        "cost_before_note": "est.: o3 $2.00/$8.00 per 1M (developers.openai.com/api/docs/pricing, pricing.yaml as of 2026-10-19) x tokens measured on the Token Factory call",
+        "reason": "parity vs reference 71.4% < 90%: multi-step proration with tiered seats still drifts by cents after 3 adapter iterations on Ultra."
+      },
+      {
+        "site_id": "cs_06",
+        "decision": "MIGRATE",
+        "tier": "lightning",
+        "model": "nvidia/Nemotron-3_5-Lightning",
+        "parity_pct": 100.0,
+        "iterations": 1,
+        "cost_before_per_1k": 1.4,
+        "cost_after_per_1k": 0.077,
+        "cost_before_note": "est.: claude-haiku-4-5 $1.00/$5.00 per 1M (platform.claude.com/docs/en/about-claude/pricing, pricing.yaml as of 2026-10-19) x tokens measured on the Token Factory call",
+        "reason": "Judge mean 4.3 on holdout handoff notes, above the 4.0 bar."
+      }
+    ],
+    "tier_results": [
+      {
+        "site_id": "cs_01",
+        "tier": "lightning",
+        "adapter_version": 1,
+        "split": "holdout",
+        "passed": true,
+        "score": 0.971,
+        "metrics": {
+          "p50_ms": 410,
+          "p95_ms": 690,
+          "tokens_in": 2296,
+          "tokens_out": 21,
+          "cost_per_1k_calls_usd": 0.019
+        },
+        "failing_case_ids": [
+          "cs_01:017"
+        ],
+        "case_scores": [
+          {
+            "case_id": "cs_01:017",
+            "passed": false,
+            "score": 0.0,
+            "detail": "expected billing, got general",
+            "error_category": "wrong_label"
+          }
+        ]
+      },
+      {
+        "site_id": "cs_02",
+        "tier": "super",
+        "adapter_version": 0,
+        "split": "holdout",
+        "passed": true,
+        "score": 0.96,
+        "metrics": {
+          "p50_ms": 1220,
+          "p95_ms": 1870,
+          "tokens_in": 5040,
+          "tokens_out": 420,
+          "cost_per_1k_calls_usd": 0.26
+        },
+        "failing_case_ids": [],
+        "case_scores": []
+      },
+      {
+        "site_id": "cs_03",
+        "tier": "super",
+        "adapter_version": 0,
+        "split": "holdout",
+        "passed": true,
+        "score": 0.964,
+        "metrics": {
+          "p50_ms": 1640,
+          "p95_ms": 2410,
+          "tokens_in": 6300,
+          "tokens_out": 840,
+          "cost_per_1k_calls_usd": 0.38
+        },
+        "failing_case_ids": [],
+        "case_scores": []
+      },
+      {
+        "site_id": "cs_04",
+        "tier": "super",
+        "adapter_version": 2,
+        "split": "holdout",
+        "passed": true,
+        "score": 4.4,
+        "metrics": {
+          "p50_ms": 2050,
+          "p95_ms": 3100,
+          "tokens_in": 8400,
+          "tokens_out": 1050,
+          "cost_per_1k_calls_usd": 0.5
+        },
+        "failing_case_ids": [],
+        "case_scores": []
+      },
+      {
+        "site_id": "cs_05",
+        "tier": "ultra",
+        "adapter_version": 3,
+        "split": "dev",
+        "passed": false,
+        "score": 0.714,
+        "metrics": {
+          "p50_ms": 14800,
+          "p95_ms": 26100,
+          "tokens_in": 21000,
+          "tokens_out": 98000,
+          "cost_per_1k_calls_usd": 33.1
+        },
+        "failing_case_ids": [
+          "cs_05:004",
+          "cs_05:011"
+        ],
+        "case_scores": [
+          {
+            "case_id": "cs_05:004",
+            "passed": false,
+            "score": 0.0,
+            "detail": "expected 150.03, got 148.20",
+            "error_category": "wrong_answer"
+          },
+          {
+            "case_id": "cs_05:011",
+            "passed": false,
+            "score": 0.0,
+            "detail": "expected 41250, got 41251",
+            "error_category": "wrong_answer"
+          }
+        ]
+      },
+      {
+        "site_id": "cs_06",
+        "tier": "lightning",
+        "adapter_version": 1,
+        "split": "holdout",
+        "passed": true,
+        "score": 4.3,
+        "metrics": {
+          "p50_ms": 530,
+          "p95_ms": 880,
+          "tokens_in": 5600,
+          "tokens_out": 840,
+          "cost_per_1k_calls_usd": 0.077
+        },
+        "failing_case_ids": [],
+        "case_scores": []
+      }
+    ],
+    "adapters": {
+      "cs_01": {
+        "site_id": "cs_01",
+        "version": 1,
+        "tier": "lightning",
+        "spec": {
+          "system_prompt": "You are the ticket router for HelpHub, a customer support platform.\nClassify the customer's ticket into exactly one queue:\n\n- billing: charges, invoices, payment methods, subscription pricing\n- shipping: delivery status, tracking, delays, lost parcels, address changes\n- returns_refunds: returns, exchanges, damaged or wrong items, refund requests\n- technical_support: bugs, errors, integrations, API and webhook problems\n- account_access: login, password reset, two-factor, locked or compromised accounts\n- general: anything else, including feedback, partnerships and sales questions\n\nReply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation.",
+          "user_suffix": "\n\nAnswer with the queue name only.",
+          "max_tokens": 16,
+          "temperature": 0.0,
+          "reasoning": "off"
+        },
+        "change_log": [
+          "v1: user suffix restates the answer format (Lightning added a sentence before the label on dev)"
+        ],
+        "notes": []
+      },
+      "cs_02": {
+        "site_id": "cs_02",
+        "version": 0,
+        "tier": "super",
+        "spec": {
+          "system_prompt": "You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\n\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve.",
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "lookup_order",
+                "description": "Fetch an order's status, items, total and charges from the order system.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "order_id": {
+                      "type": "string",
+                      "description": "Order id, e.g. HH-48213"
+                    }
+                  },
+                  "required": [
+                    "order_id"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "issue_refund",
+                "description": "Refund part or all of an order to the original payment method.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "order_id": {
+                      "type": "string",
+                      "description": "Order id, e.g. HH-48213"
+                    },
+                    "amount": {
+                      "type": "number",
+                      "description": "Refund amount, at most 200.00"
+                    },
+                    "currency": {
+                      "type": "string",
+                      "description": "ISO 4217 code of the order"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": [
+                        "damaged",
+                        "missing_item",
+                        "duplicate_charge",
+                        "other"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "order_id",
+                    "amount",
+                    "currency",
+                    "reason"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "escalate_to_human",
+                "description": "Hand the ticket to a human support agent.",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "reason": {
+                      "type": "string",
+                      "description": "One sentence for the human agent"
+                    },
+                    "priority": {
+                      "type": "string",
+                      "enum": [
+                        "low",
+                        "normal",
+                        "urgent"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "reason",
+                    "priority"
+                  ]
+                }
+              }
+            }
+          ],
+          "tool_choice": "required",
+          "max_tokens": 512,
+          "temperature": 0.0,
+          "reasoning": "off"
+        },
+        "change_log": [
+          "v0: Anthropic tools -> OpenAI function tools; tool_choice any -> required"
+        ],
+        "notes": []
+      },
+      "cs_03": {
+        "site_id": "cs_03",
+        "version": 0,
+        "tier": "super",
+        "spec": {
+          "system_prompt": "You extract structured order data from customer support emails.\nReply with a single JSON object that validates against the JSON schema given in the user message.\nUse null for any field the email does not state; never guess.\nWrite dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot\nas the decimal separator. Keep names exactly as written. The email may be in any language.\nDo not wrap the JSON in markdown and do not add any commentary.",
+          "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+              "name": "OrderFields",
+              "schema": {
+                "properties": {
+                  "order_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Order id such as HH-48213, null if not stated",
+                    "title": "Order Id"
+                  },
+                  "customer_name": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Full name of the customer as written",
+                    "title": "Customer Name"
+                  },
+                  "customer_email": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Customer's email address",
+                    "title": "Customer Email"
+                  },
+                  "order_date": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Order date as YYYY-MM-DD, null if not stated",
+                    "title": "Order Date"
+                  },
+                  "total_amount": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Order total as a plain number, no symbol",
+                    "title": "Total Amount"
+                  },
+                  "currency": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "ISO 4217 currency code, e.g. EUR",
+                    "title": "Currency"
+                  },
+                  "issue": {
+                    "enum": [
+                      "damaged",
+                      "missing_item",
+                      "wrong_item",
+                      "late_delivery",
+                      "billing_error",
+                      "other"
+                    ],
+                    "title": "Issue",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "order_id",
+                  "customer_name",
+                  "customer_email",
+                  "order_date",
+                  "total_amount",
+                  "currency",
+                  "issue"
+                ],
+                "title": "OrderFields",
+                "type": "object",
+                "additionalProperties": false
+              },
+              "strict": true
+            }
+          },
+          "max_tokens": 1024,
+          "temperature": 0.0,
+          "reasoning": "off"
+        },
+        "change_log": [
+          "v0: OrderFields schema enforced with response_format json_schema (strict)"
+        ],
+        "notes": []
+      },
+      "cs_04": {
+        "site_id": "cs_04",
+        "version": 2,
+        "tier": "super",
+        "spec": {
+          "system_prompt": "You are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words.\n- Cite only excerpt ids that appear in the excerpts above.",
+          "max_tokens": 400,
+          "temperature": 0.0,
+          "reasoning": "off"
+        },
+        "change_log": [
+          "v1: temperature 0.2 -> 0",
+          "v2: system prompt forbids citing ids that are not in the excerpts"
+        ],
+        "notes": []
+      },
+      "cs_05": {
+        "site_id": "cs_05",
+        "version": 3,
+        "tier": "ultra",
+        "spec": {
+          "system_prompt": "You compute subscription refunds for HelpHub billing. Follow this policy exactly, step by step, and show your arithmetic.\n\n1. Tiered price. The list price is in USD per seat per billing period. Seats are priced in graduated tiers: seats 1-10 cost 100% of list price, seats 11-50 cost 85%, seats 51 and above cost 70%. Subtotal = sum over the tiers of (seats in that tier x list price x tier rate). Round the subtotal to 2 decimals, half up.\n2. Coupon. Take the coupon percentage off the subtotal and round to 2 decimals, half up. The result is the USD amount paid for the period.\n3. Days used. Days used = the number of days from the period start date to the cancellation date, counting both dates. Unused days = billing period days - days used, never below 0.\n4. Refundable amount in USD. If the billing period is 365 days and days used is 14 or fewer, the refundable amount is the full amount paid. Otherwise, prorated = amount paid x unused days / billing period days, rounded to 2 decimals half up; then subtract a 3% processing fee on the prorated amount, rounded to 2 decimals half up. The fee is not charged on a full refund.\n5. Prior refunds. Subtract the USD refunds already issued from the refundable amount. If the result is negative, it is 0.\n6. Currency. Multiply by the exchange rate recorded at purchase (units of the customer's currency per 1 USD) and round half up to the currency's minor unit: 2 decimals for USD, EUR and GBP, 0 decimals for JPY.\n7. Show your working, then put the final refund in the customer's currency alone on the last line as `ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator).",
+          "max_tokens": 16000,
+          "temperature": 0.0,
+          "reasoning": "high"
+        },
+        "change_log": [
+          "v1: reasoning on",
+          "v2: worked example of tiered pricing",
+          "v3: explicit half-up rounding reminder"
+        ],
+        "notes": []
+      },
+      "cs_06": {
+        "site_id": "cs_06",
+        "version": 1,
+        "tier": "lightning",
+        "spec": {
+          "system_prompt": "You write handoff notes for HelpHub support agents taking over a ticket.\nSummarise the thread in English, in at most 120 words, with three labelled parts:\nIssue, Tried so far, Next step.\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\nMention internal notes only as \"internal note\"; their wording is for agents, never the customer.",
+          "few_shot": [
+            {
+              "role": "user",
+              "content": "Ticket thread, 2 messages:\n\n[2025-09-01T08:12:00Z] customer (Priya): I was charged twice for order HH-48213 (34.90 EUR).\n[2025-09-01T09:40:00Z] agent (Tom): Sorry about that, checking with billing now."
+            },
+            {
+              "role": "assistant",
+              "content": "Issue: Customer was charged twice for order HH-48213 (34.90 EUR).\nTried so far: Agent asked billing to check the duplicate charge.\nNext step: Confirm the duplicate with billing and refund 34.90 EUR."
+            }
+          ],
+          "max_tokens": 400,
+          "temperature": 0.0,
+          "reasoning": "off"
+        },
+        "change_log": [
+          "v1: one worked handoff note as a few-shot example"
+        ],
+        "notes": []
+      }
+    },
+    "case_counts": {
+      "cs_01": {
+        "dev": 18,
+        "holdout": 7
+      },
+      "cs_02": {
+        "dev": 17,
+        "holdout": 8
+      },
+      "cs_03": {
+        "dev": 16,
+        "holdout": 8
+      },
+      "cs_04": {
+        "dev": 14,
+        "holdout": 6
+      },
+      "cs_05": {
+        "dev": 18,
+        "holdout": 8
+      },
+      "cs_06": {
+        "dev": 14,
+        "holdout": 6
+      }
+    },
+    "references": {
+      "cs_01": {
+        "reference:seed": 25
+      },
+      "cs_02": {
+        "reference:seed": 25
+      },
+      "cs_03": {
+        "reference:seed": 22,
+        "reference:human": 2
+      },
+      "cs_04": {
+        "claude-sonnet-5.5 (via Claude Code; not the repo's source model)": 20
+      },
+      "cs_05": {
+        "reference:oracle": 26
+      },
+      "cs_06": {
+        "claude-sonnet-5.5 (via Claude Code; not the repo's source model)": 20
+      }
+    },
+    "audit": {
+      "cs_01": {
+        "checked": 26,
+        "agreed": 25,
+        "dropped": 1,
+        "human_verified": 0,
+        "auditor": "claude-sonnet-5.5 (via Claude Code)"
+      },
+      "cs_02": {
+        "checked": 26,
+        "agreed": 25,
+        "dropped": 1,
+        "human_verified": 0,
+        "auditor": "claude-sonnet-5.5 (via Claude Code)"
+      },
+      "cs_03": {
+        "checked": 25,
+        "agreed": 22,
+        "dropped": 1,
+        "human_verified": 2,
+        "auditor": "claude-sonnet-5.5 (via Claude Code)"
+      }
+    },
+    "langsmith_links": {
+      "project": "https://smith.langchain.com/public/fixture-project/r",
+      "cs_05": "https://smith.langchain.com/public/fixture-cs05-dev/r"
+    },
+    "site_files": {},
+    "sandbox": null,
+    "free_text_args": {
+      "cs_02": [
+        "escalate_to_human.reason"
+      ]
+    },
+    "client_path": "helphub/offramp_client.py"
+  }
+}
