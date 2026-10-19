@@ -1,0 +1,105 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write the prose of a GitHub pull request opened by Offramp. Offramp measured which LLM call sites of a repository NVIDIA Nemotron on Nebius Token Factory can take over, patched the ones that passed, and renders every number of the PR itself from the measurements.\n\nReturn JSON: {\"summary\": str, \"sites\": [{\"site_id\": str, \"note\": str}]}.\n- summary: two or three plain sentences for the reviewer: what this PR changes and how the evidence was produced (agreement with references on a held-out split; the repo's own tests run on the patch).\n- one note per site, one sentence: MIGRATE - what changed in the call and why the function's behaviour is kept; KEEP_CLOSED - why it stays and one concrete next step; MANUAL_REVIEW - what a reviewer must check.\n- Never write numbers, percentages, prices, latencies or counts: prose with a digit is discarded. Identifiers such as cs_02, file names or model ids are fine.\n- Use only the facts given. No marketing language, no emoji."
+      },
+      {
+        "role": "user",
+        "content": "{\n \"repo\": \"vj-io/offramp-demo-app\",\n \"sites\": [\n  {\n   \"site_id\": \"cs_01\",\n   \"file\": \"helphub/inbox/triage.py\",\n   \"function\": \"triage_ticket\",\n   \"task\": \"classification\",\n   \"decision\": \"MIGRATE\",\n   \"before\": \"gpt-4o-mini\",\n   \"after\": \"Nemotron 3.5 Lightning\",\n   \"reason\": \"Lightning matches the reference queue on 97.1% of holdout tickets.\",\n   \"adapter_changes\": [\n    \"v1: user suffix restates the answer format (Lightning added a sentence before the label on dev)\"\n   ],\n   \"files_changed\": []\n  },\n  {\n   \"site_id\": \"cs_02\",\n   \"file\": \"helphub/ops/agent_step.py\",\n   \"function\": \"next_action\",\n   \"task\": \"tool_call\",\n   \"decision\": \"MIGRATE\",\n   \"before\": \"claude-sonnet-4-5\",\n   \"after\": \"Nemotron 3 Super\",\n   \"reason\": \"Super picks the reference tool with matching arguments on 96.0% of holdout steps.\",\n   \"adapter_changes\": [\n    \"v0: Anthropic tools -> OpenAI function tools; tool_choice any -> required\"\n   ],\n   \"files_changed\": []\n  },\n  {\n   \"site_id\": \"cs_03\",\n   \"file\": \"helphub/orders/extract.py\",\n   \"function\": \"extract_order\",\n   \"task\": \"json_extraction\",\n   \"decision\": \"MIGRATE\",\n   \"before\": \"claude-sonnet-4-5\",\n   \"after\": \"Nemotron 3 Super\",\n   \"reason\": \"Every holdout reply is schema-valid and 96.4% match the reference fields.\",\n   \"adapter_changes\": [\n    \"v0: OrderFields schema enforced with response_format json_schema (strict)\"\n   ],\n   \"files_changed\": []\n  },\n  {\n   \"site_id\": \"cs_04\",\n   \"file\": \"helphub/qa/rag_answer.py\",\n   \"function\": \"answer_question\",\n   \"task\": \"free_text\",\n   \"decision\": \"MIGRATE\",\n   \"before\": \"gpt-4o\",\n   \"after\": \"Nemotron 3 Super\",\n   \"reason\": \"Judge mean 4.4 on holdout answers, above the 4.0 bar and within 0.3 of the reference.\",\n   \"adapter_changes\": [\n    \"v1: temperature 0.2 -> 0\",\n    \"v2: system prompt forbids citing ids that are not in the excerpts\"\n   ],\n   \"files_changed\": []\n  },\n  {\n   \"site_id\": \"cs_05\",\n   \"file\": \"helphub/refunds/plan.py\",\n   \"function\": \"plan_refund\",\n   \"task\": \"reasoning\",\n   \"decision\": \"KEEP_CLOSED\",\n   \"before\": \"o3\",\n   \"after\": null,\n   \"reason\": \"parity vs reference 71.4% < 90%: multi-step proration with tiered seats still drifts by cents after 3 adapter iterations on Ultra.\",\n   \"adapter_changes\": [\n    \"v1: reasoning on\",\n    \"v2: worked example of tiered pricing\",\n    \"v3: explicit half-up rounding reminder\"\n   ],\n   \"files_changed\": []\n  },\n  {\n   \"site_id\": \"cs_06\",\n   \"file\": \"helphub/summaries/summarize.py\",\n   \"function\": \"summarize_thread\",\n   \"task\": \"free_text\",\n   \"decision\": \"MIGRATE\",\n   \"before\": \"claude-haiku-4-5\",\n   \"after\": \"Nemotron 3.5 Lightning\",\n   \"reason\": \"Judge mean 4.3 on holdout handoff notes, above the 4.0 bar.\",\n   \"adapter_changes\": [\n    \"v1: one worked handoff note as a few-shot example\"\n   ],\n   \"files_changed\": []\n  }\n ]\n}"
+      }
+    ],
+    "params": {
+      "max_tokens": 1500,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "PRProse",
+          "schema": {
+            "$defs": {
+              "SiteNote": {
+                "properties": {
+                  "site_id": {
+                    "title": "Site Id",
+                    "type": "string"
+                  },
+                  "note": {
+                    "title": "Note",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "site_id",
+                  "note"
+                ],
+                "title": "SiteNote",
+                "type": "object"
+              }
+            },
+            "properties": {
+              "summary": {
+                "default": "",
+                "title": "Summary",
+                "type": "string"
+              },
+              "sites": {
+                "items": {
+                  "$ref": "#/$defs/SiteNote"
+                },
+                "title": "Sites",
+                "type": "array"
+              }
+            },
+            "title": "PRProse",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-9fe98d0248964994",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"summary\": \"This PR replaces several LLM calls with NVIDIA Nemotron models where parity with reference outputs was met or exceeded on holdout data, using minimal adapter tweaks to preserve behavior. One site remains closed due to insufficient parity despite adapter iterations. All migrated sites have been validated against the repo's test suite post-patch.\", \"sites\": [{\"site_id\": \"cs_01\", \"note\": \"MIGRATE - switched triage_ticket from gpt-4o-mini to Nemotron 3.5 Lightning after adjusting the user suffix to restate the answer format, preserving classification behavior as Lightning matched the reference queue on holdout tickets.\"}, {\"site_id\": \"cs_02\", \"note\": \"MIGRATE - updated next_action to use Nemotron 3 Super instead of claude-sonnet-4-5, changing tool invocation from Anthropic to OpenAI function tools with required tool_choice, maintaining tool-pick behavior as Super matched reference tool arguments on holdout steps.\"}, {\"site_id\": \"cs_03\", \"note\": \"MIGRATE - migrated extract_order to Nemotron 3 Super from claude-sonnet-4-5, enforcing the OrderFields schema via json_schema (strict) in response_format, keeping extraction behavior intact as all holdout replies were schema-valid and most fields matched reference.\"}, {\"site_id\": \"cs_04\", \"note\": \"MIGRATE - changed answer_question to Nemotron 3 Super from gpt-4o, setting temperature to 0 and adding a system constraint against citing non-excerpt IDs, preserving answer quality as judge scores met the bar and stayed close to reference on holdout.\"}, {\"site_id\": \"cs_05\", \"note\": \"KEEP_CLOSED - plan_refund retains o3 because reasoning parity remained below threshold despite adapter v3 adding an explicit half-up rounding reminder; next step is to diagnose drift sources in tiered seat proration logic.\"}, {\"site_id\": \"cs_06\", \"note\": \"MIGRATE - replaced summarize_thread's claude-haiku-4-5 with Nemotron 3.5 Lightning, adding a worked handoff note as few-shot example, preserving summarization behavior as judge scores cleared the quality bar on holdout threads.\"}]}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792409461,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 489,
+      "prompt_tokens": 1172,
+      "total_tokens": 1661,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 1172
+    }
+  },
+  "latency_ms": 4555,
+  "usage": {
+    "prompt_tokens": 1172,
+    "completion_tokens": 489
+  },
+  "created_at": "2026-10-19T11:31:04.414917+00:00"
+}
