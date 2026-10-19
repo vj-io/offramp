@@ -60,6 +60,8 @@ nvidia/offramp-demo-app/   separate repo — the realistic target app Offramp mi
     - `GET /api/runs/{run_id}/events` → `text/event-stream`; each event `id: <seq>`, `event: <type>`,
       `data: <RunEvent json>`; honours `Last-Event-ID`; ends after `done` or `error`.
     - `GET /api/runs/{run_id}/report` → JSON download `{snapshot, pr_body_markdown}`.
+    - The QUEUED `stage` event's payload carries `{"stage": "QUEUED", "config": RunConfig}` so replays know the
+      thresholds (web reducer reads it). Replay files: JSON array of RunEvent (or `{"events": [...]}`).
     - `GET /api/health` → `{"ok": true, "tf_configured": bool}`.
     - Rate limit 30 req/min per IP on `POST /api/runs` (429). CORS allow the web origin (env `OFFRAMP_WEB_ORIGIN`).
 14. **Replay (§9):** `?replay=demo` plays a recorded event log at 4× speed, gaps capped at 1.5 s before
