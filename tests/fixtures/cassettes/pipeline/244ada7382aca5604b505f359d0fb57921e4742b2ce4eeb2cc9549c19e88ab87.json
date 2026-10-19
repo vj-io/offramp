@@ -1,0 +1,81 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write one qualitative sentence explaining one Offramp verdict. Offramp tested whether NVIDIA Nemotron on Nebius Token Factory can take over one LLM call site of a Python repo, measured as agreement with reference outputs on held-out cases. MIGRATE: the named tier reached parity on the held-out cases, cheaper tiers did not. KEEP_CLOSED: no tier did, so the call stays on its current model.\n\nWrite one sentence of at most 30 words for an engineer reviewing the pull request: what the call site does and why the verdict follows, in words only. Write no numbers at all: no digits, no number words, no percentages, and no model names or versions (say \"the current model\"). Offramp appends the measured numbers after your sentence. Name the tier as given in the facts.\n\nReply with one JSON object: {\"reason\": \"<the sentence>\"}."
+      },
+      {
+        "role": "user",
+        "content": "{\n \"call_site\": {\n  \"file\": \"helphub/inbox/triage.py\",\n  \"function\": \"triage_ticket\",\n  \"task_type\": \"classification\"\n },\n \"decision\": \"KEEP_CLOSED\",\n \"tier\": \"Lightning\",\n \"outcome\": \"no tier reached parity with the references; this tier came closest\",\n \"adapter_changes\": [\n  \"Clarified technical_support description to explicitly include missing system emails/notifications\",\n  \"Added few-shot example for missing confirmation email -> technical_support\",\n  \"Added few-shot example for duplicate charge -> billing to reinforce boundary\"\n ],\n \"holdout_failure_kinds\": [\n  \"wrong_label\"\n ],\n \"closed_reference_compared\": false\n}"
+      }
+    ],
+    "params": {
+      "max_tokens": 300,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "VerdictReason",
+          "schema": {
+            "properties": {
+              "reason": {
+                "maxLength": 400,
+                "title": "Reason",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "title": "VerdictReason",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-b687de9f151d4c30",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"reason\": \"The triage ticket function classifies support tickets but Lightning tier failed to match reference outputs on held-out cases, so the call remains on the current model.\"}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435250,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 37,
+      "prompt_tokens": 357,
+      "total_tokens": 394,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 357
+    }
+  },
+  "latency_ms": 2118,
+  "usage": {
+    "prompt_tokens": 357,
+    "completion_tokens": 37
+  },
+  "created_at": "2026-10-19T18:40:51.192743+00:00"
+}

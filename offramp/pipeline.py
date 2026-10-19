@@ -40,9 +40,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, delete
 
-from offramp import db
+from offramp import db, github
 from offramp.agents import case_gen
 from offramp.agents.adapter import adapt
+from offramp.agents.patcher import compose_patches
+from offramp.agents.pr_writer import PRContext, reference_summary, write_pr
 from offramp.agents.scanner import label_contracts, scan_repo
 from offramp.agents.verdict import pricing_yaml_price
 from offramp.evals import baselines
@@ -68,7 +70,6 @@ from offramp.schemas import (
 from offramp.tf import LLM, Budget, BudgetExceeded, CacheMiss, TFClient
 
 TERMINAL = ("done", "error")
-FREE_TEXT_TAG = "free_text_arg:"  # case tag: this tool argument is free text, checked for presence only
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 GIT_TIMEOUT_S = 300
 GITHUB_REPO = re.compile(r"github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?/?$")
@@ -515,7 +516,7 @@ class Pipeline:
                 self._log("warn", f"evals/manifest.json: {problem}")
         audit_file = evals / "audit.json"
         audit = json.loads(audit_file.read_text()) if audit_file.exists() else {}
-        summaries, free_args = {}, {}
+        summaries, all_cases, compared = {}, [], []
         for site in chat:
             cases = [] if site.id in stale else baselines.load_cases(evals, site.id)
             if not cases:
@@ -535,17 +536,22 @@ class Pipeline:
                     auditor=", ".join(auditors) or None,
                 ),
             ).model_dump(mode="json")
-            tags = {
-                t.removeprefix(FREE_TEXT_TAG) for c in cases for t in c.tags if t.startswith(FREE_TEXT_TAG)
-            }
-            if tags:
-                free_args[site.id] = sorted(tags)
+            all_cases += cases
+            compared += baselines.baselines_for(evals, site.id).values()
             langsmith.upload_dataset(site, cases, list(refs.values()), run_id=self.log.run_id)
+        # for the PR (Task 10): per-site split counts, what the cases are compared against, and the tool
+        # arguments checked for presence only (case tags free_text_arg:<name>), disclosed in the PR and report
+        counts, methods, free_args = reference_summary(all_cases, compared)
         n = sum(s["dev"] + s["holdout"] for s in summaries.values())
         self._stage(Stage.BASELINED, f"{n} cases with references for {len(summaries)} call sites")
         for site_id, summary in summaries.items():
             self.log.emit("case_summary", summary, call_site_id=site_id)
-        return {"summaries": summaries, "free_text_args": free_args}
+        return {
+            "summaries": summaries,
+            "case_counts": counts,
+            "references": methods,
+            "free_text_args": free_args,
+        }
 
     @staticmethod
     def _unfit(site: CallSite, stale: list[str], summaries: dict[str, Any]) -> str | None:
@@ -769,14 +775,46 @@ class Pipeline:
         return run_matrix_job(matrix, mode="auto", cache_dir=self.cache_dir, run_id=self.log.run_id)
 
 
-def compose_patches(*args: Any, **kwargs: Any) -> Any:  # Task 10
-    from offramp.agents.patcher import compose_patches as compose
-
-    return compose(*args, **kwargs)
-
-
-def write_and_open_pr(**kwargs: Any) -> dict[str, Any]:  # Task 10
-    raise NotImplementedError("PR writer: wired when Task 10 is merged")
+def write_and_open_pr(
+    *,
+    run_id: str,
+    repo: str,
+    config: RunConfig,
+    sites: list[CallSite],
+    patch: dict[str, Any],
+    routes: dict[str, dict[str, Any]],
+    cases: dict[str, Any],
+    client: LLM,
+    open_pr: bool,
+    **_: Any,
+) -> dict[str, Any]:
+    """PR Writer (Task 10): Super's prose around the evidence rendered from the run's measurements, then the
+    PR on GitHub when `open_pr` (branch offramp/<run_id>, the patched files in one commit)."""
+    tier_results = [TierResult.model_validate(r) for s in sites for r in routes[s.id]["tier_results"]]
+    adapters = {k: r["adapter"] for k, r in routes.items() if r["adapter"]} | patch.get("adapters", {})
+    shared = [s for s in sites if s.id in cases["summaries"]]  # the sites whose dataset was uploaded
+    links = {s.id: url for s in shared if (url := langsmith.share_link(s, run_id=run_id))}
+    ctx = PRContext(
+        run_id=run_id,
+        repo=repo,
+        config=config,
+        sites=sites,
+        verdicts=patch["verdicts"],
+        tier_results=tier_results,
+        adapters=adapters,
+        case_counts=cases["case_counts"],
+        references=cases["references"],
+        audit={k: v["audit"] for k, v in cases["summaries"].items()},
+        free_text_args=cases["free_text_args"],
+        langsmith_links=links,
+        site_files=patch.get("site_files", {}),
+        sandbox=patch.get("sandbox_mode"),
+        client_path=patch.get("client_path"),
+    )
+    draft = write_pr(ctx, client)
+    files, title, body = patch["files"], draft.title, draft.body
+    url = github.open_pr(repo, run_id=run_id, files=files, title=title, body=body) if open_pr else None
+    return {"title": draft.title, "body": draft.body, "url": url}
 
 
 def default_price_lookup(config: RunConfig, client: LLM) -> Callable[[str], Any]:

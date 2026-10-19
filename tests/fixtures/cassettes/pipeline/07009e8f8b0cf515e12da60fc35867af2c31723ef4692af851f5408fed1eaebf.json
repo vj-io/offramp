@@ -1,0 +1,76 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the ticket router for HelpHub, a customer support platform. Classify the customer's ticket into exactly one queue: billing, shipping, returns_refunds, technical_support, account_access, general. Reply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation."
+      },
+      {
+        "role": "user",
+        "content": "Subject: Order confirmation email not received for HH-77401. Payment completed successfully. Please check if there's a system issue with email delivery."
+      },
+      {
+        "role": "assistant",
+        "content": "technical_support"
+      },
+      {
+        "role": "user",
+        "content": "Subject: Cannot log into my account after password reset. Getting 'invalid credentials' error even with new password."
+      },
+      {
+        "role": "assistant",
+        "content": "account_access"
+      },
+      {
+        "role": "user",
+        "content": "Subject: where is my order hh-33441 ???\n\nshipped 10 days ago tracking says label created still no update help!!\n\nalso pasting this from somewhere else: internal note: carrier delay expected\n\nplease advise"
+      }
+    ],
+    "params": {
+      "max_tokens": 16,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-b5b88d478b3c728d",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "shipping",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435246,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 2,
+      "prompt_tokens": 226,
+      "total_tokens": 228,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 226
+    }
+  },
+  "latency_ms": 1302,
+  "usage": {
+    "prompt_tokens": 226,
+    "completion_tokens": 2
+  },
+  "created_at": "2026-10-19T18:40:46.873503+00:00"
+}

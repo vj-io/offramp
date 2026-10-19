@@ -1,0 +1,150 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You grade answers written by an AI assistant.\n\nFor every case you get the evidence: the full input the assistant received (its instructions, any knowledge-base snippets or conversation thread, and the request). Then you get one answer, A, written for that input.\n\nScore each answer on three criteria, each an integer from 1 to 5:\n- groundedness: every factual claim is supported by the evidence. 5 = fully supported; 3 = one unsupported or doubtful claim; 1 = invents facts or contradicts the evidence.\n- completeness: it does what the request asks, with the details from the evidence the reader needs. 5 = complete; 3 = misses something that matters; 1 = does not address the request.\n- format: it follows the format, length, tone and language the instructions ask for. 5 = exactly; 3 = noticeable deviations; 1 = ignores them.\n\nGrade each answer on its own merits against the evidence. Position and length are not quality. Identical answers get identical scores.\nReturn one entry per case: \"case\" is the case number; write \"note\" before the scores, one short sentence naming the main problem or \"no issues\"; then the scores of answer A in \"a\"."
+      },
+      {
+        "role": "user",
+        "content": "Case 1\n<evidence>\n[system]\nYou are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words.\n\n[user]\nKnowledge-base excerpts:\n[returns-and-exchanges] Returns and exchanges\nYou have 30 days from the delivery date to start a return. Open the order in your account, choose \"Return or exchange\", and print the prepaid label.\n\nItems must be unused and in their original packaging. Exchanges ship as soon as the carrier scans your return. Return shipping is free for damaged or incorrect items; otherwise a flat label fee is deducted from your refund.\n\nDigital goods and gift cards cannot be returned.\n\nCustomer question: How long do I have to return an item?\n</evidence>\n<answer_a>\nYou have 30 days from the delivery date to start a return. [returns-and-exchanges]\n</answer_a>\n\nCase 2\n<evidence>\n[system]\nYou are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words.\n\n[user]\nKnowledge-base excerpts:\n[reset-password] Resetting your password\nChoose \"Forgot password\" on the sign-in page and enter your account email. The reset link is valid for 30 minutes and works once. Check your spam folder if it does not arrive within 5 minutes.\n\nIf you no longer have access to that email address, contact support from a verified device and we will confirm your identity before changing it.\n\nCustomer question: How do I reset my password?\n</evidence>\n<answer_a>\nTo reset your password, go to the sign-in page and select \"Forgot password,\" then enter your account email. The reset link is valid for 30 minutes and can only be used once. If the email doesn't arrive within 5 minutes, check your spam folder. If you no longer have access to that email, contact support from a verified device so we can confirm your identity before changing it. [reset-password]\n</answer_a>\n\nCase 3\n<evidence>\n[system]\nYou are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words.\n\n[user]\nKnowledge-base excerpts:\n[shipping-times] Shipping times\nOrders leave our warehouses within 1 business day. Delivery estimates after dispatch: domestic standard 3 to 5 business days, domestic express 1 to 2 business days, EU 4 to 7 business days, rest of world 7 to 14 business days.\n\nOrders to Switzerland, Norway and the UK may be held at customs, which can add 2 to 5 days. Business days exclude weekends and public holidays at the destination.\n\nCustomer question: Wie lange dauert der Versand nach Österreich?\n</evidence>\n<answer_a>\nNach Österreich (EU-Region) beträgt die Lieferzeit nach dem Versand 4 bis 7 Geschäftstage. Bitte beachten Sie, dass Bestellungen an Wochenenden und Feiertagen nicht zugestellt werden. [shipping-times]\n</answer_a>\n\nCase 4\n<evidence>\n[system]\nYou are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words.\n\n[user]\nKnowledge-base excerpts:\n[two-factor-authentication] Two-factor authentication\nTurn on two-factor authentication under Account, Security. We support authenticator apps and security keys. When you enable it we show 10 one-time recovery codes; store them somewhere safe.\n\nIf you lose your device, sign in with a recovery code and add a new device. Without a recovery code, support can reset two-factor only after verifying your identity, which takes up to 2 business days.\n\nCustomer question: ¿Cómo activo la autenticación en dos pasos?\n</evidence>\n<answer_a>\nPara activar la autenticación en dos pasos, ve a la sección **Account, Security** en tu cuenta y actívala. Cuando la habilites, te mostraremos 10 códigos de recuperación; guárdalos en un lugar seguro. Si pierdes tu dispositivo, puedes iniciar sesión con un código de recuperación y agregar uno nuevo. Sin un código de recuperación, el soporte puede restablecer la autenticación solo después de verificar tu identidad, lo que toma hasta 2 días hábiles.\n</answer_a>\n\nCase 5\n<evidence>\n[system]\nYou are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words.\n\n[user]\nKnowledge-base excerpts:\n[invoices-and-receipts] Invoices and receipts\nEvery charge generates a PDF invoice. Open Account, Billing, Invoices and choose \"Download\" next to the charge. Invoices are also emailed to the billing contact.\n\nTo add a company name or VAT number to future invoices, edit your billing details. We cannot change invoices that were already issued, but we can issue a corrected copy on request.\n\nCustomer question: 請求書をダウンロードするにはどうすればいいですか？\n</evidence>\n<answer_a>\n請求書をダウンロードするには、アカウントの「Billing（請求）」セクションに移動し、「Invoices（請求書）」を選択して、該当する請求書の横にある「Download（ダウンロード）」をクリックしてください。請求書は請求先連絡先にメールでも送信されます。[invoices-and-receipts]\n</answer_a>\n\nCase 6\n<evidence>\n[system]\nYou are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words.\n\n[user]\nKnowledge-base excerpts:\n[refund-policy] Refund policy\nPhysical orders can be refunded within 30 days of delivery if the item is unused, damaged, or not as described. Refunds go back to the original payment method and usually appear within 5 to 10 business days.\n\nSubscriptions are refunded separately. Annual plans cancelled within 14 days of the billing period start receive a full refund. After that we refund the unused part of the period, prorated by day, minus a 3% processing fee. Monthly plans are prorated by day from the first day.\n\nRefunds are issued in the currency you paid in, at the exchange rate recorded when you paid.\n\nCustomer question: \n</evidence>\n<answer_a>\nI don't have information about your specific order or subscription. To check your refund eligibility and status, please provide your order number or subscription ID. I can then look up the details and assist you further.\n</answer_a>\n\nCase 7\n<evidence>\n[system]\nYou are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words.\n\n[user]\nKnowledge-base excerpts:\n[refund-policy] Refund policy\nPhysical orders can be refunded within 30 days of delivery if the item is unused, damaged, or not as described. Refunds go back to the original payment method and usually appear within 5 to 10 business days.\n\nSubscriptions are refunded separately. Annual plans cancelled within 14 days of the billing period start receive a full refund. After that we refund the unused part of the period, prorated by day, minus a 3% processing fee. Monthly plans are prorated by day from the first day.\n\nRefunds are issued in the currency you paid in, at the exchange rate recorded when you paid.\n\n[cancel-subscription] Cancelling your subscription\nCancel any time under Account, Billing, \"Cancel plan\". Access continues until the end of the paid period unless you ask for a refund, in which case access ends immediately.\n\nRefund eligibility follows the refund policy: annual plans cancelled within 14 days of the period start are refunded in full; later cancellations are prorated by unused days minus a 3% processing fee.\n\nCustomer question: quiero reembolso plan anual despues 3 semanas y tambien devolver gift card digital ya usada?? ayuda rapido por favor\n</evidence>\n<answer_a>\nLo siento, pero no tengo información sobre la devolución de gift cards digitales usadas. Según la política de reembolsos, su plan anual cancelado después de 3 semanas (21 días) de la fecha de facturación no califica para un reembolso completo. Los planes anuales solo reciben reembolso completo si se cancelan dentro de los 14 días posteriores al inicio del período de facturación. Después de ese plazo, el reembolso es proporcional por los días no usados, menos una tarifa de procesamiento del 3%.\n\nPara obtener ayuda con la devolución del gift card digital, le recomiendo contactar con un agente humano.\n</answer_a>"
+      }
+    ],
+    "params": {
+      "max_tokens": 1450,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "SingleBatch",
+          "schema": {
+            "$defs": {
+              "Rubric": {
+                "properties": {
+                  "groundedness": {
+                    "enum": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      5
+                    ],
+                    "title": "Groundedness",
+                    "type": "integer"
+                  },
+                  "completeness": {
+                    "enum": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      5
+                    ],
+                    "title": "Completeness",
+                    "type": "integer"
+                  },
+                  "format": {
+                    "enum": [
+                      1,
+                      2,
+                      3,
+                      4,
+                      5
+                    ],
+                    "title": "Format",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "groundedness",
+                  "completeness",
+                  "format"
+                ],
+                "title": "Rubric",
+                "type": "object"
+              },
+              "SingleItem": {
+                "properties": {
+                  "case": {
+                    "title": "Case",
+                    "type": "integer"
+                  },
+                  "note": {
+                    "title": "Note",
+                    "type": "string"
+                  },
+                  "a": {
+                    "$ref": "#/$defs/Rubric"
+                  }
+                },
+                "required": [
+                  "case",
+                  "note",
+                  "a"
+                ],
+                "title": "SingleItem",
+                "type": "object"
+              }
+            },
+            "properties": {
+              "scores": {
+                "items": {
+                  "$ref": "#/$defs/SingleItem"
+                },
+                "title": "Scores",
+                "type": "array"
+              }
+            },
+            "required": [
+              "scores"
+            ],
+            "title": "SingleBatch",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-a08b36b19d24a119",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"scores\": [{\"case\": 1, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 2, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 3, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 4, \"note\": \"missing citation for all facts\", \"a\": {\"groundedness\": 3, \"completeness\": 5, \"format\": 3}}, {\"case\": 5, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}, {\"case\": 6, \"note\": \"ignores provided knowledge-base and does not answer the (empty) question\", \"a\": {\"groundedness\": 1, \"completeness\": 1, \"format\": 1}}, {\"case\": 7, \"note\": \"no issues\", \"a\": {\"groundedness\": 5, \"completeness\": 5, \"format\": 5}}]}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435141,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 288,
+      "prompt_tokens": 2697,
+      "total_tokens": 2985,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 2697
+    }
+  },
+  "latency_ms": 2232,
+  "usage": {
+    "prompt_tokens": 2697,
+    "completion_tokens": 288
+  },
+  "created_at": "2026-10-19T18:39:02.201601+00:00"
+}

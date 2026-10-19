@@ -1,0 +1,61 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write handoff notes for HelpHub support agents taking over a ticket.\nSummarise the thread in English, in at most 120 words, with three labelled parts:\nIssue, Tried so far, Next step.\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\nMention internal notes only as \"internal note\"; their wording is for agents, never the customer."
+      },
+      {
+        "role": "user",
+        "content": "Ticket thread, 2 messages:\n\n[2025-09-05T12:00:00Z] customer (Zoë Ångström): 😤 my order HH-55102 (£59.00) is STILL ‘in transit’ — 6 days late 🙄\n[2025-09-05T13:30:00Z] agent (Dana (HelpHub)): So sorry Zoë 🙏 — I’ve escalated to the carrier and will update you by 17:00."
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-a190e0e51294b458",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "Issue: Order HH-55102 (£59.00) remains 'in transit' after 6 days delay  \nTried so far: Agent Dana has escalated the issue to the carrier and committed to an update by 17:00 today  \nNext step: Await carrier response; follow up if no update received by promised time or if status does not change",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435168,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 84,
+      "prompt_tokens": 231,
+      "total_tokens": 315,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 231
+    }
+  },
+  "latency_ms": 1808,
+  "usage": {
+    "prompt_tokens": 231,
+    "completion_tokens": 84
+  },
+  "created_at": "2026-10-19T18:39:29.045931+00:00"
+}

@@ -1,0 +1,72 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the ticket router for HelpHub, a customer support platform. Classify the customer's ticket into exactly one queue: billing (charges, invoices, payment methods, subscription pricing), shipping (delivery status, tracking, delays, lost parcels, address changes), returns_refunds (returns, exchanges, damaged or wrong items, refund requests), technical_support (bugs, errors, integrations, API and webhook problems, missing system emails/notifications), account_access (login, password reset, two-factor, locked or compromised accounts), general (anything else, including feedback, partnerships and sales questions). Reply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation."
+      },
+      {
+        "role": "user",
+        "content": "Subject: Order confirmation email not received for HH-77401. Payment shows completed but no email arrived. Please check if there's a system issue."
+      },
+      {
+        "role": "assistant",
+        "content": "technical_support"
+      },
+      {
+        "role": "user",
+        "content": "Subject: Wrong charge on my invoice INV-2024-045. I was billed twice for the same subscription."
+      },
+      {
+        "role": "assistant",
+        "content": "billing"
+      },
+      {
+        "role": "user",
+        "content": "Subject: 💳 ¡Error! Doble cargo en tarjeta ending ¥¥42 😱\n\nHola HelpHub Team 👋\n\nMe acabo de dar cuenta de que me han cobrado dos veces por mi suscripción Premium del mes de abril 😕\n\nPrimer cargo: $29.99 el 2024-04-05\nSegundo cargo: $29.99 el 2024-04-06\n\nAdjunto captura de pantalla del banco 📎\n\n¿Podrían revisarlo y devolverme uno de los cargos? Gracias de antemano 🙏\n\n— \nJuan Pérez 🇪🇸\nUsuario desde 2022 ✨"
+      }
+    ],
+    "params": {
+      "max_tokens": 16,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-a11fe54e",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "billing",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435232,
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 3,
+      "prompt_tokens": 431,
+      "total_tokens": 434,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 431
+    }
+  },
+  "latency_ms": 4132,
+  "usage": {
+    "prompt_tokens": 431,
+    "completion_tokens": 3
+  },
+  "created_at": "2026-10-19T18:40:32.823473+00:00"
+}

@@ -1,0 +1,170 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You extract structured order data from customer support emails. Reply with a single JSON object that validates against the JSON schema given in the user message. Use null for any field the email does not state; never guess. Write dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot as the decimal separator. Keep names exactly as written. The email may be in any language. Do not wrap the JSON in markdown and do not add any commentary. The email is provided as raw headers plus body. The From header contains the customer's name and email; the Date header gives the email send date, NOT the order date. Only use the Date header for order_date if the body explicitly states the order was placed on that date. Extract order_id, total_amount, and currency only from the customer's own words in the body; ignore numbers that appear in other contexts. The issue field must be one of: damaged, missing_item, wrong_item, late_delivery, billing_error, other. Choose 'other' when the email does not clearly describe one of the first five issues. If customer_name or customer_email cannot be parsed from the From header, use null."
+      },
+      {
+        "role": "user",
+        "content": "JSON schema:\n{\"properties\": {\"order_id\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order id such as HH-48213, null if not stated\", \"title\": \"Order Id\"}, \"customer_name\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Full name of the customer as written\", \"title\": \"Customer Name\"}, \"customer_email\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Customer's email address\", \"title\": \"Customer Email\"}, \"order_date\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order date as YYYY-MM-DD, null if not stated\", \"title\": \"Order Date\"}, \"total_amount\": {\"anyOf\": [{\"type\": \"number\"}, {\"type\": \"null\"}], \"description\": \"Order total as a plain number, no symbol\", \"title\": \"Total Amount\"}, \"currency\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"ISO 4217 currency code, e.g. EUR\", \"title\": \"Currency\"}, \"issue\": {\"enum\": [\"damaged\", \"missing_item\", \"wrong_item\", \"late_delivery\", \"billing_error\", \"other\"], \"title\": \"Issue\", \"type\": \"string\"}}, \"required\": [\"order_id\", \"customer_name\", \"customer_email\", \"order_date\", \"total_amount\", \"currency\", \"issue\"], \"title\": \"OrderFields\", \"type\": \"object\"}\n\nEmail:\nFrom: Priya Nair <priya.nair@example.com>\nTo: support@helphub.example\nDate: Sun, 18 Aug 2024 07:30:00 +0000\nSubject: 配達遅延 HH-14400\n\nこんにちは、\n注文 HH-14400 がまだ届きません。439.73 EUR 支払済みです。\n対応よろしくお願いします。\n\nPriya Nair\n"
+      }
+    ],
+    "params": {
+      "max_tokens": 4000,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "response",
+          "strict": true,
+          "schema": {
+            "properties": {
+              "order_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order id such as HH-48213, null if not stated",
+                "title": "Order Id"
+              },
+              "customer_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Full name of the customer as written",
+                "title": "Customer Name"
+              },
+              "customer_email": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Customer's email address",
+                "title": "Customer Email"
+              },
+              "order_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order date as YYYY-MM-DD, null if not stated",
+                "title": "Order Date"
+              },
+              "total_amount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order total as a plain number, no symbol",
+                "title": "Total Amount"
+              },
+              "currency": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "ISO 4217 currency code, e.g. EUR",
+                "title": "Currency"
+              },
+              "issue": {
+                "enum": [
+                  "damaged",
+                  "missing_item",
+                  "wrong_item",
+                  "late_delivery",
+                  "billing_error",
+                  "other"
+                ],
+                "title": "Issue",
+                "type": "string"
+              }
+            },
+            "required": [
+              "order_id",
+              "customer_name",
+              "customer_email",
+              "order_date",
+              "total_amount",
+              "currency",
+              "issue"
+            ],
+            "title": "OrderFields",
+            "type": "object",
+            "additionalProperties": false
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-9f9de62eee49b3fd",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"order_id\": \"HH-14400\", \"customer_name\": \"Priya Nair\", \"customer_email\": \"priya.nair@example.com\", \"order_date\": null, \"total_amount\": 439.73, \"currency\": \"EUR\", \"issue\": \"late_delivery\"}",
+          "role": "assistant",
+          "reasoning": "We need to parse email.\n\nHeaders:\n\nFrom: Priya Nair <priya.nair@example.com> => customer_name = \"Priya Nair\". customer_email = \"priya.nair@example.com\".\n\nDate: Sun, 18 Aug 2024 07:30:00 +0000. This is email send date. We can only use it for order_date if body explicitly says order placed on that date. Body: Japanese text: \"こんにちは、 注文 HH-14400 がまだ届きません。439.73 EUR 支払済みです。 対応よろしくお願いします。\"\n\nIt mentions order ID HH-14400 (in subject also). It says still not delivered -> indicates late delivery? Actually they say hasn't arrived yet, which could be late delivery. Issue options: delayed delivery corresponds to \"late_delivery\". So we set issue = \"late_delivery\". Not mention damage etc.\n\nExtract order_id: from body: \"注文 HH-14400\". Also subject includes HH-14400. Must extract from customer's own words in body. Yes present. So order_id = \"HH-14400\".\n\nTotal amount: body says \"439.73 EUR 支払済みです.\" That means paid 439.73 EUR. So total_amount = 439.73, currency = \"EUR\". Ensure numeric without commas.\n\nNow order_date: No explicit statement about order date being same as email date. They didn't say order placed on that date. So order_date = null.\n\nCheck required fields: all present except order_date maybe null allowed. Provide JSON.\n\nThus output:\n\n{\n \"order_id\": \"HH-14400\",\n \"customer_name\": \"Priya Nair\",\n \"customer_email\": \"priya.nair@example.com\",\n \"order_date\": null,\n \"total_amount\": 439.73,\n \"currency\": \"EUR\",\n \"issue\": \"late_delivery\"\n}\n\nMake sure no extra spaces? Just JSON.",
+          "reasoning_content": "We need to parse email.\n\nHeaders:\n\nFrom: Priya Nair <priya.nair@example.com> => customer_name = \"Priya Nair\". customer_email = \"priya.nair@example.com\".\n\nDate: Sun, 18 Aug 2024 07:30:00 +0000. This is email send date. We can only use it for order_date if body explicitly says order placed on that date. Body: Japanese text: \"こんにちは、 注文 HH-14400 がまだ届きません。439.73 EUR 支払済みです。 対応よろしくお願いします。\"\n\nIt mentions order ID HH-14400 (in subject also). It says still not delivered -> indicates late delivery? Actually they say hasn't arrived yet, which could be late delivery. Issue options: delayed delivery corresponds to \"late_delivery\". So we set issue = \"late_delivery\". Not mention damage etc.\n\nExtract order_id: from body: \"注文 HH-14400\". Also subject includes HH-14400. Must extract from customer's own words in body. Yes present. So order_id = \"HH-14400\".\n\nTotal amount: body says \"439.73 EUR 支払済みです.\" That means paid 439.73 EUR. So total_amount = 439.73, currency = \"EUR\". Ensure numeric without commas.\n\nNow order_date: No explicit statement about order date being same as email date. They didn't say order placed on that date. So order_date = null.\n\nCheck required fields: all present except order_date maybe null allowed. Provide JSON.\n\nThus output:\n\n{\n \"order_id\": \"HH-14400\",\n \"customer_name\": \"Priya Nair\",\n \"customer_email\": \"priya.nair@example.com\",\n \"order_date\": null,\n \"total_amount\": 439.73,\n \"currency\": \"EUR\",\n \"issue\": \"late_delivery\"\n}\n\nMake sure no extra spaces? Just JSON."
+        }
+      }
+    ],
+    "created": 1792435377,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 523,
+      "prompt_tokens": 730,
+      "total_tokens": 1253,
+      "completion_tokens_details": {
+        "reasoning_tokens": 452
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 730
+    }
+  },
+  "latency_ms": 3914,
+  "usage": {
+    "prompt_tokens": 730,
+    "completion_tokens": 523
+  },
+  "created_at": "2026-10-19T18:43:00.619134+00:00"
+}

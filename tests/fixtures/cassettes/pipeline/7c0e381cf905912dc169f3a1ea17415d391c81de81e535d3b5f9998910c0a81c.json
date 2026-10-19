@@ -1,0 +1,183 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you. You must respond with exactly one tool call per step. Do not output any text, only the tool call. The tool call must be valid JSON matching the function schema. The tool name must be one of: lookup_order, issue_refund, escalate_to_human. The arguments must match the schema for that tool. Do not include any extra fields. Do not include any explanation or commentary. Do not use markdown formatting. Do not use code fences. Output only the tool call object."
+      },
+      {
+        "role": "user",
+        "content": "Customer message: My order HH-55555 arrived with a cracked screen. I want a refund please. Tool results so far: (none yet) Choose the next tool."
+      },
+      {
+        "role": "assistant",
+        "content": "lookup_order"
+      },
+      {
+        "role": "user",
+        "content": "Customer message: Order HH-55555 shows delivered but the screen is cracked. I want a refund. Tool results so far: lookup_order -> order HH-55555 status delivered items [phone] total 199.99 USD charges [199.99 USD] Choose the next tool."
+      },
+      {
+        "role": "assistant",
+        "content": "issue_refund"
+      },
+      {
+        "role": "user",
+        "content": "Customer message: This is fraud! Order HH-99999 never arrived and I'm calling my lawyer. Tool results so far: (none yet) Choose the next tool."
+      },
+      {
+        "role": "assistant",
+        "content": "escalate_to_human"
+      },
+      {
+        "role": "user",
+        "content": "Customer message:\n注文番号 HH-80194 の商品が破損して届きました。返金をお願いします。\n\nTool results so far:\n- lookup_order returned: Order HH-80194: status DELIVERED 2025-09-03, items: Wireless earbuds x1, total 21.65 USD, paid by Visa ending 8823, damage confirmed via customer photo.\n\nChoose the next tool."
+      }
+    ],
+    "params": {
+      "max_tokens": 512,
+      "temperature": 0.0,
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "lookup_order",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "order_id": {
+                  "type": "string",
+                  "description": "Order id, e.g. HH-48213"
+                }
+              },
+              "required": [
+                "order_id"
+              ]
+            },
+            "description": "Fetch an order's status, items, total and charges from the order system."
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "issue_refund",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "order_id": {
+                  "type": "string",
+                  "description": "Order id, e.g. HH-48213"
+                },
+                "amount": {
+                  "type": "number",
+                  "description": "Refund amount, at most 200.00"
+                },
+                "currency": {
+                  "type": "string",
+                  "description": "ISO 4217 code of the order"
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "damaged",
+                    "missing_item",
+                    "duplicate_charge",
+                    "other"
+                  ]
+                }
+              },
+              "required": [
+                "order_id",
+                "amount",
+                "currency",
+                "reason"
+              ]
+            },
+            "description": "Refund part or all of an order to the original payment method."
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "escalate_to_human",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "description": "One sentence for the human agent"
+                },
+                "priority": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "normal",
+                    "urgent"
+                  ]
+                }
+              },
+              "required": [
+                "reason",
+                "priority"
+              ]
+            },
+            "description": "Hand the ticket to a human support agent."
+          }
+        }
+      ],
+      "tool_choice": "required",
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-9a620a0b984e5eb0",
+    "choices": [
+      {
+        "finish_reason": "tool_calls",
+        "index": 0,
+        "message": {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "chatcmpl-tool-986243241aadc791",
+              "function": {
+                "arguments": "{\"order_id\": \"HH-80194\", \"amount\": 21.65, \"currency\": \"USD\", \"reason\": \"damaged\"}",
+                "name": "issue_refund"
+              },
+              "type": "function"
+            }
+          ]
+        }
+      }
+    ],
+    "created": 1792435310,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 63,
+      "prompt_tokens": 1097,
+      "total_tokens": 1160,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 1097
+    }
+  },
+  "latency_ms": 1781,
+  "usage": {
+    "prompt_tokens": 1097,
+    "completion_tokens": 63
+  },
+  "created_at": "2026-10-19T18:41:51.524514+00:00"
+}

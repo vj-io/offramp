@@ -1,0 +1,60 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write handoff notes for HelpHub support agents taking over a ticket.\nSummarise the thread in English, in at most 120 words, with three labelled parts:\nIssue, Tried so far, Next step.\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\nMention internal notes only as \"internal note\"; their wording is for agents, never the customer."
+      },
+      {
+        "role": "user",
+        "content": "Ticket thread, 3 messages:\n\n[2025-09-03T13:00:00Z] customer (Lena Fischer): Cancel my annual plan please, I bought it by mistake 5 days ago.\n[2025-09-03T13:20:00Z] internal_note (Sam (HelpHub)): Within 14-day window, so full refund. Customer paid 1,188.00 EUR. Needs finance approval above 1,000.\n[2025-09-03T13:22:00Z] agent (Sam (HelpHub)): Hi Lena, I have asked our finance team to approve the full refund. I will confirm tomorrow."
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-b46f5006346fd3b0",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "Issue: Customer Lena Fischer requests cancellation of annual plan purchased 5 days ago by mistake.\nTried so far: Agent Sam confirmed eligibility for full refund (1,188.00 EUR) within 14-day window. Internal note: finance approval required for amounts above 1,000 EUR. Agent informed customer finance team approval requested, confirmation expected tomorrow.\nNext step: Await finance team approval and confirm refund processing to customer.",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435172,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 93,
+      "prompt_tokens": 266,
+      "total_tokens": 359,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 266
+    }
+  },
+  "latency_ms": 1852,
+  "usage": {
+    "prompt_tokens": 266,
+    "completion_tokens": 93
+  },
+  "created_at": "2026-10-19T18:39:33.805250+00:00"
+}

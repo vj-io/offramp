@@ -1,0 +1,154 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\n\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve."
+      },
+      {
+        "role": "user",
+        "content": "Customer message:\n注文 HH-98815 の商品が届きませんでした。これは詐欺だと考え、法的措置を検討しています。\n\nTool results so far:\n(none yet)\n\nChoose the next tool."
+      }
+    ],
+    "params": {
+      "max_tokens": 512,
+      "temperature": 0.0,
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "lookup_order",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "order_id": {
+                  "type": "string",
+                  "description": "Order id, e.g. HH-48213"
+                }
+              },
+              "required": [
+                "order_id"
+              ]
+            },
+            "description": "Fetch an order's status, items, total and charges from the order system."
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "issue_refund",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "order_id": {
+                  "type": "string",
+                  "description": "Order id, e.g. HH-48213"
+                },
+                "amount": {
+                  "type": "number",
+                  "description": "Refund amount, at most 200.00"
+                },
+                "currency": {
+                  "type": "string",
+                  "description": "ISO 4217 code of the order"
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "damaged",
+                    "missing_item",
+                    "duplicate_charge",
+                    "other"
+                  ]
+                }
+              },
+              "required": [
+                "order_id",
+                "amount",
+                "currency",
+                "reason"
+              ]
+            },
+            "description": "Refund part or all of an order to the original payment method."
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "escalate_to_human",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "description": "One sentence for the human agent"
+                },
+                "priority": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "normal",
+                    "urgent"
+                  ]
+                }
+              },
+              "required": [
+                "reason",
+                "priority"
+              ]
+            },
+            "description": "Hand the ticket to a human support agent."
+          }
+        }
+      ],
+      "tool_choice": "auto",
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-5fd528b5",
+    "choices": [
+      {
+        "finish_reason": "tool_calls",
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "call_f91fbdc696a64ee4ac3c9d92",
+              "function": {
+                "arguments": "{\"order_id\":\"HH-98815\"}",
+                "name": "lookup_order"
+              },
+              "type": "function"
+            }
+          ]
+        }
+      }
+    ],
+    "created": 1792435127,
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 32,
+      "prompt_tokens": 1004,
+      "total_tokens": 1036,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 1004
+    }
+  },
+  "latency_ms": 1029,
+  "usage": {
+    "prompt_tokens": 1004,
+    "completion_tokens": 32
+  },
+  "created_at": "2026-10-19T18:38:47.953608+00:00"
+}

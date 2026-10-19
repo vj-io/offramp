@@ -1,0 +1,184 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are Offramp's Iterator Agent. Offramp moves one LLM call site in a Python repo from a closed model to NVIDIA Nemotron on Nebius Token Factory and evaluates the migrated call against reference outputs before opening a pull request. The current adapter was evaluated on the tier named in the facts and failed some development cases. Propose the next adapter version: fix what the failing cases have in common without breaking the cases that already pass. The code around the call does not change, so the reply must stay exactly as parseable by it as before.\n\nYou may change only these fields:\n- system_prompt: the complete replacement system message, or null to keep the current one. Keep every rule of the original; you may clarify, reorder or add instructions.\n- user_prefix / user_suffix: text placed before / after the user message (the case input). Return the complete new values (\"\" for none).\n- few_shot: example exchanges inserted after the system message, as user/assistant pairs. Each user message is shaped like a real input; each assistant message is exactly the reply format the code parses. Return the complete new list. Write new examples: never copy a failing case's input with its reference answer.\n- reasoning: \"off\", or \"low\"/\"medium\"/\"high\" for thinking on (the three behave the same). Thinking helps multi-step arithmetic and multi-rule policies and costs latency and tokens; on the Lightning tier it leaks reasoning prose into the reply.\n- output_mode: \"text\" keeps the current format. \"json_schema\" (guided decoding against the site's schema) or \"json_object\" (any JSON object, validated afterwards) only when the code parses a JSON object.\n- max_tokens: the answer budget, or null to keep it; room for thinking is added automatically.\nTools, tool_choice, temperature and every other parameter stay as they are.\n\nEach failing case shows its input messages before the adapter is applied, the reference output it must match, the candidate's output (or the call error), and the scorer's error category and detail.\n\ndiagnosis: what the failures have in common, in 1-3 sentences, decided before the changes.\nchange_log: 1-5 short entries, one per change, in plain words (e.g. \"Added a worked example of the proration rule\").\n\nReply with one JSON object only."
+      },
+      {
+        "role": "user",
+        "content": "{\n \"tier\": \"super\",\n \"site\": {\n  \"id\": \"cs_02\",\n  \"file\": \"helphub/ops/agent_step.py\",\n  \"sdk\": \"anthropic\",\n  \"function\": \"next_action\",\n  \"source_model\": \"claude-sonnet-4-5\",\n  \"template\": {\n   \"system\": \"You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\\n\\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve.\",\n   \"user\": \"Customer message:\\n{ticket_text}\\n\\nTool results so far:\\n{steps}\\n\\nChoose the next tool.\",\n   \"variables\": [\n    \"ticket_text\",\n    \"steps\"\n   ]\n  },\n  \"params\": {\n   \"tools\": [\n    {\n     \"name\": \"lookup_order\",\n     \"description\": \"Fetch an order's status, items, total and charges from the order system.\",\n     \"input_schema\": {\n      \"type\": \"object\",\n      \"properties\": {\n       \"order_id\": {\n        \"type\": \"string\",\n        \"description\": \"Order id, e.g. HH-48213\"\n       }\n      },\n      \"required\": [\n       \"order_id\"\n      ]\n     }\n    },\n    {\n     \"name\": \"issue_refund\",\n     \"description\": \"Refund part or all of an order to the original payment method.\",\n     \"input_schema\": {\n      \"type\": \"object\",\n      \"properties\": {\n       \"order_id\": {\n        \"type\": \"string\",\n        \"description\": \"Order id, e.g. HH-48213\"\n       },\n       \"amount\": {\n        \"type\": \"number\",\n        \"description\": \"Refund amount, at most 200.00\"\n       },\n       \"currency\": {\n        \"type\": \"string\",\n        \"description\": \"ISO 4217 code of the order\"\n       },\n       \"reason\": {\n        \"type\": \"string\",\n        \"enum\": [\n         \"damaged\",\n         \"missing_item\",\n         \"duplicate_charge\",\n         \"other\"\n        ]\n       }\n      },\n      \"required\": [\n       \"order_id\",\n       \"amount\",\n       \"currency\",\n       \"reason\"\n      ]\n     }\n    },\n    {\n     \"name\": \"escalate_to_human\",\n     \"description\": \"Hand the ticket to a human support agent.\",\n     \"input_schema\": {\n      \"type\": \"object\",\n      \"properties\": {\n       \"reason\": {\n        \"type\": \"string\",\n        \"description\": \"One sentence for the human agent\"\n       },\n       \"priority\": {\n        \"type\": \"string\",\n        \"enum\": [\n         \"low\",\n         \"normal\",\n         \"urgent\"\n        ]\n       }\n      },\n      \"required\": [\n       \"reason\",\n       \"priority\"\n      ]\n     }\n    }\n   ],\n   \"tool_choice\": {\n    \"type\": \"any\"\n   },\n   \"max_tokens\": 512,\n   \"system\": \"You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\\n\\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve.\"\n  }\n },\n \"contract\": {\n  \"task_type\": \"tool_call\",\n  \"output\": \"tool_call\",\n  \"tools\": true,\n  \"streaming\": false,\n  \"latency_budget_ms\": null,\n  \"reasoning_heavy\": false,\n  \"labels\": [],\n  \"json_schema\": null\n },\n \"output_schema_known\": false,\n \"current_adapter\": {\n  \"version\": 0,\n  \"spec\": {\n   \"system_prompt\": null,\n   \"user_prefix\": \"\",\n   \"user_suffix\": \"\",\n   \"few_shot\": [],\n   \"response_format\": null,\n   \"json_mode_fallback\": false,\n   \"tools\": [\n    {\n     \"type\": \"function\",\n     \"function\": {\n      \"name\": \"lookup_order\",\n      \"parameters\": {\n       \"type\": \"object\",\n       \"properties\": {\n        \"order_id\": {\n         \"type\": \"string\",\n         \"description\": \"Order id, e.g. HH-48213\"\n        }\n       },\n       \"required\": [\n        \"order_id\"\n       ]\n      },\n      \"description\": \"Fetch an order's status, items, total and charges from the order system.\"\n     }\n    },\n    {\n     \"type\": \"function\",\n     \"function\": {\n      \"name\": \"issue_refund\",\n      \"parameters\": {\n       \"type\": \"object\",\n       \"properties\": {\n        \"order_id\": {\n         \"type\": \"string\",\n         \"description\": \"Order id, e.g. HH-48213\"\n        },\n        \"amount\": {\n         \"type\": \"number\",\n         \"description\": \"Refund amount, at most 200.00\"\n        },\n        \"currency\": {\n         \"type\": \"string\",\n         \"description\": \"ISO 4217 code of the order\"\n        },\n        \"reason\": {\n         \"type\": \"string\",\n         \"enum\": [\n          \"damaged\",\n          \"missing_item\",\n          \"duplicate_charge\",\n          \"other\"\n         ]\n        }\n       },\n       \"required\": [\n        \"order_id\",\n        \"amount\",\n        \"currency\",\n        \"reason\"\n       ]\n      },\n      \"description\": \"Refund part or all of an order to the original payment method.\"\n     }\n    },\n    {\n     \"type\": \"function\",\n     \"function\": {\n      \"name\": \"escalate_to_human\",\n      \"parameters\": {\n       \"type\": \"object\",\n       \"properties\": {\n        \"reason\": {\n         \"type\": \"string\",\n         \"description\": \"One sentence for the human agent\"\n        },\n        \"priority\": {\n         \"type\": \"string\",\n         \"enum\": [\n          \"low\",\n          \"normal\",\n          \"urgent\"\n         ]\n        }\n       },\n       \"required\": [\n        \"reason\",\n        \"priority\"\n       ]\n      },\n      \"description\": \"Hand the ticket to a human support agent.\"\n     }\n    }\n   ],\n   \"tool_choice\": \"required\",\n   \"reasoning\": \"off\",\n   \"max_tokens\": 512\n  },\n  \"last_change_log\": []\n },\n \"failing_dev_cases\": {\n  \"count_by_error_category\": {\n   \"wrong_tool\": 3\n  },\n  \"shown\": [\n   {\n    \"id\": \"cs_02:001\",\n    \"input_messages\": [\n     {\n      \"role\": \"system\",\n      \"content\": \"You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\\n\\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve.\"\n     },\n     {\n      \"role\": \"user\",\n      \"content\": \"Customer message:\\nhh-80194 daijobu desu ka? kakkaku ga warukatta node henkou shitai desu\\n\\nTool results so far:\\n(none yet)\\n\\nChoose the next tool.\"\n     }\n    ],\n    \"reference\": {\n     \"text\": null,\n     \"tool_calls\": [\n      {\n       \"name\": \"escalate_to_human\",\n       \"arguments\": {\n        \"reason\": \"(free: not compared)\",\n        \"priority\": \"(free: not compared)\"\n       }\n      }\n     ]\n    },\n    \"candidate\": {\n     \"text\": null,\n     \"tool_calls\": [\n      {\n       \"name\": \"lookup_order\",\n       \"arguments\": {\n        \"order_id\": \"HH-80194\"\n       }\n      }\n     ]\n    },\n    \"error\": null,\n    \"error_category\": \"wrong_tool\",\n    \"detail\": \"expected ['escalate_to_human'], got ['lookup_order']\"\n   },\n   {\n    \"id\": \"cs_02:004\",\n    \"input_messages\": [\n     {\n      \"role\": \"system\",\n      \"content\": \"You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\\n\\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve.\"\n     },\n     {\n      \"role\": \"user\",\n      \"content\": \"Customer message:\\nI placed order HH-11223 three weeks ago for a birthday gift. It was supposed to arrive by standard shipping but tracking shows it got stuck in customs clearance in Chicago since May 12. Ive called twice and emailed support but no one has given me a clear answer. The item is a limited edition vinyl record that was hard to find and now Im worried it might be lost or damaged. I need to know if theres anything we can do to expedite or if I should just wait longer because returning it would be a hassle and I dont want to lose the payment either.\\n\\nTool results so far:\\n(none yet)\\n\\nChoose the next tool.\"\n     }\n    ],\n    \"reference\": {\n     \"text\": null,\n     \"tool_calls\": [\n      {\n       \"name\": \"escalate_to_human\",\n       \"arguments\": {\n        \"reason\": \"(free: not compared)\",\n        \"priority\": \"(free: not compared)\"\n       }\n      }\n     ]\n    },\n    \"candidate\": {\n     \"text\": null,\n     \"tool_calls\": [\n      {\n       \"name\": \"lookup_order\",\n       \"arguments\": {\n        \"order_id\": \"HH-11223\"\n       }\n      }\n     ]\n    },\n    \"error\": null,\n    \"error_category\": \"wrong_tool\",\n    \"detail\": \"expected ['escalate_to_human'], got ['lookup_order']\"\n   },\n   {\n    \"id\": \"cs_02:011\",\n    \"input_messages\": [\n     {\n      \"role\": \"system\",\n      \"content\": \"You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\\n\\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve.\"\n     },\n     {\n      \"role\": \"user\",\n      \"content\": \"Customer message:\\nI was charged twice for order HH-06735 — the same $113.97 hit my card two times within minutes. I've already spoken to my bank and they confirmed the duplicate charge. Please refund the second charge immediately. Also, the package arrived with a cracked lid but that's minor compared to the double billing. My lawyer suggested I file a chargeback if this isn't resolved today.\\n\\nTool results so far:\\n- lookup_order returned: Order HH-06735: status DELIVERED 2025-09-02, items: Stainless steel lunchbox x1, total 113.97 USD, paid by card ending 4417, duplicate charge confirmed: yes (two identical authorizations).\\n\\nChoose the next tool.\"\n     }\n    ],\n    \"reference\": {\n     \"text\": null,\n     \"tool_calls\": [\n      {\n       \"name\": \"issue_refund\",\n       \"arguments\": {\n        \"order_id\": \"HH-06735\",\n        \"amount\": 113.97,\n        \"currency\": \"USD\",\n        \"reason\": \"duplicate_charge\"\n       }\n      }\n     ]\n    },\n    \"candidate\": {\n     \"text\": null,\n     \"tool_calls\": [\n      {\n       \"name\": \"escalate_to_human\",\n       \"arguments\": {\n        \"reason\": \"Customer mentions lawyer and potential chargeback due to duplicate charge.\",\n        \"priority\": \"urgent\"\n       }\n      }\n     ]\n    },\n    \"error\": null,\n    \"error_category\": \"wrong_tool\",\n    \"detail\": \"expected ['issue_refund'], got ['escalate_to_human']\"\n   }\n  ]\n }\n}"
+      }
+    ],
+    "params": {
+      "max_tokens": 4000,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "IteratorDecision",
+          "schema": {
+            "$defs": {
+              "FewShotMessage": {
+                "properties": {
+                  "role": {
+                    "enum": [
+                      "user",
+                      "assistant"
+                    ],
+                    "title": "Role",
+                    "type": "string"
+                  },
+                  "content": {
+                    "maxLength": 4000,
+                    "title": "Content",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "role",
+                  "content"
+                ],
+                "title": "FewShotMessage",
+                "type": "object"
+              }
+            },
+            "description": "The Iterator's reply: the next values of the fields it may change.",
+            "properties": {
+              "diagnosis": {
+                "maxLength": 1500,
+                "title": "Diagnosis",
+                "type": "string"
+              },
+              "system_prompt": {
+                "anyOf": [
+                  {
+                    "maxLength": 8000,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "System Prompt"
+              },
+              "user_prefix": {
+                "default": "",
+                "maxLength": 1000,
+                "title": "User Prefix",
+                "type": "string"
+              },
+              "user_suffix": {
+                "default": "",
+                "maxLength": 1000,
+                "title": "User Suffix",
+                "type": "string"
+              },
+              "few_shot": {
+                "items": {
+                  "$ref": "#/$defs/FewShotMessage"
+                },
+                "maxItems": 6,
+                "title": "Few Shot",
+                "type": "array"
+              },
+              "reasoning": {
+                "enum": [
+                  "off",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "title": "Reasoning",
+                "type": "string"
+              },
+              "output_mode": {
+                "enum": [
+                  "text",
+                  "json_schema",
+                  "json_object"
+                ],
+                "title": "Output Mode",
+                "type": "string"
+              },
+              "max_tokens": {
+                "anyOf": [
+                  {
+                    "maximum": 16000,
+                    "minimum": 16,
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Max Tokens"
+              },
+              "change_log": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 5,
+                "minItems": 1,
+                "title": "Change Log",
+                "type": "array"
+              }
+            },
+            "required": [
+              "diagnosis",
+              "reasoning",
+              "output_mode",
+              "change_log"
+            ],
+            "title": "IteratorDecision",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-bffa8879c9d649a1",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\n  \"diagnosis\": \"The model misclassifies three distinct situations: (1) a non-English request with an order ID but no clear refund-eligible issue, (2) a complex shipping/customs delay that falls outside the three refund-eligible reasons, and (3) a verified duplicate charge where the model overreacts to the lawyer/chargeback mention instead of issuing the eligible refund. The common thread is insufficient discrimination between 'escalate' and the other two tools when the customer message contains emotional language, legal threats, or non-standard issues.\",\n  \"system_prompt\": \"You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you. Think step by step before choosing a tool, but output only the tool call. Do not include any reasoning text in your reply; the system strips it automatically. If reasoning prose appears, the call will be rejected. Use the following decision logic in order: 1) If the customer message contains no order ID at all, escalate_to_human. 2) If order details are not yet known (no prior lookup_order result for that ID), call lookup_order with the order ID from the customer's message. 3) If order details are known, check refund eligibility: the item arrived damaged, an item is missing, or a duplicate charge is confirmed in the lookup result. If eligible, call issue_refund for the exact eligible amount (≤ amount paid, ≤ 200.00) with the matching reason (damaged, missing_item, duplicate_charge). 4) If the customer threatens legal action, chargeback, fraud, or is abusive, escalate_to_human with priority urgent. 5) For any other situation (shipping delays, customs holds, vague dissatisfaction, requests outside the three refund reasons), escalate_to_human with priority normal.\",\n  \"user_prefix\": \"\",\n  \"user_suffix\": \"\",\n  \"few_shot\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Customer message: こんにちは、注文HH-99887の商品が届きません。追跡番号も機能しません。返金してください。Tool results so far: (none yet) Choose the next tool.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"lookup_order(order_id='HH-99887')\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Customer message: Order HH-55441 arrived but the ceramic mug was shattered. I have photos. Please refund. Tool results so far: - lookup_order returned: Order HH-55441: status DELIVERED 2025-08-15, items: Ceramic mug x1, total 42.50 USD, paid by card ending 1122. Choose the next tool.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"issue_refund(order_id='HH-55441', amount=42.5, currency='USD', reason='damaged')\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Customer message: I ordered HH-77332 and was billed twice for $89.00. My bank shows two identical charges. Refund the duplicate. Tool results so far: - lookup_order returned: Order HH-77332: status DELIVERED 2025-07-20, items: Wireless headphones x1, total 89.00 USD, paid by card ending 3344, duplicate charge confirmed: yes (two identical authorizations). Choose the next tool.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": \"issue_refund(order_id='HH-77332', amount=89.0, currency='USD', reason='duplicate_charge')\"\n    }\n  ],\n  \"reasoning\": \"medium\",\n  \"output_mode\": \"text\",\n  \"max_tokens\": 512\n  ,\n  \"change_log\": [\n    \"Added explicit step-by-step decision logic to the system prompt to prevent misclassification of non-refund-eligible issues and legal-threat language.\",\n    \"Added three few-shot examples covering non-English lookup, damaged-item refund, and duplicate-charge refund to anchor correct tool selection.\",\n    \"Enabled medium reasoning to allow the model to apply the decision logic internally without leaking prose into the output.\"\n  ]\n}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435277,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 971,
+      "prompt_tokens": 3774,
+      "total_tokens": 4745,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 3774
+    }
+  },
+  "latency_ms": 4036,
+  "usage": {
+    "prompt_tokens": 3774,
+    "completion_tokens": 971
+  },
+  "created_at": "2026-10-19T18:41:21.032663+00:00"
+}

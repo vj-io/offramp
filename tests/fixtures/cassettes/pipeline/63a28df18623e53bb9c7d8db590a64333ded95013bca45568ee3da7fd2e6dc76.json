@@ -1,0 +1,56 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words."
+      },
+      {
+        "role": "user",
+        "content": "Knowledge-base excerpts:\n(none found)\n\nCustomer question: Do you sell gift cards?"
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.2,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-9227d0fa",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "I do not have information about gift card availability in the knowledge base. I can connect you with a human agent who can provide details about our gift card offerings. Would you like me to help you with that?",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435418,
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 43,
+      "prompt_tokens": 137,
+      "total_tokens": 180,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 137
+    }
+  },
+  "latency_ms": 791,
+  "usage": {
+    "prompt_tokens": 137,
+    "completion_tokens": 43
+  },
+  "created_at": "2026-10-19T18:43:38.951993+00:00"
+}

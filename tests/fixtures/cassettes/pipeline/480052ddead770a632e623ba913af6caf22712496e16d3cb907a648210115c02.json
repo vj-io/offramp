@@ -1,0 +1,56 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write handoff notes for HelpHub support agents taking over a ticket.\nSummarise the thread in English, in at most 120 words, with three labelled parts:\nIssue, Tried so far, Next step.\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\nMention internal notes only as \"internal note\"; their wording is for agents, never the customer."
+      },
+      {
+        "role": "user",
+        "content": "Ticket thread, 6 messages:\n\n[2025-09-01T08:12:00Z] customer (Priya Nair): I was charged $49.00 twice for March.\n[2025-09-01T09:40:00Z] agent (Tom (HelpHub)): Thanks Priya, I can see both charges. I will refund the duplicate today.\n[2025-09-02T10:00:00Z] customer (Priya Nair): still waiting refund for $49.00 order HH-55901?? also why is my lamp base not here yet Marcus Webb had same issue\n[2025-09-02T10:05:00Z] system (system): Carrier trace #TR-90311 opened.\n[2025-09-02T11:00:00Z] internal_note (Tom (HelpHub)): Checked: address change was saved 2025-08-04 18:02 UTC but the order was already routed. Our bug, not the customer's.\n[2025-09-02T11:15:00Z] agent (Tom (HelpHub)): Refund for $49.00 processed. The lamp base is a different order HH-55901 ($24.00) which Dana is handling. Please ignore the internal note about address bug that was for Marcus."
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-08361f32",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "Issue: Customer charged $49.00 twice for March; duplicate refund processed. Customer also inquiring about lamp base order HH-55901 ($24.00) not yet received.\n\nTried so far: Refund for $49.00 order HH-55901 processed. Carrier trace #TR-90311 opened for lamp base shipment. Internal note regarding address bug exists but is unrelated to this ticket (per agent note).\n\nNext step: Monitor refund posting and lamp base delivery; Dana handling order HH-55901.",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435454,
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 124,
+      "prompt_tokens": 447,
+      "total_tokens": 571,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 447
+    }
+  },
+  "latency_ms": 3075,
+  "usage": {
+    "prompt_tokens": 447,
+    "completion_tokens": 124
+  },
+  "created_at": "2026-10-19T18:44:14.781453+00:00"
+}

@@ -1,0 +1,61 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words."
+      },
+      {
+        "role": "user",
+        "content": "Knowledge-base excerpts:\n[two-factor-authentication] Two-factor authentication\nTurn on two-factor authentication under Account, Security. We support authenticator apps and security keys. When you enable it we show 10 one-time recovery codes; store them somewhere safe.\n\nIf you lose your device, sign in with a recovery code and add a new device. Without a recovery code, support can reset two-factor only after verifying your identity, which takes up to 2 business days.\n\nCustomer question: ¿Cómo activo la autenticación en dos pasos?"
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.2,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-be1ac732a901dbd2",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "Para activar la autenticación en dos pasos, ve a **Account > Security** y activa la opción allí. Puedes usar una aplicación de autenticador o una clave de seguridad. Al habilitarla, se te mostrarán 10 códigos de recuperación únicos que debes guardar de forma segura [two-factor-authentication]. Si pierdes tu dispositivo, puedes iniciar sesión con un código de recuperación y agregar uno nuevo. Sin un código de recuperación, el soporte puede restablecerlo tras verificar tu identidad, lo que toma hasta 2 días hábiles [two-factor-authentication].",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435140,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 123,
+      "prompt_tokens": 229,
+      "total_tokens": 352,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 229
+    }
+  },
+  "latency_ms": 2677,
+  "usage": {
+    "prompt_tokens": 229,
+    "completion_tokens": 123
+  },
+  "created_at": "2026-10-19T18:39:01.090008+00:00"
+}

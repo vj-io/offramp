@@ -1,0 +1,60 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words."
+      },
+      {
+        "role": "user",
+        "content": "Knowledge-base excerpts:\n[refund-policy] Refund policy\nPhysical orders can be refunded within 30 days of delivery if the item is unused, damaged, or not as described. Refunds go back to the original payment method and usually appear within 5 to 10 business days.\n\nSubscriptions are refunded separately. Annual plans cancelled within 14 days of the billing period start receive a full refund. After that we refund the unused part of the period, prorated by day, minus a 3% processing fee. Monthly plans are prorated by day from the first day.\n\nRefunds are issued in the currency you paid in, at the exchange rate recorded when you paid.\n\n[cancel-subscription] Cancelling your subscription\nCancel any time under Account, Billing, \"Cancel plan\". Access continues until the end of the paid period unless you ask for a refund, in which case access ends immediately.\n\nRefund eligibility follows the refund policy: annual plans cancelled within 14 days of the period start are refunded in full; later cancellations are prorated by unused days minus a 3% processing fee.\n\nCustomer question: quiero reembolso plan anual despues 3 semanas y tambien devolver gift card digital ya usada?? ayuda rapido por favor"
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.2,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-940190a76fdd24b3",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "Según la política de reembolsos, los planes anuales cancelados **después de 14 días** del inicio del período de facturación reciben un reembolso prorrateado por los días no utilizados, **menos una tarifa de procesamiento del 3%** [refund-policy].\n\nRespecto a la **gift card digital ya usada**: los extractos proporcionados no cubren este caso específico. No tengo esa información.\n\n¿Quieres que te conecte con un agente humano para revisar lo de la gift card?",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435140,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 116,
+      "prompt_tokens": 388,
+      "total_tokens": 504,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 388
+    }
+  },
+  "latency_ms": 1900,
+  "usage": {
+    "prompt_tokens": 388,
+    "completion_tokens": 116
+  },
+  "created_at": "2026-10-19T18:39:01.976481+00:00"
+}

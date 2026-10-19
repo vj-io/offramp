@@ -1,0 +1,60 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write handoff notes for HelpHub support agents taking over a ticket.\nSummarise the thread in English, in at most 120 words, with three labelled parts:\nIssue, Tried so far, Next step.\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\nMention internal notes only as \"internal note\"; their wording is for agents, never the customer."
+      },
+      {
+        "role": "user",
+        "content": "Ticket thread, 3 messages:\n\n[2025-09-04T07:30:00Z] customer (Katharina Müller): Meine Bestellung HH-30417 ist immer noch nicht in Wien angekommen. Seit 9 Tagen keine Bewegung.\n[2025-09-04T10:15:00Z] agent (Dana (HelpHub)): Guten Tag Frau Müller, ich habe eine Nachforschung beim Paketdienst eingeleitet und melde mich bis Freitag.\n[2025-09-05T16:05:00Z] customer (Katharina Müller): Danke. Falls es bis nächste Woche nicht da ist, möchte ich das Geld (62,90 €) zurück."
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-a12688d2e19f5060",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "Issue: Customer Katharina Müller reports order HH-30417 has not arrived in Vienna after 9 days with no tracking movement. She requests a refund of 62,90 € if not delivered by next week.\n\nTried so far: Agent Dana initiated an investigation with the parcel service and committed to follow up by Friday.\n\nNext step: Await investigation results by Friday; process refund of 62,90 € if delivery fails by next week.",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435173,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 97,
+      "prompt_tokens": 274,
+      "total_tokens": 371,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 274
+    }
+  },
+  "latency_ms": 1871,
+  "usage": {
+    "prompt_tokens": 274,
+    "completion_tokens": 97
+  },
+  "created_at": "2026-10-19T18:39:33.833151+00:00"
+}

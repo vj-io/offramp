@@ -1,0 +1,56 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words."
+      },
+      {
+        "role": "user",
+        "content": "Knowledge-base excerpts:\n[reset-password] Resetting your password\nChoose \"Forgot password\" on the sign-in page and enter your account email. The reset link is valid for 30 minutes and works once. Check your spam folder if it does not arrive within 5 minutes.\n\nIf you no longer have access to that email address, contact support from a verified device and we will confirm your identity before changing it.\n\nCustomer question: How do I reset my password?"
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.2,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-aa784e73",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "To reset your password, go to the sign-in page and select \"Forgot password,\" then enter your account email. The reset link is valid for 30 minutes and can only be used once. If the email doesn't arrive within 5 minutes, check your spam folder. If you no longer have access to that email, contact support from a verified device so we can confirm your identity before changing it. [reset-password]",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435138,
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 89,
+      "prompt_tokens": 216,
+      "total_tokens": 305,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 216
+    }
+  },
+  "latency_ms": 1234,
+  "usage": {
+    "prompt_tokens": 216,
+    "completion_tokens": 89
+  },
+  "created_at": "2026-10-19T18:38:58.657273+00:00"
+}

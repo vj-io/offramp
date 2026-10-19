@@ -489,3 +489,30 @@ def test_totals_cost_kept_sites_on_their_source_model():
     assert (t.migrated, t.kept_closed, t.manual_review) == (1, 1, 2)
     assert t.est_cost_before_per_1k == pytest.approx(9.0)
     assert t.est_cost_after_per_1k == pytest.approx(8.2)
+
+
+def test_the_pr_writer_renders_the_body_from_the_run_and_opens_the_pr(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    n_dev, n_holdout = split_counts(repo)
+    log, _ = start(tmp_path, repo)
+    stub, opened = Recorder(), {}
+
+    def open_pr(repo, *, run_id, files, title, body, **kw):  # GitHub itself is Task 10's test (MockTransport)
+        opened.update(repo=repo, run_id=run_id, files=files, title=title, body=body)
+        return "https://github.com/acme/tiny/pull/9"
+
+    monkeypatch.setattr(pipeline.github, "open_pr", open_pr)
+    prose = {
+        "summary": "Moves ticket triage to Nemotron.",
+        "sites": [{"site_id": "cs_01", "note": "Same labels."}],
+    }
+    llm = llm_for_full_run(n_dev, n_holdout).add("pr_writer", prose)
+
+    assert pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch).execute() == Stage.DONE
+    body = pipeline.report(log.dir, log.run_id, log.events)["pr_body_markdown"]
+    assert opened["repo"] == "acme/tiny" and opened["run_id"] == log.run_id
+    assert opened["files"] == {"app/triage.py": "# patched\n"} and opened["body"] == body
+    assert "Moves ticket triage to Nemotron." in body and "## How parity was measured" in body
+    assert "100.0%" in body  # the holdout parity the verdict was decided on
+    assert pr_url(log) == "https://github.com/acme/tiny/pull/9"
+    assert [e.payload["title"] for e in log.events if e.type == "pr"] == [opened["title"]]

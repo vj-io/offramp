@@ -1,0 +1,61 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words."
+      },
+      {
+        "role": "user",
+        "content": "Knowledge-base excerpts:\n[refund-policy] Refund policy\nPhysical orders can be refunded within 30 days of delivery if the item is unused, damaged, or not as described. Refunds go back to the original payment method and usually appear within 5 to 10 business days.\n\nSubscriptions are refunded separately. Annual plans cancelled within 14 days of the billing period start receive a full refund. After that we refund the unused part of the period, prorated by day, minus a 3% processing fee. Monthly plans are prorated by day from the first day.\n\nRefunds are issued in the currency you paid in, at the exchange rate recorded when you paid.\n\nCustomer question: "
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.2,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-b24f6a1867a83864",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "I don't see your specific question about refunds—could you please clarify what you'd like to know? For example, are you asking about returning an order, cancelling a subscription, or how long a refund takes? Once you let me know, I’ll use the refund policy details above to give you an accurate answer.",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435142,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 67,
+      "prompt_tokens": 271,
+      "total_tokens": 338,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 271
+    }
+  },
+  "latency_ms": 4760,
+  "usage": {
+    "prompt_tokens": 271,
+    "completion_tokens": 67
+  },
+  "created_at": "2026-10-19T18:39:03.189561+00:00"
+}

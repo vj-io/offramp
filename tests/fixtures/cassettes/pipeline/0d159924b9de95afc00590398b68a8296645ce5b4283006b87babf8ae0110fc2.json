@@ -1,0 +1,168 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You label one LLM call site from a Python codebase with its output contract, so its behaviour can be\nre-tested on another model. Return JSON with `contract` and `confidence`.\n\ncontract.task_type, one of:\n- classification: picks one label from a fixed set (put the labels, verbatim, in contract.labels)\n- json_extraction: returns JSON with a fixed set of fields\n- tool_call: is given tools and must call one\n- free_text: prose such as answers, replies or summaries\n- reasoning: multi-step math or logic whose final answer is checked\ncontract.output: label | json_schema | json | tool_call | text (json_schema when the code supplies a schema).\ncontract.tools / contract.streaming: whether the call passes tools / streams its response.\ncontract.reasoning_heavy: true when the task needs multi-step reasoning.\ncontract.latency_budget_ms: only when the code states a timeout, else null.\ncontract.json_schema: always null (the scanner sets it from the code).\nconfidence: your probability, 0 to 1, that task_type is right.\n\nIn the prompt template, {name} placeholders are runtime inputs. \"<expr>\" marks a value the scanner could not\nresolve and \"<pydantic:Name>\" stands for that Pydantic model's JSON schema."
+      },
+      {
+        "role": "user",
+        "content": "Call site:\n{\n  \"file\": \"helphub/refunds/plan.py\",\n  \"lines\": [\n    68,\n    89\n  ],\n  \"sdk\": \"openai\",\n  \"call\": \"client.chat.completions.create\",\n  \"function\": \"plan_refund\",\n  \"source_model\": \"o3\",\n  \"prompt_source\": \"fstring\",\n  \"template\": {\n    \"system\": \"You compute subscription refunds for HelpHub billing. Follow this policy exactly, step by step, and show your arithmetic.\\n\\n1. Tiered price. The list price is in USD per seat per billing period. Seats are priced in graduated tiers: seats 1-10 cost 100% of list price, seats 11-50 cost 85%, seats 51 and above cost 70%. Subtotal = sum over the tiers of (seats in that tier x list price x tier rate). Round the subtotal to 2 decimals, half up.\\n2. Coupon. Take the coupon percentage off the subtotal and round to 2 decimals, half up. The result is the USD amount paid for the period.\\n3. Days used. Days used = the number of days from the period start date to the cancellation date, counting both dates. Unused days = billing period days - days used, never below 0.\\n4. Refundable amount in USD. If the billing period is 365 days and days used is 14 or fewer, the refundable amount is the full amount paid. Otherwise, prorated = amount paid x unused days / billing period days, rounded to 2 decimals half up; then subtract a 3% processing fee on the prorated amount, rounded to 2 decimals half up. The fee is not charged on a full refund.\\n5. Prior refunds. Subtract the USD refunds already issued from the refundable amount. If the result is negative, it is 0.\\n6. Currency. Multiply by the exchange rate recorded at purchase (units of the customer's currency per 1 USD) and round half up to the currency's minor unit: 2 decimals for USD, EUR and GBP, 0 decimals for JPY.\\n7. Show your working, then put the final refund in the customer's currency alone on the last line as `ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator).\",\n    \"user\": \"Plan: {request_plan_name}, billing period {request_period_days} days\\nList price: {request_list_price_usd} USD per seat per period\\nSeats: {request_seats}\\nPeriod start: {request_period_start}\\nCancelled on: {request_cancel_date}\\nCoupon: {request_coupon_pct}% off\\nRefunds already issued: {request_prior_refund_usd} USD\\nCustomer paid in {request_currency} at {request_fx_rate} {request_currency} per 1 USD\\n\\nHow much do we refund, in {request_currency}?\",\n    \"variables\": [\n      \"request_plan_name\",\n      \"request_period_days\",\n      \"request_list_price_usd\",\n      \"request_seats\",\n      \"request_period_start\",\n      \"request_cancel_date\",\n      \"request_coupon_pct\",\n      \"request_prior_refund_usd\",\n      \"request_currency\",\n      \"request_fx_rate\"\n    ]\n  },\n  \"params\": {\n    \"max_completion_tokens\": 16000\n  },\n  \"flags\": []\n}\n\nCode:\n```python\nclass RefundPlan(BaseModel):\n    amount: Decimal  # refund in the customer's currency\n    working: str  # the model's full reply\n\n\nclass PlanParseError(ValueError):\n    \"\"\"The reply did not end with an `ANSWER: <number>` line.\"\"\"\n\n\nANSWER_LINE = re.compile(r\"ANSWER:\\s*\\**\\s*(-?[\\d,]*\\.?\\d+)\")\n\n\ndef parse_answer(text: str) -> Decimal:\n    matches = ANSWER_LINE.findall(text)\n    if not matches:\n        raise PlanParseError(f\"no ANSWER line in model reply: {text[-80:]!r}\")\n    return Decimal(matches[-1].replace(\",\", \"\"))\n\n\ndef plan_refund(client: OpenAI, request: RefundRequest) -> RefundPlan:\n    response = client.chat.completions.create(\n        model=\"o3\",\n        max_completion_tokens=16000,\n        messages=[\n            {\"role\": \"system\", \"content\": REFUND_POLICY},\n            {\n                \"role\": \"user\",\n                \"content\": (\n                    f\"Plan: {request.plan_name}, billing period {request.period_days} days\\n\"\n                    f\"List price: {request.list_price_usd} USD per seat per period\\n\"\n                    f\"Seats: {request.seats}\\n\"\n                    f\"Period start: {request.period_start}\\n\"\n                    f\"Cancelled on: {request.cancel_date}\\n\"\n                    f\"Coupon: {request.coupon_pct}% off\\n\"\n                    f\"Refunds already issued: {request.prior_refund_usd} USD\\n\"\n                    f\"Customer paid in {request.currency} at {request.fx_rate} \"\n                    f\"{request.currency} per 1 USD\\n\\n\"\n                    f\"How much do we refund, in {request.currency}?\"\n                ),\n            },\n        ],\n    )\n    reply = response.choices[0].message.content or \"\"\n    return RefundPlan(amount=parse_answer(reply), working=reply)\n```"
+      }
+    ],
+    "params": {
+      "max_tokens": 1024,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "ContractLabel",
+          "schema": {
+            "$defs": {
+              "Contract": {
+                "properties": {
+                  "task_type": {
+                    "enum": [
+                      "classification",
+                      "json_extraction",
+                      "tool_call",
+                      "free_text",
+                      "reasoning"
+                    ],
+                    "title": "Task Type",
+                    "type": "string"
+                  },
+                  "output": {
+                    "enum": [
+                      "text",
+                      "label",
+                      "json_schema",
+                      "json",
+                      "tool_call"
+                    ],
+                    "title": "Output",
+                    "type": "string"
+                  },
+                  "tools": {
+                    "default": false,
+                    "title": "Tools",
+                    "type": "boolean"
+                  },
+                  "streaming": {
+                    "default": false,
+                    "title": "Streaming",
+                    "type": "boolean"
+                  },
+                  "latency_budget_ms": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Latency Budget Ms"
+                  },
+                  "reasoning_heavy": {
+                    "default": false,
+                    "title": "Reasoning Heavy",
+                    "type": "boolean"
+                  },
+                  "labels": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Labels",
+                    "type": "array"
+                  },
+                  "json_schema": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Json Schema"
+                  }
+                },
+                "required": [
+                  "task_type",
+                  "output"
+                ],
+                "title": "Contract",
+                "type": "object"
+              }
+            },
+            "description": "Super's answer for one call site.",
+            "properties": {
+              "contract": {
+                "$ref": "#/$defs/Contract"
+              },
+              "confidence": {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "title": "Confidence",
+                "type": "number"
+              }
+            },
+            "required": [
+              "contract",
+              "confidence"
+            ],
+            "title": "ContractLabel",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-a66311dfa8b0927d",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"contract\": {\"task_type\": \"reasoning\", \"output\": \"label\", \"tools\": false, \"streaming\": false, \"reasoning_heavy\": true, \"json_schema\": null}, \"confidence\": 0.95}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435084,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 54,
+      "prompt_tokens": 1513,
+      "total_tokens": 1567,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 1513
+    }
+  },
+  "latency_ms": 1474,
+  "usage": {
+    "prompt_tokens": 1513,
+    "completion_tokens": 54
+  },
+  "created_at": "2026-10-19T18:38:04.731108+00:00"
+}

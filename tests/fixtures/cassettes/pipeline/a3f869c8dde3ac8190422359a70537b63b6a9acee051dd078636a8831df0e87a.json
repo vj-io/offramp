@@ -1,0 +1,81 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write one qualitative sentence explaining one Offramp verdict. Offramp tested whether NVIDIA Nemotron on Nebius Token Factory can take over one LLM call site of a Python repo, measured as agreement with reference outputs on held-out cases. MIGRATE: the named tier reached parity on the held-out cases, cheaper tiers did not. KEEP_CLOSED: no tier did, so the call stays on its current model.\n\nWrite one sentence of at most 30 words for an engineer reviewing the pull request: what the call site does and why the verdict follows, in words only. Write no numbers at all: no digits, no number words, no percentages, and no model names or versions (say \"the current model\"). Offramp appends the measured numbers after your sentence. Name the tier as given in the facts.\n\nReply with one JSON object: {\"reason\": \"<the sentence>\"}."
+      },
+      {
+        "role": "user",
+        "content": "{\n \"call_site\": {\n  \"file\": \"helphub/ops/agent_step.py\",\n  \"function\": \"next_action\",\n  \"task_type\": \"tool_call\"\n },\n \"decision\": \"KEEP_CLOSED\",\n \"tier\": \"Lightning\",\n \"outcome\": \"no tier reached parity with the references; this tier came closest\",\n \"adapter_changes\": [\n  \"Rewrote system prompt to explicitly require reading non-English messages and to escalate on legal/fraud language, customs holds, and complex unresolved issues.\",\n  \"Added three few-shot examples: Japanese fraud/legal threat -> escalate, English customs hold with multiple contacts -> escalate, English damaged item -> lookup_order.\",\n  \"Added explicit instruction in system prompt to invoke tools via function-calling mechanism, never output tool names as plain text.\",\n  \"Kept existing few-shot examples but they still show text responses; the system prompt change is the primary fix for the function-calling issue.\",\n  \"Replaced few-shot assistant responses with natural-language reasoning that precedes tool calls, eliminating the conflicting text-only examples that taught the model to output tool names as plain text.\",\n  \"Kept the system prompt's explicit function-calling instruction as the primary behavioral anchor.\"\n ],\n \"holdout_failure_kinds\": [\n  \"wrong_tool\"\n ],\n \"closed_reference_compared\": false\n}"
+      }
+    ],
+    "params": {
+      "max_tokens": 300,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "VerdictReason",
+          "schema": {
+            "properties": {
+              "reason": {
+                "maxLength": 400,
+                "title": "Reason",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "title": "VerdictReason",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-9dbef4d1341683e8",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"reason\": \"The call site selects actions based on user input; none of the tested tiers matched reference behavior closely enough, so the current model remains.\"}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435322,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 33,
+      "prompt_tokens": 488,
+      "total_tokens": 521,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 488
+    }
+  },
+  "latency_ms": 1150,
+  "usage": {
+    "prompt_tokens": 488,
+    "completion_tokens": 33
+  },
+  "created_at": "2026-10-19T18:42:03.274588+00:00"
+}

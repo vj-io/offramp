@@ -1,0 +1,50 @@
+{
+ "cs_01": {
+  "agreed": 0,
+  "auditors": [],
+  "checked": 0,
+  "dropped": 0,
+  "human_verified": 0,
+  "unchecked": 12
+ },
+ "cs_02": {
+  "agreed": 0,
+  "auditors": [],
+  "checked": 0,
+  "dropped": 0,
+  "human_verified": 0,
+  "unchecked": 12
+ },
+ "cs_03": {
+  "agreed": 0,
+  "auditors": [],
+  "checked": 0,
+  "dropped": 0,
+  "human_verified": 0,
+  "unchecked": 9
+ },
+ "cs_04": {
+  "agreed": 0,
+  "auditors": [],
+  "checked": 0,
+  "dropped": 0,
+  "human_verified": 0,
+  "unchecked": 0
+ },
+ "cs_05": {
+  "agreed": 0,
+  "auditors": [],
+  "checked": 0,
+  "dropped": 0,
+  "human_verified": 0,
+  "unchecked": 0
+ },
+ "cs_06": {
+  "agreed": 0,
+  "auditors": [],
+  "checked": 0,
+  "dropped": 0,
+  "human_verified": 0,
+  "unchecked": 0
+ }
+}

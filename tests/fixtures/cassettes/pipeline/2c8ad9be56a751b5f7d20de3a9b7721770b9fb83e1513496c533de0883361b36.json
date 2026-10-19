@@ -1,0 +1,76 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the ticket router for HelpHub, a customer support platform. Classify the customer's ticket into exactly one queue: billing, shipping, returns_refunds, technical_support, account_access, general. Reply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation."
+      },
+      {
+        "role": "user",
+        "content": "Subject: Order confirmation email not received for HH-77401. Payment completed successfully. Please check if there's a system issue with email delivery."
+      },
+      {
+        "role": "assistant",
+        "content": "technical_support"
+      },
+      {
+        "role": "user",
+        "content": "Subject: Cannot log into my account after password reset. Getting 'invalid credentials' error even with new password."
+      },
+      {
+        "role": "assistant",
+        "content": "account_access"
+      },
+      {
+        "role": "user",
+        "content": "Subject: 💳 ¡Error! Doble cargo en tarjeta ending ¥¥42 😱\n\nHola HelpHub Team 👋\n\nMe acabo de dar cuenta de que me han cobrado dos veces por mi suscripción Premium del mes de abril 😕\n\nPrimer cargo: $29.99 el 2024-04-05\nSegundo cargo: $29.99 el 2024-04-06\n\nAdjunto captura de pantalla del banco 📎\n\n¿Podrían revisarlo y devolverme uno de los cargos? Gracias de antemano 🙏\n\n— \nJuan Pérez 🇪🇸\nUsuario desde 2022 ✨"
+      }
+    ],
+    "params": {
+      "max_tokens": 16,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-96b0e60ca0d8dbe6",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "billing",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435246,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 3,
+      "prompt_tokens": 340,
+      "total_tokens": 343,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 340
+    }
+  },
+  "latency_ms": 680,
+  "usage": {
+    "prompt_tokens": 340,
+    "completion_tokens": 3
+  },
+  "created_at": "2026-10-19T18:40:46.247710+00:00"
+}

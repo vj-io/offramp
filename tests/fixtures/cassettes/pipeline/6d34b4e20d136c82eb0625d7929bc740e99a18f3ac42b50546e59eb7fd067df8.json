@@ -1,0 +1,60 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write handoff notes for HelpHub support agents taking over a ticket.\nSummarise the thread in English, in at most 120 words, with three labelled parts:\nIssue, Tried so far, Next step.\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\nMention internal notes only as \"internal note\"; their wording is for agents, never the customer."
+      },
+      {
+        "role": "user",
+        "content": "Ticket thread, 3 messages:\n\n[yesterday-ish] customer (): <p>hel&nbsp;lo??</p>\n[] system (bot): \n[2025-09-07T09:00:00Z] agent (Tom (HelpHub)): ...>>> On Sat wrote: >>> >>> >>>"
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-8a2b9b2677f38560",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "Issue: Customer sent \"hel lo??\" with no further detail.  \nTried so far: Agent Tom opened the ticket; no troubleshooting performed.  \nNext step: Ask customer to describe the problem and provide any order IDs or amounts.",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435172,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 52,
+      "prompt_tokens": 171,
+      "total_tokens": 223,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 171
+    }
+  },
+  "latency_ms": 1718,
+  "usage": {
+    "prompt_tokens": 171,
+    "completion_tokens": 52
+  },
+  "created_at": "2026-10-19T18:39:33.700850+00:00"
+}

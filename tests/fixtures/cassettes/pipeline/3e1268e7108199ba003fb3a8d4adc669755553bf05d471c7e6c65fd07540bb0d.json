@@ -1,0 +1,66 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You extract structured order data from customer support emails. Reply with a single JSON object that validates against the JSON schema given in the user message. Use null for any field the email does not state; never guess. Write dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot as the decimal separator. Keep names exactly as written. The email may be in any language. Do not wrap the JSON in markdown and do not add any commentary. The email is provided as raw headers plus body. The From header contains the customer's name and email; the Date header gives the order date when the body does not state one explicitly. The To header is always support@helphub.example and must never be used for customer_email. Extract order_id, total_amount, and currency only from the customer's own words in the body; ignore numbers that appear in other contexts."
+      },
+      {
+        "role": "user",
+        "content": "JSON schema:\n{\"properties\": {\"order_id\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order id such as HH-48213, null if not stated\", \"title\": \"Order Id\"}, \"customer_name\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Full name of the customer as written\", \"title\": \"Customer Name\"}, \"customer_email\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Customer's email address\", \"title\": \"Customer Email\"}, \"order_date\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order date as YYYY-MM-DD, null if not stated\", \"title\": \"Order Date\"}, \"total_amount\": {\"anyOf\": [{\"type\": \"number\"}, {\"type\": \"null\"}], \"description\": \"Order total as a plain number, no symbol\", \"title\": \"Total Amount\"}, \"currency\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"ISO 4217 currency code, e.g. EUR\", \"title\": \"Currency\"}, \"issue\": {\"enum\": [\"damaged\", \"missing_item\", \"wrong_item\", \"late_delivery\", \"billing_error\", \"other\"], \"title\": \"Issue\", \"type\": \"string\"}}, \"required\": [\"order_id\", \"customer_name\", \"customer_email\", \"order_date\", \"total_amount\", \"currency\", \"issue\"], \"title\": \"OrderFields\", \"type\": \"object\"}\n\nEmail:\nFrom: liam.oc59@example.jp\nTo: support@helphub.example\nDate: Tue, 4 Nov 2025 10:15:22 +0000\nSubject: Problema con el artículo recibido\n\nHola,\n\nEl pedido HH-08089 llegó hoy pero enviaron el artículo equivocado. Ordené la versión azul y recibí la roja. El importe fue 231.38 según el resumen de compra.\n\nPor favor, arreglen esto enviando el correcto y recogiendo el equivocado.\n\nSaludos,\nLiam"
+      }
+    ],
+    "params": {
+      "max_tokens": 4000,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_object"
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-b46db301d42ff3f9",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"order_id\": \"HH-08089\", \"customer_name\": \"Liam\", \"customer_email\": \"liam.oc59@example.jp\", \"order_date\": \"2025-11-04\", \"total_amount\": 231.38, \"currency\": null, \"issue\": \"wrong_item\"}",
+          "role": "assistant",
+          "reasoning": "We need to parse email:\n\nFrom: liam.oc59@example.jp (no name? just email). Customer name should be full name as written. There's no explicit name before email. Could we infer name from signature: \"Saludos,\\nLiam\". So name likely Liam. Should we use exact string \"Liam\"? Probably yes.\n\nCustomer email: liam.oc59@example.jp\n\nOrder ID: In body: \"El pedido HH-08089 llegó hoy...\" so order_id = \"HH-08089\"\n\nTotal amount: \"El importe fue 231.38 según el resumen de compra.\" => total_amount = 231.38 (plain number)\n\nCurrency: Not specified directly. Need to infer maybe default? But instruction: extract order_id, total_amount, and currency only from the customer's own words in the body; ignore numbers that appear in other contexts. Currency not mentioned. We cannot guess. Must set null if not stated. However required fields include currency; but they said use null for any field the email does not state. Even though required list includes it, we still output null per instruction. Likely okay.\n\nOrder date: Body says \"llegó hoy\" but no explicit date. Header Date: Tue, 4 Nov 2025 10:15:22 +0000. That is order date when body does not state one explicitly. So order_date = 2025-11-04.\n\nIssue: The issue described: wrong item received. They ordered blue version got red. That's wrong_item. So issue = \"wrong_item\".\n\nNow produce JSON with those values.\n\nCheck types: order_id string, customer_name string, customer_email string, order_date string YYYY-MM-DD, total_amount number, currency null or string? Since not stated -> null. Issue string enum.\n\nThus final JSON:\n\n{\n  \"order_id\": \"HH-08089\",\n  \"customer_name\": \"Liam\",\n  \"customer_email\": \"liam.oc59@example.jp\",\n  \"order_date\": \"2025-11-04\",\n  \"total_amount\": 231.38,\n  \"currency\": null,\n  \"issue\": \"wrong_item\"\n}\n\nMake sure no extra text.",
+          "reasoning_content": "We need to parse email:\n\nFrom: liam.oc59@example.jp (no name? just email). Customer name should be full name as written. There's no explicit name before email. Could we infer name from signature: \"Saludos,\\nLiam\". So name likely Liam. Should we use exact string \"Liam\"? Probably yes.\n\nCustomer email: liam.oc59@example.jp\n\nOrder ID: In body: \"El pedido HH-08089 llegó hoy...\" so order_id = \"HH-08089\"\n\nTotal amount: \"El importe fue 231.38 según el resumen de compra.\" => total_amount = 231.38 (plain number)\n\nCurrency: Not specified directly. Need to infer maybe default? But instruction: extract order_id, total_amount, and currency only from the customer's own words in the body; ignore numbers that appear in other contexts. Currency not mentioned. We cannot guess. Must set null if not stated. However required fields include currency; but they said use null for any field the email does not state. Even though required list includes it, we still output null per instruction. Likely okay.\n\nOrder date: Body says \"llegó hoy\" but no explicit date. Header Date: Tue, 4 Nov 2025 10:15:22 +0000. That is order date when body does not state one explicitly. So order_date = 2025-11-04.\n\nIssue: The issue described: wrong item received. They ordered blue version got red. That's wrong_item. So issue = \"wrong_item\".\n\nNow produce JSON with those values.\n\nCheck types: order_id string, customer_name string, customer_email string, order_date string YYYY-MM-DD, total_amount number, currency null or string? Since not stated -> null. Issue string enum.\n\nThus final JSON:\n\n{\n  \"order_id\": \"HH-08089\",\n  \"customer_name\": \"Liam\",\n  \"customer_email\": \"liam.oc59@example.jp\",\n  \"order_date\": \"2025-11-04\",\n  \"total_amount\": 231.38,\n  \"currency\": null,\n  \"issue\": \"wrong_item\"\n}\n\nMake sure no extra text."
+        }
+      }
+    ],
+    "created": 1792435369,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 571,
+      "prompt_tokens": 692,
+      "total_tokens": 1263,
+      "completion_tokens_details": {
+        "reasoning_tokens": 494
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 692
+    }
+  },
+  "latency_ms": 10632,
+  "usage": {
+    "prompt_tokens": 692,
+    "completion_tokens": 571
+  },
+  "created_at": "2026-10-19T18:42:52.923823+00:00"
+}

@@ -1,0 +1,56 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write handoff notes for HelpHub support agents taking over a ticket.\nSummarise the thread in English, in at most 120 words, with three labelled parts:\nIssue, Tried so far, Next step.\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\nMention internal notes only as \"internal note\"; their wording is for agents, never the customer."
+      },
+      {
+        "role": "user",
+        "content": "Ticket thread, 1 messages:\n\n[2025-09-06T22:47:00Z] customer (Joe Barrett): Is anybody there? Chat has been 'connecting' for ten minutes."
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-644d4972",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "**Issue:** Customer reports chat has been 'connecting' for ten minutes with no response.\n\n**Tried so far:** No internal notes available.\n\n**Next step:** Investigate chat connection status and agent availability.",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435454,
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 44,
+      "prompt_tokens": 148,
+      "total_tokens": 192,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 148
+    }
+  },
+  "latency_ms": 3214,
+  "usage": {
+    "prompt_tokens": 148,
+    "completion_tokens": 44
+  },
+  "created_at": "2026-10-19T18:44:14.916410+00:00"
+}

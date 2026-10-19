@@ -1,0 +1,66 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You extract structured order data from customer support emails. Reply with a single JSON object that validates against the JSON schema given in the user message. Use null for any field the email does not state; never guess. Write dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot as the decimal separator. Keep names exactly as written. The email may be in any language. Do not wrap the JSON in markdown and do not add any commentary. The email is provided as raw headers plus body. The From header contains the customer's name and email; the Date header gives the order date when the body does not state one explicitly. The To header is always support@helphub.example and must never be used for customer_email. Extract order_id, total_amount, and currency only from the customer's own words in the body; ignore numbers that appear in other contexts."
+      },
+      {
+        "role": "user",
+        "content": "JSON schema:\n{\"properties\": {\"order_id\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order id such as HH-48213, null if not stated\", \"title\": \"Order Id\"}, \"customer_name\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Full name of the customer as written\", \"title\": \"Customer Name\"}, \"customer_email\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Customer's email address\", \"title\": \"Customer Email\"}, \"order_date\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order date as YYYY-MM-DD, null if not stated\", \"title\": \"Order Date\"}, \"total_amount\": {\"anyOf\": [{\"type\": \"number\"}, {\"type\": \"null\"}], \"description\": \"Order total as a plain number, no symbol\", \"title\": \"Total Amount\"}, \"currency\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"ISO 4217 currency code, e.g. EUR\", \"title\": \"Currency\"}, \"issue\": {\"enum\": [\"damaged\", \"missing_item\", \"wrong_item\", \"late_delivery\", \"billing_error\", \"other\"], \"title\": \"Issue\", \"type\": \"string\"}}, \"required\": [\"order_id\", \"customer_name\", \"customer_email\", \"order_date\", \"total_amount\", \"currency\", \"issue\"], \"title\": \"OrderFields\", \"type\": \"object\"}\n\nEmail:\nFrom: Olga Ivanova <olga.ivanova@example.de>\nTo: support@helphub.example\nDate: Fri, 20 Dec 2024 16:45:00 +0100\nSubject: verspätete Lieferung HH-88573\n\nSehr geehrte Damen und Herren,\nmeine Bestellung HH-88573 vom 10. Dezember sollte gestern ankommen, ist aber immer noch nicht da. Der Betrag beträgt 456,50 JPY.\nIch erwarte eine Lösung bis morgen.\n\nMit freundlichen Grüßen\nOlga Ivanova\n"
+      }
+    ],
+    "params": {
+      "max_tokens": 4000,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_object"
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-91efa5fb7e84366a",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"order_id\": \"HH-88573\", \"customer_name\": \"Olga Ivanova\", \"customer_email\": \"olga.ivanova@example.de\", \"order_date\": null, \"total_amount\": 456.5, \"currency\": \"JPY\", \"issue\": \"late_delivery\"}",
+          "role": "assistant",
+          "reasoning": "We need to output JSON matching schema. Fields:\n\norder_id: from body: \"Bestellung HH-88573\". So order_id = \"HH-88573\".\n\ncustomer_name: from From header: \"Olga Ivanova\". Exactly as written.\n\ncustomer_email: from From header: olga.ivanova@example.de.\n\norder_date: We have two possible sources: Body says \"vom 10. Dezember\". That's December 10 (year? Not specified). Also there is Date header: Fri, 20 Dec 2024 16:45:00 +0100 which is the email date. According to instruction: The Date header gives the order date when the body does not state one explicitly. Here body states a date: \"vom 10. Dezember\". It doesn't give year. Should we infer year? Probably use the year from email date? But instruction: \"Use null for any field the email does not state; never guess.\" The body states day and month but not year. Is that considered stating the order date? It states partially but missing year. Might treat as not fully stated => null? However typical approach: If body gives date without year, we could infer year from email date? But they said never guess. So we should not guess year. Therefore order_date null? But maybe we can treat \"10. Dezember\" as day-month, assume current year? That would be guessing. Safer to set null.\n\nBut also note: The email date is 20 Dec 2024. The order date likely 10 Dec 2024 (same year). However we cannot guess. I'd set null.\n\ntotal_amount: body says \"Der Betrag beträgt 456,50 JPY.\" Amount 456,50 with comma as decimal separator. Need to convert to plain number with dot: 456.50.\n\ncurrency: JPY.\n\nissue: The subject: \"verspätete Lieferung HH-88573\" translates to delayed delivery. Issue enum includes \"late_delivery\". So issue = \"late_delivery\".\n\nNow produce JSON with those fields. Ensure required fields present. For order_date null.\n\nThus:\n\n{\n \"order_id\": \"HH-88573\",\n \"customer_name\": \"Olga Ivanova\",\n \"customer_email\": \"olga.ivanova@example.de\",\n \"order_date\": null,\n \"total_amount\": 456.50,\n \"currency\": \"JPY\",\n \"issue\": \"late_delivery\"\n}\n\nCheck types: total_amount number. Good.\n\nReturn just JSON.",
+          "reasoning_content": "We need to output JSON matching schema. Fields:\n\norder_id: from body: \"Bestellung HH-88573\". So order_id = \"HH-88573\".\n\ncustomer_name: from From header: \"Olga Ivanova\". Exactly as written.\n\ncustomer_email: from From header: olga.ivanova@example.de.\n\norder_date: We have two possible sources: Body says \"vom 10. Dezember\". That's December 10 (year? Not specified). Also there is Date header: Fri, 20 Dec 2024 16:45:00 +0100 which is the email date. According to instruction: The Date header gives the order date when the body does not state one explicitly. Here body states a date: \"vom 10. Dezember\". It doesn't give year. Should we infer year? Probably use the year from email date? But instruction: \"Use null for any field the email does not state; never guess.\" The body states day and month but not year. Is that considered stating the order date? It states partially but missing year. Might treat as not fully stated => null? However typical approach: If body gives date without year, we could infer year from email date? But they said never guess. So we should not guess year. Therefore order_date null? But maybe we can treat \"10. Dezember\" as day-month, assume current year? That would be guessing. Safer to set null.\n\nBut also note: The email date is 20 Dec 2024. The order date likely 10 Dec 2024 (same year). However we cannot guess. I'd set null.\n\ntotal_amount: body says \"Der Betrag beträgt 456,50 JPY.\" Amount 456,50 with comma as decimal separator. Need to convert to plain number with dot: 456.50.\n\ncurrency: JPY.\n\nissue: The subject: \"verspätete Lieferung HH-88573\" translates to delayed delivery. Issue enum includes \"late_delivery\". So issue = \"late_delivery\".\n\nNow produce JSON with those fields. Ensure required fields present. For order_date null.\n\nThus:\n\n{\n \"order_id\": \"HH-88573\",\n \"customer_name\": \"Olga Ivanova\",\n \"customer_email\": \"olga.ivanova@example.de\",\n \"order_date\": null,\n \"total_amount\": 456.50,\n \"currency\": \"JPY\",\n \"issue\": \"late_delivery\"\n}\n\nCheck types: total_amount number. Good.\n\nReturn just JSON."
+        }
+      }
+    ],
+    "created": 1792435368,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 630,
+      "prompt_tokens": 702,
+      "total_tokens": 1332,
+      "completion_tokens_details": {
+        "reasoning_tokens": 560
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 702
+    }
+  },
+  "latency_ms": 10098,
+  "usage": {
+    "prompt_tokens": 702,
+    "completion_tokens": 630
+  },
+  "created_at": "2026-10-19T18:42:52.386242+00:00"
+}

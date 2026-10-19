@@ -1,0 +1,118 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are Offramp's Adapter Agent. Offramp moves one LLM call site in a Python repo from a closed model (OpenAI or Anthropic SDK) to NVIDIA Nemotron on Nebius Token Factory, an OpenAI-compatible chat.completions API, and evaluates the migrated call before opening a pull request. The patched code sends exactly what the evaluation sends, and the code around the call does not change: the reply must stay parseable by it.\n\nA deterministic translator has already mapped the call (spec_v0): Anthropic tools to OpenAI function tools, tool_choice, system= to a system message, max_tokens, response_format and temperature. You decide only what it cannot:\n\nreasoning: \"off\", or \"low\"/\"medium\"/\"high\" for on (Token Factory has a single thinking switch, so the three levels behave the same). Nemotron thinks by default; Offramp always sends the switch explicitly and adds 2000 tokens of room when thinking is on. Thinking costs latency and output tokens. Turn it on when the task needs multi-step reasoning (arithmetic, policies with several rules, multi-constraint logic) or the source model is itself a reasoning model. Keep it off for classification, extraction, tool choice, summaries and short answers. On the Lightning tier, thinking leaks reasoning prose into the reply text.\n\noutput_mode: \"text\" keeps the call's own output format. \"json_schema\" constrains the reply to the site's JSON schema with server-side guided decoding. \"json_object\" asks for any JSON object and validates it against the schema afterwards, with one repair retry. Choose a JSON mode only when the calling code parses the reply as a JSON object; never for labels, free text or tool calls. Without a known output schema, json_schema falls back to json_object.\n\nuser_suffix: an optional instruction appended to the end of the user message to pin the exact output format the calling code parses, for example \"Reply with the queue name only.\" Leave it empty when the prompt already pins the format unambiguously. Never change the task, add facts or contradict the system prompt.\n\nnotes: up to 5 short facts for the reviewer about this migration. risk_flags: up to 5 concrete ways Nemotron's behaviour could differ from the source model at this call site, each \"short_id: explanation\".\n\nReply with one JSON object only."
+      },
+      {
+        "role": "user",
+        "content": "{\n \"site\": {\n  \"id\": \"cs_05\",\n  \"file\": \"helphub/refunds/plan.py\",\n  \"sdk\": \"openai\",\n  \"call\": \"client.chat.completions.create\",\n  \"function\": \"plan_refund\",\n  \"source_model\": \"o3\",\n  \"prompt_source\": \"fstring\",\n  \"template\": {\n   \"system\": \"You compute subscription refunds for HelpHub billing. Follow this policy exactly, step by step, and show your arithmetic.\\n\\n1. Tiered price. The list price is in USD per seat per billing period. Seats are priced in graduated tiers: seats 1-10 cost 100% of list price, seats 11-50 cost 85%, seats 51 and above cost 70%. Subtotal = sum over the tiers of (seats in that tier x list price x tier rate). Round the subtotal to 2 decimals, half up.\\n2. Coupon. Take the coupon percentage off the subtotal and round to 2 decimals, half up. The result is the USD amount paid for the period.\\n3. Days used. Days used = the number of days from the period start date to the cancellation date, counting both dates. Unused days = billing period days - days used, never below 0.\\n4. Refundable amount in USD. If the billing period is 365 days and days used is 14 or fewer, the refundable amount is the full amount paid. Otherwise, prorated = amount paid x unused days / billing period days, rounded to 2 decimals half up; then subtract a 3% processing fee on the prorated amount, rounded to 2 decimals half up. The fee is not charged on a full refund.\\n5. Prior refunds. Subtract the USD refunds already issued from the refundable amount. If the result is negative, it is 0.\\n6. Currency. Multiply by the exchange rate recorded at purchase (units of the customer's currency per 1 USD) and round half up to the currency's minor unit: 2 decimals for USD, EUR and GBP, 0 decimals for JPY.\\n7. Show your working, then put the final refund in the customer's currency alone on the last line as `ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator).\",\n   \"user\": \"Plan: {request_plan_name}, billing period {request_period_days} days\\nList price: {request_list_price_usd} USD per seat per period\\nSeats: {request_seats}\\nPeriod start: {request_period_start}\\nCancelled on: {request_cancel_date}\\nCoupon: {request_coupon_pct}% off\\nRefunds already issued: {request_prior_refund_usd} USD\\nCustomer paid in {request_currency} at {request_fx_rate} {request_currency} per 1 USD\\n\\nHow much do we refund, in {request_currency}?\",\n   \"variables\": [\n    \"request_plan_name\",\n    \"request_period_days\",\n    \"request_list_price_usd\",\n    \"request_seats\",\n    \"request_period_start\",\n    \"request_cancel_date\",\n    \"request_coupon_pct\",\n    \"request_prior_refund_usd\",\n    \"request_currency\",\n    \"request_fx_rate\"\n   ]\n  },\n  \"params\": {\n   \"max_completion_tokens\": 16000\n  },\n  \"flags\": []\n },\n \"contract\": {\n  \"task_type\": \"reasoning\",\n  \"output\": \"label\",\n  \"tools\": false,\n  \"streaming\": false,\n  \"latency_budget_ms\": null,\n  \"reasoning_heavy\": true,\n  \"labels\": [],\n  \"json_schema\": null\n },\n \"spec_v0\": {\n  \"system_prompt\": null,\n  \"user_prefix\": \"\",\n  \"user_suffix\": \"\",\n  \"few_shot\": [],\n  \"response_format\": null,\n  \"json_mode_fallback\": false,\n  \"tools\": null,\n  \"tool_choice\": null,\n  \"reasoning\": \"medium\",\n  \"max_tokens\": 16000,\n  \"temperature\": 0.0,\n  \"extra_body\": {}\n },\n \"translation_notes\": [\n  \"max_tokens: max_completion_tokens=16000 -> max_tokens=16000\",\n  \"temperature: not set in source -> 0 (deterministic eval)\",\n  \"reasoning: o3 is a reasoning model -> Nemotron thinking on\"\n ],\n \"translation_risk_flags\": [],\n \"output_schema_known\": false,\n \"json_schema_supported\": {\n  \"lightning\": true,\n  \"super\": true,\n  \"ultra\": true\n }\n}"
+      }
+    ],
+    "params": {
+      "max_tokens": 1500,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "AdapterDecision",
+          "schema": {
+            "description": "The Adapter Agent's reply: only the choices the deterministic translation cannot make.",
+            "properties": {
+              "reasoning": {
+                "enum": [
+                  "off",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "title": "Reasoning",
+                "type": "string"
+              },
+              "output_mode": {
+                "enum": [
+                  "text",
+                  "json_schema",
+                  "json_object"
+                ],
+                "title": "Output Mode",
+                "type": "string"
+              },
+              "user_suffix": {
+                "default": "",
+                "maxLength": 500,
+                "title": "User Suffix",
+                "type": "string"
+              },
+              "notes": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 5,
+                "title": "Notes",
+                "type": "array"
+              },
+              "risk_flags": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 5,
+                "title": "Risk Flags",
+                "type": "array"
+              }
+            },
+            "required": [
+              "reasoning",
+              "output_mode"
+            ],
+            "title": "AdapterDecision",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-bcf80e7afb623404",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\n  \"reasoning\": \"high\",\n  \"output_mode\": \"text\",\n  \"user_suffix\": \"Reply with the final refund amount in the customer's currency alone on the last line as `ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator).\",\n  \"notes\": [\n    \"Source model o3 is a reasoning model; Nemotron thinking enabled at high level with +2000 token buffer.\",\n    \"Task requires multi-step arithmetic with tiered pricing, proration, fees, and currency conversion — all needing explicit step-by-step reasoning.\",\n    \"Output format is strictly constrained: working shown, then single ANSWER line with numeric value only.\",\n    \"Temperature set to 0 for deterministic arithmetic; max_tokens 16000 accommodates reasoning trace + output.\",\n    \"No tools or JSON schema involved; pure text completion with structured reasoning.\"\n  ],\n  \"risk_flags\": [\n    \"reasoning_leak: On Lightning tier, Nemotron may emit reasoning prose into the final answer, violating the strict ANSWER: <number> format.\",\n    \"rounding_drift: Half-up rounding at multiple steps (subtotal, coupon, prorated, fee, FX) may differ from o3's exact decimal handling.\",\n    \"tiered_calc_error: Graduated seat pricing (1-10, 11-50, 51+) requires precise tier boundary logic; off-by-one errors possible.\",\n    \"full_refund_condition: 365-day period with ≤14 days used triggers full refund without fee; mis-evaluation changes result significantly.\",\n    \"fx_precision: Currency-specific minor unit rounding (0 for JPY, 2 for others) must be exact; Nemotron may default to 2 decimals.\"\n  ]\n}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435116,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 385,
+      "prompt_tokens": 1553,
+      "total_tokens": 1938,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 1553
+    }
+  },
+  "latency_ms": 1863,
+  "usage": {
+    "prompt_tokens": 1553,
+    "completion_tokens": 385
+  },
+  "created_at": "2026-10-19T18:38:37.599371+00:00"
+}
