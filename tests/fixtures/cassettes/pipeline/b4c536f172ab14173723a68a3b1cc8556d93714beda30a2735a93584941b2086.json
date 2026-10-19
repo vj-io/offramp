@@ -1,0 +1,81 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write one qualitative sentence explaining one Offramp verdict. Offramp tested whether NVIDIA Nemotron on Nebius Token Factory can take over one LLM call site of a Python repo, measured as agreement with reference outputs on held-out cases. MIGRATE: the named tier reached parity on the held-out cases, cheaper tiers did not. KEEP_CLOSED: no tier did, so the call stays on its current model.\n\nWrite one sentence of at most 30 words for an engineer reviewing the pull request: what the call site does and why the verdict follows, in words only. Write no numbers at all: no digits, no number words, no percentages, and no model names or versions (say \"the current model\"). Offramp appends the measured numbers after your sentence. Name the tier as given in the facts.\n\nReply with one JSON object: {\"reason\": \"<the sentence>\"}."
+      },
+      {
+        "role": "user",
+        "content": "{\n \"call_site\": {\n  \"file\": \"helphub/orders/extract.py\",\n  \"function\": \"extract_order\",\n  \"task_type\": \"json_extraction\"\n },\n \"decision\": \"KEEP_CLOSED\",\n \"tier\": \"Lightning\",\n \"outcome\": \"no tier reached parity with the references; this tier came closest\",\n \"adapter_changes\": [\n  \"Strengthened system prompt to explicitly forbid guessing currency and customer_email, requiring null when absent\",\n  \"Added a few-shot example showing correct null currency when email lacks currency code\",\n  \"Kept output_mode as json_schema to enforce schema validation\",\n  \"Left reasoning off to avoid leakage on Lightning tier\",\n  \"Max tokens unchanged\",\n  \"Clarified customer_email rule: only use From header when sender is the ordering customer\",\n  \"Clarified customer_name rule: use body/signature name, not From header unless it matches customer identity\",\n  \"Clarified order_date rule: order placement date, not email date\",\n  \"Added explicit prohibition against cross-email contamination\",\n  \"Kept reasoning off and max_tokens unchanged\"\n ],\n \"holdout_failure_kinds\": [\n  \"wrong_value\"\n ],\n \"closed_reference_compared\": false\n}"
+      }
+    ],
+    "params": {
+      "max_tokens": 300,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "VerdictReason",
+          "schema": {
+            "properties": {
+              "reason": {
+                "maxLength": 400,
+                "title": "Reason",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "title": "VerdictReason",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-8cf2cd165c8b6bb5",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"reason\": \"The function extracts structured order data from emails but none of the tested tiers matched reference outputs on held‑out cases, so the current model remains.\"}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435417,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 35,
+      "prompt_tokens": 462,
+      "total_tokens": 497,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 462
+    }
+  },
+  "latency_ms": 1508,
+  "usage": {
+    "prompt_tokens": 462,
+    "completion_tokens": 35
+  },
+  "created_at": "2026-10-19T18:43:38.128108+00:00"
+}

@@ -1,0 +1,56 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words."
+      },
+      {
+        "role": "user",
+        "content": "Knowledge-base excerpts:\n[refund-policy] Refund policy\nPhysical orders can be refunded within 30 days of delivery if the item is unused, damaged, or not as described. Refunds go back to the original payment method and usually appear within 5 to 10 business days.\n\nSubscriptions are refunded separately. Annual plans cancelled within 14 days of the billing period start receive a full refund. After that we refund the unused part of the period, prorated by day, minus a 3% processing fee. Monthly plans are prorated by day from the first day.\n\nRefunds are issued in the currency you paid in, at the exchange rate recorded when you paid.\n\n[cancel-subscription] Cancelling your subscription\nCancel any time under Account, Billing, \"Cancel plan\". Access continues until the end of the paid period unless you ask for a refund, in which case access ends immediately.\n\nRefund eligibility follows the refund policy: annual plans cancelled within 14 days of the period start are refunded in full; later cancellations are prorated by unused days minus a 3% processing fee.\n\nCustomer question: Can I get a refund on my annual plan after three weeks?"
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.2,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-875e4525",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "No, you cannot get a full refund after three weeks. According to the refund policy [refund-policy], annual plans cancelled within 14 days of the billing period start receive a full refund. After that, refunds are prorated by the unused part of the period, minus a 3% processing fee [refund-policy]. Since three weeks is 21 days, which is beyond the 14-day window, you would only receive a prorated refund for the unused days, subject to the 3% fee.",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435418,
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 113,
+      "prompt_tokens": 373,
+      "total_tokens": 486,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 373
+    }
+  },
+  "latency_ms": 1026,
+  "usage": {
+    "prompt_tokens": 373,
+    "completion_tokens": 113
+  },
+  "created_at": "2026-10-19T18:43:39.177408+00:00"
+}

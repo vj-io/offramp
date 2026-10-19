@@ -1,0 +1,66 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You extract structured order data from customer support emails. Reply with a single JSON object that validates against the JSON schema given in the user message. Use null for any field the email does not state; never guess. Write dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot as the decimal separator. Keep names exactly as written. The email may be in any language. Do not wrap the JSON in markdown and do not add any commentary. The email is provided as raw headers plus body. The From header contains the customer's name and email; the Date header gives the order date when the body does not state one explicitly. The To header is always support@helphub.example and must never be used for customer_email. Extract order_id, total_amount, and currency only from the customer's own words in the body; ignore numbers that appear in other contexts."
+      },
+      {
+        "role": "user",
+        "content": "JSON schema:\n{\"properties\": {\"order_id\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order id such as HH-48213, null if not stated\", \"title\": \"Order Id\"}, \"customer_name\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Full name of the customer as written\", \"title\": \"Customer Name\"}, \"customer_email\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Customer's email address\", \"title\": \"Customer Email\"}, \"order_date\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order date as YYYY-MM-DD, null if not stated\", \"title\": \"Order Date\"}, \"total_amount\": {\"anyOf\": [{\"type\": \"number\"}, {\"type\": \"null\"}], \"description\": \"Order total as a plain number, no symbol\", \"title\": \"Total Amount\"}, \"currency\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"ISO 4217 currency code, e.g. EUR\", \"title\": \"Currency\"}, \"issue\": {\"enum\": [\"damaged\", \"missing_item\", \"wrong_item\", \"late_delivery\", \"billing_error\", \"other\"], \"title\": \"Issue\", \"type\": \"string\"}}, \"required\": [\"order_id\", \"customer_name\", \"customer_email\", \"order_date\", \"total_amount\", \"currency\", \"issue\"], \"title\": \"OrderFields\", \"type\": \"object\"}\n\nEmail:\nFrom: hanako.t3@example.de\nTo: support@helphub.example\nDate: 2025-03-10\nSubject: ???\n\norder HH-15874 amount 194.8 JPY\n\nrefund? thx\n\n-- \nsignature here\n"
+      }
+    ],
+    "params": {
+      "max_tokens": 4000,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_object"
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-ad19c1375f0f2fb8",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"order_id\": \"HH-15874\", \"customer_name\": null, \"customer_email\": \"hanako.t3@example.de\", \"order_date\": \"2025-03-10\", \"total_amount\": 194.8, \"currency\": \"JPY\", \"issue\": \"billing_error\"}",
+          "role": "assistant",
+          "reasoning": "We need to output JSON matching schema.\n\nExtract fields:\n\nFrom header: \"hanako.t3@example.de\". This includes email but also maybe name? It says From header contains the customer's name and email; but it's just email without name. So we have email = hanako.t3@example.de. Customer name? Not present (no name). Should be null per instruction: use null if not stated.\n\nOrder ID: In body: \"order HH-15874 amount 194.8 JPY\". Order id appears as HH-15874. Must be string.\n\nTotal amount: 194.8 (plain number). Currency: JPY.\n\nOrder date: We have Date header: 2025-03-10. Since body doesn't state an explicit order date, we can use Date header as order date. According to instructions: \"The From header contains the customer's name and email; the Date header gives the order date when the body does not state one explicitly.\" So order_date = 2025-03-10.\n\nIssue: Need to infer issue type based on content. Body: \"order HH-15874 amount 194.8 JPY refund? thx\". They ask about refund? Could be billing_error? Or perhaps they want a refund due to something else. No explicit mention of damaged, missing_item, wrong_item, late_delivery. The phrase \"refund?\" suggests maybe they think they were overcharged or something like billing error. The allowed enum values: damaged, missing_item, wrong_item, late_delivery, billing_error, other. Likely billing_error fits best because they are questioning amount/refund. If uncertain, could choose other. But we should interpret: they ask \"refund?\" after stating order amount. That implies they might think they were charged incorrectly => billing_error. I'll set issue: \"billing_error\".\n\nNow produce JSON with those fields.\n\nCheck required fields all present.\n\nThus:\n\n{\n \"order_id\": \"HH-15874\",\n \"customer_name\": null,\n \"customer_email\": \"hanako.t3@example.de\",\n \"order_date\": \"2025-03-10\",\n \"total_amount\": 194.8,\n \"currency\": \"JPY\",\n \"issue\": \"billing_error\"\n}\n\nMake sure numbers are plain numbers, not strings. JSON valid.\n\nNo extra commentary.",
+          "reasoning_content": "We need to output JSON matching schema.\n\nExtract fields:\n\nFrom header: \"hanako.t3@example.de\". This includes email but also maybe name? It says From header contains the customer's name and email; but it's just email without name. So we have email = hanako.t3@example.de. Customer name? Not present (no name). Should be null per instruction: use null if not stated.\n\nOrder ID: In body: \"order HH-15874 amount 194.8 JPY\". Order id appears as HH-15874. Must be string.\n\nTotal amount: 194.8 (plain number). Currency: JPY.\n\nOrder date: We have Date header: 2025-03-10. Since body doesn't state an explicit order date, we can use Date header as order date. According to instructions: \"The From header contains the customer's name and email; the Date header gives the order date when the body does not state one explicitly.\" So order_date = 2025-03-10.\n\nIssue: Need to infer issue type based on content. Body: \"order HH-15874 amount 194.8 JPY refund? thx\". They ask about refund? Could be billing_error? Or perhaps they want a refund due to something else. No explicit mention of damaged, missing_item, wrong_item, late_delivery. The phrase \"refund?\" suggests maybe they think they were overcharged or something like billing error. The allowed enum values: damaged, missing_item, wrong_item, late_delivery, billing_error, other. Likely billing_error fits best because they are questioning amount/refund. If uncertain, could choose other. But we should interpret: they ask \"refund?\" after stating order amount. That implies they might think they were charged incorrectly => billing_error. I'll set issue: \"billing_error\".\n\nNow produce JSON with those fields.\n\nCheck required fields all present.\n\nThus:\n\n{\n \"order_id\": \"HH-15874\",\n \"customer_name\": null,\n \"customer_email\": \"hanako.t3@example.de\",\n \"order_date\": \"2025-03-10\",\n \"total_amount\": 194.8,\n \"currency\": \"JPY\",\n \"issue\": \"billing_error\"\n}\n\nMake sure numbers are plain numbers, not strings. JSON valid.\n\nNo extra commentary."
+        }
+      }
+    ],
+    "created": 1792435367,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 587,
+      "prompt_tokens": 628,
+      "total_tokens": 1215,
+      "completion_tokens_details": {
+        "reasoning_tokens": 512
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 628
+    }
+  },
+  "latency_ms": 8949,
+  "usage": {
+    "prompt_tokens": 628,
+    "completion_tokens": 587
+  },
+  "created_at": "2026-10-19T18:42:51.224446+00:00"
+}

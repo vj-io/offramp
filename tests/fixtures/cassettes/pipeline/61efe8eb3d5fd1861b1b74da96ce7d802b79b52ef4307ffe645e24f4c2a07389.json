@@ -1,0 +1,60 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write handoff notes for HelpHub support agents taking over a ticket.\nSummarise the thread in English, in at most 120 words, with three labelled parts:\nIssue, Tried so far, Next step.\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\nMention internal notes only as \"internal note\"; their wording is for agents, never the customer."
+      },
+      {
+        "role": "user",
+        "content": "Ticket thread, 3 messages:\n\n[2025-09-02T18:10:00Z] customer (Carlos Ibáñez): El monitor de mi pedido HH-30991 llegó con la pantalla rota.\n[2025-09-03T08:00:00Z] agent (Tom (HelpHub)): Lamentamos lo ocurrido, Carlos. Envíenos una foto y le mandamos un reemplazo sin coste.\n[2025-09-03T09:12:00Z] customer (Carlos Ibáñez): Foto adjunta. Prefiero el reembolso de 189,00 EUR."
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-8fa6e441f361f441",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "Issue: Customer Carlos Ibáñez reports monitor from order HH-30991 arrived with broken screen. Requests refund of 189,00 EUR instead of replacement.\n\nTried so far: Agent apologized and offered free replacement upon photo receipt. Customer provided photo but prefers refund.\n\nNext step: Process refund of 189,00 EUR for order HH-30991.",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435173,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 87,
+      "prompt_tokens": 256,
+      "total_tokens": 343,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 256
+    }
+  },
+  "latency_ms": 1809,
+  "usage": {
+    "prompt_tokens": 256,
+    "completion_tokens": 87
+  },
+  "created_at": "2026-10-19T18:39:33.776159+00:00"
+}

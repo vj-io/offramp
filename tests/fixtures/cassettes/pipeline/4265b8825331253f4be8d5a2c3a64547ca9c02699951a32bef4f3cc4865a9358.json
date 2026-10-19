@@ -1,0 +1,60 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the ticket router for HelpHub, a customer support platform.\nClassify the customer's ticket into exactly one queue:\n\n- billing: charges, invoices, payment methods, subscription pricing\n- shipping: delivery status, tracking, delays, lost parcels, address changes\n- returns_refunds: returns, exchanges, damaged or wrong items, refund requests\n- technical_support: bugs, errors, integrations, API and webhook problems\n- account_access: login, password reset, two-factor, locked or compromised accounts\n- general: anything else, including feedback, partnerships and sales questions\n\nReply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation."
+      },
+      {
+        "role": "user",
+        "content": "Subject: 注文の確認メールが届きません\n\nサポートチームへ。注文番号HH-77401の確認メールが届かず、決済は完了しています。設定か何か問題がありますでしょうか。お手数ですがご確認ください。"
+      }
+    ],
+    "params": {
+      "max_tokens": 16,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-95d240909d0a1074",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "account_access",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435125,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 3,
+      "prompt_tokens": 239,
+      "total_tokens": 242,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 239
+    }
+  },
+  "latency_ms": 5243,
+  "usage": {
+    "prompt_tokens": 239,
+    "completion_tokens": 3
+  },
+  "created_at": "2026-10-19T18:38:44.974006+00:00"
+}

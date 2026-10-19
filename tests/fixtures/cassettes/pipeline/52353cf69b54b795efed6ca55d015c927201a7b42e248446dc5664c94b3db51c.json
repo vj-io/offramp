@@ -1,0 +1,170 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You extract structured order data from customer support emails. Reply with a single JSON object that validates against the JSON schema given in the user message. Use null for any field the email does not state; never guess. Write dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot as the decimal separator. Keep names exactly as written. The email may be in any language. Do not wrap the JSON in markdown and do not add any commentary. The email is provided as raw headers plus body. The From header contains the customer's name and email; the Date header gives the email send date, NOT the order date. Only use the Date header for order_date if the body explicitly states the order was placed on that date. Extract order_id, total_amount, and currency only from the customer's own words in the body; ignore numbers that appear in other contexts. The issue field must be one of: damaged, missing_item, wrong_item, late_delivery, billing_error, other. Choose 'other' when the email does not clearly describe one of the first five issues. If customer_name or customer_email cannot be parsed from the From header, use null."
+      },
+      {
+        "role": "user",
+        "content": "JSON schema:\n{\"properties\": {\"order_id\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order id such as HH-48213, null if not stated\", \"title\": \"Order Id\"}, \"customer_name\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Full name of the customer as written\", \"title\": \"Customer Name\"}, \"customer_email\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Customer's email address\", \"title\": \"Customer Email\"}, \"order_date\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order date as YYYY-MM-DD, null if not stated\", \"title\": \"Order Date\"}, \"total_amount\": {\"anyOf\": [{\"type\": \"number\"}, {\"type\": \"null\"}], \"description\": \"Order total as a plain number, no symbol\", \"title\": \"Total Amount\"}, \"currency\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"ISO 4217 currency code, e.g. EUR\", \"title\": \"Currency\"}, \"issue\": {\"enum\": [\"damaged\", \"missing_item\", \"wrong_item\", \"late_delivery\", \"billing_error\", \"other\"], \"title\": \"Issue\", \"type\": \"string\"}}, \"required\": [\"order_id\", \"customer_name\", \"customer_email\", \"order_date\", \"total_amount\", \"currency\", \"issue\"], \"title\": \"OrderFields\", \"type\": \"object\"}\n\nEmail:\nFrom: Liam O'Connor <liam.oconnor@example.uk>\nTo: support@helphub.example\nDate: Mon, 5 May 2025 09:15:00 +0000\nSubject: Query regarding order HH-06707\n\nDear Support Team,\n\nI hope this message finds you well. I am writing to bring to your attention a concern I have regarding my recent purchase. I placed order HH-06707 on your website several weeks ago for a set of premium kitchen utensils, which included a stainless steel spatula, a silicone whisk, and a ceramic mixing bowl. The items were dispatched promptly and arrived in good condition, for which I am grateful.\n\nHowever, upon reviewing my bank statement, I noticed that the total amount charged was 405.27 GBP, which appears to be incorrect based on the pricing displayed at the time of checkout. I have double-checked the order confirmation email and the product pages, and the discrepancy remains unexplained.\n\nCould you kindly investigate this billing error and advise on the next steps? I would appreciate either a correction to the charge or a detailed explanation of the fees applied.\n\nThank you for your time and assistance.\n\nBest regards,\nLiam O'Connor\n"
+      }
+    ],
+    "params": {
+      "max_tokens": 4000,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "response",
+          "strict": true,
+          "schema": {
+            "properties": {
+              "order_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order id such as HH-48213, null if not stated",
+                "title": "Order Id"
+              },
+              "customer_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Full name of the customer as written",
+                "title": "Customer Name"
+              },
+              "customer_email": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Customer's email address",
+                "title": "Customer Email"
+              },
+              "order_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order date as YYYY-MM-DD, null if not stated",
+                "title": "Order Date"
+              },
+              "total_amount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order total as a plain number, no symbol",
+                "title": "Total Amount"
+              },
+              "currency": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "ISO 4217 currency code, e.g. EUR",
+                "title": "Currency"
+              },
+              "issue": {
+                "enum": [
+                  "damaged",
+                  "missing_item",
+                  "wrong_item",
+                  "late_delivery",
+                  "billing_error",
+                  "other"
+                ],
+                "title": "Issue",
+                "type": "string"
+              }
+            },
+            "required": [
+              "order_id",
+              "customer_name",
+              "customer_email",
+              "order_date",
+              "total_amount",
+              "currency",
+              "issue"
+            ],
+            "title": "OrderFields",
+            "type": "object",
+            "additionalProperties": false
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-bab1efa92233aea4",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"order_id\": \"HH-06707\", \"customer_name\": \"Liam O'Connor\", \"customer_email\": \"liam.oconnor@example.uk\", \"order_date\": null, \"total_amount\": 405.27, \"currency\": \"GBP\", \"issue\": \"billing_error\"}",
+          "role": "assistant",
+          "reasoning": "We need to output JSON matching schema. Extract fields:\n\nFrom header: \"Liam O'Connor <liam.oconnor@example.uk>\" => customer_name = \"Liam O'Connor\". customer_email = \"liam.oconnor@example.uk\".\n\nOrder ID: In subject line: \"Query regarding order HH-06707\". Also body mentions \"order HH-06707\". So order_id = \"HH-06707\".\n\nOrder date: Need to see if body says they placed order on certain date. Body: \"I placed order HH-06707 on your website several weeks ago\". No explicit date. Not using Date header unless body states order placed on that date. It doesn't. So order_date = null.\n\nTotal amount: They say \"total amount charged was 405.27 GBP\". That's amount and currency. Must extract from customer's own words. Yes it's their statement. So total_amount = 405.27 (as number). Currency = \"GBP\". Ensure ISO 4217 code: GBP.\n\nIssue: They mention billing error. So issue = \"billing_error\".\n\nAll required fields present.\n\nReturn JSON without markdown.\n\nCheck types: order_id string, customer_name string, customer_email string, order_date null, total_amount number, currency string, issue string.\n\nLet's produce.",
+          "reasoning_content": "We need to output JSON matching schema. Extract fields:\n\nFrom header: \"Liam O'Connor <liam.oconnor@example.uk>\" => customer_name = \"Liam O'Connor\". customer_email = \"liam.oconnor@example.uk\".\n\nOrder ID: In subject line: \"Query regarding order HH-06707\". Also body mentions \"order HH-06707\". So order_id = \"HH-06707\".\n\nOrder date: Need to see if body says they placed order on certain date. Body: \"I placed order HH-06707 on your website several weeks ago\". No explicit date. Not using Date header unless body states order placed on that date. It doesn't. So order_date = null.\n\nTotal amount: They say \"total amount charged was 405.27 GBP\". That's amount and currency. Must extract from customer's own words. Yes it's their statement. So total_amount = 405.27 (as number). Currency = \"GBP\". Ensure ISO 4217 code: GBP.\n\nIssue: They mention billing error. So issue = \"billing_error\".\n\nAll required fields present.\n\nReturn JSON without markdown.\n\nCheck types: order_id string, customer_name string, customer_email string, order_date null, total_amount number, currency string, issue string.\n\nLet's produce."
+        }
+      }
+    ],
+    "created": 1792435378,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 363,
+      "prompt_tokens": 886,
+      "total_tokens": 1249,
+      "completion_tokens_details": {
+        "reasoning_tokens": 291
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 886
+    }
+  },
+  "latency_ms": 4017,
+  "usage": {
+    "prompt_tokens": 886,
+    "completion_tokens": 363
+  },
+  "created_at": "2026-10-19T18:43:00.726363+00:00"
+}

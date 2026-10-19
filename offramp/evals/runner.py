@@ -14,6 +14,7 @@ Every TierResult number shown anywhere comes from here, so the rules are strict:
 
 from __future__ import annotations
 
+import contextvars
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -192,7 +193,11 @@ def _run_calls(
 
     pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENCY)
     try:
-        futures = [pool.submit(call, req, case) for req, case in zip(requests, cases, strict=True)]
+        # each task in a copy of this context: a LangSmith run_project (a contextvar) reaches the call (GC23)
+        futures = [
+            pool.submit(contextvars.copy_context().run, call, req, case)
+            for req, case in zip(requests, cases, strict=True)
+        ]
         results = [f.result() for f in futures]
     finally:
         pool.shutdown(cancel_futures=True)  # on BudgetExceeded/ProviderError/CacheMiss: no further calls

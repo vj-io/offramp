@@ -1,0 +1,61 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You compute subscription refunds for HelpHub billing. Follow this policy exactly, step by step, and show your arithmetic.\n\n1. Tiered price. The list price is in USD per seat per billing period. Seats are priced in graduated tiers: seats 1-10 cost 100% of list price, seats 11-50 cost 85%, seats 51 and above cost 70%. Subtotal = sum over the tiers of (seats in that tier x list price x tier rate). Round the subtotal to 2 decimals, half up.\n2. Coupon. Take the coupon percentage off the subtotal and round to 2 decimals, half up. The result is the USD amount paid for the period.\n3. Days used. Days used = the number of days from the period start date to the cancellation date, counting both dates. Unused days = billing period days - days used, never below 0.\n4. Refundable amount in USD. If the billing period is 365 days and days used is 14 or fewer, the refundable amount is the full amount paid. Otherwise, prorated = amount paid x unused days / billing period days, rounded to 2 decimals half up; then subtract a 3% processing fee on the prorated amount, rounded to 2 decimals half up. The fee is not charged on a full refund.\n5. Prior refunds. Subtract the USD refunds already issued from the refundable amount. If the result is negative, it is 0.\n6. Currency. Multiply by the exchange rate recorded at purchase (units of the customer's currency per 1 USD) and round half up to the currency's minor unit: 2 decimals for USD, EUR and GBP, 0 decimals for JPY.\n7. Show your working, then put the final refund in the customer's currency alone on the last line as `ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator)."
+      },
+      {
+        "role": "user",
+        "content": "Plan: Business Annual, billing period 365 days\nList price: 99.00 USD per seat per period\nSeats: 30\nPeriod start: 2028-01-10\nCancelled on: 2028-03-05\nCoupon: 20% off\nRefunds already issued: 150.00 USD\nCustomer paid in USD at 1 USD per 1 USD\n\nHow much do we refund, in USD?\n\nReply with the final refund amount in the customer's currency alone on the last line as `ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator)."
+      }
+    ],
+    "params": {
+      "max_tokens": 18000,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-88db3ddaa69a7343",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "**Step 1: Tiered price**  \n- Seats 1‑10: 10 × $99.00 × 100% = $990.00  \n- Seats 11‑30: 20 × $99.00 × 85% = $1,683.00  \n- Subtotal = $990.00 + $1,683.00 = $2,673.00 (rounded to 2 decimals)\n\n**Step 2: Coupon**  \n- 20% off: $2,673.00 × 0.20 = $534.60  \n- Amount paid = $2,673.00 – $534.60 = $2,138.40 (rounded to 2 decimals)\n\n**Step 3: Days used**  \n- Period start: 2028‑01‑10, Cancelled: 2028‑03‑05 (both inclusive)  \n- Jan 10‑31: 22 days  \n- Feb (leap year): 29 days  \n- Mar 1‑5: 5 days  \n- Days used = 22 + 29 + 5 = 56  \n- Unused days = 365 – 56 = 309\n\n**Step 4: Refundable amount**  \n- Billing period 365 days, days used 56 (>14) → prorated refund  \n- Prorated = $2,138.40 × 309 / 365 = $1,810.3167… → $1,810.32 (rounded half up)  \n- Processing fee (3%) = $1,810.32 × 0.03 = $54.3096 → $54.31 (rounded half up)  \n- Refundable = $1,810.32 – $54.31 = $1,756.01\n\n**Step 5: Prior refunds**  \n- Already issued: $150.00  \n- Remaining refundable = $1,756.01 – $150.00 = $1,606.01\n\n**Step 6: Currency**  \n- Exchange rate: 1 USD per 1 USD  \n- Final refund = $1,606.01 × 1 = $1,606.01 (USD, 2 decimals)\n\nANSWER: 1606.01",
+          "role": "assistant",
+          "reasoning_content": "We need to compute the refund step by step.\n\nGiven:\n- Plan: Business Annual, billing period 365 days\n- List price: 99.00 USD per seat per period\n- Seats: 30\n- Period start: 2028-01-10\n- Cancelled on: 2028-03-05\n- Coupon: 20% off\n- Refunds already issued: 150.00 USD\n- Customer paid in USD at 1 USD per 1 USD (exchange rate = 1)\n\nWe need to compute the refund amount in USD.\n\nStep 1: Tiered price.\nSeats: 30.\nTiers:\n- Seats 1-10: 100% of list price\n- Seats 11-50: 85% of list price\n- Seats 51+: 70% of list price\n\nWe have 30 seats.\nSeats in tier 1 (1-10): 10 seats\nSeats in tier 2 (11-50): 20 seats (since 30-10=20)\nSeats in tier 3: 0\n\nList price = 99.00 USD per seat per period.\n\nSubtotal = (10 * 99.00 * 1.00) + (20 * 99.00 * 0.85) + (0 * ...)\nCompute:\n10 * 99.00 = 990.00\n20 * 99.00 = 1980.00; 1980.00 * 0.85 = 1683.00\nSubtotal = 990.00 + 1683.00 = 2673.00\nRound to 2 decimals, half up: 2673.00 (already 2 decimals)\n\nStep 2: Coupon.\nCoupon: 20% off. So take 20% off the subtotal.\nDiscount = subtotal * 20% = 2673.00 * 0.20 = 534.60\nAmount paid = subtotal - discount = 2673.00 - 534.60 = 2138.40\nRound to 2 decimals half up: 2138.40 (already 2 decimals)\n\nSo amount paid for the period = 2138.40 USD.\n\nStep 3: Days used.\nPeriod start: 2028-01-10\nCancelled on: 2028-03-05\nBilling period days = 365 (annual)\nDays used = number of days from period start date to cancellation date, counting both dates.\nWe need to calculate the difference in days inclusive.\n\nLet's compute the date difference.\nStart: Jan 10, 2028\nEnd: Mar 5, 2028\n\n2028 is a leap year? 2028 divisible by 4 = 507, yes 2028 is a leap year (since 2028/4=507, not a century year). So February has 29 days.\n\nCount days from Jan 10 to Mar 5 inclusive.\n\nJanuary: from Jan 10 to Jan 31 inclusive: 31 - 10 + 1 = 22 days.\nFebruary: full month = 29 days (leap year)\nMarch: up to Mar 5 inclusive = 5 days.\nTotal days used = 22 + 29 + 5 = 56 days.\n\nCheck: Jan 10 to Jan 31 = 22 days (10,11,...,31 = 22 days). Feb 1-29 = 29 days. Mar 1-5 = 5 days. Total = 56.\n\nUnused days = billing period days - days used = 365 - 56 = 309 days. Never below 0, so 309.\n\nStep 4: Refundable amount in USD.\nBilling period is 365 days. Days used = 56. Since days used is 14 or fewer? 56 > 14, so not full refund. We do prorated.\n\nProrated = amount paid * unused days / billing period days = 2138.40 * 309 / 365.\nCompute: 2138.40 * 309 = let's calculate.\n2138.40 * 300 = 641,520\n2138.40 * 9 = 19,245.60\nSum = 660,765.60\nDivide by 365: 660,765.60 / 365 = ?\n365 * 1810 = 660,650? Let's do precise division.\n660,765.60 / 365 = 1810.316712... Actually compute:\n365 * 1810 = 660,650\nRemainder = 115.60\n115.60 / 365 = 0.316712...\nSo 1810.316712... Round to 2 decimals half up: 1810.32 (since third decimal is 6? Actually 1810.3167, third decimal is 6, so round up to 1810.32). Wait half up: 1810.3167, the third decimal is 6 >=5, so round up to 1810.32.\n\nProrated amount = 1810.32 USD.\n\nThen subtract a 3% processing fee on the prorated amount, rounded to 2 decimals half up.\nProcessing fee = prorated * 3% = 1810.32 * 0.03 = 54.3096. Round to 2 decimals half up: 54.31 (since third decimal 9? Actually 54.3096, third decimal is 9? Wait 54.3096: digits: 54.30 9 6, third decimal is 9, so round up to 54.31). Yes.\n\nRefundable amount = prorated - processing fee = 1810.32 - 54.31 = 1756.01 USD.\n\nStep 5: Prior refunds.\nRefunds already issued: 150.00 USD.\nSubtract: 1756.01 - 150.00 = 1606.01 USD.\nIf negative, set to 0. It's positive.\n\nStep 6: Currency.\nCustomer paid in USD at 1 USD per 1 USD. Exchange rate = 1. Multiply by 1 = 1606.01. Round half up to currency's minor unit: USD uses 2 decimals. Already 2 decimals.\n\nFinal refund = 1606.01 USD.\n\nWe need to show working and then put final answer as ANSWER: 1606.01\n\nBut let's double-check all steps for any rounding nuances.\n\nStep 1: Subtotal = 2673.00 exactly? 10*99 = 990. 20*99*0.85 = 20*84.15 = 1683.00. Sum = 2673.00. Round to 2 decimals half up: 2673.00.\n\nStep 2: Coupon 20% off. 2673.00 * 0.20 = 534.60. 2673.00 - 534.60 = 2138.40. Round to 2 decimals: 2138.40.\n\nStep 3: Days used. Confirm dates: 2028-01-10 to 2028-03-05 inclusive.\nJanuary: 31 days total. Days from 10 to 31 inclusive = 22.\nFebruary: 2028 is leap year? 2028 / 4 = 507, no remainder, and not a century year (2000 was leap, 2100 not). So yes, 29 days.\nMarch: 5 days.\nTotal = 22+29+5 = 56. Unused = 365-56=309.\n\nStep 4: Since billing period 365 days and days used 56 > 14, prorated.\nProrated = amount paid * unused days / billing period days = 2138.40 * 309 / 365.\nCompute precisely: 2138.40 * 309 = 2138.40 * 300 = 641520; 2138.40 * 9 = 19245.6; sum = 660765.6.\n660765.6 / 365 = 1810.316712328767... Round to 2 decimals half up: 1810.32 (since 0.3167, third decimal 6 => round up).\nProcessing fee = 3% of prorated = 1810.32 * 0.03 = 54.3096. Round to 2 decimals half up: 54.31 (since 0.3096, third decimal 9 => round up).\nRefundable = 1810.32 - 54.31 = 1756.01.\n\nStep 5: Prior refunds 150.00. 1756.01 - 150.00 = 1606.01.\n\nStep 6: Exchange rate 1, USD 2 decimals => 1606.01.\n\nAll good.\n\nNow produce answer with working and final line."
+        }
+      }
+    ],
+    "created": 1792435152,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 3030,
+      "prompt_tokens": 600,
+      "total_tokens": 3630,
+      "completion_tokens_details": {
+        "reasoning_tokens": 2405
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 600
+    }
+  },
+  "latency_ms": 15107,
+  "usage": {
+    "prompt_tokens": 600,
+    "completion_tokens": 3030
+  },
+  "created_at": "2026-10-19T18:39:20.404601+00:00"
+}

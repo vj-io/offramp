@@ -1,0 +1,61 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You compute subscription refunds for HelpHub billing. Follow this policy exactly, step by step, and show your arithmetic.\n\n1. Tiered price. The list price is in USD per seat per billing period. Seats are priced in graduated tiers: seats 1-10 cost 100% of list price, seats 11-50 cost 85%, seats 51 and above cost 70%. Subtotal = sum over the tiers of (seats in that tier x list price x tier rate). Round the subtotal to 2 decimals, half up.\n2. Coupon. Take the coupon percentage off the subtotal and round to 2 decimals, half up. The result is the USD amount paid for the period.\n3. Days used. Days used = the number of days from the period start date to the cancellation date, counting both dates. Unused days = billing period days - days used, never below 0.\n4. Refundable amount in USD. If the billing period is 365 days and days used is 14 or fewer, the refundable amount is the full amount paid. Otherwise, prorated = amount paid x unused days / billing period days, rounded to 2 decimals half up; then subtract a 3% processing fee on the prorated amount, rounded to 2 decimals half up. The fee is not charged on a full refund.\n5. Prior refunds. Subtract the USD refunds already issued from the refundable amount. If the result is negative, it is 0.\n6. Currency. Multiply by the exchange rate recorded at purchase (units of the customer's currency per 1 USD) and round half up to the currency's minor unit: 2 decimals for USD, EUR and GBP, 0 decimals for JPY.\n7. Show your working, then put the final refund in the customer's currency alone on the last line as `ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator)."
+      },
+      {
+        "role": "user",
+        "content": "Plan: Scale Annual, billing period 365 days\nList price: 120.00 USD per seat per period\nSeats: 51\nPeriod start: 2025-08-20\nCancelled on: 2025-09-02\nCoupon: 0% off\nRefunds already issued: 0 USD\nCustomer paid in GBP at 0.7889 GBP per 1 USD\n\nHow much do we refund, in GBP?\n\nReply with the final refund amount in the customer's currency alone on the last line as `ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator)."
+      }
+    ],
+    "params": {
+      "max_tokens": 18000,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-97a5ddf16010bb8c",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "**Step 1: Tiered price calculation**  \n- Seats 1‑10: 10 × $120.00 × 100% = $1,200.00  \n- Seats 11‑50: 40 × $120.00 × 85% = 40 × $102.00 = $4,080.00  \n- Seat 51: 1 × $120.00 × 70% = $84.00  \nSubtotal = $1,200.00 + $4,080.00 + $84.00 = **$5,364.00** (rounded to 2 decimals)\n\n**Step 2: Coupon**  \nCoupon = 0% → Amount paid = $5,364.00 (rounded to 2 decimals)\n\n**Step 3: Days used**  \nPeriod start: 2025‑08‑20  \nCancellation: 2025‑09‑02 (both dates inclusive)  \nAugust: 20‑31 → 12 days  \nSeptember: 1‑2 → 2 days  \nDays used = 14  \nBilling period = 365 days  \nUnused days = 365 – 14 = 351\n\n**Step 4: Refundable amount (USD)**  \nBilling period = 365 days and days used ≤ 14 → full refund applies.  \nRefundable amount = $5,364.00 (no processing fee)\n\n**Step 5: Prior refunds**  \nAlready issued = $0 → Refundable amount remains $5,364.00\n\n**Step 6: Currency conversion**  \nExchange rate: 0.7889 GBP per 1 USD  \n$5,364.00 × 0.7889 = 4,231.6596 GBP  \nRounded half‑up to 2 decimals (GBP minor unit) → **4,231.66 GBP**\n\nANSWER: 4231.66",
+          "role": "assistant",
+          "reasoning_content": "We need to compute the refund step by step.\n\nGiven:\n- Plan: Scale Annual, billing period 365 days\n- List price: 120.00 USD per seat per period\n- Seats: 51\n- Period start: 2025-08-20\n- Cancelled on: 2025-09-02\n- Coupon: 0% off\n- Refunds already issued: 0 USD\n- Customer paid in GBP at 0.7889 GBP per 1 USD\n\nWe need to compute the refund in GBP.\n\nStep 1: Tiered price.\nSeats: 51.\nTiers:\n- Seats 1-10: 100% of list price\n- Seats 11-50: 85% of list price\n- Seats 51 and above: 70% of list price\n\nSo:\nSeats 1-10: 10 seats at 100% = 10 * 120.00 * 1.00 = 1200.00\nSeats 11-50: 40 seats (since 11 to 50 inclusive is 40 seats) at 85% = 40 * 120.00 * 0.85 = 40 * 102.00 = 4080.00\nSeats 51: 1 seat at 70% = 1 * 120.00 * 0.70 = 84.00\n\nSubtotal = 1200.00 + 4080.00 + 84.00 = 5364.00 USD\nRound to 2 decimals half up: 5364.00 (already 2 decimals)\n\nStep 2: Coupon: 0% off, so amount paid = subtotal = 5364.00 USD. Round to 2 decimals half up: 5364.00 USD.\n\nStep 3: Days used.\nPeriod start: 2025-08-20\nCancelled on: 2025-09-02\nCount both dates inclusive.\nWe need to calculate number of days from start to cancellation inclusive.\nAugust has 31 days. From Aug 20 to Aug 31 inclusive: 31 - 20 + 1 = 12 days.\nSeptember 1 to September 2 inclusive: 2 days.\nTotal days used = 12 + 2 = 14 days.\nBilling period days = 365.\nUnused days = 365 - 14 = 351 days (never below 0).\n\nStep 4: Refundable amount in USD.\nCondition: If billing period is 365 days and days used is 14 or fewer, the refundable amount is the full amount paid.\nHere days used = 14, which is ≤ 14, so full refund applies.\nThus refundable amount = amount paid = 5364.00 USD.\nNo processing fee on full refund.\n\nStep 5: Prior refunds: 0 USD, so refundable amount remains 5364.00 USD.\n\nStep 6: Currency conversion.\nExchange rate: 0.7889 GBP per 1 USD.\nMultiply: 5364.00 * 0.7889 = ?\nCompute: 5364 * 0.7889.\n5364 * 0.7889 = 5364 * (7889/10000) = (5364 * 7889) / 10000.\nLet's calculate precisely:\n5364 * 7889 = ?\n5364 * 7000 = 37,548,000\n5364 * 800 = 4,291,200\n5364 * 80 = 429,120\n5364 * 9 = 48,276\nSum: 37,548,000 + 4,291,200 = 41,839,200\n+ 429,120 = 42,268,320\n+ 48,276 = 42,316,596\nDivide by 10000 = 4231.6596 GBP.\nRound half up to currency's minor unit: GBP uses 2 decimals.\n4231.6596 rounded to 2 decimals half up: look at third decimal = 9, so round up: 4231.66 GBP.\n\nBut wait: The policy says \"round half up to the currency's minor unit: 2 decimals for USD, EUR and GBP, 0 decimals for JPY.\" So we round to 2 decimals.\n\nThus final refund = 4231.66 GBP.\n\nBut we must show working and then put final answer as ANSWER: <number>.\n\nLet's double-check days used calculation: Period start 2025-08-20, cancelled 2025-09-02. Counting both dates inclusive.\nAugust: 20,21,22,23,24,25,26,27,28,29,30,31 = 12 days.\nSeptember: 1,2 = 2 days.\nTotal = 14 days. Yes.\n\nCondition: \"If the billing period is 365 days and days used is 14 or fewer, the refundable amount is the full amount paid.\" So full refund.\n\nThus refund in USD = 5364.00.\nConvert: 5364.00 * 0.7889 = 4231.6596 -> 4231.66 GBP.\n\nNow, we need to show working step by step. Then final line: ANSWER: 4231.66\n\nBut ensure no currency symbol, no thousands separator. Just digits and decimal point.\n\nLet's produce the response."
+        }
+      }
+    ],
+    "created": 1792435151,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 1954,
+      "prompt_tokens": 603,
+      "total_tokens": 2557,
+      "completion_tokens_details": {
+        "reasoning_tokens": 1438
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 603
+    }
+  },
+  "latency_ms": 11718,
+  "usage": {
+    "prompt_tokens": 603,
+    "completion_tokens": 1954
+  },
+  "created_at": "2026-10-19T18:39:17.026207+00:00"
+}

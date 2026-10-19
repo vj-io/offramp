@@ -1,0 +1,56 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words."
+      },
+      {
+        "role": "user",
+        "content": "Knowledge-base excerpts:\n[two-factor-authentication] Two-factor authentication\nTurn on two-factor authentication under Account, Security. We support authenticator apps and security keys. When you enable it we show 10 one-time recovery codes; store them somewhere safe.\n\nIf you lose your device, sign in with a recovery code and add a new device. Without a recovery code, support can reset two-factor only after verifying your identity, which takes up to 2 business days.\n\nCustomer question: ¿Cómo activo la autenticación en dos pasos?"
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.2,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-aab34d2b",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "Para activar la autenticación en dos pasos, ve a la sección **Account, Security** en tu cuenta y actívala. Cuando la habilites, te mostraremos 10 códigos de recuperación; guárdalos en un lugar seguro. Si pierdes tu dispositivo, puedes iniciar sesión con un código de recuperación y agregar uno nuevo. Sin un código de recuperación, el soporte puede restablecer la autenticación solo después de verificar tu identidad, lo que toma hasta 2 días hábiles.",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435139,
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 106,
+      "prompt_tokens": 229,
+      "total_tokens": 335,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 229
+    }
+  },
+  "latency_ms": 2367,
+  "usage": {
+    "prompt_tokens": 229,
+    "completion_tokens": 106
+  },
+  "created_at": "2026-10-19T18:38:59.800682+00:00"
+}

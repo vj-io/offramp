@@ -1,0 +1,60 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words."
+      },
+      {
+        "role": "user",
+        "content": "Knowledge-base excerpts:\n[invoices-and-receipts] Invoices and receipts\nEvery charge generates a PDF invoice. Open Account, Billing, Invoices and choose \"Download\" next to the charge. Invoices are also emailed to the billing contact.\n\nTo add a company name or VAT number to future invoices, edit your billing details. We cannot change invoices that were already issued, but we can issue a corrected copy on request.\n\nCustomer question: 請求書をダウンロードするにはどうすればいいですか？"
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.2,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-9d4f88585fad0e81",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "請求書をダウンロードするには、アカウントの「請求」→「請求書」を開き、該当する請求の横にある「ダウンロード」をクリックしてください。請求書は請求担当者宛てにもメールで送信されます。[invoices-and-receipts]",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435140,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 84,
+      "prompt_tokens": 230,
+      "total_tokens": 314,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 230
+    }
+  },
+  "latency_ms": 1732,
+  "usage": {
+    "prompt_tokens": 230,
+    "completion_tokens": 84
+  },
+  "created_at": "2026-10-19T18:39:01.790519+00:00"
+}

@@ -1,0 +1,36 @@
+{
+ "files": {
+  "audit.json": "66bb4aac9b61e30e03abf90ea942bff2f768b85e72bc13e3e46725245c0504dc",
+  "cases/cs_01.jsonl": "74f8dc4a258c48b2b17a93f09ee5923458872c387a98bdabc6cb0dd55dc32d00",
+  "cases/cs_02.jsonl": "f417a04fb3def7debb48620697fc5b960dc39ccfe38b028dbbd5148352f8368d",
+  "cases/cs_03.jsonl": "62b83a93f83cbd863127e53b49f99784d8e80dd1403e1805fd5d0c8c4f2e630b",
+  "cases/cs_04.jsonl": "d943ab91a21ce1f7d3637eaa22a150f8dd102d5e6268c5658d36c7de43450397",
+  "cases/cs_05.jsonl": "7ef1cc9ebcfd460198dd640b5e451a505c919d1ad9b59873a78ec98c91e68ff4",
+  "cases/cs_06.jsonl": "4f9e4def6d6f997c28994db6024e13f860349a093ad42e77f68688cb88670845",
+  "reference/refund_oracle.py": "528f5802677b5e13c684eeb0218b2811c8d46349f025ce2ba6c1b5f9e48c3488",
+  "references/cs_01.jsonl": "3fa1d5f85fdd3c5a8948db830c565312f18e98b18d36a38db8b2a10124241f92",
+  "references/cs_02.jsonl": "2eac2c398be444709ddf2b078da108a9e0df46368bda303cec1250b5939d4aa1",
+  "references/cs_03.jsonl": "180e022d5c0ae6dbe9f89e3c4582715d42dd5720ec1966c1bf4edd72ba3322e5",
+  "references/cs_05.jsonl": "759860315c43dc92209498317aaf9d648d48913bf9fa83b026361ac26e7d6ba1",
+  "sites.json": "a8d2b96dd11b11b94c240d7507e0120a1e7e62ab916394a537373052f67c0e89"
+ },
+ "generated_at": "2026-10-19T18:36:59.464424+00:00",
+ "generator_models": {
+  "case_gen": "nvidia/nemotron-3-super-120b-a12b",
+  "case_gen_adversarial": "nvidia/Nemotron-3-Ultra-550b-a55b"
+ },
+ "methods": {
+  "cs_01": {
+   "reference:seed": 12
+  },
+  "cs_02": {
+   "reference:seed": 12
+  },
+  "cs_03": {
+   "reference:seed": 9
+  },
+  "cs_05": {
+   "reference:oracle": 12
+  }
+ }
+}

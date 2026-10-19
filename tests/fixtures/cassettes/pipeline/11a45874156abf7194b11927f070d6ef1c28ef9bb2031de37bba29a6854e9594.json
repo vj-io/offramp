@@ -1,0 +1,61 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write handoff notes for HelpHub support agents taking over a ticket.\nSummarise the thread in English, in at most 120 words, with three labelled parts:\nIssue, Tried so far, Next step.\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\nMention internal notes only as \"internal note\"; their wording is for agents, never the customer."
+      },
+      {
+        "role": "user",
+        "content": "Ticket thread, 6 messages:\n\n[2025-09-03T13:00:00Z] customer (田中 太郎): 年間プランをキャンセルしてください。5日前に間違えて購入しました。\n[2025-09-03T13:20:00Z] internal_note (Sam (HelpHub)): Within 14-day window, so full refund. Customer paid 1,188.00 EUR. Needs finance approval above 1,000.\n[2025-09-03T13:22:00Z] agent (Sam (HelpHub)): Hi Lena, I have asked our finance team to approve the full refund. I will confirm tomorrow.\n[2025-09-04T09:00:00Z] customer (田中 太郎): Lena Fischerではありません。私は田中太郎です。注文HH-55901の$24.00返金はいつ？Marcus Webbと同じ住所バグです。\n[2025-09-04T09:10:00Z] internal_note (Sam (HelpHub)): Customer confused. This is annual plan cancellation (1,188.00 EUR), not order HH-55901. Address bug was Marcus Webb's case. Finance approval pending.\n[2025-09-04T09:15:00Z] agent (Sam (HelpHub)): 田中様、年間プランの返金1,188.00 EURはファイナンス承認待ちです。HH-55901は別のお客様のケースです。"
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-861ed43900fd45a8",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "Issue: Customer requests cancellation of annual plan purchased by mistake 5 days ago; also inquires about refund for unrelated order HH-55901 ($24.00) due to address confusion.\n\nTried so far: Agent confirmed eligibility for full refund within 14-day window; finance approval requested for 1,188.00 EUR (over 1,000 threshold). Internal note indicates finance approval still pending and clarifies HH-55901 is unrelated (Marcus Webb’s case).\n\nNext step: Await finance approval for 1,188.00 EUR refund; inform customer that HH-55901 is not their order and no action is needed on it. Clarify refund status upon approval.",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435168,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 160,
+      "prompt_tokens": 490,
+      "total_tokens": 650,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 490
+    }
+  },
+  "latency_ms": 2846,
+  "usage": {
+    "prompt_tokens": 490,
+    "completion_tokens": 160
+  },
+  "created_at": "2026-10-19T18:39:30.089198+00:00"
+}

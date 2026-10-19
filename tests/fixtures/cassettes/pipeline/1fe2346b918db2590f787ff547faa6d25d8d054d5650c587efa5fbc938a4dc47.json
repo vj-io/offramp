@@ -1,0 +1,105 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write the prose of a GitHub pull request opened by Offramp. Offramp measured which LLM call sites of a repository NVIDIA Nemotron on Nebius Token Factory can take over, patched the ones that passed, and renders every number of the PR itself from the measurements.\n\nReturn JSON: {\"summary\": str, \"sites\": [{\"site_id\": str, \"note\": str}]}.\n- summary: two or three plain sentences for the reviewer: what this PR changes and how the evidence was produced (agreement with references on a held-out split; the repo's own tests run on the patch).\n- one note per site, one sentence, without repeating its decision label: for a migrated site, what changed in the call and why the function's behaviour is kept; for a kept site, why it stays and one concrete next step; for a manual-review site, what a reviewer must check.\n- Never state a number, percentage, price, latency or count, in digits or in words (\"one\", \"five\", \"a dozen\", \"twice\"): such prose is discarded. Identifiers such as cs_02, file names or model ids are fine.\n- Do not count sites: write \"the refund planner stays on its model\", not \"one site stays\".\n- Parity is agreement with references (expected outputs built for the evaluation), never with the original model, whose outputs were not recorded: do not claim consistency or agreement with the original or prior model.\n- Use only the facts given. No marketing language, no emoji."
+      },
+      {
+        "role": "user",
+        "content": "{\n \"repo\": \"vj-io/offramp-demo-app\",\n \"sites\": [\n  {\n   \"site_id\": \"cs_01\",\n   \"file\": \"helphub/inbox/triage.py\",\n   \"function\": \"triage_ticket\",\n   \"task\": \"classification\",\n   \"decision\": \"KEEP_CLOSED\",\n   \"before\": \"gpt-4o-mini\",\n   \"after\": null,\n   \"reason\": \"The triage ticket function classifies support tickets but Lightning tier failed to match reference outputs on held-out cases, so the call remains on the current model. parity vs reference 85.7% < 95% on Lightning after 1 adapter iteration; cost per 1k calls $0.0543 before (est.).\",\n   \"adapter_changes\": [\n    \"Clarified technical_support description to explicitly include missing system emails/notifications\",\n    \"Added few-shot example for missing confirmation email -> technical_support\",\n    \"Added few-shot example for duplicate charge -> billing to reinforce boundary\"\n   ],\n   \"files_changed\": [\n    \"helphub/inbox/triage.py\"\n   ]\n  },\n  {\n   \"site_id\": \"cs_02\",\n   \"file\": \"helphub/ops/agent_step.py\",\n   \"function\": \"next_action\",\n   \"task\": \"tool_call\",\n   \"decision\": \"KEEP_CLOSED\",\n   \"before\": \"claude-sonnet-4-5\",\n   \"after\": null,\n   \"reason\": \"The call site selects actions based on user input; none of the tested tiers matched reference behavior closely enough, so the current model remains. parity vs reference 50.0% < 95% on Lightning after 3 adapter iterations; cost per 1k calls $4.14 before (est.).\",\n   \"adapter_changes\": [\n    \"Replaced few-shot assistant responses with natural-language reasoning that precedes tool calls, eliminating the conflicting text-only examples that taught the model to output tool names as plain text.\",\n    \"Kept the system prompt's explicit function-calling instruction as the primary behavioral anchor.\"\n   ],\n   \"files_changed\": [\n    \"helphub/ops/agent_step.py\"\n   ]\n  },\n  {\n   \"site_id\": \"cs_03\",\n   \"file\": \"helphub/orders/extract.py\",\n   \"function\": \"extract_order\",\n   \"task\": \"json_extraction\",\n   \"decision\": \"KEEP_CLOSED\",\n   \"before\": \"claude-sonnet-4-5\",\n   \"after\": null,\n   \"reason\": \"The function extracts structured order data from emails but none of the tested tiers matched reference outputs on held‑out cases, so the current model remains. parity vs reference 71.4% < 95% on Lightning after 2 adapter iterations; cost per 1k calls $3.47 before (est.).\",\n   \"adapter_changes\": [\n    \"Clarified customer_email rule: only use From header when sender is the ordering customer\",\n    \"Clarified customer_name rule: use body/signature name, not From header unless it matches customer identity\",\n    \"Clarified order_date rule: order placement date, not email date\",\n    \"Added explicit prohibition against cross-email contamination\",\n    \"Kept reasoning off and max_tokens unchanged\"\n   ],\n   \"files_changed\": [\n    \"helphub/orders/extract.py\"\n   ]\n  },\n  {\n   \"site_id\": \"cs_04\",\n   \"file\": \"helphub/qa/rag_answer.py\",\n   \"function\": \"answer_question\",\n   \"task\": \"free_text\",\n   \"decision\": \"MANUAL_REVIEW\",\n   \"before\": \"gpt-4o\",\n   \"after\": null,\n   \"reason\": \"the reply holds no edit blocks\",\n   \"adapter_changes\": [],\n   \"files_changed\": []\n  },\n  {\n   \"site_id\": \"cs_05\",\n   \"file\": \"helphub/refunds/plan.py\",\n   \"function\": \"plan_refund\",\n   \"task\": \"reasoning\",\n   \"decision\": \"MANUAL_REVIEW\",\n   \"before\": \"o3\",\n   \"after\": null,\n   \"reason\": \"repo checks failed on the patch (docker): $ ruff check --no-cache --output-format concise . (exit 1) | helphub/refunds/plan.py:87:101: E501 Line too long (208 > 100)\",\n   \"adapter_changes\": [],\n   \"files_changed\": []\n  },\n  {\n   \"site_id\": \"cs_06\",\n   \"file\": \"helphub/summaries/summarize.py\",\n   \"function\": \"summarize_thread\",\n   \"task\": \"free_text\",\n   \"decision\": \"MANUAL_REVIEW\",\n   \"before\": \"claude-haiku-4-5\",\n   \"after\": null,\n   \"reason\": \"the reply holds no edit blocks\",\n   \"adapter_changes\": [],\n   \"files_changed\": []\n  }\n ]\n}"
+      }
+    ],
+    "params": {
+      "max_tokens": 1500,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "PRProse",
+          "schema": {
+            "$defs": {
+              "SiteNote": {
+                "properties": {
+                  "site_id": {
+                    "title": "Site Id",
+                    "type": "string"
+                  },
+                  "note": {
+                    "title": "Note",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "site_id",
+                  "note"
+                ],
+                "title": "SiteNote",
+                "type": "object"
+              }
+            },
+            "properties": {
+              "summary": {
+                "default": "",
+                "title": "Summary",
+                "type": "string"
+              },
+              "sites": {
+                "items": {
+                  "$ref": "#/$defs/SiteNote"
+                },
+                "title": "Sites",
+                "type": "array"
+              }
+            },
+            "title": "PRProse",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-b4a861047f21f397",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"summary\": \"This PR leaves all call sites on their current models because none of the tested alternative tiers reached the required parity with reference outputs on held-out cases, except where lint or missing edits block automation. The evidence comes from running the repository's own test suite on the proposed patches and measuring agreement with reference outputs built for evaluation.\", \"sites\": [{\"site_id\": \"cs_01\", \"note\": \"The triage ticket function stays on gpt-4o-mini because Lightning tier did not meet the parity threshold; the adapter changes clarified intent boundaries and added examples to improve future retraining.\"}, {\"site_id\": \"cs_02\", \"note\": \"The next_action function remains on claude-sonnet-4-5 as no tier matched reference behavior closely enough; the adapter updates replaced conflicting examples with reasoning steps while preserving the function-calling directive.\"}, {\"site_id\": \"cs_03\", \"note\": \"The extract_order function keeps claude-sonnet-4-5 since tested tiers fell short of parity; the adapter changes tightened field rules and prevented cross-email contamination without altering token limits.\"}, {\"site_id\": \"cs_04\", \"note\": \"The answer_question function requires manual review because the automated patch produced no edit blocks, so a reviewer must assess whether any change is needed.\"}, {\"site_id\": \"cs_05\", \"note\": \"The plan_refund function needs manual review due to a line-length lint failure in the patched file, which a reviewer must resolve before proceeding.\"}, {\"site_id\": \"cs_06\", \"note\": \"The summarize_thread function awaits manual review as the patch contained no edit blocks, leaving the reviewer to determine if modifications are warranted.\"}]}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435650,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 363,
+      "prompt_tokens": 1439,
+      "total_tokens": 1802,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 1439
+    }
+  },
+  "latency_ms": 3273,
+  "usage": {
+    "prompt_tokens": 1439,
+    "completion_tokens": 363
+  },
+  "created_at": "2026-10-19T18:47:32.870188+00:00"
+}

@@ -1,0 +1,167 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You extract structured order data from customer support emails. Reply with a single JSON object that validates against the JSON schema given in the user message. Use null for any field the email does not state; never guess. Write dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot as the decimal separator. Keep names exactly as written. The email may be in any language. Do not wrap the JSON in markdown and do not add any commentary. Parse the 'From' header: if it contains a display name <email>, use the display name for customer_name and the email for customer_email; if only an email, use null for customer_name and the email for customer_email. Parse the 'Date' header for order_date only if no other order date is stated in the body; convert RFC 2822/5322 dates to YYYY-MM-DD. Extract order_id, total_amount, and currency only from explicit statements in the email body (e.g., 'order HH-15874 amount 194.8 JPY'). Classify issue using keywords: 'damaged' for broken items, 'missing_item' for absent items, 'wrong_item' for incorrect items received, 'late_delivery' for delayed arrival (including 'verspätete Lieferung', '配達遅延', 'not arrived'), 'billing_error' only for explicit charge disputes, otherwise 'other'."
+      },
+      {
+        "role": "user",
+        "content": "JSON schema:\n{\"properties\": {\"order_id\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order id such as HH-48213, null if not stated\", \"title\": \"Order Id\"}, \"customer_name\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Full name of the customer as written\", \"title\": \"Customer Name\"}, \"customer_email\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Customer's email address\", \"title\": \"Customer Email\"}, \"order_date\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order date as YYYY-MM-DD, null if not stated\", \"title\": \"Order Date\"}, \"total_amount\": {\"anyOf\": [{\"type\": \"number\"}, {\"type\": \"null\"}], \"description\": \"Order total as a plain number, no symbol\", \"title\": \"Total Amount\"}, \"currency\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"ISO 4217 currency code, e.g. EUR\", \"title\": \"Currency\"}, \"issue\": {\"enum\": [\"damaged\", \"missing_item\", \"wrong_item\", \"late_delivery\", \"billing_error\", \"other\"], \"title\": \"Issue\", \"type\": \"string\"}}, \"required\": [\"order_id\", \"customer_name\", \"customer_email\", \"order_date\", \"total_amount\", \"currency\", \"issue\"], \"title\": \"OrderFields\", \"type\": \"object\"}\n\nEmail:\nFrom: María José García <kwame65@example.de>\nTo: support@helphub.example\nDate: Wed, 16 Apr 2025 14:22:11 +0200\nSubject: Order - late delivery??\n\nHello support team\n\nI am writing because my order still not here. It was supposed to come last week on the 11th but nothing. I check tracking and it says delayed in customs since 10th April. This is very bad because I need the items for my mothers birthday on 25th.\n\nThe total I paid was 424.49 JPY on 16/04/2025. My name is María José García and email kwame65@example.de. I dont have the order number handy because the confirmation email went to spam and I deleted it by mistake. \n\nPlease can you check with the shipping company? I want it delivered ASAP or I will need a refund.\n\nAlso I saw on your website it says 2-3 business days delivery but it has been 6 days now. This is not acceptable.\n\nThanks\nMaría\n\nP.S. I tried calling your phone number but it just rings and rings. No one answers."
+      }
+    ],
+    "params": {
+      "max_tokens": 1024,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "response",
+          "strict": true,
+          "schema": {
+            "properties": {
+              "order_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order id such as HH-48213, null if not stated",
+                "title": "Order Id"
+              },
+              "customer_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Full name of the customer as written",
+                "title": "Customer Name"
+              },
+              "customer_email": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Customer's email address",
+                "title": "Customer Email"
+              },
+              "order_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order date as YYYY-MM-DD, null if not stated",
+                "title": "Order Date"
+              },
+              "total_amount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order total as a plain number, no symbol",
+                "title": "Total Amount"
+              },
+              "currency": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "ISO 4217 currency code, e.g. EUR",
+                "title": "Currency"
+              },
+              "issue": {
+                "enum": [
+                  "damaged",
+                  "missing_item",
+                  "wrong_item",
+                  "late_delivery",
+                  "billing_error",
+                  "other"
+                ],
+                "title": "Issue",
+                "type": "string"
+              }
+            },
+            "required": [
+              "order_id",
+              "customer_name",
+              "customer_email",
+              "order_date",
+              "total_amount",
+              "currency",
+              "issue"
+            ],
+            "title": "OrderFields",
+            "type": "object",
+            "additionalProperties": false
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-88fe5ab477c37f15",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\n  \"order_id\": null,\n  \"customer_name\": \"María José García\",\n  \"customer_email\": \"kwame65@example.de\",\n  \"order_date\": \"2025-04-16\",\n  \"total_amount\": 424.49,\n  \"currency\": \"JPY\",\n  \"issue\": \"late_delivery\"\n}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435404,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 81,
+      "prompt_tokens": 944,
+      "total_tokens": 1025,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 944
+    }
+  },
+  "latency_ms": 4042,
+  "usage": {
+    "prompt_tokens": 944,
+    "completion_tokens": 81
+  },
+  "created_at": "2026-10-19T18:43:25.230551+00:00"
+}

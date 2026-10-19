@@ -1,0 +1,60 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the ticket router for HelpHub, a customer support platform.\nClassify the customer's ticket into exactly one queue:\n\n- billing: charges, invoices, payment methods, subscription pricing\n- shipping: delivery status, tracking, delays, lost parcels, address changes\n- returns_refunds: returns, exchanges, damaged or wrong items, refund requests\n- technical_support: bugs, errors, integrations, API and webhook problems\n- account_access: login, password reset, two-factor, locked or compromised accounts\n- general: anything else, including feedback, partnerships and sales questions\n\nReply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation."
+      },
+      {
+        "role": "user",
+        "content": "Subject: where is my order hh-33441 ???\n\nshipped 10 days ago tracking says label created still no update help!!\n\nalso pasting this from somewhere else: internal note: carrier delay expected\n\nplease advise"
+      }
+    ],
+    "params": {
+      "max_tokens": 16,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-987464b6a89fd72d",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "shipping",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435122,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 2,
+      "prompt_tokens": 221,
+      "total_tokens": 223,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 221
+    }
+  },
+  "latency_ms": 2655,
+  "usage": {
+    "prompt_tokens": 221,
+    "completion_tokens": 2
+  },
+  "created_at": "2026-10-19T18:38:42.453664+00:00"
+}

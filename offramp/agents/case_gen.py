@@ -144,6 +144,23 @@ def _run(
     return out
 
 
+def _target_env() -> dict[str, str]:
+    """The environment target code runs in: what uv and python need, nothing of Offramp's (no *_KEY,
+    *_TOKEN, *_FALLBACK, GITHUB_TOKEN or LANGSMITH_*); HOME and TMPDIR in a scratch dir, as Task 10's local
+    sandbox does."""
+    scratch = data_dir() / "envs" / "home"
+    scratch.mkdir(parents=True, exist_ok=True)
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(scratch),
+        "TMPDIR": str(scratch),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR") or str(Path.home() / ".cache" / "uv"),
+        "UV_PYTHON_INSTALL_DIR": os.environ.get("UV_PYTHON_INSTALL_DIR")
+        or str(Path.home() / ".local" / "share" / "uv" / "python"),
+    }
+
+
 def _target_python(repo: Path) -> tuple[list[str], dict[str, str]]:
     """Command and environment for running python in the target's own dependencies without writing into the
     target. The virtualenv lives in Offramp's data dir (UV_PROJECT_ENVIRONMENT) and holds the third-party
@@ -153,7 +170,7 @@ def _target_python(repo: Path) -> tuple[list[str], dict[str, str]]:
     target; their code imports from PYTHONPATH (_import_roots). Every run uses --no-sync; a changed lock or
     pyproject re-syncs the env."""
     path = os.pathsep.join(str(p) for p in _import_roots(repo))
-    base = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"} | {"PYTHONPATH": path}
+    base = _target_env() | {"PYTHONPATH": path}
     if not (repo / "pyproject.toml").exists():
         return [sys.executable], base  # ponytail: no project metadata to build an env from; Offramp's python
     env_dir = data_dir() / "envs" / hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:16]

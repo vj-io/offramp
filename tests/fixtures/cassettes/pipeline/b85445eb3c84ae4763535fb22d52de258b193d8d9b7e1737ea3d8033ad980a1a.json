@@ -1,0 +1,76 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the ticket router for HelpHub, a customer support platform. Classify the customer's ticket into exactly one queue: billing, shipping, returns_refunds, technical_support, account_access, general. Reply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation."
+      },
+      {
+        "role": "user",
+        "content": "Subject: Order confirmation email not received for HH-77401. Payment completed successfully. Please check if there's a system issue with email delivery."
+      },
+      {
+        "role": "assistant",
+        "content": "technical_support"
+      },
+      {
+        "role": "user",
+        "content": "Subject: Cannot log into my account after password reset. Getting 'invalid credentials' error even with new password."
+      },
+      {
+        "role": "assistant",
+        "content": "account_access"
+      },
+      {
+        "role": "user",
+        "content": "Subject: API webhook delivery failing silently after retry exhaustion\n\nOur integration with HelpHub's outgoing webhook system has been experiencing silent failures when attempting to deliver event payloads to our endpoint. We've configured retries with exponential backoff, but after the fifth consecutive HTTP 502 Bad Gateway response, the webhook appears to be marked as failed internally without any notification being sent to our configured alert channel or logged in the dashboard's webhook history section.\n\nWe first noticed this pattern approximately three weeks ago during a routine audit of missed events from the 'ticket.updated' and 'invoice.paid' streams. Initially, we suspected network instability on our side, but further investigation revealed that our endpoint consistently returns HTTP 200 OK when probed manually, and the issue only manifests during the automated retry sequence triggered by HelpHub's infrastructure.\n\nHas there been a recent change to how webhook retry exhaustion is handled? Specifically, we're wondering if the failure to surface errors post-retry is intentional or a regression in the webhook delivery logic. Any insight into debugging this would be greatly appreciated, as we're currently losing visibility into critical billing and support sync events."
+      }
+    ],
+    "params": {
+      "max_tokens": 16,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-a3dcfac8671f010e",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "technical_support",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435248,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 4,
+      "prompt_tokens": 413,
+      "total_tokens": 417,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 413
+    }
+  },
+  "latency_ms": 2109,
+  "usage": {
+    "prompt_tokens": 413,
+    "completion_tokens": 4
+  },
+  "created_at": "2026-10-19T18:40:49.069927+00:00"
+}

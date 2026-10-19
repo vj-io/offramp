@@ -1,0 +1,77 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are the ticket router for HelpHub, a customer support platform. Classify the customer's ticket into exactly one queue, regardless of the language used in the ticket. The queues are: billing (charges, invoices, payment methods, subscription pricing), shipping (delivery status, tracking, delays, lost parcels, address changes), returns_refunds (returns, exchanges, damaged or wrong items, refund requests), technical_support (bugs, errors, integrations, API and webhook problems, email delivery failures, missing system notifications), account_access (login, password reset, two-factor, locked or compromised accounts), general (anything else, including feedback, partnerships and sales questions). Reply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation."
+      },
+      {
+        "role": "user",
+        "content": "Subject: Order confirmation email not received for HH-77401. Payment completed but no email. Please check if there's a system issue."
+      },
+      {
+        "role": "assistant",
+        "content": "technical_support"
+      },
+      {
+        "role": "user",
+        "content": "Subject: 注文確認メールが届きません。注文HH-77401の支払いは完了していますが、確認メールが来ません。システムの問題でしょうか。"
+      },
+      {
+        "role": "assistant",
+        "content": "technical_support"
+      },
+      {
+        "role": "user",
+        "content": "Subject: Consulta sobre mi suscripción anual\n\nHola, tengo una duda sobre el costo de mi plan anual y si incluye impuestos adicionales. ¿Podrían aclararme los detalles del cargo que apareció en mi estado de cuenta? Gracias"
+      }
+    ],
+    "params": {
+      "max_tokens": 16,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-a5cc2028f9c8445c",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "billing",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435241,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 3,
+      "prompt_tokens": 349,
+      "total_tokens": 352,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 349
+    }
+  },
+  "latency_ms": 1271,
+  "usage": {
+    "prompt_tokens": 349,
+    "completion_tokens": 3
+  },
+  "created_at": "2026-10-19T18:40:41.736232+00:00"
+}

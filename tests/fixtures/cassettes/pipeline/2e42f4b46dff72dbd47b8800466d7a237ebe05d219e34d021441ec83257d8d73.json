@@ -1,0 +1,60 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write handoff notes for HelpHub support agents taking over a ticket.\nSummarise the thread in English, in at most 120 words, with three labelled parts:\nIssue, Tried so far, Next step.\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\nMention internal notes only as \"internal note\"; their wording is for agents, never the customer."
+      },
+      {
+        "role": "user",
+        "content": "Ticket thread, 2 messages:\n\n[2025-09-01T08:12:00Z] customer (Priya Nair): I was charged $49.00 twice for March.\n[2025-09-01T09:40:00Z] agent (Tom (HelpHub)): Thanks Priya, I can see both charges. I will refund the duplicate today."
+      }
+    ],
+    "params": {
+      "max_tokens": 400,
+      "temperature": 0.0,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-a1bdd0da93c3dff3",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "Issue: Customer Priya Nair reports being charged $49.00 twice for March.\nTried so far: Agent Tom confirmed both charges and stated a refund for the duplicate will be processed today.\nNext step: Verify refund completion and confirm with customer.",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435172,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 54,
+      "prompt_tokens": 195,
+      "total_tokens": 249,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 195
+    }
+  },
+  "latency_ms": 1777,
+  "usage": {
+    "prompt_tokens": 195,
+    "completion_tokens": 54
+  },
+  "created_at": "2026-10-19T18:39:33.724648+00:00"
+}

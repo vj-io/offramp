@@ -1,0 +1,186 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you. Think step by step before choosing a tool, but output only the tool call. Do not include any reasoning text in your reply; the system strips it automatically. If reasoning prose appears, the call will be rejected. Use the following decision logic in order: 1) If the customer message contains no order ID at all, escalate_to_human. 2) If order details are not yet known (no prior lookup_order result for that ID), call lookup_order with the order ID from the customer's message. 3) If order details are known, check refund eligibility: the item arrived damaged, an item is missing, or a duplicate charge is confirmed in the lookup result. If eligible, call issue_refund for the exact eligible amount (≤ amount paid, ≤ 200.00) with the matching reason (damaged, missing_item, duplicate_charge). 4) If the customer explicitly threatens legal action, chargeback, fraud, or is abusive, escalate_to_human with priority urgent. 5) For any other situation (shipping delays, customs holds, price complaints, vague dissatisfaction, requests outside the three refund reasons), escalate_to_human with priority normal."
+      },
+      {
+        "role": "user",
+        "content": "Customer message: こんにちは、注文HH-99887の商品が届きません。追跡番号も機能しません。返金してください。Tool results so far: (none yet) Choose the next tool."
+      },
+      {
+        "role": "assistant",
+        "content": "lookup_order(order_id='HH-99887')"
+      },
+      {
+        "role": "user",
+        "content": "Customer message: Order HH-55441 arrived but the ceramic mug was shattered. I have photos. Please refund. Tool results so far: - lookup_order returned: Order HH-55441: status DELIVERED 2025-08-15, items: Ceramic mug x1, total 42.50 USD, paid by card ending 1122. Choose the next tool."
+      },
+      {
+        "role": "assistant",
+        "content": "issue_refund(order_id='HH-55441', amount=42.5, currency='USD', reason='damaged')"
+      },
+      {
+        "role": "user",
+        "content": "Customer message: I ordered HH-77332 and was billed twice for $89.00. My bank shows two identical charges. Refund the duplicate. Tool results so far: - lookup_order returned: Order HH-77332: status DELIVERED 2025-07-20, items: Wireless headphones x1, total 89.00 USD, paid by card ending 3344, duplicate charge confirmed: yes (two identical authorizations). Choose the next tool."
+      },
+      {
+        "role": "assistant",
+        "content": "issue_refund(order_id='HH-77332', amount=89.0, currency='USD', reason='duplicate_charge')"
+      },
+      {
+        "role": "user",
+        "content": "Customer message:\nhh-80194 daijobu desu ka? kakkaku ga warukatta node henkou shitai desu\n\nTool results so far:\n(none yet)\n\nChoose the next tool."
+      }
+    ],
+    "params": {
+      "max_tokens": 2512,
+      "temperature": 0.0,
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "lookup_order",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "order_id": {
+                  "type": "string",
+                  "description": "Order id, e.g. HH-48213"
+                }
+              },
+              "required": [
+                "order_id"
+              ]
+            },
+            "description": "Fetch an order's status, items, total and charges from the order system."
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "issue_refund",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "order_id": {
+                  "type": "string",
+                  "description": "Order id, e.g. HH-48213"
+                },
+                "amount": {
+                  "type": "number",
+                  "description": "Refund amount, at most 200.00"
+                },
+                "currency": {
+                  "type": "string",
+                  "description": "ISO 4217 code of the order"
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "damaged",
+                    "missing_item",
+                    "duplicate_charge",
+                    "other"
+                  ]
+                }
+              },
+              "required": [
+                "order_id",
+                "amount",
+                "currency",
+                "reason"
+              ]
+            },
+            "description": "Refund part or all of an order to the original payment method."
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "escalate_to_human",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "description": "One sentence for the human agent"
+                },
+                "priority": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "normal",
+                    "urgent"
+                  ]
+                }
+              },
+              "required": [
+                "reason",
+                "priority"
+              ]
+            },
+            "description": "Hand the ticket to a human support agent."
+          }
+        }
+      ],
+      "tool_choice": "required",
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-8e0723c1d7f4cdae",
+    "choices": [
+      {
+        "finish_reason": "tool_calls",
+        "index": 0,
+        "message": {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "chatcmpl-tool-8ce7d619aba57038",
+              "function": {
+                "arguments": "{\"order_id\": \"hh-80194\"}",
+                "name": "lookup_order"
+              },
+              "type": "function"
+            }
+          ],
+          "reasoning": "We need to see if there's an order ID. The message includes hh-80194 (lowercase). It has an order ID pattern. So we should lookup_order first.",
+          "reasoning_content": "We need to see if there's an order ID. The message includes hh-80194 (lowercase). It has an order ID pattern. So we should lookup_order first."
+        }
+      }
+    ],
+    "created": 1792435301,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 71,
+      "prompt_tokens": 1400,
+      "total_tokens": 1471,
+      "completion_tokens_details": {
+        "reasoning_tokens": 39
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 1400
+    }
+  },
+  "latency_ms": 2676,
+  "usage": {
+    "prompt_tokens": 1400,
+    "completion_tokens": 71
+  },
+  "created_at": "2026-10-19T18:41:42.120263+00:00"
+}

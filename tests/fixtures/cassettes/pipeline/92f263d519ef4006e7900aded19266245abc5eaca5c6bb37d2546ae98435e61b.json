@@ -1,0 +1,169 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you. You must read every customer message carefully, regardless of language, and identify the true intent before choosing a tool. If the customer mentions legal action, fraud, chargeback, or uses abusive language, escalate immediately. If the issue involves customs holds, lost shipments, or complex multi-contact problems that cannot be fixed by a simple refund, escalate. Only use lookup_order when you genuinely need basic order details (status, items, total, charges) to decide on a standard refund for damaged/missing/duplicate-charge items. Never look up an order just to gather information when the customer's intent already demands human intervention."
+      },
+      {
+        "role": "user",
+        "content": "Customer message: HH-55555 この注文は詐欺です。弁護士に相談します。法的措置を取ります。Tool results so far: (none yet) Choose the next tool."
+      },
+      {
+        "role": "assistant",
+        "content": "escalate_to_human"
+      },
+      {
+        "role": "user",
+        "content": "Customer message: Order HH-77777 has been stuck in customs for three weeks. I've contacted support multiple times with no resolution. I need this escalated to someone who can actually help. Tool results so far: (none yet) Choose the next tool."
+      },
+      {
+        "role": "assistant",
+        "content": "escalate_to_human"
+      },
+      {
+        "role": "user",
+        "content": "Customer message: My order HH-12345 arrived with a cracked screen. I'd like a refund for the $150 item. Tool results so far: (none yet) Choose the next tool."
+      },
+      {
+        "role": "assistant",
+        "content": "lookup_order"
+      },
+      {
+        "role": "user",
+        "content": "Customer message:\nhh-80194 daijobu desu ka? kakkaku ga warukatta node henkou shitai desu\n\nTool results so far:\n(none yet)\n\nChoose the next tool."
+      }
+    ],
+    "params": {
+      "max_tokens": 512,
+      "temperature": 0.0,
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "lookup_order",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "order_id": {
+                  "type": "string",
+                  "description": "Order id, e.g. HH-48213"
+                }
+              },
+              "required": [
+                "order_id"
+              ]
+            },
+            "description": "Fetch an order's status, items, total and charges from the order system."
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "issue_refund",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "order_id": {
+                  "type": "string",
+                  "description": "Order id, e.g. HH-48213"
+                },
+                "amount": {
+                  "type": "number",
+                  "description": "Refund amount, at most 200.00"
+                },
+                "currency": {
+                  "type": "string",
+                  "description": "ISO 4217 code of the order"
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "damaged",
+                    "missing_item",
+                    "duplicate_charge",
+                    "other"
+                  ]
+                }
+              },
+              "required": [
+                "order_id",
+                "amount",
+                "currency",
+                "reason"
+              ]
+            },
+            "description": "Refund part or all of an order to the original payment method."
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "escalate_to_human",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "description": "One sentence for the human agent"
+                },
+                "priority": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "normal",
+                    "urgent"
+                  ]
+                }
+              },
+              "required": [
+                "reason",
+                "priority"
+              ]
+            },
+            "description": "Hand the ticket to a human support agent."
+          }
+        }
+      ],
+      "tool_choice": "auto",
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-0dbc8c34",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "lookup_order",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435255,
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 3,
+      "prompt_tokens": 1186,
+      "total_tokens": 1189,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 1186
+    }
+  },
+  "latency_ms": 668,
+  "usage": {
+    "prompt_tokens": 1186,
+    "completion_tokens": 3
+  },
+  "created_at": "2026-10-19T18:40:55.072356+00:00"
+}

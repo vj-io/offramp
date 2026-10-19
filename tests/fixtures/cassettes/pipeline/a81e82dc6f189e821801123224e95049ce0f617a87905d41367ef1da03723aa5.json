@@ -1,0 +1,163 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You extract structured order data from customer support emails.\nReply with a single JSON object that validates against the JSON schema given in the user message.\nUse null for any field the email does not state; never guess.\nWrite dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot\nas the decimal separator. Keep names exactly as written. The email may be in any language.\nDo not wrap the JSON in markdown and do not add any commentary."
+      },
+      {
+        "role": "user",
+        "content": "JSON schema:\n{\"properties\": {\"order_id\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order id such as HH-48213, null if not stated\", \"title\": \"Order Id\"}, \"customer_name\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Full name of the customer as written\", \"title\": \"Customer Name\"}, \"customer_email\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Customer's email address\", \"title\": \"Customer Email\"}, \"order_date\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"Order date as YYYY-MM-DD, null if not stated\", \"title\": \"Order Date\"}, \"total_amount\": {\"anyOf\": [{\"type\": \"number\"}, {\"type\": \"null\"}], \"description\": \"Order total as a plain number, no symbol\", \"title\": \"Total Amount\"}, \"currency\": {\"anyOf\": [{\"type\": \"string\"}, {\"type\": \"null\"}], \"description\": \"ISO 4217 currency code, e.g. EUR\", \"title\": \"Currency\"}, \"issue\": {\"enum\": [\"damaged\", \"missing_item\", \"wrong_item\", \"late_delivery\", \"billing_error\", \"other\"], \"title\": \"Issue\", \"type\": \"string\"}}, \"required\": [\"order_id\", \"customer_name\", \"customer_email\", \"order_date\", \"total_amount\", \"currency\", \"issue\"], \"title\": \"OrderFields\", \"type\": \"object\"}\n\nEmail:\nFrom: Fatima Zahra El Idrissi <kwame24@example.de>\nTo: support@helphub.example\nDate: Sun, 17 Nov 2024 10:05:22 +0000\nSubject: Billing issue HH-78848\n\nHi,\n\nI was charged 326.25 for order HH-78848 but should have been 299.00. Please fix.\n\nThanks,\nFatima"
+      }
+    ],
+    "params": {
+      "max_tokens": 1024,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "response",
+          "strict": true,
+          "schema": {
+            "properties": {
+              "order_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order id such as HH-48213, null if not stated",
+                "title": "Order Id"
+              },
+              "customer_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Full name of the customer as written",
+                "title": "Customer Name"
+              },
+              "customer_email": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Customer's email address",
+                "title": "Customer Email"
+              },
+              "order_date": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order date as YYYY-MM-DD, null if not stated",
+                "title": "Order Date"
+              },
+              "total_amount": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Order total as a plain number, no symbol",
+                "title": "Total Amount"
+              },
+              "currency": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "ISO 4217 currency code, e.g. EUR",
+                "title": "Currency"
+              },
+              "issue": {
+                "enum": [
+                  "damaged",
+                  "missing_item",
+                  "wrong_item",
+                  "late_delivery",
+                  "billing_error",
+                  "other"
+                ],
+                "title": "Issue",
+                "type": "string"
+              }
+            },
+            "required": [
+              "order_id",
+              "customer_name",
+              "customer_email",
+              "order_date",
+              "total_amount",
+              "currency",
+              "issue"
+            ],
+            "title": "OrderFields",
+            "type": "object",
+            "additionalProperties": false
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-9fd1bd72",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"order_id\": \"HH-78848\", \"customer_name\": \"Fatima Zahra El Idrissi\", \"customer_email\": \"kwame24@example.de\", \"order_date\": \"2024-11-17\", \"total_amount\": 326.25, \"currency\": \"EUR\", \"issue\": \"billing_error\"}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792435130,
+    "model": "nvidia/Nemotron-3_5-Lightning",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 83,
+      "prompt_tokens": 586,
+      "total_tokens": 669,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 586
+    }
+  },
+  "latency_ms": 1535,
+  "usage": {
+    "prompt_tokens": 586,
+    "completion_tokens": 83
+  },
+  "created_at": "2026-10-19T18:38:50.726199+00:00"
+}
