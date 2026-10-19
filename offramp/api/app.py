@@ -11,7 +11,8 @@ Runs wait on a queue that one background thread works through, so the per-run ca
 runs never race for the same credit. A replay (Global Constraint 14) never calls Token Factory: a thread
 appends the recorded events at 4x speed, each recorded gap capped at 1.5 s first. POST /api/runs is rate
 limited per IP (OFFRAMP_RATE_LIMIT_PER_MIN, default 30); CORS allows OFFRAMP_WEB_ORIGIN (comma-separated,
-default http://localhost:3000).
+default http://localhost:3000). A live run imports the target repo's code on this host, so the API starts one
+only when OFFRAMP_ALLOW_LIVE_RUNS=1 (403 otherwise); replays and cache-only runs need no opt-in.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import threading
 import time
 from collections import defaultdict, deque
@@ -41,10 +43,17 @@ REPLAY_SPEED, REPLAY_GAP_CAP_S = 4.0, 1.5
 NO_RECORDING = (
     "no recorded run yet: the demo replay is produced by a real run (`offramp export-replay <run_id>`)"
 )
+LIVE_OPT_IN = "OFFRAMP_ALLOW_LIVE_RUNS"
+LIVE_REFUSED = (
+    "live runs are off on this server: a live run imports the target repo's code here and spends Token "
+    "Factory credit. Watch the replay (?replay=demo), start a cache-only run (live=false), or set "
+    "OFFRAMP_ALLOW_LIVE_RUNS=1 on a server you trust with the repos it is given."
+)
 DEFAULT_ORIGIN = "http://localhost:3000"
 POLL_S = 0.2  # how often an event stream looks for new events
 KEEPALIVE_S = 15.0  # an SSE comment after this long without events, so proxies keep the stream open
-HTTPS_URL = re.compile(r"https://[^\s/]+/\S+")
+REPLAY_KEEP = 20  # replay runs kept (memory, disk, SQLite); the oldest finished ones go first
+HTTPS_URL = re.compile(r"https://[^\s/@]+/\S+")  # no user:password@ part: credentials never enter a run
 
 
 def tf_configured() -> bool:
@@ -57,6 +66,16 @@ def replay_delays(events: Sequence[RunEvent]) -> list[float]:
         return []
     gaps = [(b.ts - a.ts).total_seconds() for a, b in zip(events, events[1:], strict=False)]
     return [0.0] + [min(max(g, 0.0), REPLAY_GAP_CAP_S) / REPLAY_SPEED for g in gaps]
+
+
+def pr_body_file(replay_file: Path) -> Path:
+    """Where `offramp export-replay` puts the recorded run's PR body, next to its events."""
+    return replay_file.with_suffix(".pr.md")
+
+
+def pr_body(replay_file: Path) -> str | None:
+    path = pr_body_file(replay_file)
+    return path.read_text(encoding="utf-8") if path.exists() else None
 
 
 def load_recording(path: Path) -> list[RunEvent] | None:
@@ -76,7 +95,7 @@ def load_recording(path: Path) -> list[RunEvent] | None:
 def config_problem(config: RunConfig) -> str | None:
     """Why the API refuses this config, if it does. Only https repos: a run clones whatever it is given."""
     if not HTTPS_URL.fullmatch(config.repo_url):
-        return "repo_url must be an https:// URL of a git repository"
+        return "repo_url must be an https:// URL of a git repository, without credentials in it"
     if not (0.5 <= config.threshold <= 1 and 0.5 <= config.reasoning_threshold <= 1):
         return "thresholds must be between 0.5 and 1"
     if not 0 <= config.max_iterations <= 3:
@@ -159,6 +178,17 @@ def create_app(
         allow_headers=["content-type", "last-event-id"],
     )
 
+    def evict_replays() -> None:
+        """Keep the newest REPLAY_KEEP - 1 finished replay runs before adding one: replays are free to start,
+        so their logs, directories and rows must not pile up."""
+        runs = root / "runs"
+        ids = {p.name for p in runs.glob("replay-*")} | {k for k in logs if k.startswith("replay-")}
+        done = sorted(i for i in ids if i not in active)  # ids start with a timestamp: oldest first
+        for run_id in done[: max(0, len(ids) - REPLAY_KEEP + 1)]:
+            logs.pop(run_id, None)
+            shutil.rmtree(runs / run_id, ignore_errors=True)
+            pipeline.forget(engine, run_id)
+
     def run_log(run_id: str) -> pipeline.RunLog:
         log = logs.get(run_id)
         if log is None and pipeline.RUN_ID.fullmatch(run_id):
@@ -186,15 +216,21 @@ def create_app(
             events = load_recording(replay_file)
             if events is None:
                 raise HTTPException(404, NO_RECORDING)
+            evict_replays()
             run_id = pipeline.new_run_id("replay-")
             log = logs[run_id] = pipeline.RunLog(root / "runs" / run_id, run_id, engine=engine)
             active.add(run_id)
+            if (body := pr_body(replay_file)) is not None:  # the recorded run's PR body, for the report
+                log.dir.mkdir(parents=True, exist_ok=True)
+                (log.dir / "pr.json").write_text(json.dumps({"title": None, "body": body, "url": None}))
             threading.Thread(target=play, args=(log, events), name=f"replay-{run_id}", daemon=True).start()
             return {"run_id": run_id}
         if config is None:
             raise HTTPException(422, "the body must be a RunConfig")
         if problem := config_problem(config):
             raise HTTPException(422, problem)
+        if config.live and os.environ.get(LIVE_OPT_IN) != "1":
+            raise HTTPException(403, LIVE_REFUSED)
         if config.live and not tf_configured():
             raise HTTPException(503, "Token Factory is not configured on this server; watch the replay")
         log = pipeline.new_run(config, root, engine=engine)

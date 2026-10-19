@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from offramp import db, pipeline
+from offramp.api import app as api
 from offramp.api.app import RateLimit, create_app, replay_delays
 from offramp.schemas import RunConfig, RunEvent, Stage
 
@@ -105,6 +106,7 @@ def sse(text: str) -> list[dict]:
 def make_client(tmp_path, monkeypatch):
     monkeypatch.delenv("OFFRAMP_RATE_LIMIT_PER_MIN", raising=False)
     monkeypatch.delenv("OFFRAMP_WEB_ORIGIN", raising=False)
+    monkeypatch.delenv("OFFRAMP_ALLOW_LIVE_RUNS", raising=False)
     clients = []
 
     def make(**kw):
@@ -182,6 +184,37 @@ def test_a_replay_streams_the_recorded_run_then_serves_its_snapshot_and_report(m
         assert row.stage == "DONE" and row.repo_url == CONFIG["repo_url"]
 
 
+def finish(client, run_id):
+    with client.stream("GET", f"/api/runs/{run_id}/events") as stream:
+        stream.read()
+
+
+def test_a_replay_carries_the_recorded_runs_pr_body(make_client, tmp_path):
+    replay = write_jsonl(tmp_path / "demo-events.jsonl", recorded_events())
+    api.pr_body_file(replay).write_text("## Summary\n\nrecorded body\n")
+    client = make_client(replay_file=replay)
+    run_id = client.post("/api/runs?replay=demo").json()["run_id"]
+    finish(client, run_id)
+    assert (
+        client.get(f"/api/runs/{run_id}/report").json()["pr_body_markdown"] == "## Summary\n\nrecorded body\n"
+    )
+
+
+def test_only_the_newest_replay_runs_are_kept(make_client, tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "REPLAY_KEEP", 2)
+    client = make_client(replay_file=write_jsonl(tmp_path / "demo.jsonl", recorded_events()))
+    ids = []
+    for _ in range(3):
+        ids.append(client.post("/api/runs?replay=demo").json()["run_id"])
+        finish(client, ids[-1])
+    assert ids == sorted(ids)
+    runs = tmp_path / "data" / "runs"
+    assert sorted(p.name for p in runs.iterdir()) == ids[1:]  # the oldest went: directory, memory, rows
+    assert client.get(f"/api/runs/{ids[0]}").status_code == 404
+    with Session(client.app.state.engine) as s:
+        assert s.get(db.Run, ids[0]) is None and s.get(db.Run, ids[2]) is not None
+
+
 def test_the_event_stream_resumes_after_last_event_id(make_client, tmp_path):
     client = make_client(replay_file=write_jsonl(tmp_path / "demo.jsonl", recorded_events()))
     run_id = client.post("/api/runs?replay=demo").json()["run_id"]
@@ -234,6 +267,7 @@ def test_cors_allows_only_the_web_origin(make_client, monkeypatch):
     [
         ({"repo_url": "/etc"}, "https://"),
         ({"repo_url": "file:///etc/passwd"}, "https://"),
+        ({"repo_url": "https://user:ghp_secret@github.com/acme/tiny"}, "https://"),  # no credentials in URLs
         ({"threshold": 2}, "thresholds"),
         ({"max_iterations": 9}, "max_iterations"),
         ({"tiers": []}, "tier"),
@@ -244,7 +278,19 @@ def test_bad_configs_are_refused(make_client, change, problem):
     assert r.status_code == 422 and problem in r.json()["detail"]
 
 
+def test_live_runs_are_refused_unless_the_server_opts_in(make_client, monkeypatch):
+    """A live run imports the target repo's code on this host: the API runs one only when the operator says so
+    (OFFRAMP_ALLOW_LIVE_RUNS=1). Replays and cache-only runs stay open."""
+    monkeypatch.setenv("NEBIUS_API_KEY", "k")
+    r = make_client().post("/api/runs", json={**CONFIG, "live": True})
+    assert r.status_code == 403 and "OFFRAMP_ALLOW_LIVE_RUNS=1" in r.json()["detail"]
+    monkeypatch.setenv("OFFRAMP_ALLOW_LIVE_RUNS", "true")  # only the exact value 1 opens it
+    assert make_client().post("/api/runs", json={**CONFIG, "live": True}).status_code == 403
+    assert make_client().post("/api/runs", json=CONFIG).status_code == 200  # cache-only (live=False)
+
+
 def test_a_live_run_needs_token_factory(make_client, monkeypatch):
+    monkeypatch.setenv("OFFRAMP_ALLOW_LIVE_RUNS", "1")
     monkeypatch.delenv("NEBIUS_API_KEY", raising=False)
     monkeypatch.delenv("NEBIUS_API_KEY_FALLBACK", raising=False)
     r = make_client().post("/api/runs", json={**CONFIG, "live": True})

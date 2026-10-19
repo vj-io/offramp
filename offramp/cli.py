@@ -106,7 +106,7 @@ def serve(args: argparse.Namespace) -> int:
 
 def export_replay(args: argparse.Namespace) -> int:
     """Both replay files (Global Constraint 14) from a finished run: the API's JSON Lines, the web's JSON."""
-    from offramp.api.app import REPLAY_FILE, replay_delays
+    from offramp.api.app import REPLAY_FILE, pr_body_file, replay_delays
 
     log = pipeline.RunLog(pipeline.data_dir() / "runs" / args.run_id, args.run_id)
     if not log.events or log.events[-1].type != "done":
@@ -119,6 +119,12 @@ def export_replay(args: argparse.Namespace) -> int:
     api_out.write_text("".join(e.model_dump_json() + "\n" for e in log.events), encoding="utf-8")
     events = [e.model_dump(mode="json") for e in log.events]
     web_out.write_text(json.dumps(events, ensure_ascii=False) + "\n", encoding="utf-8")
+    pr = log.dir / "pr.json"  # the PR body travels with the API's replay, so a replay's report shows it
+    body = json.loads(pr.read_text())["body"] if pr.exists() else None
+    if body:
+        pr_body_file(api_out).write_text(body, encoding="utf-8")
+    else:
+        pr_body_file(api_out).unlink(missing_ok=True)
     seconds = sum(replay_delays(log.events))
     print(f"wrote {len(log.events)} events to {api_out} and {web_out}; the replay plays in {seconds:.0f} s")
     if seconds >= REPLAY_LIMIT_S:

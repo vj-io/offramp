@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from offramp import cli, pipeline
-from offramp.api.app import load_recording
+from offramp.api.app import load_recording, pr_body_file
 from offramp.schemas import RunConfig, RunEvent, Stage
 
 APP = """from openai import OpenAI
@@ -51,6 +51,11 @@ def test_export_replay_writes_both_replay_files(tmp_path, monkeypatch, capsys):
     assert load_recording(api) == log.events  # what POST /api/runs?replay=demo plays
     assert [RunEvent.model_validate(e) for e in json.loads(web.read_text())] == log.events  # a JSON array
     assert "3 events" in capsys.readouterr().out
+    assert not pr_body_file(api).exists()  # this run rendered no PR body
+
+    (log.dir / "pr.json").write_text(json.dumps({"title": "t", "body": "## Summary\n", "url": None}))
+    assert cli.main(["export-replay", log.run_id, "--api-out", str(api), "--web-out", str(web)]) == 0
+    assert pr_body_file(api).read_text() == "## Summary\n"  # the API's replay serves it in its report
 
 
 def test_export_replay_refuses_an_unfinished_run(tmp_path, monkeypatch, capsys):

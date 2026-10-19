@@ -531,3 +531,51 @@ def test_a_pr_for_a_repo_that_is_not_on_github_is_a_run_error(tmp_path):
     assert run.execute() == Stage.FAILED
     assert log.events[-1].payload["reason"].endswith("is not a GitHub repository")
     assert stub.prs[0]["open_pr"] is False  # the body was still rendered; resuming after a fix opens it
+
+
+def test_secrets_never_reach_events_the_event_file_or_sqlite(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-live-secret-123")
+    monkeypatch.setenv("LANGSMITH_API_KEY_FALLBACK", "lsv2-fallback-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret_456789")
+    engine = db.init_db(db.engine(tmp_path / "offramp.db"))
+    config = RunConfig(repo_url="https://bob:ghp_secret_456789@github.com/acme/tiny")
+    log = pipeline.new_run(config, tmp_path / "data", engine=engine)
+    log.emit(
+        "log", {"level": "error", "message": "Tavily 401 for key tvly-live-secret-123 (lsv2-fallback-secret)"}
+    )
+    log.emit("stage", {"stage": "FAILED", "detail": "clone https://x:y@example.com/r failed"})
+
+    stored = log.file.read_text() + pipeline.json.dumps([e.model_dump(mode="json") for e in log.events])
+    with Session(engine) as s:
+        stored += s.get(db.Run, log.run_id).repo_url
+    for secret in ("tvly-live-secret-123", "lsv2-fallback-secret", "ghp_secret_456789", "x:y@"):
+        assert secret not in stored
+    assert "https://***@github.com/acme/tiny" in stored and "for key ***" in stored
+
+
+def test_the_run_budget_survives_a_resume(tmp_path):
+    """GC8 caps are per run, not per attempt: a resumed run starts from what it had already spent."""
+    repo = make_repo(tmp_path)
+    n_dev, n_holdout = split_counts(repo)
+    log, engine = start(tmp_path, repo)
+    stub = Recorder()
+    spent = {"tokens_in": 1200, "tokens_out": 80, "ultra_agent_calls": 2, "tf_spend_usd": 0.25}
+
+    def matrix_that_spent(m):
+        return stub.eval_matrix(m).model_copy(update={"budget": spent})  # usage of its own client
+
+    def outage(*args, **kwargs):
+        raise ProviderError("Token Factory returned 503 twice", status=503)
+
+    llm = llm_for_full_run(n_dev, n_holdout)
+    first = pipeline.Pipeline(
+        log, llm, eval_matrix=matrix_that_spent, route=outage, patch=stub.patch, pr=stub.pr
+    )
+    assert first.execute() == Stage.FAILED
+
+    again = pipeline.RunLog(log.dir, log.run_id, engine=engine)
+    resumed = pipeline.Pipeline(again, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr)
+    assert resumed.budget.snapshot()["ultra_agent_calls"] == 2  # not a fresh 0 of 40
+    assert resumed.execute() == Stage.DONE
+    totals = pipeline.snapshot(again.run_id, again.events).totals
+    assert (totals.tokens_in, totals.tokens_out, totals.tf_spend_usd) == (1200, 80, 0.25)

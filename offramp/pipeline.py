@@ -51,7 +51,7 @@ from offramp.evals import baselines
 from offramp.evals.route import route_site
 from offramp.evals.runner import run_tier
 from offramp.evals.scorers.aggregate import Thresholds
-from offramp.evals.serverless_job.matrix import Matrix, MatrixResults, absorb_usage, remaining_caps, scrub
+from offramp.evals.serverless_job.matrix import Matrix, MatrixResults, absorb_usage, remaining_caps
 from offramp.integrations import langsmith
 from offramp.integrations.tavily import lookup_source_model
 from offramp.schemas import (
@@ -73,6 +73,9 @@ TERMINAL = ("done", "error")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 GIT_TIMEOUT_S = 300
 GITHUB_REPO = re.compile(r"github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?/?$")
+SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD", re.I)  # *_API_KEY(_FALLBACK), GITHUB_TOKEN, ...
+URL_USERINFO = re.compile(r"(?<=://)[^/@\s]+@")
+BUDGET_FILE = "budget.json"  # the run's Token Factory usage so far: caps hold across resumes
 
 
 def data_dir() -> Path:
@@ -80,7 +83,25 @@ def data_dir() -> Path:
 
 
 def new_run_id(prefix: str = "") -> str:
-    return f"{prefix}{datetime.now(UTC):%Y%m%d-%H%M%S}-{secrets.token_hex(3)}"
+    """e.g. 20261020-101503123-a1b2c3: milliseconds included, so ids sort in creation order."""
+    now = datetime.now(UTC)
+    return f"{prefix}{now:%Y%m%d-%H%M%S}{now.microsecond // 1000:03d}-{secrets.token_hex(3)}"
+
+
+def scrub(value: Any) -> Any:
+    """`value` with the value of every secret-named environment variable (KEY, TOKEN, SECRET or PASSWORD in
+    the name: every provider key and its fallback, GITHUB_TOKEN) and any user:password@ in a URL replaced by
+    ***; dicts and lists are scrubbed throughout. Every event goes through this before it is stored."""
+    if isinstance(value, dict):
+        return {k: scrub(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [scrub(v) for v in value]
+    if not isinstance(value, str):
+        return value
+    for name, secret in os.environ.items():
+        if len(secret) >= 8 and SECRET_NAME.search(name):
+            value = value.replace(secret, "***")
+    return URL_USERINFO.sub("***@", value)
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -166,6 +187,7 @@ class RunLog:
             return self._add(event.model_copy(update={"run_id": self.run_id}))
 
     def _add(self, event: RunEvent) -> RunEvent:
+        event = event.model_copy(update={"payload": scrub(event.payload)})  # file, memory and SQLite alike
         self.dir.mkdir(parents=True, exist_ok=True)
         with self.file.open("a", encoding="utf-8") as f:
             f.write(event.model_dump_json() + "\n")
@@ -234,6 +256,23 @@ def record(engine: Engine, e: RunEvent) -> None:
         elif e.type == "pr":
             s.add(db.Artifact(run_id=e.run_id, kind="pr_url", path=p["url"]))
         s.add(run)
+        s.commit()
+
+
+def forget(engine: Engine, run_id: str) -> None:
+    """Delete a run's summary rows (an evicted replay run)."""
+    with _DB_LOCK, Session(engine) as s:
+        s.exec(delete(db.Run).where(db.Run.id == run_id))
+        for table in (
+            db.CallSite,
+            db.EvalCase,
+            db.Baseline,
+            db.Adapter,
+            db.TierResult,
+            db.Verdict,
+            db.Artifact,
+        ):
+            s.exec(delete(table).where(table.run_id == run_id))
         s.commit()
 
 
@@ -384,6 +423,7 @@ class Pipeline:
             raise ValueError(f"run {log.run_id} has no QUEUED event with its config")
         self.log, self.config, self.client, self.dir = log, config, client, log.dir
         self.budget: Budget = getattr(client, "budget", None) or Budget()
+        self._restore_budget()
         self.cache_dir = cache_dir
         self.price_lookup = price_lookup or default_price_lookup(config, client)
         self.eval_matrix = eval_matrix or self._run_matrix_job
@@ -409,6 +449,7 @@ class Pipeline:
             at = self.log.stage
             self.log.emit("stage", {"stage": Stage.FAILED.value, "detail": reason})
             self.log.emit("error", {"stage": at.value, "reason": reason})
+            self._save_budget()
             _write_json(self.dir / "report.json", report(self.dir, self.log.run_id, self.log.events))
             return Stage.FAILED
         return Stage.DONE
@@ -439,7 +480,24 @@ class Pipeline:
             return json.loads(path.read_text(encoding="utf-8"))
         value = make()
         _write_json(path, value)
+        self._save_budget()
         return value
+
+    def _save_budget(self) -> None:
+        _write_json(self.dir / BUDGET_FILE, self.budget.snapshot())
+
+    def _restore_budget(self) -> None:
+        """A resumed run keeps what it spent before: the per-run caps (GC8) count every attempt of the run.
+        ponytail: saved after each finished step and site, so a crash (not a failure) forgets the partial
+        step's spend; save per call if that ever matters."""
+        path = self.dir / BUDGET_FILE
+        if not path.exists():
+            return
+        saved, b = json.loads(path.read_text(encoding="utf-8")), self.budget
+        b.tokens_in = max(b.tokens_in, saved["tokens_in"])
+        b.tokens_out = max(b.tokens_out, saved["tokens_out"])
+        b.ultra_agent_calls = max(b.ultra_agent_calls, saved["ultra_agent_calls"])
+        b.spend_usd = max(b.spend_usd, saved["tf_spend_usd"])
 
     def _stage(self, stage: Stage, detail: str | None = None, **extra: Any) -> None:
         if self.log.stage != stage:
@@ -649,6 +707,7 @@ class Pipeline:
                 else:
                     result = self._route_site(site, adapters[site.id], evals, schemas.get(site.id) or None)
                 _write_json(path, {"site": site.model_dump(mode="json"), **result})
+                self._save_budget()
             out[site.id] = json.loads(path.read_text(encoding="utf-8"))
         return out
 

@@ -23,6 +23,7 @@ image), so nothing may present a job-run cell as traced.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 from collections.abc import Sequence
@@ -208,7 +209,8 @@ def run_matrix(
         return _entry(site, tier, split, "tier_result", result=out.model_dump(mode="json"))
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        entries = list(pool.map(run, cells))
+        # each cell in a copy of this context: a LangSmith run_project (a contextvar) reaches it (GC23)
+        entries = [f.result() for f in [pool.submit(contextvars.copy_context().run, run, c) for c in cells]]
     entries.sort(key=lambda e: (e["site_id"], TIER_ORDER.index(Tier(e["tier"])), e["split"]))
     return entries
 

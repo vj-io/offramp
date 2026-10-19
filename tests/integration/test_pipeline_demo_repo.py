@@ -7,8 +7,8 @@ Inputs (committed, except the demo checkout):
   sibling directory of this repo); skipped without one, and without Docker (the patch stage's sandbox);
 - tests/fixtures/pipeline/demo_evals/: the eval dataset `offramp prepare` wrote for that commit, overlaid on
   the clone's evals/. A test fixture, smaller than the real one (target 12 cases per site, 2 adversarial;
-  see DATASET_COMMAND), and its seed references are not blind-audited; Task 14 prepares, audits and commits
-  the real demo dataset;
+  see DATASET_COMMAND); its seed references are NOT audited and some are known to be wrong (see RECORDED).
+  Task 14 prepares, audits and commits the real demo dataset;
 - tests/fixtures/cassettes/pipeline/: every Token Factory response the run used, recorded by
   test_record_demo_run (`uv run --env-file .env pytest --live -m live -k record_demo_run`, about $0.50 of
   Token Factory credit), which also writes the PR body snapshot tests/fixtures/pipeline/expected_pr_body.md.
@@ -39,6 +39,13 @@ RUN_ID = "test-demo-run"
 # Recorded live 2026-10-20 on the fixture dataset ($0.47 of Token Factory credit): no site migrated. cs_01-03
 # reached no parity on any tier; cs_04-06 reached it on Lightning, and each patch then failed (no edit blocks
 # in the patcher's reply, or the repo's ruff), so they need a manual review.
+# The fixture's seed references are NOT audited, and some are known to be wrong: cs_01:009 (a pricing and
+# charge question labelled `general`; every tier answers `billing`, which is right) and both cs_03 holdout
+# references (cs_03:005 takes the email's Date header as order_date, cs_03:009 leaves customer_email null
+# though the From header states it). They decide cs_01's and cs_03's KEEP_CLOSED. That is why the demo's own
+# dataset comes from `offramp prepare` plus the GC18 blind audit (Task 14). This test pins the pipeline on
+# recorded responses; the verdicts it asserts are what was measured on this flawed dataset, not evidence about
+# the models.
 RECORDED = {
     "cs_01": "KEEP_CLOSED",
     "cs_02": "KEEP_CLOSED",
