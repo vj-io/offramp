@@ -24,7 +24,8 @@ from test_patcher import (  # noqa: E402  (shared tiny-repo fixtures)
     work_dir,
 )
 
-pytestmark = pytest.mark.skipif(not (docker_available() or shutil.which("uv")), reason="no docker and no uv")
+pytestmark = pytest.mark.skipif(not docker_available(), reason="needs docker")
+CANARY = "canary-secret-123"
 
 
 def test_a_patch_that_breaks_a_repo_test_is_downgraded_and_dropped():
@@ -52,7 +53,7 @@ def test_a_patch_that_breaks_a_repo_test_is_downgraded_and_dropped():
     assert "tinyapp/shout.py" not in result.files and "cs_03" not in result.diffs
     assert result.adapters["cs_03"].patch is None
     assert result.adapters["cs_01"].patch and "tinyapp/greet.py" in result.files
-    assert result.sandbox_mode == ("docker" if docker_available() else "local")
+    assert result.sandbox_mode == "docker"
 
 
 def test_the_sandbox_has_no_network_and_reads_the_repo_read_only():
@@ -93,3 +94,52 @@ def test_tidy_fixes_imports_and_layout_through_stdin_not_the_mount():
     assert "import sys" not in text and "import json" not in text  # F401 removed both
     assert f'"content": "{words}",' in text and text.rstrip().endswith(")")  # reformatted, not cut short
     assert max(map(len, text.splitlines())) <= 100
+
+
+ENV_TEST = f"""import os
+
+
+def test_no_provider_keys_reach_the_sandbox():
+    names = {{k for k in os.environ if k.endswith(("_KEY", "_TOKEN", "_FALLBACK"))}}
+    leaked = sorted(names - {{"GPG_KEY"}})  # GPG_KEY: python image's public signing key id
+    assert not leaked, leaked
+    assert not any("{CANARY}" in v for v in os.environ.values())
+"""
+
+
+@pytest.mark.parametrize("docker", [True, False], ids=["docker", "local"])
+def test_the_sandbox_environment_carries_no_keys(monkeypatch, docker):
+    if not docker and not shutil.which("uv"):
+        pytest.skip("local mode needs uv")
+    for name in ("NEBIUS_API_KEY", "GITHUB_TOKEN", "NEBIUS_API_KEY_FALLBACK"):
+        monkeypatch.setenv(name, CANARY)
+    monkeypatch.setenv("OFFRAMP_ALLOW_LOCAL_SANDBOX", "1")
+    repo = work_dir(f"env-{docker}") / "repo"
+    shutil.copytree(TINY, repo)
+    (repo / "tests" / "test_env.py").write_text(ENV_TEST)
+
+    result = Sandbox(repo, docker=docker).check()
+
+    assert result.mode == ("docker" if docker else "local")
+    assert result.ok, result.output
+
+
+def test_a_symlink_to_a_host_file_never_reaches_the_sandbox_or_a_reason():
+    src = work_dir("symlink-attack") / "src"
+    shutil.copytree(TINY, src)
+    secret = src.parent / "environ"  # stands in for /proc/self/environ on a Linux host
+    secret.write_text(f"NEBIUS_API_KEY={CANARY}")
+    (src / "tinyapp" / "data.txt").symlink_to(secret)
+    (src / "tests" / "test_leak.py").write_text(
+        "from pathlib import Path\n\n\n"
+        "def test_leak():\n"
+        "    assert False, (Path(__file__).parents[1] / 'tinyapp' / 'data.txt').read_text()\n"
+    )
+    llm = patcher_llm(migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"))
+
+    result = compose_patches(src, tiny_sites(), tiny_verdicts(), tiny_adapters(), llm, src.parent / "work",
+                             config=RunConfig(repo_url="x"), build_request=BUILD)  # fmt: skip
+
+    assert result.warnings == ["dropped symlink tinyapp/data.txt: it points outside the repository"]
+    assert all(CANARY not in v.reason for v in result.verdicts)
+    assert "the untouched repo" in next(v for v in result.verdicts if v.site_id == "cs_01").reason

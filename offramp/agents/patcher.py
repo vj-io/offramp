@@ -1,9 +1,11 @@
 """Patch Composer (PRD §6.8): each MIGRATE site's winning adapter becomes a code change; the repo stays green.
 
 Per run, on a sandbox copy of the target repo:
-1. add `offramp/client.py` (Token Factory client + tier constants) and mark KEEP_CLOSED calls with
-   `# offramp: kept on <model> — parity <p>% < <threshold>%`; the repo's own ruff + pytest must pass
-   (baseline);
+0. copy the repo without following symlinks (a link leaving the repo is dropped, with a warning) and check the
+   untouched copy with the repo's own ruff + pytest;
+1. add the Token Factory client module (`<pkg>/offramp_client.py` inside the package holding the migrated
+   sites, so it ships with it; else `offramp/client.py`) and mark KEEP_CLOSED calls with
+   `# offramp: kept on <model> — parity <p>% < <threshold>%`; check again;
 2. for each MIGRATE site, in order: the request parameters come from `build_request` (Task 6, the function the
    eval runner used), so what ships is what was evaluated. Large literals (tools, response_format, few-shot,
    a changed system prompt) are written into the file deterministically; Nemotron 3 Super (role `patcher`)
@@ -16,6 +18,7 @@ Per run, on a sandbox copy of the target repo:
 import ast
 import difflib
 import json
+import os
 import re
 import shutil
 import string
@@ -27,8 +30,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from offramp.agents.pr_writer import TIER_NAMES, threshold
-from offramp.sandbox import CheckResult, Sandbox
+from offramp.agents.pr_writer import TIER_NAMES, is_test_path, threshold
+from offramp.agents.translate import UnresolvedCallSite, build_request
+from offramp.sandbox import NO_SANDBOX, CheckResult, Sandbox
 from offramp.schemas import Adapter, AdapterSpec, CallSite, EvalCase, RunConfig, Tier, Verdict
 from offramp.tf.budget import BudgetExceeded
 from offramp.tf.client import LLM, _merge, plan_structured
@@ -40,7 +44,7 @@ REPAIRS = 1  # one more try per site, shown its failure (like Global Constraint 
 REPAIR = """Your edits were not accepted: {failure}
 The files are unchanged from my first message. Reply with a complete new set of edit blocks (all of them, \
 not only the fix) and the NOTES line."""
-CLIENT_PATH = "offramp/client.py"
+ROOT_CLIENT = ("offramp/client.py", "offramp.client")  # when the sites are not inside one package
 TEMPLATE = Path(__file__).parents[1] / "templates" / "client.py.tmpl"
 TIER_CONSTANTS = {Tier.LIGHTNING: "LIGHTNING", Tier.SUPER: "SUPER", Tier.ULTRA: "ULTRA"}
 REQUEST_KWARGS = ("max_tokens", "temperature", "tools", "tool_choice", "response_format", "extra_body")
@@ -62,11 +66,12 @@ SKIP_PARTS = {".git", ".venv", "venv", "__pycache__", "node_modules", "offramp"}
 BuildRequest = Callable[[AdapterSpec, EvalCase, Tier], dict[str, Any]]
 # Names a patch may use without importing them; added mechanically, like an editor's auto-import.
 AUTO_IMPORTS = {
-    "token_factory_client": "from offramp.client import token_factory_client",
+    "token_factory_client": "from {client} import token_factory_client",
     "OpenAI": "from openai import OpenAI",
     "json": "import json",
 }
-_BLOCK = re.compile(r"^FILE: *`?([^`\s]+)`?[ \t]*\n<{7} SEARCH\n(.*?)\n={7}\n(.*?)>{7} REPLACE", re.S | re.M)
+_FILE = re.compile(r"^FILE: *`?([^`\s]+)`?[ \t]*$", re.M)
+_BLOCK = re.compile(r"^<{7} SEARCH\n(.*?)\n={7}\n(.*?)>{7} REPLACE", re.S | re.M)
 
 
 class Edit(BaseModel):
@@ -83,9 +88,15 @@ class PatchEdits(BaseModel):
 def parse_edits(text: str) -> PatchEdits:
     """The patcher replies in plain SEARCH/REPLACE blocks: code inside JSON strings needs every Python escape
     escaped again, and the model dropped some of them (a recorded run broke 3 of 5 patches that way)."""
-    edits = [
-        Edit(path=p, search=s, replace=r[:-1] if r.endswith("\n") else r) for p, s, r in _BLOCK.findall(text)
-    ]
+    files = [(m.start(), m.group(1)) for m in _FILE.finditer(text)]
+    edits = []
+    for block in _BLOCK.finditer(text):  # a block without its own FILE line belongs to the previous file
+        path = next((p for at, p in reversed(files) if at < block.start()), None)
+        search, replace = block.group(1), block.group(2)
+        if path:
+            edits.append(
+                Edit(path=path, search=search, replace=replace[:-1] if replace.endswith("\n") else replace)
+            )
     notes = re.search(r"^NOTES:(.*)$", text, re.M)
     return PatchEdits(edits=edits, notes=notes.group(1).strip() if notes else "")
 
@@ -107,13 +118,42 @@ class PatchResult(BaseModel):
     site_files: dict[str, list[str]]  # site_id -> paths that change touched
     verdicts: list[Verdict]  # input order; MIGRATE sites whose patch failed are MANUAL_REVIEW
     adapters: dict[str, Adapter]  # copies, with .patch set for the migrated sites
-    sandbox_mode: str  # "docker" (network off) | "local" (not isolated)
+    sandbox_mode: str  # "docker" (network off) | "local" (opt-in, not isolated) | "none"
+    client_path: str | None = None  # where the Token Factory client module was added, when it was
+    warnings: list[str] = Field(default_factory=list)  # e.g. symlinks dropped from the sandbox copy
 
 
-def _default_build_request() -> BuildRequest:
-    from offramp.agents.translate import build_request  # Task 6
+def client_location(repo: Path, files: list[str]) -> tuple[str, str]:
+    """(path, module) of the client: `<pkg>/offramp_client.py` in the one top-level package that holds every
+    migrated site, so it ships in that package's wheel; else `offramp/client.py` at the repository root."""
+    tops = set()
+    for f in files:
+        top = (repo / f).parent
+        if not (top / "__init__.py").is_file():
+            return ROOT_CLIENT
+        while (top.parent / "__init__.py").is_file():
+            top = top.parent
+        tops.add(top)
+    if len(tops) != 1:
+        return ROOT_CLIENT
+    top = tops.pop()
+    return f"{top.relative_to(repo).as_posix()}/offramp_client.py", f"{top.name}.offramp_client"
 
-    return build_request
+
+def copy_repo(src: Path, dst: Path) -> list[str]:
+    """Copy without following symlinks; keep a link only if it resolves inside the copy. A link to a host
+    file (e.g. /proc/self/environ) would otherwise copy its content in, for the repo's tests to print."""
+    shutil.copytree(src, dst, ignore=IGNORE, symlinks=True)
+    root, warnings = dst.resolve(), []
+    for dirpath, dirnames, filenames in os.walk(dst):
+        for name in [*dirnames, *filenames]:
+            path = Path(dirpath) / name
+            if path.is_symlink() and not path.resolve().is_relative_to(root):
+                path.unlink()
+                warnings.append(
+                    f"dropped symlink {path.relative_to(dst).as_posix()}: it points outside the repository"
+                )
+    return sorted(warnings)
 
 
 # ---------------------------------------------------------------- request parameters
@@ -346,6 +386,12 @@ def _apply(edits: list[Edit], files: dict[str, str]) -> list[str]:
         if e.path not in files:
             return [f"{e.path} is not editable for this site"]
         n = files[e.path].count(e.search) if e.search else 0
+        elsewhere = [p for p in files if p != e.path and e.search and files[p].count(e.search) == 1]
+        if (
+            n == 0 and len(elsewhere) == 1
+        ):  # labelled with the wrong editable file: its text is unique elsewhere
+            e = e.model_copy(update={"path": elsewhere[0]})
+            n = 1
         if n != 1:
             hint = (
                 " (an earlier block already changed these lines: merge the two)"
@@ -360,8 +406,9 @@ def _apply(edits: list[Edit], files: dict[str, str]) -> list[str]:
     return []
 
 
-def add_imports(source: str) -> str:
-    """Import AUTO_IMPORTS names the module uses but never binds (after its last top-level import)."""
+def add_imports(source: str, client: str) -> str:
+    """Import AUTO_IMPORTS names the module uses but never binds (after its last top-level import); `client`
+    is the module path of the Token Factory client."""
     tree = ast.parse(source)
     bound = set()
     for n in tree.body:
@@ -372,7 +419,7 @@ def add_imports(source: str) -> str:
         elif isinstance(n, ast.Assign):
             bound |= {t.id for t in n.targets if isinstance(t, ast.Name)}
     used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
-    missing = [line for name, line in AUTO_IMPORTS.items() if name in used - bound]
+    missing = [line.format(client=client) for name, line in AUTO_IMPORTS.items() if name in used - bound]
     if not missing:
         return source
     imports = [n for n in tree.body if isinstance(n, ast.Import | ast.ImportFrom)]
@@ -473,21 +520,13 @@ def conformance(
 # ---------------------------------------------------------------- context for the patcher prompt
 
 
-def _is_test(rel: Path) -> bool:
-    return (
-        any(p in ("tests", "test") for p in rel.parts[:-1])
-        or rel.name.startswith("test_")
-        or rel.name.endswith("_test.py")
-        or rel.name == "conftest.py"
-    )
-
-
-def _context(repo: Path, site: CallSite) -> list[str]:
+def _context(repo: Path, site: CallSite, client_path: str) -> list[str]:
     """Editable files for one site: its module, callers of its function, tests touching them, test helpers."""
     files = sorted(
         p.relative_to(repo)
         for p in repo.rglob("*.py")
         if not SKIP_PARTS & set(p.relative_to(repo).parts[:-1])
+        and p.relative_to(repo).as_posix() != client_path
     )
     text = {f: (repo / f).read_text() for f in files}
     own = Path(site.file)
@@ -495,13 +534,15 @@ def _context(repo: Path, site: CallSite) -> list[str]:
         f
         for f in files
         if f != own
-        and not _is_test(f)
+        and not is_test_path(f.as_posix())
         and site.function
         and re.search(rf"\b{re.escape(site.function)}\b", text[f])
     ]
     words = {own.stem, *(f.stem for f in callers), *([site.function] if site.function else [])}
     pattern = re.compile(r"\b(" + "|".join(map(re.escape, sorted(words))) + r")\b")
-    tests = [f for f in files if _is_test(f) and f.name != "conftest.py" and pattern.search(text[f])]
+    tests = [
+        f for f in files if is_test_path(f.as_posix()) and f.name != "conftest.py" and pattern.search(text[f])
+    ]
     helpers = set()
     for t in tests:
         for node in ast.walk(ast.parse(text[t])):
@@ -552,14 +593,17 @@ may change, to `OpenAI` (from openai).
 are `response.choices[0].message.tool_calls or []`, each with `.function.name` and `.function.arguments` \
 (a JSON string: json.loads it). Map them onto exactly what the function returned before.
 4. Code in this repo that constructs the old SDK client to call this function must pass \
-`token_factory_client()` (from offramp.client import token_factory_client) instead. Tests that replaced \
-that constructor in such a module with a fake must replace `token_factory_client` there instead: check the \
-editable tests for such patches, since one left on the old constructor makes the code call the real client.
-5. Tests: change only what pins the old provider - fakes of the old SDK and assertions on the old request \
-(model, old SDK arguments, message layout). Use the repo's existing OpenAI-style fake helper; if it cannot \
-yet return what the new code reads (e.g. tool calls), extend that helper the way it already builds real \
-openai response objects, instead of writing ad-hoc fake classes inside tests. Never delete or rename a \
-test, never change an expected return value or a parsing check.
+`token_factory_client()` (imported from the client module named under "Required request") instead. \
+Tests that replaced that constructor in such a module with a fake must replace `token_factory_client` \
+there instead: check the editable tests for such patches, since one left on the old constructor makes the \
+code call the real client.
+5. Tests: you may update the tests that pin the old provider - assertions on the request's shape (model, \
+SDK keyword arguments, message layout, checks of the call's source such as `"X" in ast.unparse(call)`) \
+and the repo's provider fakes: extend its existing OpenAI-style fake helper when it cannot yet return what \
+the new code reads (e.g. tool calls), building real openai response objects the way the helper already \
+does, instead of writing ad-hoc fake classes inside tests. Never weaken a behavioural or parsing \
+assertion: expected return values and parsing checks stay exactly as they are. Never delete or rename a \
+test.
 6. Add the imports your code needs and remove the ones it leaves unused (import order is fixed \
 automatically afterwards).
 7. Keep lines within the repo's line length."""
@@ -574,6 +618,7 @@ def _prompt(
     system_name: str | None,
     files: dict[str, str],
     client: str,
+    client_at: tuple[str, str],
     width: int,
 ) -> str:
     args = [f'    model="{params["model"]}",', "    messages=[...],  # see below"]
@@ -612,10 +657,11 @@ def _prompt(
         "messages, in this order:",
         *(f"{i}. {m}" for i, m in enumerate(messages, 1)),
         "",
+        f"Token Factory client: `from {client_at[1]} import token_factory_client` (module shown below).",
         f"Repo ruff line length: {width}.",
         "",
         "## Files",
-        f"### {CLIENT_PATH} (read-only)",
+        f"### {client_at[0]} (read-only)",
         "```python",
         client.rstrip("\n"),
         "```",
@@ -638,6 +684,8 @@ def _line_length(repo: Path) -> int:
 
 def _summary(output: str) -> str:
     """The lines that say what failed (pytest FAILED/ERROR, ruff findings), else the output's tail."""
+    # run-specific tokens (object addresses, durations) out: the summary feeds the next request's cache key
+    output = re.sub(r"\b\d+(\.\d+)?s\b", "<t>s", re.sub(r"0x[0-9a-fA-F]{6,}", "0x…", output))
     keep = [ln for ln in output.splitlines() if re.match(r"(FAILED|ERROR) |\S+\.py:\d+:\d+: |\$ |E\s{3}", ln)]
     return (" | ".join(keep[:8]) if keep else output.strip()[-500:])[:1200]
 
@@ -673,6 +721,7 @@ class _Job:
     system_name: str | None
     editable: dict[str, str]  # as shown to the patcher (the site's module with the adapter's constants)
     before: dict[str, str]  # on disk before the site's patch
+    client_module: str  # import path of the Token Factory client module
 
 
 def _attempt(job: _Job, reply: str, repo: Path, box: Sandbox, formatted: bool, write) -> str | None:
@@ -685,12 +734,14 @@ def _attempt(job: _Job, reply: str, repo: Path, box: Sandbox, formatted: bool, w
     problems = _apply(patch.edits, new)
     for path in new if not problems else []:
         try:
-            new[path] = add_imports(new[path]) if new[path] != job.editable[path] else new[path]
+            new[path] = (
+                add_imports(new[path], job.client_module) if new[path] != job.editable[path] else new[path]
+            )
         except SyntaxError as e:
             problems.append(f"{path} does not parse: {e.msg} (line {e.lineno})")
     if not problems:
         for path in new:
-            if _is_test(Path(path)) and (gone := _test_names(job.editable[path]) - _test_names(new[path])):
+            if is_test_path(path) and (gone := _test_names(job.editable[path]) - _test_names(new[path])):
                 problems.append(f"patch removes tests from {path}: {sorted(gone)}")
         problems += conformance(new[job.site.file], job.site, job.tier, job.params, job.constants,
                                 job.system_name, job.spec)  # fmt: skip
@@ -718,12 +769,11 @@ def compose_patches(
     *,
     config: RunConfig,
     sandbox_factory: Callable[[Path], Sandbox] = Sandbox,
-    build_request: BuildRequest | None = None,
+    build_request: BuildRequest = build_request,
 ) -> PatchResult:
-    build = build_request or _default_build_request()
     repo = Path(work_dir) / "repo"
     shutil.rmtree(repo, ignore_errors=True)
-    shutil.copytree(repo_dir, repo, ignore=IGNORE)
+    warnings = copy_repo(repo_dir, repo)
     width = _line_length(repo)
     originals: dict[str, str | None] = {}
 
@@ -742,13 +792,30 @@ def compose_patches(
     diffs: dict[str, str] = {}
     site_files: dict[str, list[str]] = {}
     box = sandbox_factory(repo)
+    to_migrate = sorted((v for v in verdicts if v.decision == "MIGRATE"), key=lambda v: v.site_id)
 
     def downgrade(v: Verdict, reason: str) -> None:
         decided[v.site_id] = v.model_copy(update={"decision": "MANUAL_REVIEW", "reason": reason})
 
+    def stop(reason: str) -> PatchResult:  # nothing can be validated: no site is patched, no file changes
+        for v in to_migrate:
+            downgrade(v, reason)
+        verdicts_out = [decided.get(v.site_id, v) for v in verdicts]
+        return PatchResult(files={}, diffs={}, site_files={}, verdicts=verdicts_out, adapters=adapters,
+                           sandbox_mode=box.mode, warnings=warnings)  # fmt: skip
+
+    if box.mode == "none":
+        return stop(NO_SANDBOX)
+    untouched = box.check()
+    if not untouched.ok:
+        return stop(
+            f"repo checks fail on the untouched repo ({untouched.mode}): {_summary(untouched.output)}"
+        )
+
+    client_at = client_location(repo, [by_id[v.site_id].file for v in to_migrate if v.site_id in by_id])
     client = client_module()
-    write(CLIENT_PATH, client)
-    if read("offramp/__init__.py") is None:
+    write(client_at[0], client)
+    if client_at == ROOT_CLIENT and read("offramp/__init__.py") is None:
         write("offramp/__init__.py", "")
     kept = [by_id[v.site_id] for v in verdicts if v.decision == "KEEP_CLOSED" and v.site_id in by_id]
     for site in sorted(kept, key=lambda s: (s.file, -s.lines[0])):  # bottom-up: line numbers stay valid
@@ -759,38 +826,37 @@ def compose_patches(
         site_files[site.id] = [site.file]
 
     base = box.check()
-    formatted = base.ok and box.formatted()  # the repo keeps `ruff format` clean: so do the patches
     if not base.ok:
-        reason = f"repo checks fail before any call-site patch ({base.mode}): {_summary(base.output)}"
-        for v in verdicts:
-            if v.decision == "MIGRATE":
-                downgrade(v, reason)
-        return PatchResult(
-            files={},
-            diffs={},
-            site_files={},
-            verdicts=[decided.get(v.site_id, v) for v in verdicts],
-            adapters=adapters,
-            sandbox_mode=box.mode,
+        return stop(
+            f"repo checks fail after adding Offramp's client module ({client_at[0]}) and kept-site comments "
+            f"({base.mode}): {_summary(base.output)}"
         )
+    formatted = box.formatted()  # the repo keeps `ruff format` clean: so do the patches
 
     migrated = 0
-    for v in sorted((v for v in verdicts if v.decision == "MIGRATE"), key=lambda v: v.site_id):
+    for v in to_migrate:
         site, adapter = by_id.get(v.site_id), adapters.get(v.site_id)
         if site is None or adapter is None or v.tier is None:
             downgrade(v, "no call site, adapter or tier to build the patch from")
             continue
         tier = Tier(v.tier)
         try:
-            params = call_params(build(adapter.spec, _probe_case(site), tier))
-            prepared, constants, system_name = _prepare(read(site.file), site, adapter.spec, params, width)
-        except ValueError as e:
+            params = call_params(build_request(adapter.spec, _probe_case(site), tier))
+        except UnresolvedCallSite as e:
             downgrade(v, f"patch not composed: {e}")
             continue
-        editable = {p: (prepared if p == site.file else read(p)) for p in _context(repo, site)}
+        if params.get("response_format") == {"type": "json_object"}:
+            why = "evaluated as json_object plus a validation repair retry, which a patch cannot reproduce"
+            downgrade(v, f"patch not composed: the adapter was {why}")
+            continue
+        prepared, constants, system_name = _prepare(read(site.file), site, adapter.spec, params, width)
+        context = _context(repo, site, client_at[0])
+        editable = {p: (prepared if p == site.file else read(p)) for p in context}
         job = _Job(site, tier, adapter.spec, params, constants, system_name, editable,
-                   before={p: read(p) for p in editable})  # fmt: skip
-        prompt = _prompt(site, tier, adapter.spec, params, constants, system_name, editable, client, width)
+                   before={p: read(p) for p in editable}, client_module=client_at[1])  # fmt: skip
+        prompt = _prompt(
+            site, tier, adapter.spec, params, constants, system_name, editable, client, client_at, width
+        )
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
         failure = None
         for _ in range(1 + REPAIRS):
@@ -824,8 +890,8 @@ def compose_patches(
 
     files = {p: text for p in originals if (text := read(p)) is not None and text != originals[p]}
     if not migrated:  # nothing uses the client module
-        files.pop(CLIENT_PATH, None)
-        if originals.get("offramp/__init__.py") is None:
+        files.pop(client_at[0], None)
+        if originals.get("offramp/__init__.py", "") is None:  # added for the root client only
             files.pop("offramp/__init__.py", None)
     return PatchResult(
         files=files,
@@ -834,4 +900,6 @@ def compose_patches(
         verdicts=[decided.get(v.site_id, v) for v in verdicts],
         adapters=adapters,
         sandbox_mode=box.mode,
+        client_path=client_at[0] if migrated else None,
+        warnings=warnings,
     )

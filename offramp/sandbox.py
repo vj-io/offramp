@@ -1,9 +1,12 @@
 """Run a target repo's own `ruff check` + `pytest` on a patched copy (PRD §6.8, §10).
 
-Docker (preferred): the repo's dependencies are installed into a throwaway image while the network is still on
-(cached per dependency-file hash); the checks then run with `--network none --cpus 2`, the copy mounted
-read-only, under a 10-minute cap. Without Docker the checks run as a local `uv run` subprocess: mode "local",
-which is not isolated and is reported as such.
+Docker: the repo's dependencies are installed into a throwaway image while the network is still on (cached per
+dependency-file hash); the checks then run with no network, 2 CPUs, 2 GB, 256 pids, no capabilities and no
+privilege escalation, the copy mounted read-only, under a 10-minute cap. It gets no host environment.
+
+Without Docker, mode "local" runs the checks as a `uv run` subprocess, only on machines that opt in with
+OFFRAMP_ALLOW_LOCAL_SANDBOX=1 (developer laptops). It is not isolated, but its environment is minimal: no
+provider keys or tokens. Otherwise mode is "none" and nothing runs: the caller reports "no sandbox".
 """
 
 import hashlib
@@ -20,6 +23,11 @@ TIMEOUT_S = 600
 BUILD_TIMEOUT_S = 900
 OUTPUT_TAIL = 4000
 DEP_FILES = ("pyproject.toml", "uv.lock", "requirements.txt", ".python-version")
+LOCAL_OPT_IN = "OFFRAMP_ALLOW_LOCAL_SANDBOX"
+NO_SANDBOX = "no sandbox (Docker unavailable)"
+DOCKER_LIMITS = ["--network", "none", "--cpus", "2", "--memory", "2g", "--pids-limit", "256",
+                 "--cap-drop", "ALL", "--security-opt", "no-new-privileges"]  # fmt: skip
+Mode = Literal["docker", "local", "none"]
 CHECKS = (
     ["ruff", "check", "--no-cache", "--output-format", "concise", "."],
     ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"],
@@ -54,7 +62,7 @@ def docker_available() -> bool:
 @dataclass
 class CheckResult:
     ok: bool
-    mode: Literal["docker", "local"]
+    mode: Mode
     output: str  # tail of the failing (or last) command's output
 
     @property
@@ -66,13 +74,16 @@ class Sandbox:
     def __init__(self, repo: Path, timeout_s: int = TIMEOUT_S, docker: bool | None = None):
         self.repo = Path(repo).resolve()
         self.timeout_s = timeout_s
-        self.mode: Literal["docker", "local"] = (
-            "docker" if (docker_available() if docker is None else docker) else "local"
-        )
+        if docker_available() if docker is None else docker:
+            self.mode: Mode = "docker"
+        else:
+            self.mode = "local" if os.environ.get(LOCAL_OPT_IN) == "1" else "none"
         self._image: str | None = None
 
     def check(self) -> CheckResult:
         """ruff, then pytest; the first failure ends the check. One 10-minute cap covers both."""
+        if self.mode == "none":
+            return CheckResult(False, "none", NO_SANDBOX)
         deadline = self._deadline()
         text = ""
         for cmd in CHECKS:
@@ -108,6 +119,20 @@ class Sandbox:
                     text = out
             (self.repo / path).write_text(text)
 
+    def _local_env(self) -> dict[str, str]:
+        """Only what uv and pytest need: no *_KEY / *_TOKEN / *_FALLBACK, HOME and TMPDIR in a scratch dir."""
+        scratch = self.repo.parent / f"{self.repo.name}-home"
+        scratch.mkdir(exist_ok=True)
+        return {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": str(scratch),
+            "TMPDIR": str(scratch),
+            "LANG": os.environ.get("LANG", "C.UTF-8"),
+            "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR") or str(Path.home() / ".cache" / "uv"),
+            "UV_PYTHON_INSTALL_DIR": os.environ.get("UV_PYTHON_INSTALL_DIR")
+            or str(Path.home() / ".local" / "share" / "uv" / "python"),
+        }
+
     def _deadline(self) -> float:
         return time.monotonic() + self.timeout_s
 
@@ -124,13 +149,19 @@ class Sandbox:
             except (RuntimeError, subprocess.TimeoutExpired) as e:  # no image, no check: report, never crash
                 return 1, str(e)
             user = ["--user", f"{os.getuid()}:{os.getgid()}"] if hasattr(os, "getuid") else []
-            full = ["docker", "run", "--rm", "-i", "--name", name, "--network", "none", "--cpus", "2", *user,
+            full = ["docker", "run", "--rm", "-i", "--name", name, *DOCKER_LIMITS, *user,
                     "-v", f"{self.repo}:/repo:ro", "-w", "/repo", image, *cmd]  # fmt: skip
-        else:
+            env = None  # the docker CLI's own environment; `docker run` passes none of it into the container
+        elif self.mode == "local":
             frozen = ["--frozen"] if (self.repo / "uv.lock").exists() else []
             full = ["uv", "run", "--directory", str(self.repo), *frozen, *cmd]
+            env = self._local_env()
+        else:
+            return 1, NO_SANDBOX
         try:
-            p = subprocess.run(full, input=stdin or "", capture_output=True, text=True, timeout=remaining)
+            p = subprocess.run(
+                full, input=stdin or "", capture_output=True, text=True, timeout=remaining, env=env
+            )
         except subprocess.TimeoutExpired:
             if self.mode == "docker":
                 subprocess.run(["docker", "rm", "-f", name], capture_output=True)
