@@ -1,0 +1,104 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write realistic test inputs for one LLM call inside a software product. Each input is a JSON record in the same shape as the product's own test fixtures. Reply with JSON only."
+      },
+      {
+        "role": "user",
+        "content": "## The call's system message\nWrite a handoff note for the next support agent in at most 60 words:\nIssue, Tried so far, Next step.\n\n## The call's user message template (fields of the record fill the placeholders)\nThread, {len_messages} messages:\n\n{transcript}\n\n## Example records from the product's test fixtures\n{\"messages\": [{\"role\": \"customer\", \"text\": \"Charged twice for order SH-3021 (24.50 EUR).\"}, {\"role\": \"agent\", \"text\": \"I see both charges and will refund one today.\"}]}\n{\"messages\": [{\"role\": \"customer\", \"text\": \"Paket SH-7781 kam beschädigt an.\"}, {\"role\": \"agent\", \"text\": \"Können Sie ein Foto schicken?\"}, {\"role\": \"customer\", \"text\": \"Foto anbei.\"}]}\n{\"messages\": []}\n\n## Items\n1. Style: locale:es — written in Spanish.\n2. Style: malformed — messy: typos, broken line breaks, missing punctuation, stray pasted text.\n3. Style: empty — as terse as possible: the bare minimum of text that still determines the answer.\n\n## Rules\n- Write exactly 3 records, record i for item i, each with exactly the fields [\"messages\"] as in the examples; reply {\"records\": [...]}.\n- Make the records realistic and varied: different names, ids, amounts and topics from each other and from the examples.\n- Follow each item's style.\n- Where a field holds reference documents or other context (as in the examples), reuse passages from the examples verbatim instead of inventing new facts."
+      }
+    ],
+    "params": {
+      "max_tokens": 3200,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "response",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "records": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "messages": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "role": {
+                            "type": "string"
+                          },
+                          "text": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "role",
+                          "text"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "messages"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "records"
+            ]
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-85aecbbbd635924e",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"records\": [{\"messages\": [{\"role\": \"customer\", \"text\": \"Me cobraron dos veces por el pedido ORD-9045 (32,75 €).\"}, {\"role\": \"agent\", \"text\": \"Veo ambos cargos y reembolsaré uno hoy.\"}]}, {\"messages\": [{\"role\": \"customer\", \"text\": \"El envio ORD-8821 llego roto y mojado ayuda por favor\\nadjunto foto borrosa\\nno se ve bien pero es evidente el dano\"}, {\"role\": \"agent\", \"text\": \"Gracias por el foto. Vamos a gestionar la sustitucion.\"}]}, {\"messages\": [{\"role\": \"customer\", \"text\": \"Factura duplicada ORD-1122 19,90 €\"}]}]}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792408296,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 178,
+      "prompt_tokens": 411,
+      "total_tokens": 589,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 411
+    }
+  },
+  "latency_ms": 1684,
+  "usage": {
+    "prompt_tokens": 411,
+    "completion_tokens": 178
+  },
+  "created_at": "2026-10-19T11:11:37.575546+00:00"
+}

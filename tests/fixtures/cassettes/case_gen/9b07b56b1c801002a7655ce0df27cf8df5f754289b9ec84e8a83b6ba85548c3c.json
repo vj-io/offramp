@@ -1,0 +1,141 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You map test-fixture records to the placeholders of an LLM prompt template, reproducing exactly what the application code does before it formats the prompt. Reply with JSON only."
+      },
+      {
+        "role": "user",
+        "content": "## Application code (shop/extract.py; the LLM call is in `extract`, lines [22, 32])\n```python\n\"\"\"Pull order fields out of an email.\"\"\"\n\nimport json\nfrom typing import Literal\n\nfrom pydantic import BaseModel, Field\n\n\nclass OrderInfo(BaseModel):\n    order_id: str | None = Field(description=\"Order id such as SH-1234, null if not stated\")\n    total: float | None = Field(description=\"Order total as a plain number, null if not stated\")\n    currency: str | None = Field(description=\"ISO 4217 currency code, e.g. EUR\")\n    issue: Literal[\"damaged\", \"late\", \"other\"]\n\n\nEXTRACT_PROMPT = \"\"\"Extract the order from the email as one JSON object matching the schema.\nUse null for anything the email does not state. Reply with the JSON object only.\"\"\"\n\n\ndef extract(client, email: str):\n    return client.messages.create(\n        model=\"claude-sonnet-4-5\",\n        max_tokens=300,\n        system=EXTRACT_PROMPT,\n        messages=[\n            {\n                \"role\": \"user\",\n                \"content\": f\"Schema:\\n{json.dumps(OrderInfo.model_json_schema())}\\n\\nEmail:\\n{email}\",\n            }\n        ],\n    )\n\n```\n\n## Prompt template (str.format placeholders)\nSystem: \"Extract the order from the email as one JSON object matching the schema.\\nUse null for anything the email does not state. Reply with the JSON object only.\"\nUser: \"Schema:\\n{{\\\"properties\\\": {{\\\"order_id\\\": {{\\\"anyOf\\\": [{{\\\"type\\\": \\\"string\\\"}}, {{\\\"type\\\": \\\"null\\\"}}], \\\"description\\\": \\\"Order id such as SH-1234, null if not stated\\\", \\\"title\\\": \\\"Order Id\\\"}}, \\\"total\\\": {{\\\"anyOf\\\": [{{\\\"type\\\": \\\"number\\\"}}, {{\\\"type\\\": \\\"null\\\"}}], \\\"description\\\": \\\"Order total as a plain number, null if not stated\\\", \\\"title\\\": \\\"Total\\\"}}, \\\"currency\\\": {{\\\"anyOf\\\": [{{\\\"type\\\": \\\"string\\\"}}, {{\\\"type\\\": \\\"null\\\"}}], \\\"description\\\": \\\"ISO 4217 currency code, e.g. EUR\\\", \\\"title\\\": \\\"Currency\\\"}}, \\\"issue\\\": {{\\\"enum\\\": [\\\"damaged\\\", \\\"late\\\", \\\"other\\\"], \\\"title\\\": \\\"Issue\\\", \\\"type\\\": \\\"string\\\"}}}}, \\\"required\\\": [\\\"order_id\\\", \\\"total\\\", \\\"currency\\\", \\\"issue\\\"], \\\"title\\\": \\\"OrderInfo\\\", \\\"type\\\": \\\"object\\\"}}\\n\\nEmail:\\n{email}\"\nPlaceholders: [\"email\"]\n\n## Fixture sets in tests/fixtures/\n### agent_steps.json (3 records)\nFirst record: {\"id\": \"a-1\", \"tags\": [\"en\", \"first-step\"], \"ticket_text\": \"Where is order SH-4410? It was due Monday.\", \"history\": []}\n\n### emails/ (2 records)\nFirst record: {\"id\": \"001-damaged\", \"text\": \"From: Ana Ruiz <ana@example.com>\\nSubject: Broken lamp\\n\\nHi, order SH-5120 arrived with the lamp shade cracked. I paid 42.00 EUR.\\nAna\\n\"}\n\n### refunds.json (3 records)\nFirst record: {\"id\": \"r-1\", \"tags\": [\"no-coupon\"], \"seats\": 3, \"price\": \"10.00\", \"coupon\": \"0\", \"expected_answer\": \"30.00\"}\n\n### threads.json (3 records)\nFirst record: {\"id\": \"th-1\", \"tags\": [\"short\", \"en\"], \"messages\": [{\"role\": \"customer\", \"text\": \"Charged twice for order SH-3021 (24.50 EUR).\"}, {\"role\": \"agent\", \"text\": \"I see both charges and will refund one today.\"}]}\n\n### tickets.json (3 records)\nFirst record: {\"id\": \"t-1\", \"tags\": [\"short\", \"en\"], \"subject\": \"Double charge\", \"body\": \"I see two charges of $19.00 for my May invoice.\"}\n\n## Task\nPick the one fixture set whose records are the inputs of `extract` (null if none is), and for EVERY\nplaceholder give a recipe that computes its value from one record, exactly as the code above does:\n- op \"value\": str(record[field])\n- op \"len\": str(len(record[field]))\n- op \"join\": sep.join(item.format(**element) for element in record[field]), or `empty` when the list is empty\n  (mirror the code's join separator, per-element f-string and any `or \"...\"` fallback).\n`item`, `sep` and `empty` are the contents of the Python string literals in the code, escapes included (write\nthe two characters \\n where the code has \\n). In `item` the placeholders are the element's keys: write\n{sent_at}, not {m.sent_at} or {m['sent_at']}.\n`field` is a top-level key of the record; never use a key whose name starts with \"expected\" (those are\nexpected outputs, not inputs).\nReply {\"fixture\": ..., \"recipes\": [{\"var\", \"field\", \"op\", \"item\", \"sep\", \"empty\"}]}."
+      }
+    ],
+    "params": {
+      "max_tokens": 2000,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "_MappingReply",
+          "schema": {
+            "$defs": {
+              "Recipe": {
+                "description": "How one template variable is computed from a record, mirroring the call site's own code.",
+                "properties": {
+                  "var": {
+                    "title": "Var",
+                    "type": "string"
+                  },
+                  "field": {
+                    "title": "Field",
+                    "type": "string"
+                  },
+                  "op": {
+                    "default": "value",
+                    "enum": [
+                      "value",
+                      "len",
+                      "join"
+                    ],
+                    "title": "Op",
+                    "type": "string"
+                  },
+                  "item": {
+                    "default": "",
+                    "title": "Item",
+                    "type": "string"
+                  },
+                  "sep": {
+                    "default": "\n",
+                    "title": "Sep",
+                    "type": "string"
+                  },
+                  "empty": {
+                    "default": "",
+                    "title": "Empty",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "var",
+                  "field"
+                ],
+                "title": "Recipe",
+                "type": "object"
+              }
+            },
+            "properties": {
+              "fixture": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Fixture"
+              },
+              "recipes": {
+                "items": {
+                  "$ref": "#/$defs/Recipe"
+                },
+                "title": "Recipes",
+                "type": "array"
+              }
+            },
+            "required": [
+              "fixture",
+              "recipes"
+            ],
+            "title": "_MappingReply",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-925677731360cabf",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"fixture\": \"emails/\", \"recipes\": [{\"var\": \"email\", \"field\": \"text\", \"op\": \"value\"}]}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792408285,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 32,
+      "prompt_tokens": 1215,
+      "total_tokens": 1247,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 1215
+    }
+  },
+  "latency_ms": 1219,
+  "usage": {
+    "prompt_tokens": 1215,
+    "completion_tokens": 32
+  },
+  "created_at": "2026-10-19T11:11:25.950210+00:00"
+}

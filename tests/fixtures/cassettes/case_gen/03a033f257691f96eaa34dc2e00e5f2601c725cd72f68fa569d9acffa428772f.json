@@ -1,0 +1,89 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write realistic test inputs for one LLM call inside a software product. Each input is a JSON record in the same shape as the product's own test fixtures. Reply with JSON only."
+      },
+      {
+        "role": "user",
+        "content": "## The call's system message\nExtract the order from the email as one JSON object matching the schema.\nUse null for anything the email does not state. Reply with the JSON object only.\n\n## The call's user message template (fields of the record fill the placeholders)\nSchema:\n{{\"properties\": {{\"order_id\": {{\"anyOf\": [{{\"type\": \"string\"}}, {{\"type\": \"null\"}}], \"description\": \"Order id such as SH-1234, null if not stated\", \"title\": \"Order Id\"}}, \"total\": {{\"anyOf\": [{{\"type\": \"number\"}}, {{\"type\": \"null\"}}], \"description\": \"Order total as a plain number, null if not stated\", \"title\": \"Total\"}}, \"currency\": {{\"anyOf\": [{{\"type\": \"string\"}}, {{\"type\": \"null\"}}], \"description\": \"ISO 4217 currency code, e.g. EUR\", \"title\": \"Currency\"}}, \"issue\": {{\"enum\": [\"damaged\", \"late\", \"other\"], \"title\": \"Issue\", \"type\": \"string\"}}}}, \"required\": [\"order_id\", \"total\", \"currency\", \"issue\"], \"title\": \"OrderInfo\", \"type\": \"object\"}}\n\nEmail:\n{email}\n\n## Example records from the product's test fixtures\n{\"text\": \"From: Ana Ruiz <ana@example.com>\\nSubject: Broken lamp\\n\\nHi, order SH-5120 arrived with the lamp shade cracked. I paid 42.00 EUR.\\nAna\\n\"}\n{\"text\": \"From: Ken Ito <ken@example.jp>\\nSubject: 遅延\\n\\n注文がまだ届きません。いつ届きますか？\\n\"}\n\n## Items\n1. Expected output: JSON {\"order_id\": \"SH-4801\", \"total\": 474.96, \"currency\": \"GBP\", \"issue\": \"damaged\"}. Style: locale:es — written in Spanish.\n2. Expected output: JSON {\"order_id\": \"SH-1259\", \"total\": null, \"currency\": null, \"issue\": \"other\"}. Style: locale:ja — written in Japanese.\n3. Expected output: JSON {\"order_id\": \"SH-3596\", \"total\": null, \"currency\": null, \"issue\": \"other\"}. Style: malformed — messy: typos, broken line breaks, missing punctuation, stray pasted text.\n4. Expected output: JSON {\"order_id\": \"SH-9921\", \"total\": 306.28, \"currency\": \"JPY\", \"issue\": \"damaged\"}. Style: locale:de — written in German.\n5. Expected output: JSON {\"order_id\": \"SH-4998\", \"total\": 170.84, \"currency\": \"JPY\", \"issue\": \"late\"}. Style: empty — as terse as possible: the bare minimum of text that still determines the answer.\n6. Expected output: JSON {\"order_id\": null, \"total\": 16.74, \"currency\": \"USD\", \"issue\": \"late\"}. Style: length:short — very short: one line, the way people type on a phone.\n\n## Rules\n- Write exactly 6 records, record i for item i, each with exactly the fields [\"text\"] as in the examples; reply {\"records\": [...]}.\n- For each item, the call's correct output for your record must be exactly the item's expected output, unambiguously, under the system message's instructions. Never give the answer away in what the person writes (no label or tool names, no JSON); write like a real person or document.\n- Make the records realistic and varied: different names, ids, amounts and topics from each other and from the examples.\n- Follow each item's style.\n- Where a field holds reference documents or other context (as in the examples), reuse passages from the examples verbatim instead of inventing new facts.\n- Every non-null value of the expected JSON must be stated in the record (it may be phrased or formatted differently, e.g. a local date format); a null field must not be stated or inferable."
+      }
+    ],
+    "params": {
+      "max_tokens": 5600,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "response",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "records": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "text"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "records"
+            ]
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-9bceefdfa58c2f6d",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"records\": [{\"text\": \"De: María López <maria@tienda.es>\\nAsunto: Recepción defectuosa\\n\\nHola, el pedido SH-4801 llegó con la caja abollada y el producto dentro rayado. El importe fue 474,96 GBP.\\nGracias\"}, {\"text\": \"From: 田中 健 <tanaka@example.jp>\\nSubject: 問い合わせ\\n\\n注文番号 SH-1259 について、サポートに連絡したいです。\\nよろしくお願いします。\"}, {\"text\": \"Hi there just wanted to say that my order sh-3596 has some issues but im not sure what exactly also the website was down yesterday and i copied this from a chat log help plz\"}, {\"text\": \"Von: Lukas Becker <lukas@shop.de>\\nBetreff: Beschädigte Ware\\n\\nSehr geehrte Damen und Herren,\\nmeine Bestellung SH-9921 ist heute eingetroffen, jedoch ist das Gerät beschädigt. Der Rechnungsbetrag beträgt 306,28 JPY.\\nMit freundlichen Grüßen\"}, {\"text\": \"Order SH-4998 late 170.84 JPY\"}, {\"text\": \"From: Alex Chen <alex@example.com>\\nSubject: Late delivery\\n\\nWhere is my order? Paid 16.74 USD still waiting.\"}]}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792408286,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 319,
+      "prompt_tokens": 967,
+      "total_tokens": 1286,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 967
+    }
+  },
+  "latency_ms": 2188,
+  "usage": {
+    "prompt_tokens": 967,
+    "completion_tokens": 319
+  },
+  "created_at": "2026-10-19T11:11:28.140650+00:00"
+}

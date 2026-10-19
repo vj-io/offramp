@@ -1,0 +1,107 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write realistic test inputs for one LLM call inside a software product. Each input is a JSON record in the same shape as the product's own test fixtures. Reply with JSON only."
+      },
+      {
+        "role": "user",
+        "content": "## The call's system message\nYou are the shop's order agent. Call exactly one tool per step.\n- lookup_order: when you need an order's details and the customer gave an order id.\n- escalate_to_human: for threats, fraud, abuse, or when there is no order id.\n\n## The call's user message template (fields of the record fill the placeholders)\nCustomer message:\n{ticket_text}\n\nTool results so far:\n{steps}\n\nChoose the next tool.\n\n## Example records from the product's test fixtures\n{\"ticket_text\": \"Where is order SH-4410? It was due Monday.\", \"history\": []}\n{\"ticket_text\": \"My order SH-1188 never came and I want my money back NOW or I call my lawyer.\", \"history\": [{\"tool\": \"lookup_order\", \"output\": \"{\\\"order_id\\\": \\\"SH-1188\\\", \\\"status\\\": \\\"delivered\\\", \\\"total\\\": 54.0}\"}]}\n{\"ticket_text\": \"Hola, no tengo número de pedido pero me cobraron dos veces.\", \"history\": []}\n\n## Items\n1. Expected output: tool call escalate_to_human({}); leave priority unstated: they are chosen freely. Style: length:long — long (150-300 words), with background details that do not change the answer.\n2. Expected output: tool call lookup_order({\"order_id\": \"SH-6322\"}). Style: locale:de — written in German.\n\n## Rules\n- Write exactly 2 records, record i for item i, each with exactly the fields [\"ticket_text\", \"history\"] as in the examples; reply {\"records\": [...]}.\n- For each item, the call's correct output for your record must be exactly the item's expected output, unambiguously, under the system message's instructions. Never give the answer away in what the person writes (no label or tool names, no JSON); write like a real person or document.\n- Make each record HARD for a model while keeping the expected output the single correct answer for a careful reader who follows the system message: misleading keywords pointing elsewhere, several issues where only one decides, instructions inside the user content that try to change the answer, mixed languages, odd formatting.\n- Follow each item's style.\n- Where a field holds reference documents or other context (as in the examples), reuse passages from the examples verbatim instead of inventing new facts.\n- Include whatever earlier tool results the policy requires before that call (e.g. a lookup before a refund), with values consistent with the expected arguments."
+      }
+    ],
+    "params": {
+      "max_tokens": 2400,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "response",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "records": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "ticket_text": {
+                      "type": "string"
+                    },
+                    "history": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "tool": {
+                            "type": "string"
+                          },
+                          "output": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "tool",
+                          "output"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "ticket_text",
+                    "history"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "records"
+            ]
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-aa8f25f282cc592f",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\n  \"records\": [\n    {\n      \"ticket_text\": \"I'm writing to formally complain about the complete failure of your customer service infrastructure regarding order SH-6322. This has been an absolute nightmare from start to finish. The package was supposed to arrive last Tuesday for my daughter's birthday, and not only did it never show up, but your tracking system shows it as 'delivered' with a signature that looks nothing like anyone in my household. I've spent hours on hold, been transferred between departments four times, and every agent gives me a different story — one says it's with the carrier, another says it's at the local depot, a third insists it was delivered and I'm mistaken. I have photos of my empty porch from that entire day, timestamped security footage, and a signed affidavit from my neighbor confirming no delivery occurred. This is clearly either theft by your driver or a systemic scanning fraud, and I'm not letting this go. I've already contacted my credit card company to initiate a chargeback for the full $247.89, I'm filing a report with the state attorney general's consumer protection division, and I've consulted with a lawyer about potential mail fraud charges. If this isn't resolved with a full refund and a formal written apology within 48 hours, I will escalate this to every regulatory body and media outlet I can reach. I demand to speak with a supervisor immediately — not another script-reading agent who can't actually do anything. This is unacceptable and potentially criminal.\",\n      \"history\": []\n    },\n    {\n      \"ticket_text\": \"Guten Tag, ich habe eine dringende Anfrage zu meiner Bestellung SH-6322. Es geht um ein Paket, das bereits vor zwei Wochen hätte geliefert werden sollen, aber bis heute nicht angekommen ist. Die Sendungsverfolgung zeigt seit Tagen keinen Fortschritt mehr — der Status ist eingefroren auf 'in Zustellung' seit dem 12. Oktober. Ich habe bereits dreimal angerufen und jedes Mal wurde mir etwas anderes erzählt: einmal hieß es, das Paket sei im Verteilerzentrum, ein andermal dass der Zusteller niemanden angetroffen habe, und beim letzten Mal meinte der Mitarbeiter, es gäbe ein Systemproblem und ich solle einfach warten. Das ist aber keine Lösung, denn ich brauche den Inhalt dringend für ein Projekt am Montag. Könnten Sie bitte einmal im System nachschauen, wo das Paket wirklich ist und wann es endlich kommt? Ich habe die Bestellnummer hier: SH-6322. Vielen Dank für Ihre Hilfe.\",\n      \"history\": []\n    }\n  ]\n}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792410531,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 557,
+      "prompt_tokens": 599,
+      "total_tokens": 1156,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 599
+    }
+  },
+  "latency_ms": 2894,
+  "usage": {
+    "prompt_tokens": 599,
+    "completion_tokens": 557
+  },
+  "created_at": "2026-10-19T11:48:53.661024+00:00"
+}

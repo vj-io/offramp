@@ -1,0 +1,5 @@
+[
+  {"id": "r-1", "tags": ["no-coupon"], "seats": 3, "price": "10.00", "coupon": "0", "expected_answer": "30.00"},
+  {"id": "r-2", "tags": ["coupon"], "seats": 2, "price": "9.99", "coupon": "50", "expected_answer": "9.99"},
+  {"id": "r-3", "tags": ["coupon", "wrong-on-purpose"], "seats": 4, "price": "2.50", "coupon": "10", "expected_answer": "99.00"}
+]

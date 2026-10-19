@@ -1,0 +1,5 @@
+[
+  {"id": "t-1", "tags": ["short", "en"], "subject": "Double charge", "body": "I see two charges of $19.00 for my May invoice."},
+  {"id": "t-2", "tags": ["de"], "subject": "Wo ist mein Paket?", "body": "Meine Bestellung SH-2231 ist seit zehn Tagen unterwegs."},
+  {"id": "t-3", "tags": ["empty"], "subject": "", "body": ""}
+]
