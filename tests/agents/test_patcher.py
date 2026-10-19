@@ -19,6 +19,7 @@ from offramp.agents.patcher import (
     Edit,
     PatchEdits,
     _summary,
+    add_fixtures,
     add_imports,
     call_params,
     client_location,
@@ -26,8 +27,11 @@ from offramp.agents.patcher import (
     copy_repo,
     edits_text,
     keep_comment,
+    line_length,
+    merge_onto,
     parse_edits,
     py_literal,
+    wrap_long_strings,
 )
 from offramp.agents.translate import build_request
 from offramp.sandbox import CheckResult, Sandbox, docker_available
@@ -211,7 +215,7 @@ def test_migrates_passing_sites_and_comments_kept_ones():
         "cs_03": ["tinyapp/shout.py"],
     }
     assert result.sandbox_mode == "docker"
-    assert len(boxes[0].checks) == 4  # untouched repo, + client and comments, then one per migrated site
+    assert len(boxes[0].checks) == 5  # untouched, + client and comments, each site alone, then combined
     assert "tinyapp/offramp_client.py" not in boxes[0].checks[0]
     assert boxes[0].fixed == [["tinyapp/greet.py"], ["tinyapp/shout.py"]]
 
@@ -242,7 +246,9 @@ def test_failing_repo_tests_downgrade_the_site_and_drop_its_patch():
     )
     llm = patcher_llm(migrate("tinyapp/greet.py"), breaking, breaking)  # shout: first try + repair round
 
-    result = run(llm, results=[True, True, True, False, False])  # untouched, + client, greet, shout x2
+    result = run(
+        llm, results=[True, True, True, False, False, True]
+    )  # untouched, +client, greet, shout x2, all
 
     shout = verdict(result, "cs_03")
     assert shout.decision == "MANUAL_REVIEW"
@@ -368,9 +374,9 @@ def test_patcher_call_is_super_with_thinking_off_and_shows_the_exact_request():
     assert 'extra_body={"chat_template_kwargs": {"enable_thinking": False}}' in prompt
     assert "### tinyapp/greet.py (editable)" in prompt and "### tests/test_tinyapp.py (editable)" in prompt
     assert "### tinyapp/offramp_client.py (read-only)" in prompt
-    second = llm.calls[1]["messages"][-1]["content"]
+    second = llm.calls[1]["messages"][-1]["content"]  # each site is patched against the same base
     assert "### tinyapp/greet.py" not in second  # unrelated module: not shown
-    assert "def test_greet_strips_the_reply():  # migrated" in second  # builds on the accepted patch
+    assert "def test_greet_strips_the_reply():  # migrated" not in second  # order independent
 
 
 def test_adapter_constants_are_written_into_the_file_before_the_call():
@@ -526,11 +532,42 @@ def test_keep_comment_format():
 # ---------------------------------------------------------------- demo repo on cassettes
 
 
+DEMO_OUTCOME = ({"cs_04": True, "cs_05": False, "cs_06": False}, ["cs_04"])  # recorded live, 2026-10-20
+CS05_SUFFIX = (
+    "\n\nReply with the final refund amount in the customer's currency alone on the last line as "
+    "`ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator)."
+)
+
+
 def demo_inputs():
+    """The demo repo's sites with the verdicts and evaluated adapter specs of Task 12's end-to-end run
+    (cassettes in its tests/fixtures/cassettes/pipeline): cs_04, cs_05 and cs_06 MIGRATE on Lightning,
+    cs_01..cs_03 KEEP_CLOSED. FIXTURE verdict numbers are that run's, labelled in its review."""
     data = json.loads((FIXTURES / "pr" / "demo_run.json").read_text())["context"]
     sites = [CallSite.model_validate(s) for s in data["sites"]]
-    verdicts = [Verdict.model_validate(v) for v in data["verdicts"]]
-    adapters = {k: Adapter.model_validate(a) for k, a in data["adapters"].items()}
+    lightning = {"decision": "MIGRATE", "tier": Tier.LIGHTNING, "model": LIGHTNING, "reason": "parity"}
+    verdicts = [
+        Verdict(
+            site_id="cs_01", decision="KEEP_CLOSED", best_tier=Tier.LIGHTNING, parity_pct=85.7, reason="k"
+        ),
+        Verdict(
+            site_id="cs_02", decision="KEEP_CLOSED", best_tier=Tier.LIGHTNING, parity_pct=50.0, reason="k"
+        ),
+        Verdict(
+            site_id="cs_03", decision="KEEP_CLOSED", best_tier=Tier.LIGHTNING, parity_pct=71.4, reason="k"
+        ),
+        Verdict(site_id="cs_04", parity_pct=100.0, **lightning),
+        Verdict(site_id="cs_05", parity_pct=100.0, **lightning),
+        Verdict(site_id="cs_06", parity_pct=100.0, **lightning),
+    ]
+    specs = {
+        "cs_04": AdapterSpec(max_tokens=400, temperature=0.2),
+        "cs_05": AdapterSpec(max_tokens=16000, temperature=0.0, reasoning="medium", user_suffix=CS05_SUFFIX),
+        "cs_06": AdapterSpec(max_tokens=400, temperature=0.0),
+    }
+    adapters = {
+        sid: Adapter(site_id=sid, version=0, tier=Tier.LIGHTNING, spec=spec) for sid, spec in specs.items()
+    }
     return sites, verdicts, adapters, RunConfig.model_validate(data["config"])
 
 
@@ -556,32 +593,21 @@ def test_record_demo_patches():
 
 
 def test_demo_patches_keep_the_demo_repo_green():
-    """Recorded live (Super, 2026-10-19): 3 of 5 MIGRATE sites patched green; the other 2 are honestly
-    MANUAL_REVIEW. Every accepted patch passed the demo repo's own ruff + pytest in Docker on replay."""
+    """Task 12's MIGRATE set, recorded live (Super). Each site is checked alone against the same base, then
+    all green ones together; the outcome below is what the recording produced (see the task-10 report)."""
     result = run_demo(live=False)
 
-    decisions = {v.site_id: v.decision for v in result.verdicts}
-    assert decisions == {
-        "cs_01": "MIGRATE",
-        "cs_02": "MANUAL_REVIEW",
-        "cs_03": "MIGRATE",
-        "cs_04": "MIGRATE",
-        "cs_05": "KEEP_CLOSED",
-        "cs_06": "MANUAL_REVIEW",
-    }
-    reasons = {v.site_id: v.reason for v in result.verdicts}
-    assert "E501" in reasons["cs_02"] and "repo checks failed" in reasons["cs_06"]
     assert result.client_path == "helphub/offramp_client.py" and result.warnings == []
-    assert "# offramp: kept on o3 — parity 71.4% < 90%" in result.files["helphub/refunds/plan.py"]
-    extract = result.files["helphub/orders/extract.py"]  # an Anthropic site, now OpenAI SDK on Token Factory
-    assert "messages.create" not in extract and "nvidia/nemotron-3-super-120b-a12b" in extract
-    assert "from helphub.offramp_client import token_factory_client" in result.files["helphub/cli.py"]
-    assert (
-        "helphub/ops/agent_step.py" not in result.files
-        and "helphub/summaries/summarize.py" not in result.files
-    )
-    for site_id in ("cs_01", "cs_03", "cs_04"):
-        assert result.adapters[site_id].patch and result.site_files[site_id]
+    assert set(result.alone) == {"cs_04", "cs_05", "cs_06"}
+    assert set(result.combined) <= {sid for sid, ok in result.alone.items() if ok}
+    for v in result.verdicts:
+        if v.site_id in result.combined:
+            assert v.decision == "MIGRATE" and result.adapters[v.site_id].patch
+        elif v.site_id in result.alone:
+            assert v.decision == "MANUAL_REVIEW"
+    for path, text in result.files.items():  # E501 never reaches the PR
+        assert max(map(len, text.splitlines()), default=0) <= 100, path
+    assert DEMO_OUTCOME == ({s: result.alone[s] for s in sorted(result.alone)}, result.combined)
 
 
 def test_edit_blocks_round_trip_with_python_escapes_and_empty_replacements():
@@ -603,7 +629,7 @@ def test_a_failed_try_gets_one_repair_round_that_sees_the_failure():
     )
     llm = patcher_llm(breaking, migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"))
 
-    result = run(llm, results=[True, True, False, True, True])
+    result = run(llm, results=[True, True, False, True, True, True])
 
     assert verdict(result, "cs_01").decision == "MIGRATE"
     first, repair = llm.calls[0]["messages"], llm.calls[1]["messages"]
@@ -829,3 +855,189 @@ def test_a_repo_root_package_holding_the_sites_has_no_place_for_the_client():
     (v,) = result.verdicts
     assert v.decision == "MANUAL_REVIEW" and "repository root, which is itself a Python package" in v.reason
     assert result.files == {}
+
+
+# ---------------------------------------------------------------- Task 10b: long strings, repair, composition
+
+
+LONG = "Reply with the final refund amount in the customer's currency alone on the last line as ANSWER."
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        f'    content = "{LONG} {LONG}"\n',
+        f'    content = f"Plan: {{plan}}, {{days}} days\\n\\n{LONG} {{{{literal braces}}}} {LONG}"\n',
+        f'    content = f"{{d["key"]}} and {{x!r:>{{w}}}} {LONG} {LONG}"\n',
+        f'    """{LONG} {LONG}"""\n',
+    ],
+    ids=["plain", "f-string", "f-string-nested-quotes", "triple-quoted"],
+)
+def test_long_strings_on_patched_lines_are_wrapped_without_changing_their_values(line):
+    source = f"def f(plan, days, d, x, w):\n{line}    return content\n"
+
+    wrapped = wrap_long_strings(source, {2}, 88)
+
+    assert ast.dump(ast.parse(wrapped)) == ast.dump(ast.parse(source))
+    assert max(map(len, wrapped.splitlines())) <= 88
+    assert "noqa" not in wrapped
+    for piece in wrapped.splitlines():  # a piece with no field is a plain string: no ruff F541
+        assert not piece.strip().startswith(("f'", 'f"')) or "{" in piece
+
+
+def test_only_lines_the_patch_touched_are_wrapped():
+    source = f'a = "{LONG} {LONG}"\nb = "{LONG} {LONG}"\n'
+
+    wrapped = wrap_long_strings(source, {2}, 88)
+
+    assert wrapped.splitlines()[0] == source.splitlines()[0]
+    assert ast.dump(ast.parse(wrapped)) == ast.dump(ast.parse(source))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [f'x = b"{LONG} {LONG}"\n', f'x = "{LONG}" "{LONG}"\n', f'x = f"""{{a}} {LONG} {LONG}"""\n'],
+    ids=["bytes", "implicit-concatenation", "triple-quoted-f-string"],
+)
+def test_strings_that_cannot_be_split_safely_are_left_alone(source):
+    assert wrap_long_strings(source, {1}, 88) == source
+
+
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        ({"pyproject.toml": "[tool.ruff]\nline-length = 100\n"}, 100),
+        ({"ruff.toml": "line-length = 79\n", "pyproject.toml": "[tool.ruff]\nline-length = 100\n"}, 79),
+        ({".ruff.toml": "line-length = 120\n"}, 120),
+        ({"pyproject.toml": "[project]\nname = 'x'\n"}, 88),
+        ({}, 88),
+    ],
+    ids=["pyproject", "ruff.toml-wins", "dot-ruff.toml", "no-ruff-section", "nothing"],
+)
+def test_line_length_comes_from_the_targets_ruff_config(files, expected):
+    repo = work_dir("ruffcfg")
+    repo.mkdir(parents=True)
+    for name, text in files.items():
+        (repo / name).write_text(text)
+
+    assert line_length(repo) == expected
+
+
+BASE = 'import os\nCHAT = {\n    "qa": "gpt-4o",\n    "refund": "o3",\n    "sum": "haiku",\n}\n'
+
+
+def test_patches_on_adjacent_lines_of_one_file_compose():
+    ours = BASE.replace("import os\n", "import os\nfrom pkg.client import tf\n").replace('"gpt-4o"', '"nemo"')
+    theirs = BASE.replace("import os\n", "import os\nfrom pkg.client import tf\n").replace('"o3"', '"nemo"')
+
+    merged = merge_onto(BASE, ours, theirs)
+
+    assert merged == ours.replace('"o3"', '"nemo"')  # both rows changed, the shared import once
+    assert merge_onto(BASE, merged, theirs) == merged  # already applied: nothing to do
+
+
+def test_patches_changing_the_same_line_differently_conflict():
+    assert merge_onto(BASE, BASE.replace('"o3"', '"a"'), BASE.replace('"o3"', '"b"')) is None
+
+
+def test_a_repair_that_repeats_the_failed_patch_stops_without_another_check():
+    breaking = migrate(
+        "tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace="")]
+    )
+    llm = patcher_llm(breaking, breaking, migrate("tinyapp/shout.py"))
+    boxes = []
+
+    result = run(llm, results=[True, True, False, True, True], sandboxes=boxes)
+
+    assert verdict(result, "cs_01").reason.startswith(
+        "repair produced no change; first try: repo checks failed"
+    )
+    assert len(boxes[0].checks) == 4  # untouched, base, greet's one try, shout (no combined: one site)
+    repair = llm.calls[1]
+    assert repair["max_tokens"] > llm.calls[0]["max_tokens"] and repair["reasoning"] == "off"
+    assert "edit blocks only" in repair["messages"][-1]["content"]
+
+
+def test_each_site_is_patched_alone_then_all_together():
+    mark = Edit(path="tests/test_tinyapp.py", search="from types import SimpleNamespace",
+                replace="from types import SimpleNamespace  # both sites")  # fmt: skip
+    llm = patcher_llm(migrate("tinyapp/greet.py", extra=[mark]), migrate("tinyapp/shout.py", extra=[mark]))
+    boxes = []
+
+    result = run(llm, sandboxes=boxes)
+
+    combined = boxes[0].checks[-1]
+    assert (
+        f'model="{LIGHTNING}"' in combined["tinyapp/greet.py"]
+        and f'model="{LIGHTNING}"' in combined["tinyapp/shout.py"]
+    )
+    assert combined["tests/test_tinyapp.py"].count("# both sites") == 1
+    assert f'model="{LIGHTNING}"' not in boxes[0].checks[3]["tinyapp/greet.py"]  # shout was checked alone
+    assert result.alone == {"cs_01": True, "cs_03": True} and result.combined == ["cs_01", "cs_03"]
+    assert result.files["tests/test_tinyapp.py"].count("# both sites") == 1
+
+
+def test_a_site_green_alone_but_not_together_is_dropped_from_the_combined_tree():
+    llm = patcher_llm(migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"))
+
+    # untouched, base, greet alone, shout alone, all together (red), greet (green), greet + shout (red)
+    result = run(llm, results=[True, True, True, True, False, True, False])
+
+    assert result.alone == {"cs_01": True, "cs_03": True} and result.combined == ["cs_01"]
+    shout = verdict(result, "cs_03")
+    assert shout.decision == "MANUAL_REVIEW" and "green alone" in shout.reason
+    assert "tinyapp/shout.py" not in result.files and verdict(result, "cs_01").decision == "MIGRATE"
+
+
+def test_a_long_piece_of_a_multi_line_concatenation_is_split_in_place():
+    """cs_05's recorded patch: the suffix became one more 208-column piece of an existing concatenation."""
+    source = (
+        "def f(request):\n"
+        "    return [\n"
+        "        {\n"
+        '            "content": (\n'
+        '                f"Plan: {request.plan_name}\\n"\n'
+        f'                f"How much do we refund, in {{request.currency}}?\\n\\n{LONG} {LONG}"\n'
+        "            ),\n"
+        "        }\n"
+        "    ]\n"
+    )
+
+    wrapped = wrap_long_strings(source, {6}, 100)
+
+    assert ast.dump(ast.parse(wrapped)) == ast.dump(ast.parse(source))
+    assert max(map(len, wrapped.splitlines())) <= 100 and "((" not in wrapped
+
+
+def test_a_test_using_a_pytest_fixture_it_never_requested_gets_it_as_a_parameter():
+    source = (
+        "import pytest\n\n\n"
+        "def test_a():\n    monkeypatch.setattr('x.y', 1)\n\n\n"
+        "@pytest.mark.parametrize('n', [1])\n"
+        "def test_b(n, capsys):\n    monkeypatch.setenv('A', '1')\n    capsys\n\n\n"
+        "def test_c(monkeypatch):\n    monkeypatch.setenv('A', '1')\n\n\n"
+        "def helper():\n    monkeypatch = 1\n    return monkeypatch\n\n\n"
+        "def tmp_path(**kw):\n    return kw\n\n\n"
+        "def test_d():\n    assert tmp_path(a=1)\n"
+    )
+
+    fixed = add_fixtures(source)
+
+    assert "def test_a(monkeypatch):" in fixed and "def test_b(n, capsys, monkeypatch):" in fixed
+    assert "def test_c(monkeypatch):" in fixed and "def helper():" in fixed
+    assert "def test_d():" in fixed  # tmp_path is the module's own helper here, not the fixture
+    assert add_fixtures(fixed) == fixed
+
+
+def test_fixture_parameters_land_in_the_signature_even_with_a_comment_or_in_a_class():
+    source = (
+        "class TestX:\n"
+        "    def test_m(self):  # covers (a) and (b): done\n"
+        "        with open('f'):\n"
+        "            monkeypatch.chdir('.')\n"
+    )
+
+    fixed = add_fixtures(source)
+
+    assert "    def test_m(self, monkeypatch):  # covers (a) and (b): done\n" in fixed
+    assert "        with open('f'):\n" in fixed

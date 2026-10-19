@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from offramp.agents.patcher import Edit, compose_patches
+from offramp.agents.patcher import Edit, PatchEdits, compose_patches
 from offramp.sandbox import Sandbox, docker_available
 from offramp.schemas import RunConfig
 
@@ -143,3 +143,19 @@ def test_a_symlink_to_a_host_file_never_reaches_the_sandbox_or_a_reason():
     assert result.warnings == ["dropped symlink tinyapp/data.txt: it points outside the repository"]
     assert all(CANARY not in v.reason for v in result.verdicts)
     assert "the untouched repo" in next(v for v in result.verdicts if v.site_id == "cs_01").reason
+
+
+def test_a_patch_with_an_over_long_string_is_wrapped_and_passes_ruff():
+    """The model writes a long f-string on one line; ruff E501 would fail it. The wrap keeps its value."""
+    long = "Greet {name} warmly in one short sentence, mention the weather only if it is sunny, no emoji."
+    call = migrate("tinyapp/greet.py").edits[0]
+    content = Edit(path="tinyapp/greet.py", search='f"Greet {name}."', replace=f'f"{long} {long}"')
+    llm = patcher_llm(PatchEdits(edits=[call, content]), migrate("tinyapp/shout.py"))
+
+    result = compose_patches(TINY, tiny_sites(), tiny_verdicts(), tiny_adapters(), llm, work_dir("e501"),
+                             config=RunConfig(repo_url="x"), build_request=BUILD)  # fmt: skip
+
+    assert result.alone == {"cs_01": True, "cs_03": True} and result.combined == ["cs_01", "cs_03"]
+    greet = result.files["tinyapp/greet.py"]
+    assert max(map(len, greet.splitlines())) <= 100 and "noqa" not in greet
+    assert "# offramp" not in greet.split("def greet")[1]  # nothing but the wrap changed around the string
