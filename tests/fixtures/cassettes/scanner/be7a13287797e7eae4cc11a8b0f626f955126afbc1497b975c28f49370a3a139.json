@@ -1,0 +1,168 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You label one LLM call site from a Python codebase with its output contract, so its behaviour can be\nre-tested on another model. Return JSON with `contract` and `confidence`.\n\ncontract.task_type, one of:\n- classification: picks one label from a fixed set (put the labels, verbatim, in contract.labels)\n- json_extraction: returns JSON with a fixed set of fields\n- tool_call: is given tools and must call one\n- free_text: prose such as answers, replies or summaries\n- reasoning: multi-step math or logic whose final answer is checked\ncontract.output: label | json_schema | json | tool_call | text (json_schema when the code supplies a schema).\ncontract.tools / contract.streaming: whether the call passes tools / streams its response.\ncontract.reasoning_heavy: true when the task needs multi-step reasoning.\ncontract.latency_budget_ms: only when the code states a timeout, else null.\ncontract.json_schema: only when the prompt or code spells out the output fields, else null.\nconfidence: your probability, 0 to 1, that task_type is right.\n\nIn the prompt template, {name} placeholders are runtime inputs. \"<expr>\" marks a value the scanner could not\nresolve and \"<pydantic:Name>\" stands for that Pydantic model's JSON schema."
+      },
+      {
+        "role": "user",
+        "content": "Call site:\n{\n  \"file\": \"helphub/orders/extract.py\",\n  \"lines\": [\n    47,\n    57\n  ],\n  \"sdk\": \"anthropic\",\n  \"call\": \"client.messages.create\",\n  \"function\": \"extract_order\",\n  \"source_model\": \"claude-sonnet-4-5\",\n  \"prompt_source\": \"fstring\",\n  \"template\": {\n    \"system\": \"You extract structured order data from customer support emails.\\nReply with a single JSON object that validates against the JSON schema given in the user message.\\nUse null for any field the email does not state; never guess.\\nWrite dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot\\nas the decimal separator. Keep names exactly as written. The email may be in any language.\\nDo not wrap the JSON in markdown and do not add any commentary.\",\n    \"user\": \"JSON schema:\\n<pydantic:OrderFields>\\n\\nEmail:\\n{email}\",\n    \"variables\": [\n      \"email\"\n    ]\n  },\n  \"params\": {\n    \"max_tokens\": 1024,\n    \"system\": \"You extract structured order data from customer support emails.\\nReply with a single JSON object that validates against the JSON schema given in the user message.\\nUse null for any field the email does not state; never guess.\\nWrite dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot\\nas the decimal separator. Keep names exactly as written. The email may be in any language.\\nDo not wrap the JSON in markdown and do not add any commentary.\"\n  },\n  \"flags\": []\n}\n\nCode:\n```python\nWrite dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot\nas the decimal separator. Keep names exactly as written. The email may be in any language.\nDo not wrap the JSON in markdown and do not add any commentary.\"\"\"\n\n\nclass ExtractionError(ValueError):\n    \"\"\"The model's reply was not a JSON object matching `OrderFields`.\"\"\"\n\n\ndef parse_order_fields(text: str) -> OrderFields:\n    start, end = text.find(\"{\"), text.rfind(\"}\")\n    if start == -1 or end < start:\n        raise ExtractionError(f\"no JSON object in model reply: {text[:80]!r}\")\n    try:\n        return OrderFields.model_validate_json(text[start : end + 1])\n    except ValidationError as exc:\n        raise ExtractionError(str(exc)) from exc\n\n\ndef extract_order(client: Anthropic, email: str) -> OrderFields:\n    response = client.messages.create(\n        model=\"claude-sonnet-4-5\",\n        max_tokens=1024,\n        system=EXTRACT_SYSTEM_PROMPT,\n        messages=[\n            {\n                \"role\": \"user\",\n                \"content\": f\"JSON schema:\\n{json.dumps(ORDER_SCHEMA)}\\n\\nEmail:\\n{email}\",\n            }\n        ],\n    )\n    reply = \"\".join(block.text for block in response.content if block.type == \"text\")\n    return parse_order_fields(reply)\n```"
+      }
+    ],
+    "params": {
+      "max_tokens": 1024,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "ContractLabel",
+          "schema": {
+            "$defs": {
+              "Contract": {
+                "properties": {
+                  "task_type": {
+                    "enum": [
+                      "classification",
+                      "json_extraction",
+                      "tool_call",
+                      "free_text",
+                      "reasoning"
+                    ],
+                    "title": "Task Type",
+                    "type": "string"
+                  },
+                  "output": {
+                    "enum": [
+                      "text",
+                      "label",
+                      "json_schema",
+                      "json",
+                      "tool_call"
+                    ],
+                    "title": "Output",
+                    "type": "string"
+                  },
+                  "tools": {
+                    "default": false,
+                    "title": "Tools",
+                    "type": "boolean"
+                  },
+                  "streaming": {
+                    "default": false,
+                    "title": "Streaming",
+                    "type": "boolean"
+                  },
+                  "latency_budget_ms": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Latency Budget Ms"
+                  },
+                  "reasoning_heavy": {
+                    "default": false,
+                    "title": "Reasoning Heavy",
+                    "type": "boolean"
+                  },
+                  "labels": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Labels",
+                    "type": "array"
+                  },
+                  "json_schema": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Json Schema"
+                  }
+                },
+                "required": [
+                  "task_type",
+                  "output"
+                ],
+                "title": "Contract",
+                "type": "object"
+              }
+            },
+            "description": "Super's answer for one call site.",
+            "properties": {
+              "contract": {
+                "$ref": "#/$defs/Contract"
+              },
+              "confidence": {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "title": "Confidence",
+                "type": "number"
+              }
+            },
+            "required": [
+              "contract",
+              "confidence"
+            ],
+            "title": "ContractLabel",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-894621e3ac49bb74",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"contract\": {\"task_type\": \"json_extraction\", \"output\": \"json_schema\", \"tools\": false, \"streaming\": false, \"reasoning_heavy\": false, \"json_schema\": {\"$ref\": \"#/$defs/OrderFields\"}}, \"confidence\": 0.95}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792396832,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 66,
+      "prompt_tokens": 990,
+      "total_tokens": 1056,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 990
+    }
+  },
+  "latency_ms": 1351,
+  "usage": {
+    "prompt_tokens": 990,
+    "completion_tokens": 66
+  },
+  "created_at": "2026-10-19T08:00:33.257848+00:00"
+}

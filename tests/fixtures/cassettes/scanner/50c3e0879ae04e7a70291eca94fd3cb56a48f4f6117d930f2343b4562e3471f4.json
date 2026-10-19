@@ -1,0 +1,168 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You label one LLM call site from a Python codebase with its output contract, so its behaviour can be\nre-tested on another model. Return JSON with `contract` and `confidence`.\n\ncontract.task_type, one of:\n- classification: picks one label from a fixed set (put the labels, verbatim, in contract.labels)\n- json_extraction: returns JSON with a fixed set of fields\n- tool_call: is given tools and must call one\n- free_text: prose such as answers, replies or summaries\n- reasoning: multi-step math or logic whose final answer is checked\ncontract.output: label | json_schema | json | tool_call | text (json_schema when the code supplies a schema).\ncontract.tools / contract.streaming: whether the call passes tools / streams its response.\ncontract.reasoning_heavy: true when the task needs multi-step reasoning.\ncontract.latency_budget_ms: only when the code states a timeout, else null.\ncontract.json_schema: always null (the scanner sets it from the code).\nconfidence: your probability, 0 to 1, that task_type is right.\n\nIn the prompt template, {name} placeholders are runtime inputs. \"<expr>\" marks a value the scanner could not\nresolve and \"<pydantic:Name>\" stands for that Pydantic model's JSON schema."
+      },
+      {
+        "role": "user",
+        "content": "Call site:\n{\n  \"file\": \"helphub/ops/agent_step.py\",\n  \"lines\": [\n    73,\n    89\n  ],\n  \"sdk\": \"anthropic\",\n  \"call\": \"client.messages.create\",\n  \"function\": \"next_action\",\n  \"source_model\": \"claude-sonnet-4-5\",\n  \"prompt_source\": \"fstring\",\n  \"template\": {\n    \"system\": \"You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\\n\\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve.\",\n    \"user\": \"Customer message:\\n{ticket_text}\\n\\nTool results so far:\\n{steps}\\n\\nChoose the next tool.\",\n    \"variables\": [\n      \"ticket_text\",\n      \"steps\"\n    ]\n  },\n  \"params\": {\n    \"tools\": [\n      {\n        \"name\": \"lookup_order\",\n        \"description\": \"Fetch an order's status, items, total and charges from the order system.\",\n        \"input_schema\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"order_id\": {\n              \"type\": \"string\",\n              \"description\": \"Order id, e.g. HH-48213\"\n            }\n          },\n          \"required\": [\n            \"order_id\"\n          ]\n        }\n      },\n      {\n        \"name\": \"issue_refund\",\n        \"description\": \"Refund part or all of an order to the original payment method.\",\n        \"input_schema\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"order_id\": {\n              \"type\": \"string\",\n              \"description\": \"Order id, e.g. HH-48213\"\n            },\n            \"amount\": {\n              \"type\": \"number\",\n              \"description\": \"Refund amount, at most 200.00\"\n            },\n            \"currency\": {\n              \"type\": \"string\",\n              \"description\": \"ISO 4217 code of the order\"\n            },\n            \"reason\": {\n              \"type\": \"string\",\n              \"enum\": [\n                \"damaged\",\n                \"missing_item\",\n                \"duplicate_charge\",\n                \"other\"\n              ]\n            }\n          },\n          \"required\": [\n            \"order_id\",\n            \"amount\",\n            \"currency\",\n            \"reason\"\n          ]\n        }\n      },\n      {\n        \"name\": \"escalate_to_human\",\n        \"description\": \"Hand the ticket to a human support agent.\",\n        \"input_schema\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"reason\": {\n              \"type\": \"string\",\n              \"description\": \"One sentence for the human agent\"\n            },\n            \"priority\": {\n              \"type\": \"string\",\n              \"enum\": [\n                \"low\",\n                \"normal\",\n                \"urgent\"\n              ]\n            }\n          },\n          \"required\": [\n            \"reason\",\n            \"priority\"\n          ]\n        }\n      }\n    ],\n    \"tool_choice\": {\n      \"type\": \"any\"\n    },\n    \"max_tokens\": 512,\n    \"system\": \"You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\\n\\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve.\"\n  },\n  \"flags\": []\n}\n\nCode:\n```python\n        \"input_schema\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"reason\": {\"type\": \"string\", \"description\": \"One sentence for the human agent\"},\n                \"priority\": {\"type\": \"string\", \"enum\": [\"low\", \"normal\", \"urgent\"]},\n            },\n            \"required\": [\"reason\", \"priority\"],\n        },\n    },\n]\nTOOL_NAMES = {tool[\"name\"] for tool in TOOLS}\n\n\nclass AgentAction(BaseModel):\n    tool: str\n    args: dict[str, Any]\n\n\ndef next_action(client: Anthropic, ticket_text: str, history: list[ToolResult]) -> AgentAction:\n    steps = \"\\n\".join(f\"- {step.tool} returned: {step.output}\" for step in history) or \"(none yet)\"\n    response = client.messages.create(\n        model=\"claude-sonnet-4-5\",\n        max_tokens=512,\n        system=AGENT_SYSTEM_PROMPT,\n        tools=TOOLS,\n        tool_choice={\"type\": \"any\"},\n        messages=[\n            {\n                \"role\": \"user\",\n                \"content\": (\n                    f\"Customer message:\\n{ticket_text}\\n\\n\"\n                    f\"Tool results so far:\\n{steps}\\n\\n\"\n                    \"Choose the next tool.\"\n                ),\n            }\n        ],\n    )\n    for block in response.content:\n        if block.type == \"tool_use\" and block.name in TOOL_NAMES:\n            return AgentAction(tool=block.name, args=dict(block.input))\n    return AgentAction(\n        tool=\"escalate_to_human\",\n        args={\"reason\": \"The agent did not return a valid tool call.\", \"priority\": \"normal\"},\n    )\n```"
+      }
+    ],
+    "params": {
+      "max_tokens": 1024,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "ContractLabel",
+          "schema": {
+            "$defs": {
+              "Contract": {
+                "properties": {
+                  "task_type": {
+                    "enum": [
+                      "classification",
+                      "json_extraction",
+                      "tool_call",
+                      "free_text",
+                      "reasoning"
+                    ],
+                    "title": "Task Type",
+                    "type": "string"
+                  },
+                  "output": {
+                    "enum": [
+                      "text",
+                      "label",
+                      "json_schema",
+                      "json",
+                      "tool_call"
+                    ],
+                    "title": "Output",
+                    "type": "string"
+                  },
+                  "tools": {
+                    "default": false,
+                    "title": "Tools",
+                    "type": "boolean"
+                  },
+                  "streaming": {
+                    "default": false,
+                    "title": "Streaming",
+                    "type": "boolean"
+                  },
+                  "latency_budget_ms": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Latency Budget Ms"
+                  },
+                  "reasoning_heavy": {
+                    "default": false,
+                    "title": "Reasoning Heavy",
+                    "type": "boolean"
+                  },
+                  "labels": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Labels",
+                    "type": "array"
+                  },
+                  "json_schema": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Json Schema"
+                  }
+                },
+                "required": [
+                  "task_type",
+                  "output"
+                ],
+                "title": "Contract",
+                "type": "object"
+              }
+            },
+            "description": "Super's answer for one call site.",
+            "properties": {
+              "contract": {
+                "$ref": "#/$defs/Contract"
+              },
+              "confidence": {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "title": "Confidence",
+                "type": "number"
+              }
+            },
+            "required": [
+              "contract",
+              "confidence"
+            ],
+            "title": "ContractLabel",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-a135aaf956f2c980",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"contract\": {\"task_type\": \"tool_call\", \"output\": \"tool_call\", \"tools\": true, \"streaming\": false, \"reasoning_heavy\": false, \"labels\": [], \"json_schema\": null}, \"confidence\": 1.0}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792397280,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 58,
+      "prompt_tokens": 1661,
+      "total_tokens": 1719,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 1661
+    }
+  },
+  "latency_ms": 1096,
+  "usage": {
+    "prompt_tokens": 1661,
+    "completion_tokens": 58
+  },
+  "created_at": "2026-10-19T08:08:01.104163+00:00"
+}

@@ -21,6 +21,7 @@ from typing import Any, NamedTuple
 from pydantic import BaseModel, Field
 
 from offramp.schemas import CallSite, Contract, PromptTemplate, ScanResult, Tier
+from offramp.tf.client import LLM
 
 EXPR = "<expr>"  # a value the scanner could not resolve statically
 PARAM_KEYS = (
@@ -71,24 +72,32 @@ def scan_repo(path: str | Path) -> ScanResult:
     """Every closed-LLM call site under `path`. Deterministic, no LLM."""
     root = Path(path)
     found: list[CallSite] = []
+    warnings: list[str] = []
     for file in _py_files(root):
         rel = file.relative_to(root).as_posix()
         try:
-            tree = ast.parse(file.read_bytes())  # bytes, so a BOM or a coding cookie is honoured
+            source = file.read_bytes()
+        except OSError as exc:  # unreadable, or a broken symlink named *.py
+            warnings.append(f"skipped {rel}: not readable ({type(exc).__name__})")
+            continue
+        try:
+            tree = ast.parse(source)  # bytes, so a BOM or a coding cookie is honoured
         except (SyntaxError, ValueError, RecursionError) as exc:
-            log.warning("scanner: skipped %s, not parseable as Python 3.12 (%s)", rel, type(exc).__name__)
+            warnings.append(f"skipped {rel}: not parseable as Python 3.12 ({type(exc).__name__})")
             continue
         try:
             found += _Module(tree).sites(rel)
         except RecursionError:
-            log.warning("scanner: skipped %s, expressions nested too deeply to analyse", rel)
+            warnings.append(f"skipped {rel}: nested too deeply to analyse (RecursionError)")
+    for warning in warnings:
+        log.warning("scanner: %s", warning)
     found.sort(key=lambda s: (s.file, s.lines))
     chat = [s for s in found if s.kind == "chat"]
     embeddings = [s for s in found if s.kind == "embedding"]
     for prefix, group in (("cs", chat), ("emb", embeddings)):
         for i, site in enumerate(group, 1):
             site.id = f"{prefix}_{i:02d}"
-    return ScanResult(repo=str(path), sites=chat + embeddings)
+    return ScanResult(repo=str(path), sites=chat + embeddings, warnings=warnings)
 
 
 def _py_files(root: Path) -> Iterator[Path]:
@@ -629,7 +638,7 @@ class _Module:
 
 # ---------------------------------------------------------------- Super labelling
 
-SCANNER_MAX_TOKENS = 1024
+SCANNER_MAX_TOKENS = 1024  # thinking is off, so this budget holds only the ContractLabel JSON
 SNIPPET_BEFORE, SNIPPET_AFTER = 20, 15  # lines of code around the call shown to the labeller
 
 LABEL_SYSTEM = """\
@@ -646,7 +655,7 @@ contract.output: label | json_schema | json | tool_call | text (json_schema when
 contract.tools / contract.streaming: whether the call passes tools / streams its response.
 contract.reasoning_heavy: true when the task needs multi-step reasoning.
 contract.latency_budget_ms: only when the code states a timeout, else null.
-contract.json_schema: only when the prompt or code spells out the output fields, else null.
+contract.json_schema: always null (the scanner sets it from the code).
 confidence: your probability, 0 to 1, that task_type is right.
 
 In the prompt template, {name} placeholders are runtime inputs. "<expr>" marks a value the scanner could not
@@ -660,11 +669,12 @@ class ContractLabel(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)  # the labeller's confidence that task_type is right
 
 
-def label_contracts(sites: list[CallSite], llm: Any, root: str | Path | None = None) -> list[CallSite]:
+def label_contracts(sites: list[CallSite], llm: LLM, root: str | Path | None = None) -> list[CallSite]:
     """Fill `contract` and `confidence` on every chat site, one Super call each (PRD §6.1 step 3).
 
-    `llm` implements offramp.tf.client.LLM. `root` is the scanned repo (ScanResult.repo); when given, the code
-    around each call goes into the prompt. Parameters that settle the task type override the model.
+    `root` is the scanned repo (ScanResult.repo); when given, the code around each call goes into the prompt.
+    Parameters that settle the task type override the model. A reply that does not validate leaves the
+    contract empty, confidence 0 and the site flagged MANUAL_REVIEW.
     """
     out = []
     for site in sites:
@@ -681,9 +691,25 @@ def label_contracts(sites: list[CallSite], llm: Any, root: str | Path | None = N
             max_tokens=SCANNER_MAX_TOKENS,
             temperature=0.0,
             response_model=ContractLabel,
+            reasoning="off",  # Nemotron thinks by default (docs/plan/tf-probe.md); labelling needs none
         )
-        contract, confidence = _apply_hints(site, result.parsed.contract, result.parsed.confidence)
-        out.append(site.model_copy(update={"contract": contract, "confidence": confidence}))
+        label: ContractLabel | None = result.parsed
+        hints = _hints(site)
+        certain = "task_type" in hints
+        if label is None:  # keep what the code settles, and ask a human for the rest
+            flags = site.flags if "MANUAL_REVIEW" in site.flags else [*site.flags, "MANUAL_REVIEW"]
+            update = {
+                "contract": Contract(**hints) if certain else None,
+                "confidence": 1.0 if certain else 0.0,
+            }
+            out.append(site.model_copy(update={**update, "flags": flags}))
+            continue
+        # The labeller never supplies json_schema: it is set only from a literal schema in the code (or later
+        # from the resolved Pydantic model), since a model-written schema can dangle ($ref with no $defs).
+        contract = label.contract.model_copy(update={"json_schema": None, **hints})
+        out.append(
+            site.model_copy(update={"contract": contract, "confidence": 1.0 if certain else label.confidence})
+        )
     return out
 
 
@@ -712,8 +738,8 @@ def _describe(site: CallSite, root: str | Path | None) -> str:
     return text
 
 
-def _apply_hints(site: CallSite, contract: Contract, confidence: float) -> tuple[Contract, float]:
-    """Override the labeller where the call's own parameters are certain."""
+def _hints(site: CallSite) -> dict[str, Any]:
+    """Contract fields the call's own parameters settle; they override the labeller (task_type => certain)."""
     p = site.params
     fmt = p.get("response_format")
     if not isinstance(fmt, dict) and isinstance(p.get("text"), dict):
@@ -728,8 +754,6 @@ def _apply_hints(site: CallSite, contract: Contract, confidence: float) -> tuple
         update = {"task_type": "json_extraction", "output": "json_schema"}
         if isinstance(schema, dict):
             update["json_schema"] = schema
-    if update:
-        confidence = 1.0
     if p.get("stream") is True:
         update["streaming"] = True
-    return contract.model_copy(update=update), confidence
+    return update
