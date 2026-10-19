@@ -1,7 +1,7 @@
 """How a matrix gets into a job and its results get out. Only the submitter and the entrypoint use this.
 
-In:  one tar.gz holding `matrix.json` and `cache/<key>.json` (the Token Factory cache, so cached calls
-     replay), cut into `part-NNN` files that `nebius ai job create --inject-file` places in the container
+In:  one tar.gz holding `matrix.json` and `cache/<key>.json` (the Token Factory cache entries the matrix
+     replays), cut into `part-NNN` files that `nebius ai job create --inject-file` places in the container
      (64 KiB each).
 Out: stdout lines `OFFRAMP_RESULTS <urlsafe-base64 of gzip of JSON>`: one line when it fits, else
      `OFFRAMP_RESULTS <i>/<n> <chunk>` lines, because job logs are the only channel and a long line can
@@ -18,6 +18,7 @@ import json
 import re
 import tarfile
 import zlib
+from collections.abc import Iterable
 from pathlib import Path
 
 from offramp.evals.serverless_job.matrix import Matrix, MatrixResults
@@ -32,14 +33,23 @@ _CHUNK = re.compile(rf"{RESULTS_TAG} (?:(\d+)/(\d+) )?([A-Za-z0-9_=-]*)\s*$")
 
 
 class JobError(RuntimeError):
-    """The Serverless Job path did not produce results (submit failed, job failed, results lost)."""
+    """The Serverless Job path did not produce results (submit failed, job failed, results lost).
+
+    `ran` is True when the job may have run and spent Token Factory credit; a caller must not then re-run
+    the matrix elsewhere on its own. `job_id` is set once the job exists."""
+
+    def __init__(self, message: str, *, ran: bool = False, job_id: str | None = None):
+        super().__init__(message)
+        self.ran = ran
+        self.job_id = job_id
 
 
 class JobUnavailable(JobError):
     """The Serverless Job path cannot be tried at all: no CLI, no project, no image, input too large."""
 
 
-def pack_input(matrix: Matrix, cache_dir: Path) -> bytes:
+def pack_input(matrix: Matrix, cache_dir: Path, cache_keys: Iterable[str]) -> bytes:
+    """tar.gz of the matrix and the cache entries `cache_keys` (not the whole cache directory)."""
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
 
@@ -49,8 +59,8 @@ def pack_input(matrix: Matrix, cache_dir: Path) -> bytes:
             tar.addfile(info, io.BytesIO(data))
 
         add("matrix.json", matrix.to_json().encode())
-        for path in sorted(cache_dir.glob("*.json")) if cache_dir.is_dir() else []:
-            add(f"cache/{path.name}", path.read_bytes())
+        for key in sorted(cache_keys):
+            add(f"cache/{key}.json", (cache_dir / f"{key}.json").read_bytes())
     return buf.getvalue()
 
 

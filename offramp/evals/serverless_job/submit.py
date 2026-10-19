@@ -1,18 +1,33 @@
 """Run the eval matrix as a Nebius Serverless Job or locally: same entries either way (PRD §6.5, §12.4).
 
-`run_matrix_job(matrix, mode="auto")` submits with the `nebius` CLI when it is on PATH and NEBIUS_PROJECT_ID
-and OFFRAMP_EVAL_IMAGE (an image built from Dockerfile.eval, pushed where the project can pull it) are set;
-otherwise, or when the job fails, it runs the same `run_matrix` in-process (`mode="job"` raises instead).
-The job gets the matrix and the Token Factory cache as `--inject-file` parts and the provider key as `--env`
-(from this process's environment, only when the matrix is live, never in a log). It hands back its results
-and the cache entries it wrote on stdout (transport.py); those are merged into the local cache, so a job run
-fills the same cache a local run would.
+`run_matrix_job(matrix, mode="auto")` submits with the `nebius` CLI when the job path is configured: a
+default profile in ~/.nebius/config.yaml, the CLI on PATH, NEBIUS_PROJECT_ID, NEBIUS_JOB_SECRET_ID and
+OFFRAMP_EVAL_IMAGE (an image built from Dockerfile.eval, pushed where the project can pull it). Otherwise
+`auto` runs the same `run_matrix` in-process with `fallback_reason == NOT_CONFIGURED`, without a single CLI
+call (the checks read the environment and the config file only); `mode="job"` raises JobUnavailable naming
+what is missing.
 
-Verbs and flags: docs.nebius.com/cli/reference/ai/job/{create,get,logs,cancel}. Checked against those docs:
-the flags below, `create --async --format json` printing the Operation with `resource_id`, and the job state
-names (nebius/api ai/v1/job.proto). Not checked, no credentials yet: that a real job accepts these flags as
-used (--args split on spaces, several --inject-file), the CPU platform/preset names, and the log line format
-(parsing tolerates a prefix).
+The key never travels on a command line or in the job spec. A live job gets it as
+`--env-secret NEBIUS_API_KEY=<NEBIUS_JOB_SECRET_ID>`, a MysteryBox secret whose payload has a key named
+NEBIUS_API_KEY (the variable name must equal the payload key; the CLI has no other syntax). The same goes
+for NEBIUS_API_KEY_FALLBACK with NEBIUS_JOB_SECRET_ID_FALLBACK, which may name the same secret. The job's
+service account must be allowed to read the secret. A replay (`live=False`) job is passed no key.
+
+The matrix and the cache entries it replays go in as `--inject-file` parts. Results and the cache entries
+the job wrote come back on stdout (transport.py) and are merged into the local cache, so a job run fills
+the same cache a local run would. `MatrixResults.ran_on` / `job_id` / `fallback_reason` say where the
+cells ran.
+
+A job that may have spent Token Factory credit is never silently re-run: `auto` falls back to local only
+when the job could not be created or never started. After any failure past `create` the job is cancelled.
+
+Verbs and flags: docs.nebius.com/cli/reference/ai/job/{create,get,logs,cancel}, `nebius ai job create
+--help`. Checked against those: the flags below, `create --async --format json` printing the Operation with
+`resource_id`, `--env-secret KEY=SECRET_SELECTOR`, and the job state names (nebius/api ai/v1/job.proto).
+Not checked: this path has only run against a fake `nebius` (Nebius AI Cloud needs separate billing, and
+Token Factory credit cannot fund it). So unknown: that a real job accepts these flags as used (--args split
+on spaces, several --inject-file), the CPU platform/preset names, the `get --format json` field names, and
+the log line format (parsing tolerates a prefix).
 """
 
 from __future__ import annotations
@@ -31,46 +46,57 @@ import time
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
+
+import yaml
 
 from offramp.evals.serverless_job.matrix import (
     DEFAULT_WORKERS,
-    SECRET_ENV,
     Matrix,
     MatrixResults,
-    budget_snapshot,
+    budget_usage,
     dumps,
     make_client,
+    needed_cache_keys,
     run_matrix,
     scrub,
 )
 from offramp.evals.serverless_job.transport import (
     CHUNK_CHARS,
     PART_PREFIX,
+    RESULTS_TAG,
     JobError,
     JobUnavailable,
     decode_results,
     pack_input,
     split_parts,
 )
-from offramp.tf import LLM, TFClient
+from offramp.tf import LLM, Cache, TFClient
 
 __all__ = ["JobError", "JobUnavailable", "redact", "run_local", "run_matrix_job"]
 
 log = logging.getLogger(__name__)
 
+NOT_CONFIGURED = "nebius job: not configured"  # MatrixResults.fallback_reason when auto never tried a job
+NEBIUS_CONFIG = Path.home() / ".nebius" / "config.yaml"  # where the CLI keeps its profiles
 INPUT_DIR = "/offramp/input"  # where --inject-file puts the parts inside the container
 JOB_PLATFORM, JOB_PRESET = "cpu-d3", "4vcpu-16gb"  # the work is network-bound: a CPU VM, not the GPU default
 # Config that must match the submitter or the job's cache keys and prices differ from a local run's.
 FORWARDED_ENV = ("NEBIUS_BASE_URL", "OFFRAMP_MODEL_LIGHTNING", "OFFRAMP_MODEL_SUPER", "OFFRAMP_MODEL_ULTRA")
-ENDED_BADLY = {"FAILED", "CANCELLED", "CANCELLING", "DELETING", "ERROR"}  # JobStatus.State; COMPLETED is good
+IN_PROGRESS = {"PROVISIONING", "STARTING", "IMAGE_PULLING", "RUNNING"}  # JobStatus.State
+ENDED_BADLY = {"FAILED", "CANCELLED", "CANCELLING", "DELETING", "ERROR"}  # COMPLETED is the good end
+GET_ATTEMPTS = 3  # tries per status read, with backoff
+UNKNOWN_POLLS = 3  # polls without a recognised status.state before giving up
 LOG_ATTEMPTS = 5  # the job's logs can lag its COMPLETED state
+LOG_TAIL_CHARS = 1500  # of a failed job's logs, in the error
 CLI_TIMEOUT_S = 300
 SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD", re.I)
+CACHE_KEY = re.compile(r"[0-9a-f]{64}")
 
 
 def redact(argv: Sequence[str]) -> str:
-    """A command line safe to print: secret `--env` values and registry credentials replaced by ***."""
+    """A command line safe to print: secret `--env` values and registry credentials replaced by ***.
+    (The key is never on a command line; this is the second line of defence.)"""
     shown, previous = [], ""
     for arg in argv:
         name = arg.partition("=")[0]
@@ -83,18 +109,30 @@ def redact(argv: Sequence[str]) -> str:
     return shlex.join(shown)
 
 
+def _head(text: str, n: int) -> str:
+    return scrub(text).strip()[:n]  # scrub first: a cut can fall inside a key and leave its prefix
+
+
+def _tail(text: str, n: int) -> str:
+    return scrub(text).strip()[-n:]
+
+
 def _cli(*args: str) -> str:
     cmd = [shutil.which("nebius") or "nebius", *args]
     log.info("nebius %s", redact(args))
+    verb = " ".join(args[:3])
     try:
         done = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=CLI_TIMEOUT_S)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        # `from None`, not `from e`: the exception carries the argv, key included
-        raise JobError(f"nebius {' '.join(args[:3])}: {type(e).__name__}") from None
-    if done.returncode != 0:  # the full command is in the log, redacted; the error only needs the verb
+    except subprocess.TimeoutExpired:  # `from None` throughout: the exception carries the argv
         raise JobError(
-            scrub(f"nebius {' '.join(args[:3])} exited {done.returncode}: {done.stderr.strip()[:500]}")
-        )
+            f"nebius {verb} timed out after {CLI_TIMEOUT_S} s; its outcome is unknown, "
+            "look in `nebius ai job list`",
+            ran=True,
+        ) from None
+    except OSError as e:
+        raise JobError(f"nebius {verb}: {type(e).__name__}") from None
+    if done.returncode != 0:  # the full command is in the log, redacted; the error only needs the verb
+        raise JobError(f"nebius {verb} exited {done.returncode}: {_head(done.stderr, 500)}")
     return done.stdout
 
 
@@ -105,25 +143,43 @@ def run_local(
     client: LLM | None = None,
     workers: int = DEFAULT_WORKERS,
 ) -> MatrixResults:
-    """The in-process worker. `client` shares the pipeline's budget; else one is built from the matrix."""
+    """The in-process worker. `MatrixResults.budget` is this run's usage alone. With your own `client`, that
+    client's Budget has already been charged by the run: do not absorb_usage the results into it again."""
     client = client or make_client(matrix, cache_dir)
-    return MatrixResults(results=run_matrix(matrix, client, workers=workers), budget=budget_snapshot(client))
+    before = budget_usage(client)
+    results = run_matrix(matrix, client, workers=workers)
+    after = budget_usage(client)
+    return MatrixResults(results=results, budget={k: after[k] - before[k] for k in after}, ran_on="local")
 
 
-def _unavailable(matrix: Matrix, project_id: str | None, image: str | None) -> str | None:
+def _profile_configured() -> bool:
+    """The CLI has a default profile. Read from its config file, not by running it."""
+    try:
+        config = yaml.safe_load(NEBIUS_CONFIG.read_text())
+        return config["default"] in config["profiles"]
+    except (OSError, yaml.YAMLError, KeyError, TypeError):
+        return False
+
+
+def _unavailable(project_id: str | None, image: str | None, secret_id: str | None) -> str | None:
+    """What is missing for the job path, or None. No CLI call: this is the fast path of every local run."""
+    if not _profile_configured():
+        return f"no default nebius profile in {NEBIUS_CONFIG}"
     if not shutil.which("nebius"):
         return "the nebius CLI is not on PATH"
     if not project_id:
         return "NEBIUS_PROJECT_ID is not set"
+    if not secret_id:
+        return (
+            "NEBIUS_JOB_SECRET_ID is not set: a live job gets the Token Factory key only as a MysteryBox "
+            "secret (--env-secret), never on the command line"
+        )
     if not image:
         return "OFFRAMP_EVAL_IMAGE is not set"
-    if matrix.live and not os.environ.get("NEBIUS_API_KEY"):
-        return "NEBIUS_API_KEY is not set (the job's Token Factory calls need it)"
     return None
 
 
 def _create(
-    matrix: Matrix,
     parts: list[bytes],
     *,
     name: str,
@@ -132,10 +188,9 @@ def _create(
     platform: str,
     preset: str,
     timeout_h: int,
+    secrets: dict[str, str],
 ) -> str:
     env = {k: os.environ[k] for k in FORWARDED_ENV if os.environ.get(k)}
-    if matrix.live:  # a replay needs no key: the job does not get one
-        env |= {k: os.environ[k] for k in SECRET_ENV if os.environ.get(k)}
     with tempfile.TemporaryDirectory() as scratch:
         inject = []
         for i, part in enumerate(parts):
@@ -161,57 +216,100 @@ def _create(
         args = ["ai", "job", "create", "--async", *(arg for pair in flags.items() for arg in pair)]
         for key, value in env.items():
             args += ["--env", f"{key}={value}"]
+        for variable, selector in secrets.items():  # the selector names a secret; it is not the key
+            args += ["--env-secret", f"{variable}={selector}"]
         out = _cli(*args, *inject)
     try:
         return str(json.loads(out)["resource_id"])
     except (ValueError, KeyError, TypeError):
-        raise JobError(f"`nebius ai job create` printed no resource_id: {scrub(out)[:300]!r}") from None
+        raise JobError(f"`nebius ai job create` printed no resource_id: {_head(out, 300)!r}") from None
 
 
 def _cancel(job_id: str) -> None:
+    """Best effort, and harmless on a job that has ended: stops a billing VM nobody is waiting for."""
     try:
         _cli("ai", "job", "cancel", job_id)
-    except JobError as e:  # nothing more to do about it, and the job's own --timeout still ends it
+    except JobError as e:
         log.warning("could not cancel job %s: %s", job_id, e)
+
+
+def _status(job_id: str, poll_s: float) -> dict[str, Any]:
+    """`status` of `nebius ai job get`, retrying a failed read: one blip must not orphan a running job."""
+    for attempt in range(GET_ATTEMPTS):
+        try:
+            return json.loads(_cli("ai", "job", "get", job_id, "--format", "json")).get("status") or {}
+        except (JobError, ValueError, AttributeError) as e:
+            if attempt == GET_ATTEMPTS - 1:
+                why = e if isinstance(e, JobError) else "unreadable output"
+                raise JobError(
+                    f"could not read job {job_id} after {GET_ATTEMPTS} tries: {why}", ran=True
+                ) from None
+            time.sleep(poll_s * 2**attempt)
+    raise AssertionError("unreachable")
+
+
+def _failure_logs(job_id: str) -> str:
+    """What the container printed before it failed (scrubbed, results lines dropped), '' if none."""
+    try:
+        logs = _cli("ai", "job", "logs", job_id, "--since", "24h")
+    except JobError:
+        return ""
+    return _tail("\n".join(ln for ln in logs.splitlines() if RESULTS_TAG not in ln), LOG_TAIL_CHARS)
 
 
 def _wait(job_id: str, *, timeout_h: int, poll_s: float) -> None:
     deadline = time.monotonic() + timeout_h * 3600 + 120  # the job's own --timeout should end it first
-    try:
-        while True:
-            try:
-                status = json.loads(_cli("ai", "job", "get", job_id, "--format", "json")).get("status") or {}
-            except (ValueError, AttributeError):
-                raise JobError(f"unreadable output from `nebius ai job get {job_id}`") from None
-            state = status.get("state")
-            if state == "COMPLETED":
-                return
-            if state in ENDED_BADLY:
-                detail = (status.get("state_details") or {}).get("message", "")
-                raise JobError(f"job {job_id} ended {state}: {detail}")
-            if time.monotonic() > deadline:
-                _cancel(job_id)  # stop paying for a job nobody waits for
-                raise JobError(f"job {job_id} still {state} after {timeout_h}h: cancelled")
-            time.sleep(poll_s)
-    except KeyboardInterrupt:
-        _cancel(job_id)
-        raise
+    ran, unknown = False, 0
+    while True:
+        status = _status(job_id, poll_s)
+        state = status.get("state") if isinstance(status.get("state"), str) else None
+        ran = ran or state == "RUNNING"
+        if state == "COMPLETED":
+            return
+        if state in ENDED_BADLY:
+            logs = _failure_logs(job_id)
+            ran = ran or bool(status.get("started_at")) or bool(logs)  # a container that printed did run
+            detail = _head(str((status.get("state_details") or {}).get("message", "")), 500)
+            raise JobError(f"job {job_id} ended {state}: {detail}\n{logs}".rstrip(), ran=ran)
+        unknown = 0 if state in IN_PROGRESS else unknown + 1
+        if unknown >= UNKNOWN_POLLS:
+            raise JobError(
+                f"job {job_id}: `nebius ai job get` shows no recognised status.state ({state!r}); "
+                "the job's output format is not what submit.py expects",
+                ran=True,
+            )
+        if time.monotonic() > deadline:
+            raise JobError(f"job {job_id} still {state} after {timeout_h}h", ran=True)
+        time.sleep(poll_s)
 
 
 def _results(job_id: str, *, timeout_h: int, poll_s: float) -> MatrixResults:
     for attempt in range(1, LOG_ATTEMPTS + 1):
         try:
             return decode_results(_cli("ai", "job", "logs", job_id, "--since", f"{timeout_h + 1}h"))
-        except JobError:
+        except JobError as e:
             if attempt == LOG_ATTEMPTS:
-                raise
+                raise JobError(str(e), ran=True) from None  # the job ran: its results are what is lost
             time.sleep(poll_s)
+    raise AssertionError("unreachable")
+
+
+def _merge_cache(cache: Cache, entries: dict[str, dict[str, Any]]) -> None:
+    """Add what the job wrote to the local cache. The keys come from the job's logs: check them first."""
+    if bad := [key for key in entries if not CACHE_KEY.fullmatch(key)]:
+        raise JobError(
+            f"job returned cache entries under invalid keys ({bad[0][:80]!r}): none written", ran=True
+        )
+    for key, entry in entries.items():
+        if cache.get(key) is None:
+            cache.put(key, entry)
 
 
 def _run_job(
     matrix: Matrix,
     cache_dir: str | Path | None,
     *,
+    workers: int,
     run_id: str | None,
     image: str,
     project_id: str,
@@ -219,12 +317,13 @@ def _run_job(
     preset: str,
     timeout_h: int,
     poll_s: float,
+    secrets: dict[str, str],
 ) -> MatrixResults:
     cache = TFClient(cache_dir=cache_dir).cache  # the same directory a local run would read and fill
-    parts = split_parts(pack_input(matrix, cache.dir))
+    keys = needed_cache_keys(matrix, cache.dir, workers)  # ship what the matrix replays, not the whole cache
+    parts = split_parts(pack_input(matrix, cache.dir, keys))
     slug = re.sub(r"[^a-z0-9-]+", "-", (run_id or uuid.uuid4().hex[:8]).lower()).strip("-")[:40] or "run"
     job_id = _create(
-        matrix,
         parts,
         name=f"offramp-eval-{slug}",
         image=image,
@@ -232,14 +331,21 @@ def _run_job(
         platform=platform,
         preset=preset,
         timeout_h=timeout_h,
+        secrets=secrets,
     )
     log.info("eval matrix submitted as Nebius job %s", job_id)
-    _wait(job_id, timeout_h=timeout_h, poll_s=poll_s)
-    out = _results(job_id, timeout_h=timeout_h, poll_s=poll_s)
-    for key, entry in out.cache.items():
-        if cache.get(key) is None:
-            cache.put(key, entry)
-    return out
+    try:
+        _wait(job_id, timeout_h=timeout_h, poll_s=poll_s)
+        out = _results(job_id, timeout_h=timeout_h, poll_s=poll_s)
+        _merge_cache(cache, out.cache)
+    except JobError as e:
+        _cancel(job_id)
+        e.job_id = job_id
+        raise
+    except KeyboardInterrupt:
+        _cancel(job_id)
+        raise
+    return out.model_copy(update={"ran_on": "job", "job_id": job_id})
 
 
 def run_matrix_job(
@@ -247,35 +353,52 @@ def run_matrix_job(
     *,
     mode: Literal["auto", "job", "local"] = "auto",
     cache_dir: str | Path | None = None,
-    client: LLM | None = None,
     workers: int = DEFAULT_WORKERS,
     run_id: str | None = None,
     image: str | None = None,
     project_id: str | None = None,
+    secret_id: str | None = None,
+    fallback_secret_id: str | None = None,
     platform: str = JOB_PLATFORM,
     preset: str = JOB_PRESET,
     timeout_h: int = 2,
     poll_s: float = 10.0,
 ) -> MatrixResults:
-    """`client` and `workers` only apply to a local run (a job builds its own client from the matrix).
+    """Run `matrix` and return its results; `.ran_on`, `.job_id` and `.fallback_reason` say where.
 
-    A job that is cancelled after `timeout_h` may already have spent Token Factory credit that a fallback run
-    pays again; the cache entries it wrote are lost with it.
+    The run builds its own client from `matrix.budget` (Matrix(budget=remaining_caps(budget))), so
+    `.budget` is its usage alone on either path: `absorb_usage(budget, results)` adds it to your Budget.
+    `mode="job"` raises JobUnavailable (cannot try) or JobError; `auto` falls back to local only when the
+    job could not be created or never started, and raises when the job had run (re-running would spend again).
     """
     image = image or os.environ.get("OFFRAMP_EVAL_IMAGE")
     project_id = project_id or os.environ.get("NEBIUS_PROJECT_ID")
+    secret_id = secret_id or os.environ.get("NEBIUS_JOB_SECRET_ID")
+    fallback_secret_id = fallback_secret_id or os.environ.get("NEBIUS_JOB_SECRET_ID_FALLBACK")
+
+    def local(reason: str | None = None) -> MatrixResults:
+        return run_local(matrix, cache_dir=cache_dir, workers=workers).model_copy(
+            update={"fallback_reason": reason}
+        )
+
     if mode == "local":
-        return run_local(matrix, cache_dir=cache_dir, client=client, workers=workers)
-    if reason := _unavailable(matrix, project_id, image):
+        return local()
+    if reason := _unavailable(project_id, image, secret_id):
         if mode == "job":
             raise JobUnavailable(reason)
-        log.info("eval matrix runs locally: %s", reason)
-        return run_local(matrix, cache_dir=cache_dir, client=client, workers=workers)
+        log.info("eval matrix runs locally (%s): %s", NOT_CONFIGURED, reason)
+        return local(NOT_CONFIGURED)
     assert image and project_id
+    secrets = {}
+    if matrix.live:
+        secrets["NEBIUS_API_KEY"] = secret_id or ""  # (set: checked above)
+        if fallback_secret_id:
+            secrets["NEBIUS_API_KEY_FALLBACK"] = fallback_secret_id
     try:
         return _run_job(
             matrix,
             cache_dir,
+            workers=workers,
             run_id=run_id,
             image=image,
             project_id=project_id,
@@ -283,12 +406,18 @@ def run_matrix_job(
             preset=preset,
             timeout_h=timeout_h,
             poll_s=poll_s,
+            secrets=secrets,
         )
     except JobError as e:
-        if mode == "job":
+        if mode == "job" or e.ran:
+            if mode == "auto":
+                log.error(
+                    "Serverless Job %s failed after it had run; not re-running locally: %s", e.job_id, e
+                )
             raise
-        log.warning("Serverless Job path failed (%s); running the matrix locally", e)
-        return run_local(matrix, cache_dir=cache_dir, client=client, workers=workers)
+        reason = f"Serverless Job path failed before the job ran: {e}"
+        log.warning("%s; running the matrix locally", reason)
+        return local(reason)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -307,6 +436,7 @@ def main(argv: list[str] | None = None) -> int:
         Matrix.from_json(args.input.read_text()), mode=args.mode, cache_dir=args.cache_dir, run_id=args.run_id
     )
     args.output.write_text(dumps(out.results, indent=2) + "\n")
+    log.info("ran on %s (job %s) %s", out.ran_on, out.job_id, out.fallback_reason or "")
     return 0
 
 

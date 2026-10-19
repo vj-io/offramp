@@ -17,7 +17,7 @@ from offramp.evals.serverless_job.matrix import (
     DEFAULT_WORKERS,
     Matrix,
     MatrixResults,
-    budget_snapshot,
+    budget_usage,
     dumps,
     make_client,
     run_matrix,
@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
         written = {  # what this run added to the cache: the submitter merges it into its own
             p.stem: json.loads(p.read_text()) for p in client.cache.dir.glob("*.json") if p.name not in before
         }
-    out = MatrixResults(results=results, cache=written, budget=budget_snapshot(client))
+    out = MatrixResults(results=results, cache=written, budget=budget_usage(client))
     if args.output:
         args.output.write_text(dumps(results, indent=2) + "\n")
     if args.emit_stdout:
