@@ -119,13 +119,23 @@ class ModelOutput(BaseModel):
 
 
 class BaselineResult(BaseModel):
+    """Expected output for one case (PLAN Amendment A).
+
+    source="reference": ground truth known by construction — model is "reference:seed" (expected output chosen
+    first, input written around it), "reference:oracle" (deterministic reference code) or "reference:human"
+    (written/verified by a human expert). Latency/tokens/cost are None: nothing was measured.
+    source="closed_model": recorded from the original closed model (scripts/record_baselines.py, needs keys).
+    """
+
     case_id: str
+    source: Literal["reference", "closed_model"] = "reference"
     model: str
     output: ModelOutput
-    latency_ms: int
-    input_tokens: int
-    output_tokens: int
-    cost_usd: float
+    latency_ms: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    verified_by: list[str] = Field(default_factory=list)  # e.g. ["blind:nemotron-ultra", "human:tendem"]
     recorded_at: datetime
 
 
@@ -217,9 +227,12 @@ class Verdict(BaseModel):
     best_tier: Tier | None = None  # KEEP_CLOSED: best tier tried
     best_score: float | None = None
     iterations: int = 0  # adapter iterations used for the chosen/best tier
-    latency_delta_ms: int | None = None  # p50 after - before
+    latency_delta_ms: int | None = None  # p50 after - before; None when "before" was never measured
     cost_before_per_1k: float | None = None
+    cost_before_note: str | None = None  # e.g. "est.: gpt-4o-mini $0.15/$0.60 per 1M (openai.com/api/pricing,
+    # fetched via Tavily 2026-10-19) x tokens measured on the Token Factory call"
     cost_after_per_1k: float | None = None
+    sunset_risk: str | None = None  # deprecation notice for the source model found via Tavily, with URL
     reason: str
 
 

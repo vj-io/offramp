@@ -72,6 +72,45 @@ nvidia/offramp-demo-app/   separate repo — the realistic target app Offramp mi
     Never touch files owned by another task (ownership listed per task). Tests that need an absent/empty
     resource must create that absence themselves (tmp dirs), never rely on tree state.
 
+### Amendment A — no closed-model keys (user decision, 2026-10-19). Overrides anything above or below.
+
+Credits available: Nebius Token Factory $25, LangSmith $100, Tavily $25, Toloka $50, Tendem (by Toloka) $50.
+No OpenAI or Anthropic keys exist, so PRD G2's "baseline recorded from the original closed model" cannot be
+produced for the demo. Never fabricate closed-model outputs, latencies or costs.
+
+17. **Baselines are references** (`BaselineResult.source="reference"`, see `offramp/schemas.py`). Methods:
+    `reference:seed` — the case generator picks the expected output first (label / tool name + args / extraction
+    record) and asks Super to write a realistic input that implies it; expected = seed.
+    `reference:oracle` — deterministic code computes the answer (cs_05 refund math; the demo repo's tests already
+    hold an independent reference implementation — port it to `evals/reference/refund_oracle.py` in the demo repo).
+    `reference:human` — written or verified by a human expert (Tendem), optional. References carry no
+    latency/tokens/cost (None).
+18. **Reference audit:** every `seed` reference gets a blind check — Ultra (thinking on) answers the input without
+    seeing the seed; disagreements are dropped or sent to human audit. Record n checked / agreed / dropped /
+    human-verified per site; show it in the report and PR.
+19. **Parity = agreement with references** on holdout, same scorers and thresholds. Column header
+    "Parity vs reference (holdout)".
+20. **Free text (cs_04, cs_06):** judge (Ultra) scores 1–5 on an absolute rubric against the evidence (KB snippets
+    or thread): groundedness, completeness, format. Pass: candidate mean ≥ 4.0; when human references exist, also
+    candidate mean ≥ reference mean − 0.3 (references judged with the same rubric, position-swapped pairwise).
+21. **Cost before is an estimate:** source-model published price from a Tavily runtime lookup (§6.10, now core;
+    fallback `pricing.yaml`) × tokens measured on the Token Factory call for the same prompt. Shown as "est." with
+    price source URL and date (`Verdict.cost_before_note`). Latency before is not measured: show "—".
+    Tavily also returns deprecation notices → `Verdict.sunset_risk` badge.
+22. **Closed-model recorder** (`scripts/record_baselines.py`) stays for teams that have keys (PRD G2); tested with
+    fake SDK clients only; the demo never claims closed-model numbers.
+23. **LangSmith** (when `LANGSMITH_API_KEY` set): trace every TF call under project `offramp-<run_id>`; upload each
+    site's cases + references as a dataset and each (site, tier, split) evaluation as an experiment; share links go
+    into the report and PR evidence section.
+24. **Tendem** human audit via `scripts/audit_references.py` (builds the audit task text from flagged/sampled
+    references; ingests verdicts → `verified_by: ["human:tendem"]`). Every paid task needs the user's explicit
+    approval of its quoted price.
+25. **Reasoning control (probe: `docs/plan/tf-probe.md`):** always send `chat_template_kwargs.enable_thinking`
+    explicitly; `false` for every structured agent call unless the spec asks for reasoning. Reasoning tokens count
+    toward `max_tokens`: when thinking is on, budget ≥ 2000. Lightning with thinking on leaks reasoning prose into
+    `content`; never evaluate Lightning with thinking on unless the adapter explicitly chose it.
+26. **TF spend:** $25 total. Dev runs reuse the cache; never re-run a full live matrix without need.
+
 ---
 
 ## Wave 1 — independent, run in parallel
@@ -241,25 +280,52 @@ Offramp never migrates it).
   add output-format instructions, choose json_schema vs json_mode fallback per tier capability.
 - **Done when:** golden tests green; agent contract test green on cassettes (incl. malformed-cassette repair path).
 
-### Task 7: Case Generator, splits, Baseline Recorder
+### Task 7: Case Generator with references, reference audit, baselines I/O, recorder
 
-**Owns:** `offramp/agents/case_gen.py`, `offramp/evals/baselines.py`, `scripts/record_baselines.py`,
-`tests/agents/test_case_gen.py`, `tests/unit/test_baselines.py`, `tests/harness/test_baseline_integrity.py`,
-`tests/fixtures/cassettes/case_gen/**`.
+**Owns:** `offramp/agents/case_gen.py`, `offramp/agents/reference_audit.py`, `offramp/evals/baselines.py`,
+`scripts/record_baselines.py`, `scripts/audit_references.py`, `tests/agents/test_case_gen.py`,
+`tests/agents/test_reference_audit.py`, `tests/unit/test_baselines.py`, `tests/harness/test_baseline_integrity.py`,
+`tests/fixtures/cassettes/{case_gen,reference_audit}/**`; in the demo repo: `evals/**` (cases, references,
+manifest, `evals/reference/refund_oracle.py`).
 
-- Case Generator (§6.2): prefers repo fixtures (files under `tests/fixtures/` matched to the site's
-  variables), then Super bulk synthetic (diverse: length, locale, malformed, empty, unicode), then Ultra 3–5
-  adversarial; total 20–30 per site; renders `input_messages` from `site.template`; assigns split per Global
-  Constraint 10. Writes `evals/cases/<site_id>.jsonl` in the target repo.
-- `baselines.py`: load/save `evals/baselines/<site_id>.jsonl` (`BaselineResult`), `evals/manifest.json`
-  (sha256 per file + model + recorded_at + total cost), `verify_manifest()`.
-- `scripts/record_baselines.py`: offline, run by the team with closed keys: for each case call the original
-  closed model with its native SDK (OpenAI or Anthropic, rebuilding native params from the site: system,
-  tools, response_format, max_tokens), measure latency/tokens/cost, write baselines + manifest. Also
-  `--self-agreement` (run twice, report agreement %, §16).
-- **Done when:** tests green (recorder tested with fake SDK clients; no network).
+Read Amendment A (Global Constraints 17–26) first: there are no closed-model keys; expected outputs are
+references with ground truth known by construction.
+
+- Case Generator (§6.2 + GC17): per site produce 20–30 `EvalCase` + one `BaselineResult(source="reference")` each.
+  Sources, in order: repo fixtures under the target's `tests/fixtures/` that already carry an expected output
+  (e.g. refund fixtures with `expected_answer`) → `reference:oracle`/fixture; then seed-first synthetic via Super
+  (role `case_gen`, thinking off): pick the expected output first — classification label (balanced across
+  `contract.labels`), tool name + args, extraction record (deterministic Python generator with a seeded RNG),
+  refund scenario parameters (oracle computes the answer) — then ask Super to write a realistic input implying it,
+  diverse in length, locale (en/de/es/ja), malformed, empty-ish, unicode; then 3–5 Ultra adversarial cases
+  (role `case_gen_adversarial`). Free-text sites (cs_04, cs_06): inputs only (question + retrieved KB snippets /
+  thread), `expected_kind="text"`, reference output text None unless a human reference exists.
+  Render `input_messages` from `site.template`; split per GC10. Write `evals/cases/<site_id>.jsonl` and
+  `evals/references/<site_id>.jsonl` into the target repo.
+- `evals/reference/refund_oracle.py` in the demo repo: port the independent reference implementation from the demo
+  repo's tests (do not import from tests/); cs_05 cases are generated from oracle parameters → narrative by Super.
+- Reference audit (GC18, `reference_audit.py`): blind Ultra check (thinking on, role `reference_audit`) per seed
+  reference using the site's own scorer; disagreements dropped (kept in `evals/references/<site>.dropped.jsonl`
+  with the reason) or queued for human audit. Writes `evals/audit.json` {site: checked, agreed, dropped,
+  human_verified}. Budget: these are Ultra agent calls — batch several cases per call to stay inside the 40-call cap
+  (run once, offline, cached; it is dataset preparation, not a per-run step).
+- `scripts/audit_references.py` (GC24): `export` writes a human-readable Tendem task (markdown table of sampled +
+  flagged references, instructions, answer format) to `evals/human_audit/task.md`; `ingest <file>` applies expert
+  verdicts → `verified_by += ["human:tendem"]` or drops. No network in this script.
+- `baselines.py`: load/save `evals/references/<site_id>.jsonl` (also reads legacy `evals/baselines/`), manifest
+  `evals/manifest.json` (sha256 per file, method counts, generated_at, generator model ids), `verify_manifest()`.
+- `scripts/record_baselines.py` (GC22): unchanged purpose — teams with keys record closed-model baselines
+  (`source="closed_model"`); fake SDK clients in tests; `--self-agreement`.
+- Eval-target calls are never made here. Role names: never start with `eval` (reserved for eval targets).
+- **Done when:** tests green on cassettes/fakes; then the controller runs `offramp prepare` live once on the demo
+  repo (Task 14) to produce the committed `evals/`.
 
 ### Task 8: Eval Runner + Judge Agent
+
+**Amendment A notes:** compare candidates against `BaselineResult` references (GC17–20). Eval-target calls use role
+`eval_target` (any role starting with `eval` is excluded from the Ultra agent cap). Price with
+`get_tier(tier)` prices, not `price(model_id)`. Judge per GC20: absolute rubric vs evidence; pairwise vs reference
+only when a human reference exists. Send `enable_thinking` explicitly per `AdapterSpec.reasoning` (GC25).
 
 **Owns:** `offramp/evals/runner.py`, `offramp/agents/judge.py`, `tests/unit/test_runner.py`,
 `tests/agents/test_judge.py`, `tests/harness/test_judge_sanity.py`, `tests/fixtures/cassettes/judge/**`.
@@ -274,6 +340,11 @@ Offramp never migrates it).
 - **Done when:** tests green on cassettes/fakes.
 
 ### Task 9: Iterator, Verdict, per-site routing loop
+
+**Amendment A notes:** verdict `cost_before_per_1k` is an estimate (GC21): source-model price from
+`offramp.integrations.tavily.lookup_source_model(model)` (Task 17; fallback `pricing.yaml`) × mean tokens measured
+on the TF calls for the same prompts; fill `cost_before_note` and `sunset_risk`; `latency_delta_ms=None` (before
+not measured). KEEP_CLOSED reason wording: "parity vs reference <p>% < <threshold>%".
 
 **Owns:** `offramp/agents/iterator.py`, `offramp/agents/verdict.py`, `offramp/evals/route.py`,
 `tests/agents/test_iterator.py`, `tests/agents/test_verdict.py`, `tests/harness/test_holdout_leakage.py`,
@@ -292,6 +363,11 @@ Offramp never migrates it).
   be KEEP_CLOSED).
 
 ### Task 10: Patch Composer, sandbox, PR Writer, GitHub PR builder
+
+**Amendment A notes:** PR evidence columns: Site | File | Task | Before | After | Parity vs reference (holdout) |
+p50 latency (after) | $/1k calls before (est.) → after. Add a "How parity was measured" section: reference methods
+and audit counts per site (`evals/audit.json`), price sources + dates, LangSmith share links when present, and the
+sentence "No closed-model outputs were recorded; parity is agreement with references."
 
 **Owns:** `offramp/agents/patcher.py`, `offramp/agents/pr_writer.py`, `offramp/github.py`,
 `offramp/sandbox.py`, `offramp/templates/client.py.tmpl`, `tests/unit/test_pr_render.py`,
@@ -328,6 +404,22 @@ Offramp never migrates it).
   `shutil.which("nebius")` check and test it with a fake CLI script on PATH.
 
 ---
+
+### Task 17: Tavily + LangSmith integrations
+
+**Owns:** `offramp/integrations/{__init__,tavily,langsmith}.py`, `tests/unit/test_tavily.py`,
+`tests/unit/test_langsmith.py`, `tests/fixtures/tavily/**`.
+
+- `tavily.py` (GC21, §6.10, "Best Use of Tavily"): `lookup_source_model(model_id) -> SourceModelInfo(model,
+  input_usd_per_m, output_usd_per_m, price_source_url, fetched_at, deprecation: str|None, deprecation_url)` via
+  Tavily Search REST (`POST https://api.tavily.com/search`, `TAVILY_API_KEY`, `include_answer`, domain filters for
+  official pricing/deprecation pages: openai.com, platform.openai.com, anthropic.com, docs.anthropic.com,
+  docs.claude.com) then Super (role `pricing_extract`, json_schema, thinking off) extracts numbers from the returned
+  content; numbers must appear verbatim in the cited page content or the result is rejected (fallback
+  `pricing.yaml`, noted). Cached on disk per (model, date). httpx MockTransport tests with recorded Tavily fixtures.
+- `langsmith.py` (GC23): thin, import-guarded helpers: `tracing_enabled()`, `run_project(run_id)`,
+  `upload_dataset(site, cases, references) -> url`, `log_experiment(site, tier, split, case_results) -> url`,
+  `share_link(...)`. No-ops returning None without a key. Tests use a fake client object.
 
 ## Wave 3
 
