@@ -1,0 +1,187 @@
+{
+  "recorded_at": "2026-10-19T08:03:23.301540+00:00",
+  "status": 200,
+  "request": {
+    "query": "claude-haiku-4-5 (claude haiku 4.5) API pricing: input and output price per 1M tokens (MTok); deprecation, retirement or shutdown date",
+    "search_depth": "basic",
+    "max_results": 20,
+    "include_answer": true,
+    "include_domains": [
+      "anthropic.com",
+      "docs.anthropic.com",
+      "docs.claude.com",
+      "claude.com",
+      "platform.claude.com"
+    ]
+  },
+  "response": {
+    "query": "claude-haiku-4-5 (claude haiku 4.5) API pricing: input and output price per 1M tokens (MTok); deprecation, retirement or shutdown date",
+    "follow_up_questions": null,
+    "answer": "The sources indicate that the input price for claude-haiku-4-5 is $1 per million tokens (MTok) and the output price is $5 per MTok. The model is currently available but is advised to migrate to Claude Haiku 5.5. The sources do not provide a specific deprecation, retirement, or shutdown date for claude-haiku-4-5, but it is noted that migration to the newer model is recommended.",
+    "images": [],
+    "results": [
+      {
+        "url": "https://docs.claude.com/docs/en/models/haiku-4-5/overview",
+        "title": "Claude Haiku 4.5 - Claude Platform Docs",
+        "content": "Title: Claude Haiku 4.5 - Claude Platform Docs\nAlthough Claude Haiku 4.5 is still available, you should consider migrating to Claude Haiku 5.5. See Claude Haiku 5.5. # Claude Haiku 4.5Legacy. Migrate to Claude Haiku 5.5\ue010. ## How it compares to the current lineup. | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |. | Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |. | Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |. | Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |. | Claude Haiku 5.5 | 1M | 128K | From $0.10 / $0.50 | Adaptive | `medium` | Jun 2026 |. | Claude Haiku 4.5This modelLegacy | 200K | 64K | $1 / $5 | Extended | \u2014 | Feb 2025 |. ## Specifications. ### Model IDs. ### Pricing. :   50% discount on input and output. ### Capabilities. :   Not sooner than October 15, 2026. :   Claude APIAmazon BedrockAmazon Bedrock (InvokeModel)Google CloudMicrosoft FoundryClaude Platform on AWS. ## Good to know. * `claude-haiku-4-5` is a convenience alias that resolves to the pinned snapshot `claude-haiku-4-5-20251001`. See Model IDs and versioning. * Claude Haiku 4.5 uses manual extended thinking (`thinking.type: \"enabled\"`), not adaptive thinking. * Query limits and capabilities programmatically with the Models API. ## Resources. What changes when moving from Claude Haiku 4.5 to Claude Haiku 5.5. The current Haiku model: overview, specs, and resources. Claude Haiku 4.5 supports manual extended thinking with `budget_tokens`. ## Reference. The system prompt Claude Haiku 4.5 uses on claude.ai and the Claude apps. Safety evaluations and deployment decisions for Claude Haiku 4.5. Full price list, including batch discounts and prompt caching rates. How model IDs, aliases, and pinned snapshots work. Lifecycle status and retirement commitments for every Claude model. Amazon Bedrock (Opus 4.6 and earlier). Claude Haiku 4.5 is also available through the InvokeModel Bedrock integration and Bedrock-style model IDs.",
+        "score": 0.8773195,
+        "raw_content": null,
+        "id": "adb5b4-00"
+      },
+      {
+        "url": "https://docs.claude.com/en/docs/models/haiku-4-5/overview",
+        "title": "Claude Haiku 4.5 - Claude Platform Docs",
+        "content": "Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Haiku 4.5 is still available, you should consider migrating to Claude Haiku 5.5.\n\nSee Claude Haiku 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Haiku 4.5Legacy\n\nMigrate to Claude Haiku 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $1/ MTok\n\nOutput pricing\n:   $5/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Haiku 5.5 | 1M | 128K | From $0.10 / $0.50 | Adaptive | `medium` | Jun 2026 | [...] ## Specifications\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $1 / MTok\n\nOutput\n:   $5 / MTok\n\n5m cache write\n:   $1.25 / MTok\n\n1h cache write\n:   $2 / MTok\n\nCache read\n:   $0.10 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended",
+        "score": 0.8058924,
+        "raw_content": null,
+        "id": "907fd8-01"
+      },
+      {
+        "url": "https://platform.claude.com/docs/en/models/haiku-4-5",
+        "title": "Claude Haiku 4.5 - Claude Platform Docs",
+        "content": "Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Haiku 4.5 is still available, you should consider migrating to Claude Haiku 5.5.\n\nSee Claude Haiku 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Haiku 4.5Legacy\n\nMigrate to Claude Haiku 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $1/ MTok\n\nOutput pricing\n:   $5/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Haiku 5.5 | 1M | 128K | From $0.10 / $0.50 | Adaptive | `medium` | Jun 2026 | [...] ## Specifications\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $1 / MTok\n\nOutput\n:   $5 / MTok\n\n5m cache write\n:   $1.25 / MTok\n\n1h cache write\n:   $2 / MTok\n\nCache read\n:   $0.10 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended",
+        "score": 0.8058924,
+        "raw_content": null,
+        "id": "b93b7c-02"
+      },
+      {
+        "url": "http://platform.claude.com/docs/en/models/haiku-4-5/overview",
+        "title": "Claude Haiku 4.5 - Claude Platform Docs",
+        "content": "Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Haiku 4.5 is still available, you should consider migrating to Claude Haiku 5.5.\n\nSee Claude Haiku 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Haiku 4.5Legacy\n\nMigrate to Claude Haiku 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $1/ MTok\n\nOutput pricing\n:   $5/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Haiku 5.5 | 1M | 128K | From $0.10 / $0.50 | Adaptive | `medium` | Jun 2026 | [...] ## Specifications\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $1 / MTok\n\nOutput\n:   $5 / MTok\n\n5m cache write\n:   $1.25 / MTok\n\n1h cache write\n:   $2 / MTok\n\nCache read\n:   $0.10 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended",
+        "score": 0.8058924,
+        "raw_content": null,
+        "id": "b64af4-03"
+      },
+      {
+        "url": "https://docs.anthropic.com/docs/en/models/haiku-4-5/overview",
+        "title": "Claude Haiku 4.5 - Claude Platform Docs",
+        "content": "Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Haiku 4.5 is still available, you should consider migrating to Claude Haiku 5.5.\n\nSee Claude Haiku 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Haiku 4.5Legacy\n\nMigrate to Claude Haiku 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $1/ MTok\n\nOutput pricing\n:   $5/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Haiku 5.5 | 1M | 128K | From $0.10 / $0.50 | Adaptive | `medium` | Jun 2026 | [...] ## Specifications\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $1 / MTok\n\nOutput\n:   $5 / MTok\n\n5m cache write\n:   $1.25 / MTok\n\n1h cache write\n:   $2 / MTok\n\nCache read\n:   $0.10 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended",
+        "score": 0.8058924,
+        "raw_content": null,
+        "id": "27284a-04"
+      },
+      {
+        "url": "https://docs.anthropic.com/en/docs/models/haiku-4-5/overview",
+        "title": "Claude Haiku 4.5 - Claude Platform Docs",
+        "content": "Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Haiku 4.5 is still available, you should consider migrating to Claude Haiku 5.5.\n\nSee Claude Haiku 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Haiku 4.5Legacy\n\nMigrate to Claude Haiku 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $1/ MTok\n\nOutput pricing\n:   $5/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Haiku 5.5 | 1M | 128K | From $0.10 / $0.50 | Adaptive | `medium` | Jun 2026 | [...] ## Specifications\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $1 / MTok\n\nOutput\n:   $5 / MTok\n\n5m cache write\n:   $1.25 / MTok\n\n1h cache write\n:   $2 / MTok\n\nCache read\n:   $0.10 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended",
+        "score": 0.8058924,
+        "raw_content": null,
+        "id": "ded05e-05"
+      },
+      {
+        "url": "https://console.anthropic.com/docs/en/models/haiku-4-5/overview",
+        "title": "Claude Haiku 4.5 - Claude Platform Docs",
+        "content": "Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Haiku 4.5 is still available, you should consider migrating to Claude Haiku 5.5.\n\nSee Claude Haiku 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Haiku 4.5Legacy\n\nMigrate to Claude Haiku 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $1/ MTok\n\nOutput pricing\n:   $5/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Haiku 5.5 | 1M | 128K | From $0.10 / $0.50 | Adaptive | `medium` | Jun 2026 | [...] ## Specifications\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $1 / MTok\n\nOutput\n:   $5 / MTok\n\n5m cache write\n:   $1.25 / MTok\n\n1h cache write\n:   $2 / MTok\n\nCache read\n:   $0.10 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended",
+        "score": 0.8058924,
+        "raw_content": null,
+        "id": "2a2e5e-06"
+      },
+      {
+        "url": "https://docs.anthropic.com/en/models/haiku-4-5/overview",
+        "title": "Claude Haiku 4.5 - Claude Platform Docs",
+        "content": "Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Haiku 4.5 is still available, you should consider migrating to Claude Haiku 5.5.\n\nSee Claude Haiku 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Haiku 4.5Legacy\n\nMigrate to Claude Haiku 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $1/ MTok\n\nOutput pricing\n:   $5/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Haiku 5.5 | 1M | 128K | From $0.10 / $0.50 | Adaptive | `medium` | Jun 2026 | [...] ## Specifications\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $1 / MTok\n\nOutput\n:   $5 / MTok\n\n5m cache write\n:   $1.25 / MTok\n\n1h cache write\n:   $2 / MTok\n\nCache read\n:   $0.10 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended",
+        "score": 0.8058924,
+        "raw_content": null,
+        "id": "fbd9eb-07"
+      },
+      {
+        "url": "https://docs.anthropic.com/en/docs/models/haiku-4-5",
+        "title": "Claude Haiku 4.5 - Claude Platform Docs",
+        "content": "Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Haiku 4.5 is still available, you should consider migrating to Claude Haiku 5.5.\n\nSee Claude Haiku 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Haiku 4.5Legacy\n\nMigrate to Claude Haiku 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $1/ MTok\n\nOutput pricing\n:   $5/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Haiku 5.5 | 1M | 128K | From $0.10 / $0.50 | Adaptive | `medium` | Jun 2026 | [...] ## Specifications\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $1 / MTok\n\nOutput\n:   $5 / MTok\n\n5m cache write\n:   $1.25 / MTok\n\n1h cache write\n:   $2 / MTok\n\nCache read\n:   $0.10 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended",
+        "score": 0.8058924,
+        "raw_content": null,
+        "id": "e64ef5-08"
+      },
+      {
+        "url": "https://platform.claude.com/docs/en/models/haiku-4-5/overview",
+        "title": "Claude Haiku 4.5 - Claude Platform Docs",
+        "content": "| Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Haiku 5.5 | 1M | 128K | From $0.10 / $0.50 | Adaptive | `medium` | Jun 2026 | [...] ## Specifications\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $1 / MTok\n\nOutput\n:   $5 / MTok\n\n5m cache write\n:   $1.25 / MTok\n\n1h cache write\n:   $2 / MTok\n\nCache read\n:   $0.10 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended [...] Migrate to Claude Haiku 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $1/ MTok\n\nOutput pricing\n:   $5/ MTok\n\n## How it compares to the current lineup",
+        "score": 0.7997713,
+        "raw_content": null,
+        "id": "77e5f7-09"
+      },
+      {
+        "url": "https://platform.claude.com/docs/id/models/haiku-4-5/overview",
+        "title": "Claude Haiku 4.5 - Claude Platform Docs",
+        "content": "| Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Haiku 5.5 | 1M | 128K | From $0.10 / $0.50 | Adaptive | `medium` | Jun 2026 | [...] Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Haiku 4.5 is still available, you should consider migrating to Claude Haiku 5.5.\n\nSee Claude Haiku 5.5\n\nModel & harga\ue02aModel lama\n\n# Claude Haiku 4.5Legacy\n\nMigrate to Claude Haiku 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $1/ MTok\n\nOutput pricing\n:   $5/ MTok\n\n## Perbandingannya dengan jajaran model saat ini [...] ## Spesifikasi\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $1 / MTok\n\nOutput\n:   $5 / MTok\n\n5m cache write\n:   $1.25 / MTok\n\n1h cache write\n:   $2 / MTok\n\nCache read\n:   $0.10 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended",
+        "score": 0.7997713,
+        "raw_content": null,
+        "id": "4b570a-10"
+      },
+      {
+        "url": "https://platform.claude.com/docs/ru/models/haiku-4-5/overview",
+        "title": "Claude Haiku 4.5 - Claude Platform Docs",
+        "content": "| Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Haiku 5.5 | 1M | 128K | From $0.10 / $0.50 | Adaptive | `medium` | Jun 2026 | [...] Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Haiku 4.5 is still available, you should consider migrating to Claude Haiku 5.5.\n\nSee Claude Haiku 5.5\n\n\u041c\u043e\u0434\u0435\u043b\u0438 \u0438 \u0446\u0435\u043d\u044b\ue02a\u0423\u0441\u0442\u0430\u0440\u0435\u0432\u0448\u0438\u0435 \u043c\u043e\u0434\u0435\u043b\u0438\n\n# Claude Haiku 4.5Legacy\n\nMigrate to Claude Haiku 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $1/ MTok\n\nOutput pricing\n:   $5/ MTok\n\n## \u0421\u0440\u0430\u0432\u043d\u0435\u043d\u0438\u0435 \u0441 \u0442\u0435\u043a\u0443\u0449\u0435\u0439 \u043b\u0438\u043d\u0435\u0439\u043a\u043e\u0439 [...] ## \u0425\u0430\u0440\u0430\u043a\u0442\u0435\u0440\u0438\u0441\u0442\u0438\u043a\u0438\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $1 / MTok\n\nOutput\n:   $5 / MTok\n\n5m cache write\n:   $1.25 / MTok\n\n1h cache write\n:   $2 / MTok\n\nCache read\n:   $0.10 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended",
+        "score": 0.7997713,
+        "raw_content": null,
+        "id": "30ec90-11"
+      },
+      {
+        "url": "https://platform.claude.com/docs/it/models/haiku-4-5/overview",
+        "title": "Claude Haiku 4.5 - Claude Platform Docs",
+        "content": "| Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Haiku 5.5 | 1M | 128K | From $0.10 / $0.50 | Adaptive | `medium` | Jun 2026 | [...] Migrate to Claude Haiku 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $1/ MTok\n\nOutput pricing\n:   $5/ MTok\n\n## Come si confronta con la gamma attuale [...] ## Specifiche\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $1 / MTok\n\nOutput\n:   $5 / MTok\n\n5m cache write\n:   $1.25 / MTok\n\n1h cache write\n:   $2 / MTok\n\nCache read\n:   $0.10 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended",
+        "score": 0.7997713,
+        "raw_content": null,
+        "id": "94b52c-12"
+      },
+      {
+        "url": "https://platform.claude.com/docs/zh-CN/models/haiku-4-5/overview",
+        "title": "Claude Haiku 4.5 - Claude Platform Docs",
+        "content": "| Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Haiku 5.5 | 1M | 128K | From $0.10 / $0.50 | Adaptive | `medium` | Jun 2026 | [...] Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Haiku 4.5 is still available, you should consider migrating to Claude Haiku 5.5.\n\nSee Claude Haiku 5.5\n\n\u6a21\u578b\u4e0e\u5b9a\u4ef7\ue02a\u65e7\u7248\u6a21\u578b\n\n# Claude Haiku 4.5Legacy\n\nMigrate to Claude Haiku 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $1/ MTok\n\nOutput pricing\n:   $5/ MTok\n\n## \u4e0e\u5f53\u524d\u6a21\u578b\u9635\u5bb9\u7684\u6bd4\u8f83 [...] ## \u89c4\u683c\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $1 / MTok\n\nOutput\n:   $5 / MTok\n\n5m cache write\n:   $1.25 / MTok\n\n1h cache write\n:   $2 / MTok\n\nCache read\n:   $0.10 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended",
+        "score": 0.7997713,
+        "raw_content": null,
+        "id": "468272-13"
+      },
+      {
+        "url": "https://platform.claude.com/docs/en/about-claude/models/overview.md",
+        "title": "App unavailable in region | Claude by Anthropic",
+        "content": "Model page | Claude Fable 5.1 | Claude Opus 5.5 | Claude Sonnet 5.5 | Claude Haiku 5.5 | | Comparative latency | Slower | Moderate | Fast | Fastest | | Pricing | $10 / input MTok, $50 / output MTok | $4 / input MTok, $20 / output MTok | $2 / input MTok, $10 / output MTok | From $0.10 / input MTok, From $0.50 / output MTok | | Claude API ID | `claude-fable-5-1` | `claude-opus-5-5` | `claude-sonnet-5-5` | `claude-haiku-5-5` | | Thinking | Adaptive (always on) | Adaptive (always on) | Adaptive | [...] Claude Sonnet 5.5, Claude Sonnet 5, Claude Haiku 5.5, Claude Opus 4.8, Claude Opus 4.7, Claude Opus 4.6, and Claude Sonnet 4.6 support up to 300k output tokens with the output-300k-2026-03-24 beta header. \\ \\\\Reliable knowledge cutoff:\\\\ The date through which the model\u2019s knowledge is most extensive and reliable. Training data cutoff (under Additional details) is the broader range of data used. See Anthropic\u2019s Transparency Hub for details. \\ \\\\Retirement:\\\\ Anthropic\u2019s commitment for the [...] on) | Adaptive | Adaptive | | Default effort | `high` | `medium` | `high` | `medium` | | Context window | 1M tokens | 1M tokens | 1M tokens | 1M tokens | | Max output | 128K tokens | 128K tokens | 128K tokens | 128K tokens | | Reliable knowledge cutoff | Jun 2026 | Jun 2026 | Jun 2026 | Jun 2026 | | Training data cutoff | Jun 2026 | Jun 2026 | Jun 2026 | Jun 2026 | | Retirement | Not sooner than September 1, 2027 | Not sooner than September 22, 2027 | Not sooner than September 28, 2027 | Not",
+        "score": 0.61363083,
+        "raw_content": null,
+        "id": "397e86-14"
+      },
+      {
+        "url": "https://platform.claude.com/docs/en/models/haiku-5-5",
+        "title": "Claude Haiku 5.5 - Claude Platform Docs",
+        "content": "1h cache write\n:   $0.20 / MTok for prompts up to 100,000 tokens$1 / MTok for prompts over 100,000 tokens\n\nCache read\n:   $0.01 / MTok for prompts up to 100,000 tokens$0.05 / MTok for prompts over 100,000 tokens\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive\n\nDefault effort\n:   `medium`\n\nComparative latency\n:   Fastest [...] | Model | Context | Max output | Price / MTok | Latency | Thinking | Default effort | Knowledge cutoff |\n ---  ---  ---  --- |\n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Slower | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Moderate | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Fast | Adaptive | `high` | Jun 2026 | [...] Max output\n:   128Ktokens\n\nInput pricing\n:   From $0.10/ MTok\n\nOutput pricing\n:   From $0.50/ MTok\n\n## Overview",
+        "score": 0.5515985,
+        "raw_content": null,
+        "id": "ac4ea4-15"
+      },
+      {
+        "url": "https://platform.claude.com/docs/en/models/haiku-5-5/overview",
+        "title": "Claude Haiku 5.5 - Claude Platform Docs",
+        "content": "1h cache write\n:   $0.20 / MTok for prompts up to 100,000 tokens$1 / MTok for prompts over 100,000 tokens\n\nCache read\n:   $0.01 / MTok for prompts up to 100,000 tokens$0.05 / MTok for prompts over 100,000 tokens\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive\n\nDefault effort\n:   `medium`\n\nComparative latency\n:   Fastest [...] | Model | Context | Max output | Price / MTok | Latency | Thinking | Default effort | Knowledge cutoff |\n ---  ---  ---  --- |\n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Slower | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Moderate | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Fast | Adaptive | `high` | Jun 2026 | [...] Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\nModels & pricing\ue02aModels\n\n# Claude Haiku 5.5Latest\n\nFor high-volume, latency-sensitive tasks such as classification, extraction, and routing\n\nTry in playground\ue015\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   From $0.10/ MTok\n\nOutput pricing\n:   From $0.50/ MTok\n\n## Overview",
+        "score": 0.5515985,
+        "raw_content": null,
+        "id": "833903-16"
+      },
+      {
+        "url": "https://docs.claude.com/en/docs/models/haiku-5-5/overview",
+        "title": "Claude Haiku 5.5 - Claude Platform Docs",
+        "content": "1h cache write\n:   $0.20 / MTok for prompts up to 100,000 tokens$1 / MTok for prompts over 100,000 tokens\n\nCache read\n:   $0.01 / MTok for prompts up to 100,000 tokens$0.05 / MTok for prompts over 100,000 tokens\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive\n\nDefault effort\n:   `medium`\n\nComparative latency\n:   Fastest [...] | Model | Context | Max output | Price / MTok | Latency | Thinking | Default effort | Knowledge cutoff |\n ---  ---  ---  --- |\n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Slower | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Moderate | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Fast | Adaptive | `high` | Jun 2026 | [...] Max output\n:   128Ktokens\n\nInput pricing\n:   From $0.10/ MTok\n\nOutput pricing\n:   From $0.50/ MTok\n\n## Overview",
+        "score": 0.5515985,
+        "raw_content": null,
+        "id": "681f00-17"
+      },
+      {
+        "url": "https://docs.anthropic.com/en/models/haiku-5-5/overview",
+        "title": "Claude Haiku 5.5 - Claude Platform Docs",
+        "content": "1h cache write\n:   $0.20 / MTok for prompts up to 100,000 tokens$1 / MTok for prompts over 100,000 tokens\n\nCache read\n:   $0.01 / MTok for prompts up to 100,000 tokens$0.05 / MTok for prompts over 100,000 tokens\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive\n\nDefault effort\n:   `medium`\n\nComparative latency\n:   Fastest [...] | Model | Context | Max output | Price / MTok | Latency | Thinking | Default effort | Knowledge cutoff |\n ---  ---  ---  --- |\n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Slower | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Moderate | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Fast | Adaptive | `high` | Jun 2026 | [...] Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\nModels & pricing\ue02aModels\n\n# Claude Haiku 5.5Latest\n\nFor high-volume, latency-sensitive tasks such as classification, extraction, and routing\n\nTry in playground\ue015\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   From $0.10/ MTok\n\nOutput pricing\n:   From $0.50/ MTok\n\n## Overview",
+        "score": 0.5515985,
+        "raw_content": null,
+        "id": "3f358b-18"
+      },
+      {
+        "url": "https://docs.anthropic.com/en/docs/models/haiku-5-5/overview",
+        "title": "Claude Haiku 5.5 - Claude Platform Docs",
+        "content": "1h cache write\n:   $0.20 / MTok for prompts up to 100,000 tokens$1 / MTok for prompts over 100,000 tokens\n\nCache read\n:   $0.01 / MTok for prompts up to 100,000 tokens$0.05 / MTok for prompts over 100,000 tokens\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive\n\nDefault effort\n:   `medium`\n\nComparative latency\n:   Fastest [...] | Model | Context | Max output | Price / MTok | Latency | Thinking | Default effort | Knowledge cutoff |\n ---  ---  ---  --- |\n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Slower | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Moderate | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Fast | Adaptive | `high` | Jun 2026 | [...] Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\nModels & pricing\ue02aModels\n\n# Claude Haiku 5.5Latest\n\nFor high-volume, latency-sensitive tasks such as classification, extraction, and routing\n\nTry in playground\ue015\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   From $0.10/ MTok\n\nOutput pricing\n:   From $0.50/ MTok\n\n## Overview",
+        "score": 0.5515985,
+        "raw_content": null,
+        "id": "cca566-19"
+      }
+    ],
+    "response_time": 2.75,
+    "request_id": "6351ed26-d2e8-4852-a873-7a424307d8c9"
+  }
+}

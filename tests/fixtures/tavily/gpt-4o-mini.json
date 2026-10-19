@@ -1,0 +1,188 @@
+{
+  "recorded_at": "2026-10-19T08:02:46.621776+00:00",
+  "status": 200,
+  "request": {
+    "query": "gpt-4o-mini (gpt 4o mini) API pricing: input and output price per 1M tokens (MTok); deprecation, retirement or shutdown date",
+    "search_depth": "basic",
+    "max_results": 20,
+    "include_answer": true,
+    "include_domains": [
+      "openai.com",
+      "platform.openai.com",
+      "developers.openai.com"
+    ],
+    "exclude_domains": [
+      "community.openai.com"
+    ]
+  },
+  "response": {
+    "query": "gpt-4o-mini (gpt 4o mini) API pricing: input and output price per 1M tokens (MTok); deprecation, retirement or shutdown date",
+    "follow_up_questions": null,
+    "answer": "The GPT-4o Mini API pricing per 1M tokens is $0.15 for input and $0.60 for output. The sources do not provide information on the deprecation, retirement, or shutdown date for the GPT-4o Mini API. The sources also do not mention any specific date or timeframe for the discontinuation of the GPT-4o Mini Realtime model.",
+    "images": [],
+    "results": [
+      {
+        "url": "https://platform.openai.com/docs/models/gpt-4o-mini-transcribe.md",
+        "title": "GPT-4o mini Transcribe",
+        "content": "| Metric | Price | Unit |  ---:  | Input | $1.25 | 1M tokens | | Output | $5 | 1M tokens | ## Endpoints | Endpoint | Route | Support |  ---  | Live | `v1/live/sessions` | Not supported | | Chat Completions | `v1/chat/completions` | Not supported | | Responses | `v1/responses` | Not supported | | Realtime | `v1/realtime` | Supported | | Realtime translation | `v1/realtime/translations` | Not supported | | Realtime transcription | `v1/realtime/transcription\\_sessions` | Not supported | | [...] | | Translation | `v1/audio/translations` | Not supported | | Moderation | `v1/moderations` | Not supported | | Completions (legacy) | `v1/completions` | Not supported | ## Quick comparison | Model | Input | Output |  ---:  | GPT-4o Mini Transcribe | $1.25 | $5 | | GPT-4o Transcribe | $2.5 | $10 | ## Snapshots Snapshots let you lock in a specific version of the model so that performance and behavior remain consistent. Below is a list of all available snapshots and aliases for GPT-4o Mini [...] for more accurate transcripts. ## Model details - Default snapshot: `gpt-4o-mini-transcribe-2025-12-15` - Input modalities: audio, text - Output modalities: text - 16,000 context window - 2,000 max output tokens - Jun 01, 2024 knowledge cutoff ## Pricing Pricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page. ### Audio tokens | Metric | Price |",
+        "score": 0.8325776,
+        "raw_content": null,
+        "id": "658371-00"
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/models/gpt-4o-mini",
+        "title": "GPT-4o Mini Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\n\u2219\n\nBatch API price\n\nInput\n\n$0.15\n\nCached input\n\n$0.075\n\nOutput\n\n$0.60\n\nQuick comparison\n\nInput\n\nCached input\n\nOutput\n\nGPT-4o\n\n$2.50\n\no3-mini\n\n$1.10\n\nGPT-4o Mini\n\n$0.15\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nInput only\n\nAudio\n\nNot supported\n\nVideo [...] Generate tags\n\nGPT-4o Mini (\u201co\u201d for \u201comni\u201d) is a fast, affordable small model for focused tasks. It accepts both text and image inputs, and produces text outputs (including Structured Outputs). It is ideal for fine-tuning, and model outputs from a larger model like GPT-4o can be distilled to GPT-4o-Mini to produce similar results at lower cost and latency.\n\n128,000 context window\n\n16,384 max output tokens\n\nOct 01, 2023 knowledge cutoff\n\nPricing [...] Default\n\nFast, affordable small model for focused tasks\n\nFast, affordable small model for focused tasks\n\nIntelligence\n\nAverage\n\nSpeed\n\nFast\n\nPrice\n\n$0.15\u2022$0.6\n\nInput\u2022Output\n\nInput\n\nText, Image\n\nOutput\n\nText\n\nPrompt example\n\nIntent Classification\n\nPrompt example\n\nExtract search keywords\n\nPrompt example\n\nTranslate text\n\nPrompt example\n\nGenerate tags",
+        "score": 0.8315952,
+        "raw_content": null,
+        "id": "899a41-01"
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/models/gpt-4o-mini?v=20260928",
+        "title": "GPT-4o Mini Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\n\u2219\n\nBatch API price\n\nInput\n\n$0.15\n\nCached input\n\n$0.075\n\nOutput\n\n$0.60\n\nQuick comparison\n\nInput\n\nCached input\n\nOutput\n\nGPT-4o\n\n$2.50\n\no3-mini\n\n$1.10\n\nGPT-4o Mini\n\n$0.15\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nInput only\n\nAudio\n\nNot supported\n\nVideo [...] Generate tags\n\nGPT-4o Mini (\u201co\u201d for \u201comni\u201d) is a fast, affordable small model for focused tasks. It accepts both text and image inputs, and produces text outputs (including Structured Outputs). It is ideal for fine-tuning, and model outputs from a larger model like GPT-4o can be distilled to GPT-4o-Mini to produce similar results at lower cost and latency.\n\n128,000 context window\n\n16,384 max output tokens\n\nOct 01, 2023 knowledge cutoff\n\nPricing [...] Default\n\nFast, affordable small model for focused tasks\n\nFast, affordable small model for focused tasks\n\nIntelligence\n\nAverage\n\nSpeed\n\nFast\n\nPrice\n\n$0.15\u2022$0.6\n\nInput\u2022Output\n\nInput\n\nText, Image\n\nOutput\n\nText\n\nPrompt example\n\nIntent Classification\n\nPrompt example\n\nExtract search keywords\n\nPrompt example\n\nTranslate text\n\nPrompt example\n\nGenerate tags",
+        "score": 0.8315952,
+        "raw_content": null,
+        "id": "678558-02"
+      },
+      {
+        "url": "https://developers.openai.com/docs/models/gpt-4o-mini",
+        "title": "GPT-4o Mini Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\n\u2219\n\nBatch API price\n\nInput\n\n$0.15\n\nCached input\n\n$0.075\n\nOutput\n\n$0.60\n\nQuick comparison\n\nInput\n\nCached input\n\nOutput\n\nGPT-4o\n\n$2.50\n\no3-mini\n\n$1.10\n\nGPT-4o Mini\n\n$0.15\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nInput only\n\nAudio\n\nNot supported\n\nVideo [...] Generate tags\n\nGPT-4o Mini (\u201co\u201d for \u201comni\u201d) is a fast, affordable small model for focused tasks. It accepts both text and image inputs, and produces text outputs (including Structured Outputs). It is ideal for fine-tuning, and model outputs from a larger model like GPT-4o can be distilled to GPT-4o-Mini to produce similar results at lower cost and latency.\n\n128,000 context window\n\n16,384 max output tokens\n\nOct 01, 2023 knowledge cutoff\n\nPricing [...] Default\n\nFast, affordable small model for focused tasks\n\nFast, affordable small model for focused tasks\n\nIntelligence\n\nAverage\n\nSpeed\n\nFast\n\nPrice\n\n$0.15\u2022$0.6\n\nInput\u2022Output\n\nInput\n\nText, Image\n\nOutput\n\nText\n\nPrompt example\n\nIntent Classification\n\nPrompt example\n\nExtract search keywords\n\nPrompt example\n\nTranslate text\n\nPrompt example\n\nGenerate tags",
+        "score": 0.8315952,
+        "raw_content": null,
+        "id": "12190c-03"
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/models/gpt-4o-mini-realtime-preview",
+        "title": "GPT-4o Mini Realtime Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\nInput\n\n$0.60\n\nCached input\n\n$0.30\n\nOutput\n\n$2.40\n\nAudio tokens\n\nPer 1M tokens\n\nInput\n\n$10.00\n\nCached input\n\n$0.30\n\nOutput\n\n$20.00\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nNot supported\n\nAudio\n\nInput and output\n\nVideo\n\nNot supported\n\nEndpoints\n\nLive [...] Default\n\nSmaller realtime model for text and audio inputs and outputs\n\nSmaller realtime model for text and audio inputs and outputs\n\nPerformance\n\nAverage\n\nSpeed\n\nVery fast\n\nPrice\n\n$0.6\u2022$2.4\n\nInput\u2022Output\n\nInput\n\nText, Audio\n\nOutput\n\nText, Audio\n\nThis is a preview release of the GPT-4o-Mini Realtime model, capable of responding to audio and text inputs in realtime over WebRTC or a WebSocket interface.\n\n16,000 context window\n\n4,096 max output tokens\n\nOct 01, 2023 knowledge cutoff\n\nPricing [...] Not supported\n\nPredicted outputs\n\nNot supported\n\nSnapshots let you lock in a specific version of the model so that performance and behavior remain consistent. Below is a list of all available snapshots and aliases for GPT-4o Mini Realtime.\n\ngpt-4o-mini-realtime-preview\n\nDeprecated\n\ngpt-4o-mini-realtime-preview-2024-12-17\n\nRate limits",
+        "score": 0.8312667,
+        "raw_content": null,
+        "id": "03b900-04"
+      },
+      {
+        "url": "https://platform.openai.com/docs/models/gpt-4o-mini-realtime-preview",
+        "title": "GPT-4o Mini Realtime Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\nInput\n\n$0.60\n\nCached input\n\n$0.30\n\nOutput\n\n$2.40\n\nAudio tokens\n\nPer 1M tokens\n\nInput\n\n$10.00\n\nCached input\n\n$0.30\n\nOutput\n\n$20.00\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nNot supported\n\nAudio\n\nInput and output\n\nVideo\n\nNot supported\n\nEndpoints\n\nLive [...] Deprecated\n\nDefault\n\nSmaller realtime model for text and audio inputs and outputs\n\nSmaller realtime model for text and audio inputs and outputs\n\nPerformance\n\nAverage\n\nSpeed\n\nVery fast\n\nPrice\n\n$0.6\u2022$2.4\n\nInput\u2022Output\n\nInput\n\nText, Audio\n\nOutput\n\nText, Audio\n\nThis is a preview release of the GPT-4o-Mini Realtime model, capable of responding to audio and text inputs in realtime over WebRTC or a WebSocket interface.\n\n16,000 context window\n\n4,096 max output tokens\n\nOct 01, 2023 knowledge cutoff [...] Predicted outputs\n\nNot supported\n\nSnapshots let you lock in a specific version of the model so that performance and behavior remain consistent. Below is a list of all available snapshots and aliases for GPT-4o Mini Realtime.\n\ngpt-4o-mini-realtime-preview\n\nDeprecated\n\ngpt-4o-mini-realtime-preview-2024-12-17\n\nRate limits",
+        "score": 0.8312667,
+        "raw_content": null,
+        "id": "953e9b-05"
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/models/gpt-4o-mini-audio-preview",
+        "title": "GPT-4o Mini Audio Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\nInput\n\n$0.15\n\nOutput\n\n$0.60\n\nAudio tokens\n\nPer 1M tokens\n\nInput\n\n$10.00\n\nOutput\n\n$20.00\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nNot supported\n\nAudio\n\nInput and output\n\nVideo\n\nNot supported\n\nEndpoints\n\nLive\n\nv1/live/sessions\n\nChat Completions [...] GPT-4o Mini Audio\n\nDeprecated\n\nDefault\n\nSmaller model capable of audio inputs and outputs\n\nSmaller model capable of audio inputs and outputs\n\nIntelligence\n\nAverage\n\nSpeed\n\nFast\n\nPrice\n\n$0.15\u2022$0.6\n\nInput\u2022Output\n\nInput\n\nText, Audio\n\nOutput\n\nText, Audio\n\nThis is a preview release of the smaller GPT-4o Audio Mini model. It's designed to input audio or create audio outputs via the REST API.\n\n128,000 context window\n\n16,384 max output tokens\n\nOct 01, 2023 knowledge cutoff\n\nPricing [...] Rate limits\n\nRate limits ensure fair and reliable access to the API by placing specific caps on requests, tokens, audio duration, or other usage within a given time period. Your usage tier determines how high these limits are set and automatically increases as you send more requests and spend more on the API.",
+        "score": 0.8286204,
+        "raw_content": null,
+        "id": "e77249-06"
+      },
+      {
+        "url": "https://platform.openai.com/docs/models/gpt-4o-mini-transcribe",
+        "title": "GPT-4o Mini Transcribe Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nAudio tokens\n\nPer 1M tokens\n\nInput\n\n$1.25\n\nOutput\n\n$5.00\n\nQuick comparison\n\nInput\n\nOutput\n\nGPT-4o Transcribe\n\n$2.50\n\nGPT-4o Mini Transcribe\n\n$1.25\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nNot supported\n\nAudio\n\nInput only\n\nVideo\n\nNot supported\n\nEndpoints\n\nLive\n\nv1/live/sessions [...] ### Spaces\n\n Events\n Developer Forum\n Discord\n Reddit\n X\n\nAPI Dashboard\n\nTry ChatGPT\n\nModels\n\ngpt-4o-mini-transcribe\n\nGPT-4o Mini Transcribe\n\nDefault\n\nSpeech-to-text model powered by GPT-4o Mini\n\nSpeech-to-text model powered by GPT-4o Mini\n\nPerformance\n\nHigh\n\nSpeed\n\nFast\n\nPrice\n\n$1.25\u2022$5\n\nInput\u2022Output\n\nInput\n\nAudio, Text\n\nOutput\n\nText [...] Output\n\nText\n\nGPT-4o Mini Transcribe is a speech-to-text model that uses GPT-4o Mini to transcribe audio. It offers improvements to word error rate and better language recognition and accuracy compared to original Whisper models. Use it for more accurate transcripts.\n\n16,000 context window\n\n2,000 max output tokens\n\nJun 01, 2024 knowledge cutoff\n\nPricing",
+        "score": 0.8259413,
+        "raw_content": null,
+        "id": "5c1dba-07"
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/models/gpt-4o-mini-tts?_cb=190324",
+        "title": "GPT-4o Mini TTS Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\nInput\n\n$0.60\n\nQuick comparison\n\nInput\n\nGPT-4o Realtime\n\n$5.00\n\nGPT-4o Mini TTS\n\n$0.60\n\nGPT-4o Mini Realtime\n\n$0.60\n\nAudio tokens\n\nPer 1M tokens\n\nOutput\n\n$12.00\n\nModalities\n\nText\n\nInput only\n\nImage\n\nNot supported\n\nAudio\n\nOutput only\n\nVideo\n\nNot supported [...] Deprecated\n\nDefault\n\nText-to-speech model powered by GPT-4o Mini\n\nText-to-speech model powered by GPT-4o Mini\n\nPerformance\n\nHigher\n\nSpeed\n\nFast\n\nPrice\n\n$0.6\u2022$12\n\nInput\u2022Output\n\nInput\n\nText\n\nOutput\n\nAudio\n\nGPT-4o Mini TTS is a text-to-speech model built on GPT-4o Mini, a fast and powerful language model. Use it to convert text to natural sounding spoken text. The maximum number of input tokens is 2000.\n\nPricing [...] Snapshots let you lock in a specific version of the model so that performance and behavior remain consistent. Below is a list of all available snapshots and aliases for GPT-4o Mini TTS.\n\ngpt-4o-mini-tts\n\ngpt-4o-mini-tts-2025-03-20\n\nDeprecated\n\ngpt-4o-mini-tts-2025-12-15\n\nDeprecated\n\nRate limits",
+        "score": 0.8170061,
+        "raw_content": null,
+        "id": "87fed1-08"
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/models/gpt-4o-mini-tts",
+        "title": "GPT-4o Mini TTS Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\nInput\n\n$0.60\n\nQuick comparison\n\nInput\n\nGPT-4o Realtime\n\n$5.00\n\nGPT-4o Mini TTS\n\n$0.60\n\nGPT-4o Mini Realtime\n\n$0.60\n\nAudio tokens\n\nPer 1M tokens\n\nOutput\n\n$12.00\n\nModalities\n\nText\n\nInput only\n\nImage\n\nNot supported\n\nAudio\n\nOutput only\n\nVideo\n\nNot supported [...] Deprecated\n\nDefault\n\nText-to-speech model powered by GPT-4o Mini\n\nText-to-speech model powered by GPT-4o Mini\n\nPerformance\n\nHigher\n\nSpeed\n\nFast\n\nPrice\n\n$0.6\u2022$12\n\nInput\u2022Output\n\nInput\n\nText\n\nOutput\n\nAudio\n\nGPT-4o Mini TTS is a text-to-speech model built on GPT-4o Mini, a fast and powerful language model. Use it to convert text to natural sounding spoken text. The maximum number of input tokens is 2000.\n\nPricing [...] Snapshots let you lock in a specific version of the model so that performance and behavior remain consistent. Below is a list of all available snapshots and aliases for GPT-4o Mini TTS.\n\ngpt-4o-mini-tts\n\ngpt-4o-mini-tts-2025-03-20\n\nDeprecated\n\ngpt-4o-mini-tts-2025-12-15\n\nDeprecated\n\nRate limits",
+        "score": 0.8170061,
+        "raw_content": null,
+        "id": "c5e635-09"
+      },
+      {
+        "url": "https://platform.openai.com/docs/models/gpt-4o-mini-tts?ref=curatifyai",
+        "title": "GPT-4o Mini TTS Model | OpenAI API",
+        "content": "Pricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\nInput\n\n$0.60\n\nQuick comparison\n\nInput\n\nGPT-4o Realtime\n\n$5.00\n\nGPT-4o Mini TTS\n\n$0.60\n\nGPT-4o Mini Realtime\n\n$0.60\n\nAudio tokens\n\nPer 1M tokens\n\nOutput\n\n$12.00\n\nModalities\n\nText\n\nInput only\n\nImage\n\nNot supported\n\nAudio\n\nOutput only\n\nVideo\n\nNot supported [...] Deprecated\n\nDefault\n\nText-to-speech model powered by GPT-4o Mini\n\nText-to-speech model powered by GPT-4o Mini\n\nPerformance\n\nHigher\n\nSpeed\n\nFast\n\nPrice\n\n$0.6\u2022$12\n\nInput\u2022Output\n\nInput\n\nText\n\nOutput\n\nAudio\n\nGPT-4o Mini TTS is a text-to-speech model built on GPT-4o Mini, a fast and powerful language model. Use it to convert text to natural sounding spoken text. The maximum number of input tokens is 2000.\n\nPricing [...] Snapshots let you lock in a specific version of the model so that performance and behavior remain consistent. Below is a list of all available snapshots and aliases for GPT-4o Mini TTS.\n\ngpt-4o-mini-tts\n\ngpt-4o-mini-tts-2025-03-20\n\nDeprecated\n\ngpt-4o-mini-tts-2025-12-15\n\nDeprecated\n\nRate limits",
+        "score": 0.8170061,
+        "raw_content": null,
+        "id": "3aa840-10"
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/models/gpt-4o-mini-transcribe",
+        "title": "GPT-4o Mini Transcribe Model | OpenAI API",
+        "content": "Jun 01, 2024 knowledge cutoff\n\nPricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nAudio tokens\n\nPer 1M tokens\n\nInput\n\n$1.25\n\nOutput\n\n$5.00\n\nQuick comparison\n\nInput\n\nOutput\n\nGPT-4o Transcribe\n\n$2.50\n\nGPT-4o Mini Transcribe\n\n$1.25\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nNot supported\n\nAudio\n\nInput only\n\nVideo\n\nNot supported [...] Default\n\nSpeech-to-text model powered by GPT-4o Mini\n\nSpeech-to-text model powered by GPT-4o Mini\n\nPerformance\n\nHigh\n\nSpeed\n\nFast\n\nPrice\n\n$1.25\u2022$5\n\nInput\u2022Output\n\nInput\n\nAudio, Text\n\nOutput\n\nText\n\nGPT-4o Mini Transcribe is a speech-to-text model that uses GPT-4o Mini to transcribe audio. It offers improvements to word error rate and better language recognition and accuracy compared to original Whisper models. Use it for more accurate transcripts.\n\n16,000 context window\n\n2,000 max output tokens [...] Rate limits\n\nRate limits ensure fair and reliable access to the API by placing specific caps on requests, tokens, audio duration, or other usage within a given time period. Your usage tier determines how high these limits are set and automatically increases as you send more requests and spend more on the API.\n\n| Tier | RPM | TPM |\n --- \n| Free | Not supported |\n| Build | 2,000 | 150,000 |\n| Launch | 10,000 | 2,000,000 |\n| Grow | 10,000 | 8,000,000 |\n\n## Docs agent\n\nLoading docs agent...",
+        "score": 0.8025714,
+        "raw_content": null,
+        "id": "fc5bd4-11"
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/models/gpt-4o-mini-search-preview",
+        "title": "GPT-4o Mini Search Preview Model | OpenAI API",
+        "content": "Oct 01, 2023 knowledge cutoff\n\nPricing\n\nPricing is based on the number of tokens used, or other metrics based on the model type. For tool-specific models, like search and computer use, there\u2019s a fee per tool call. See details in the pricing page.\n\nText tokens\n\nPer 1M tokens\n\nInput\n\n$0.15\n\nOutput\n\n$0.60\n\nQuick comparison\n\nInput\n\nOutput\n\nGPT-4o\n\n$2.50\n\nGPT-4o Mini Search Preview\n\n$0.15\n\nGPT-4o Mini\n\n$0.15\n\nModalities\n\nText\n\nInput and output\n\nImage\n\nNot supported\n\nAudio\n\nNot supported\n\nVideo [...] Default\n\nFast, affordable small model for web search\n\nFast, affordable small model for web search\n\nPerformance\n\nAverage\n\nSpeed\n\nFast\n\nPrice\n\n$0.15\u2022$0.6\n\nInput\u2022Output\n\nInput\n\nText\n\nOutput\n\nText\n\nGPT-4o Mini Search Preview is a specialized model trained to understand and execute web search queries with the Chat Completions API. In addition to token fees, web search queries have a fee per tool call. Learn more in the pricing page.\n\n128,000 context window\n\n16,384 max output tokens [...] Fine-tuning\n\nNot supported\n\nPredicted outputs\n\nNot supported\n\nSnapshots let you lock in a specific version of the model so that performance and behavior remain consistent. Below is a list of all available snapshots and aliases for GPT-4o Mini Search Preview.\n\ngpt-4o-mini-search-preview\n\nDeprecated\n\ngpt-4o-mini-search-preview-2025-03-11\n\nRate limits",
+        "score": 0.776708,
+        "raw_content": null,
+        "id": "da0360-12"
+      },
+      {
+        "url": "https://openai.com/ca-ES/index/gpt-4o-mini-advancing-cost-efficient-intelligence",
+        "title": "GPT-4o mini: advancing cost-efficient intelligence | OpenAI",
+        "content": "Title: GPT-4o mini: advancing cost-efficient intelligence | OpenAI\n# GPT\u20114o mini: advancing cost-efficient intelligence. Introducing our most cost-efficient small model. Today, we're announcing GPT\u20114o mini, our most cost-efficient small model. We expect GPT\u20114o mini will significantly expand the range of applications built with AI by making intelligence much more affordable. GPT\u20114o mini scores 82% on MMLU and currently outperforms GPT\u201141 on chat preferences in LMSYS leaderboard\u2060(s'obre en una finestra nova). It is priced at 15 cents per million input tokens and 60 cents per million output tokens, an order of magnitude more affordable than previous frontier models and more than 60% cheaper than GPT\u20113.5 Turbo. Today, GPT\u20114o mini supports text and vision in the API, with support for text, image, video and audio inputs and outputs coming in the future. ## A small model with superior textual intelligence and multimodal reasoning. GPT\u20114o mini surpasses GPT\u20113.5 Turbo and other small models on academic benchmarks across both textual intelligence and multimodal reasoning, and supports the same range of languages as GPT\u20114o. Reasoning tasks:GPT\u20114o mini is better than other small models at reasoning tasks involving both text and vision, scoring 82.0% on MMLU, a textual intelligence and reasoning benchmark, as compared to 77.9% for Gemini Flash and 73.8% for Claude Haiku. On MGSM, measuring math reasoning, GPT\u20114o mini scored 87.0%, compared to 75.5% for Gemini Flash and 71.7% for Claude Haiku. GPT\u20114o mini scored 87.2% on HumanEval, which measures coding performance, compared to 71.5% for Gemini Flash and 75.9% for Claude Haiku. Multimodal reasoning: GPT\u20114o mini also shows strong performance on MMMU, a multimodal reasoning eval, scoring 59.4% compared to 56.1% for Gemini Flash and 50.2% for Claude Haiku. ### GPT-4o mini. ### GPT-4o. We partnered with companies like Ramp\u2060(s'obre en una finestra nova) and Superhuman\u2060(s'obre en una finestra nova) who found GPT\u20114o mini to perform significantly better than GPT\u20113.5 Turbo for tasks such as extracting structured data from receipt files or generating high quality email responses when provided with thread history. GPT\u20114o mini has the same safety mitigations built-in as GPT\u20114o\u2060, which we carefully assessed using both automated and human evaluations according to our Preparedness Framework\u2060 and in line with our voluntary commitments\u2060.",
+        "score": 0.7760977,
+        "raw_content": null,
+        "id": "a83ac5-13"
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/deprecations",
+        "title": "Deprecations | OpenAI API",
+        "content": "| Shutdown date | Legacy model | Legacy model price | Recommended replacement |\n ---  --- |\n| at earliest 2024-06-13 | `gpt-4-0314` | $30.00 / 1M input tokens + $60.00 / 1M output tokens | `gpt-4o` | [...] | Shutdown date | Deprecated model | Deprecated model price | Recommended replacement |\n ---  --- |\n| 2025-06-06 | `gpt-4-32k` | $60.00 / 1M input tokens + $120 / 1M output tokens | `gpt-4o` |\n| 2025-06-06 | `gpt-4-32k-0613` | $60.00 / 1M input tokens + $120 / 1M output tokens | `gpt-4o` |\n| 2025-06-06 | `gpt-4-32k-0314` | $60.00 / 1M input tokens + $120 / 1M output tokens | `gpt-4o` |\n| 2024-12-06 | `gpt-4-vision-preview` | $10.00 / 1M input tokens + $30 / 1M output tokens | `gpt-4o` | [...] | 2024-12-06 | `gpt-4-1106-vision-preview` | $10.00 / 1M input tokens + $30 / 1M output tokens | `gpt-4o` |",
+        "score": 0.7598145,
+        "raw_content": null,
+        "id": "eb6fd4-14"
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/deprecations#gpt-4o-mini-tts",
+        "title": "Deprecations | OpenAI API",
+        "content": "| Shutdown date | Legacy model | Legacy model price | Recommended replacement |\n ---  --- |\n| at earliest 2024-06-13 | `gpt-4-0314` | $30.00 / 1M input tokens + $60.00 / 1M output tokens | `gpt-4o` | [...] | Shutdown date | Deprecated model | Deprecated model price | Recommended replacement |\n ---  --- |\n| 2025-06-06 | `gpt-4-32k` | $60.00 / 1M input tokens + $120 / 1M output tokens | `gpt-4o` |\n| 2025-06-06 | `gpt-4-32k-0613` | $60.00 / 1M input tokens + $120 / 1M output tokens | `gpt-4o` |\n| 2025-06-06 | `gpt-4-32k-0314` | $60.00 / 1M input tokens + $120 / 1M output tokens | `gpt-4o` |\n| 2024-12-06 | `gpt-4-vision-preview` | $10.00 / 1M input tokens + $30 / 1M output tokens | `gpt-4o` | [...] | 2024-12-06 | `gpt-4-1106-vision-preview` | $10.00 / 1M input tokens + $30 / 1M output tokens | `gpt-4o` |",
+        "score": 0.7598145,
+        "raw_content": null,
+        "id": "1a46a5-15"
+      },
+      {
+        "url": "https://developers.openai.com/api/docs/pricing",
+        "title": "Pricing | OpenAI API",
+        "content": "Specialized models\n\nPrices per 1M tokens.\n\nStandard\n\n| Category | Model | Input | Cached input | Output |\n ---  --- \n| ChatGPT | chat-latest | $5.00 | $0.50 | $30.00 |\n| Codex | gpt-5.3-codex | $1.75 | $0.175 | $14.00 |\n\nRegional processing (data residency) endpoints are charged a 10% uplift for models released on or after March 5, 2026, that are eligible for data residency. See our Your data guide for supported regions and processing details.\n\nFast [...] Fast\n\n| Category | Model | Input | Cached input | Output |\n ---  --- \n| Codex | gpt-5.3-codex | $3.50 | $0.35 | $28.00 |\n\nRegional processing (data residency) endpoints are charged a 10% uplift for models released on or after March 5, 2026, that are eligible for data residency. See our Your data guide for supported regions and processing details.\n\nPrices per 1M tokens. [...] Tokens used for built-in tools are billed at the chosen model's per-token rates. GB refers to binary gigabytes (also known as gibibytes), where 1 GB is 2^30 bytes. Web search content tokens are tokens retrieved from the search index and fed to the model alongside your prompt to generate an answer. For `gpt-4o-mini` and `gpt-4.1-mini` with the non-preview web search tool, search content tokens are billed as a fixed block of 8,000 input tokens per call. File search tool call pricing applies to",
+        "score": 0.6420965,
+        "raw_content": null,
+        "id": "dd6215-16"
+      },
+      {
+        "url": "https://platform.openai.com/docs/models/gpt-4o-mini-tts",
+        "title": "GPT-4o Mini TTS Model | OpenAI API",
+        "content": "### Specialized models\n\ngpt-4o-mini-tts\n\nGPT-4o Mini TTS is a text-to-speech model built on GPT-4o Mini, a fast and powerful language model. Use it to convert text to natural sounding spoken text. The maximum number of input tokens is 2000.\n\ngpt-4o-mini-tts\n\n| Tier | RPM | TPM |\n --- \n| Free | Not supported | |\n| Build | 2,000 | 150,000 |\n| Launch | 10,000 | 2,000,000 |\n| Grow | 10,000 | 8,000,000 |\n\n## Docs agent\n\nLoading docs agent... [...] ### Realtime API\n\n### Build with voice\n\n### Connections\n\n### Audio processing\n\n### Go live\n\n### Performance and quality\n\n### Cost and throughput\n\n### Safety and governance\n\n### Infrastructure and access\n\n### Operations\n\n### Core concepts\n\n### Plan\n\n### Build\n\n### Test and publish\n\n### Conversion specs\n\n### Guides\n\n### Resources\n\n### Identity\n\n### ChatGPT plan usage\n\n### Guides\n\n### File Upload\n\n### API\n\n### Measurement\n\n### Advertiser API\n\n### API Reference\n\n### Get started\n\n### Get started [...] `.md`\nOpenAI Developers\n\n## Search the API docs\n\n### Suggested\n\n### Suggested\n\n### Get started\n\n### Core concepts\n\n### SDKs and CLI\n\n### Resources\n\n### Legacy APIs\n\n### Choose a model\n\n### Text and code\n\n### Prompting\n\n### Reasoning\n\n### Images\n\n### Realtime and audio\n\n### Specialized models\n\n### Agents API\n\n### Agents SDK\n\n### ChatKit\n\n### Search and retrieval\n\n### Connect tools and data\n\n### Build tool workflows\n\n### Computer and code\n\n### Media\n\n### GPT-Live\n\n### Realtime API",
+        "score": 0.51076555,
+        "raw_content": null,
+        "id": "6a144f-17"
+      },
+      {
+        "url": "https://help.openai.com/en/articles/7102672-how-can-i-access-gpt-4o-and-gpt-41-mini",
+        "title": "How can I access GPT-4o and GPT-4.1 mini?",
+        "content": "How can I access GPT-4o and GPT-4.1 mini? 3. How can I access GPT-4o and GPT-4.1 mini? How can I access GPT-4o and GPT-4.1 mini? Learn about the GPT-4o models available in ChatGPT A model refers to a version of an AI system, each with its own capabilities, behavior, and strengths depending on how it was trained. GPT-4o is a highly capable model that can interface with multiple modalities such as text, image, and audio input. GPT-4o is available to Free, Plus, Pro, Team, and Enterprise plans. GPT-4.1 mini is available in the model picker under \"more models\" for paid users, and will serve as the fallback model for free users once they reach their GPT-4o usage limits. Here is a brief overview of the differences between GPT-4o and GPT-4.1 mini: * Great model for most tasks. * Text and image input/output.* * Text and image input/output.* * Does not have access to advanced tools that GPT-4o has (data analysis, file uploads, vision) * Read this article for more information about image generation. Free plan users can use GPT-4o a limited number of times within a five hour window. ChatGPT will inform you once you\u2019ve reached the message limit but you can continue your conversation using GPT-4.1 mini or by upgrading to Plus or Pro plans. Free users receive limited access to messages using advanced tools through GPT-4o, such as: Free users can upgrade to Plus or Pro at any time by visiting our pricing page. All paid tiers share the same unlimited access to the \u201cmini\u201d models; only the per\u2011window caps on GPT\u20114o differ. The ChatGPT Enterprise plan is designed specifically to meet the needs of large enterprises: ChatGPT Enterprise offers enterprise-grade security and privacy, longer context windows for processing larger inputs, unlimited, high speed access to advanced tools like data analysis, and more. GPT-4o and GPT-4.1 mini are available in the OpenAI API. * How can I access GPT-4o and GPT-4.1 mini? Learn about the GPT-4o models available in ChatGPT * What is the ChatGPT model selector? Switch between different models in ChatGPT depending on your plan and your needs * ChatGPT Enterprise & Edu - Release Notes * What is GPT-4.1 mini?",
+        "score": 0.29141974,
+        "raw_content": null,
+        "id": "ec919b-18"
+      },
+      {
+        "url": "https://openai.com/gpt-4o-long-output",
+        "title": "GPT-4o Long Output | OpenAI",
+        "content": "Title: GPT-4o Long Output | OpenAI\n# GPT\u20114o Long Output. ## Alpha program. OpenAI is offering an experimental version of GPT\u20114o with a maximum of 64K output tokens per request. We hope this experiment helps you explore new use cases that are unlocked by longer completions. Alpha participants can access GPT\u20114o long output by using the `gpt-4o-64k-output-alpha` model name. `gpt-4o-64k-output-alpha`. Long completions are more costly from an inference perspective, so the per-token pricing of this model is increased to match the costs.",
+        "score": 0.18347688,
+        "raw_content": null,
+        "id": "84d81f-19"
+      }
+    ],
+    "response_time": 0.0,
+    "request_id": "be8ae8c8-7120-4820-8487-2d4d932e2c87"
+  }
+}
