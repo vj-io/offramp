@@ -319,6 +319,13 @@ Offramp never migrates it).
   `nebius` CLI when `NEBIUS_PROJECT_ID` + CLI present, polls, fetches results; else runs locally in-process
   (`concurrent.futures`) — same output format. Test: tiny matrix local vs "job" path (subprocess running the
   entrypoint) are byte-equal after sorting (§12.4).
+- Nebius CLI facts (docs.nebius.com/cli/reference/ai/job/create, /serverless/jobs/manage): `nebius ai job create
+  --name --image --container-command --args --env KEY=VAL --platform --preset --disk-size --volume --timeout`
+  (+ registry credentials); `nebius ai job list`, `nebius ai job cancel <id>`, `nebius ai job delete <id>`;
+  `nebius ai job run` packages a local script and streams logs (`--detach`). Jobs bill only while running.
+  Results return via stdout logs or a mounted volume — pick logs (print one JSON line `OFFRAMP_RESULTS <json>`)
+  unless a volume is simpler once tried. The CLI is not installed yet; build the submit path behind a
+  `shutil.which("nebius")` check and test it with a fake CLI script on PATH.
 
 ---
 
@@ -364,3 +371,24 @@ Web on Vercel (replay works with no backend). API on Nebius (Serverless Endpoint
 key + rate limit, else documented local `make demo`. Clean-machine check.
 
 ### Task 16: Demo video (≤3:00, narrated, measured numbers only) and submission materials.
+
+## Devpost submission deliverables (from nebiusglobalaihackathon.devpost.com + /rules, read 2026-10-19)
+
+Deadline: **30 Oct 2026 10:00 PT** (hard close; PRD targets 29 Oct). Judging 1–15 Dec 2026: hosted demo and
+repo must stay up and free to use until 15 Dec. Judging criteria: Technological Implementation, Design (complete
+product, not a PoC), Potential Impact, Quality of the Idea. Track: **Coding and Agentic Engineering**.
+
+| # | Deliverable | Rule | Where it lives |
+|---|---|---|---|
+| D1 | Working project with a runtime call to the Token Factory inference API, ≥1 NVIDIA open model | required | this repo |
+| D2 | Track selection: Coding and Agentic Engineering | required | Devpost form |
+| D3 | Text description: what, why, how; features and functionality | required | `docs/SUBMISSION.md` |
+| D4 | Working demo URL, free, no login (or creds in testing instructions) | required | Vercel web (replay works with no keys) + hosted API |
+| D5 | Demo video < 3:00, public YouTube, shows the project working and how Token Factory + Nemotron are used; no copyrighted music, no third-party trademarks/logos | required | `docs/VIDEO.md` script + rendered MP4 (user uploads) |
+| D6 | Public repo, OSI licence detectable in the GitHub About section | required | `vj-io/offramp` (flip public at submission) + `vj-io/offramp-demo-app` |
+| D7 | README: setup, clear run guidance, how Nemotron is used, where Token Factory accelerated the workflow, other Nebius services used | required | `README.md` |
+| D8 | Feedback on Token Factory, AI Cloud, NVIDIA tools/models (specific, incl. what broke) | required; "Most Valuable Feedback" prize | `docs/FEEDBACK.md` |
+| D9 | "Existed before?" explanation | n/a: created during the period (first commit 2026-10-19) | Devpost form |
+| D10 | Best Use of Tavily ($3k; 3 Tavily judges): meaningful runtime Tavily call | optional bonus | §6.10 pricing/deprecation lookup + sunset-risk badge |
+| D11 | Gallery images / thumbnail | Devpost form | `docs/media/` screenshots of the real dashboard |
+| D12 | City (IRL Builders & Brews), team representative | user's choice | Devpost form |
