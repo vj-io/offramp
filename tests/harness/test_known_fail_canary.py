@@ -133,7 +133,7 @@ def run(config: RunConfig):
     agents = FakeLLM(
         {
             ITERATOR_ROLE: [iterator_reply(n) for n in range(9)],
-            VERDICT_ROLE: [{"reason": "Nemotron matches the refund references."}],
+            VERDICT_ROLE: [{"reason": "Nemotron matches 9 of 10 refund references."}],
         }
     )
     v0 = Adapter(site_id="cs_05", version=0, spec=AdapterSpec(reasoning="high", max_tokens=2000))
@@ -164,12 +164,16 @@ def test_cs05_like_reasoning_site_stays_closed_with_an_honest_reason():
     out, agents = run(RunConfig(repo_url="x"))
     v = out.verdict
     assert v.decision == "KEEP_CLOSED" and v.tier is None and v.model is None
-    assert v.best_tier == Tier.ULTRA and v.iterations == 3
+    # outputs never depend on the adapter here, so every Ultra version ties and v0 (no iterations) is the best
+    assert v.best_tier == Tier.ULTRA and v.iterations == 0 and out.adapter.version == 0
     k = sum(right(Tier.ULTRA, c) for c in holdout)
     expected = f"parity vs reference {floor_pct(k, len(holdout))}% < 90%"
     assert v.parity_pct == float(floor_pct(k, len(holdout)))
-    # the Super sentence lacked the measured phrase, so the rule sentence stands
-    assert v.reason == f"{expected} on Ultra after 3 adapter iterations."
+    # Super's sentence carried a number, so the rule sentence stands; o3 at $2/$8 per 1M (pricing.yaml) x
+    # 700 in / 900 out tokens per call = $8.6 per 1k calls
+    assert (
+        v.reason == f"{expected} on Ultra after 0 adapter iterations; cost per 1k calls $8.6 before (est.)."
+    )
     assert sum(c["role"] == ITERATOR_ROLE for c in agents.calls) == 9
 
 
