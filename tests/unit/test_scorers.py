@@ -92,10 +92,14 @@ JSON_ROWS = [
     ("bool_is_not_one", '{"f": true}', '{"f": 1}', ANY_OBJECT, False, "wrong_value", 0.0),
     ("one_is_not_bool", '{"f": 1}', '{"f": true}', ANY_OBJECT, False, "wrong_value", 0.0),
     ("numeric_string_is_not_number", '{"n": 5}', '{"n": "5"}', ANY_OBJECT, False, "wrong_value", 0.0),
+    ("overflow_exponent_never_equal", '{"v": 1e400}', '{"v": 2e400}', ANY_OBJECT, False, "wrong_value", 0.0),
     ("big_int_precision", '{"id": 12345678901234567890}', '{"id": 12345678901234567891}', ANY_OBJECT,
      False, "wrong_value", 0.0),
     ("null_is_not_missing", '{"a":1,"b":null}', '{"a":1}', ANY_OBJECT, False, "missing_key", 0.5),
     ("empty_list_is_a_key", '{"a":1,"items":[]}', '{"a":1}', ANY_OBJECT, False, "missing_key", 0.5),
+    ("empty_object_is_a_key", '{"a":1,"meta":{}}', '{"a":1}', ANY_OBJECT, False, "missing_key", 0.5),
+    ("missing_and_wrong_reports_missing", '{"a":1,"b":2,"c":3}', '{"a":1,"b":9}', ANY_OBJECT, False,
+     "missing_key", 1 / 3),
     ("list_order_matters", '{"t":["x","y"]}', '{"t":["y","x"]}', ANY_OBJECT, False, "wrong_value", 0.0),
     ("list_gains_item", '{"t":[1,2]}', '{"t":[1,2,3]}', ANY_OBJECT, False, "extra_key", 2 / 3),
     ("object_replaced_by_scalar", '{"a":{"b":1}}', '{"a":5}', ANY_OBJECT, False, "missing_key", 0.0),
@@ -191,6 +195,8 @@ TOOL_ROWS = [
     ("number_5_vs_float", [SET], [("set_temp", {"value": 5.0})], True, None),
     ("number_5_vs_str_float", [SET], [("set_temp", {"value": "5.0"})], True, None),
     ("number_5_vs_padded_str", [SET], [("set_temp", {"value": " 5.00 "})], True, None),
+    ("number_str_baseline_vs_number", [("set_temp", {"value": "5"})], [SET], True, None),
+    ("number_str_float_baseline_vs_number", [("set_temp", {"value": "5.0"})], [SET], True, None),
     ("number_float_vs_str_float", [("f", {"v": 5.1})], [("f", {"v": "5.10"})], True, None),
     ("negative_str", [("f", {"v": -5})], [("f", {"v": "-5"})], True, None),
     ("nested_args", [("q", {"f": {"tags": ["A", "b"], "n": 1}})],
@@ -218,6 +224,8 @@ TOOL_ROWS = [
      False, "wrong_args"),
     ("exponent_string_stays_string", [("f", {"v": 1000})], [("f", {"v": "1e3"})], False, "wrong_args"),
     ("nan_never_equal", [("f", {"v": float("nan")})], [("f", {"v": float("nan")})], False, "wrong_args"),
+    ("inf_never_equal", [("f", {"v": float("inf")})], [("f", {"v": float("inf")})], False, "wrong_args"),
+    ("non_ascii_digit_is_not_number", [("f", {"v": 55})], [("f", {"v": "5\u0665"})], False, "wrong_args"),
     ("list_order_matters", [("f", {"v": [1, 2]})], [("f", {"v": [2, 1]})], False, "wrong_args"),
     ("no_call_when_expected", [W], [], False, "no_tool_call"),
     ("call_when_none_expected", [], [W], False, "wrong_tool"),
@@ -263,9 +271,11 @@ REASONING_ROWS = [
     ("fallback_trailing_period", "ANSWER: 42", "The result is 42.", True, None),
     ("fallback_on_baseline", "the total is 1,234", "ANSWER: 1234", True, None),
     ("fallback_leading_dot_number", "ANSWER: 0.5", "so it equals .5", True, None),
+    ("fallback_negative_after_equals", "ANSWER: -4", "so x=-4", True, None),
+    ("fallback_hyphen_is_not_a_sign", "ANSWER: 4", "between 3-4", True, None),
     ("thousands_separator", "ANSWER: 1,234", "ANSWER: 1234", True, None),
     ("currency_and_decimal", "ANSWER: $1,234.50", "ANSWER: 1234.5", True, None),
-    ("unicode_minus", "ANSWER: -5", "ANSWER: −5", True, None),
+    ("unicode_minus", "ANSWER: -5", "ANSWER: \u22125", True, None),
     ("leading_dot", "ANSWER: 0.5", "ANSWER: .5", True, None),
     ("exponent", "ANSWER: 1e3", "ANSWER: 1000", True, None),
     ("tol_inside", "ANSWER: 1", "ANSWER: 1.0000001", True, None),
@@ -284,11 +294,13 @@ REASONING_ROWS = [
     ("fraction_is_not_decimal", "ANSWER: 1/2", "ANSWER: 0.5", False, "wrong_answer"),
     ("units_break_exactness", "ANSWER: 42 apples", "ANSWER: 42", False, "wrong_answer"),
     ("overflow_is_not_equal", "ANSWER: 1e999", "ANSWER: 2e999", False, "wrong_answer"),
+    ("non_ascii_digit_is_not_number", "ANSWER: 5", "ANSWER: \u0665", False, "wrong_answer"),
     ("exact_is_case_sensitive", "ANSWER: B", "ANSWER: b", False, "wrong_answer"),
     ("exact_keeps_parentheses", "ANSWER: B", "ANSWER: (B)", False, "wrong_answer"),
     ("exact_text_differs", "ANSWER: yes", "ANSWER: no", False, "wrong_answer"),
     ("number_vs_text", "ANSWER: 42", "ANSWER: forty-two", False, "wrong_answer"),
     ("no_answer_no_number", "ANSWER: 42", "I cannot determine this.", False, "no_answer"),
+    ("digits_glued_to_letters_are_not_a_number", "ANSWER: 2", "the molecule is H2O", False, "no_answer"),
     ("empty_candidate", "ANSWER: 42", "", False, "no_answer"),
     ("none_candidate", "ANSWER: 42", None, False, "no_answer"),
     ("both_unextractable_is_not_agreement", "No idea.", "No idea.", False, "no_answer"),
@@ -404,6 +416,11 @@ def test_thresholds_are_parameters_and_split_by_task_family():
     assert Thresholds() == Thresholds(threshold=0.95, reasoning_threshold=0.90)
 
 
+def test_site_pass_counts_passed_flags_not_scores():
+    scores = [CaseScore(case_id=str(i), passed=False, score=0.99) for i in range(10)]
+    assert site_pass("classification", scores) == (False, 0.0)
+
+
 def test_site_pass_accepts_a_run_config():
     cfg = RunConfig(repo_url="https://github.com/x/y", threshold=0.90, reasoning_threshold=0.95)
     eighteen = _scores(18, ["wrong"] * 2)
@@ -419,6 +436,8 @@ JUDGE_ROWS = [
     ("mean_of_mixed_scores_at_margin", [4, 5] * 5, 4.8, True),
     ("floor_applies_even_when_baseline_is_low", [3.9] * 5, 3.9, False),
     ("exactly_floor_and_baseline", [4.0] * 5, 4.0, True),
+    ("float_noise_boundary_4.4", [4.1] * 10, 4.4, True),  # 4.4 - 0.3 is 4.1000000000000005 in floats
+    ("float_noise_boundary_4.9", [4.6] * 10, 4.9, True),
     ("floor_ok_but_baseline_gap_too_big", [4.0] * 5, 4.5, False),
     ("better_than_baseline", [5.0] * 5, 4.1, True),
     ("perfect_vs_perfect", [5.0] * 5, 5.0, True),

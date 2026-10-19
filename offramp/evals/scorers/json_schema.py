@@ -9,6 +9,7 @@ including "100% schema-valid", lives in aggregate.site_pass.
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Iterator
 from decimal import Decimal
@@ -31,7 +32,7 @@ INVALID_CATEGORIES = frozenset({INVALID_JSON, EMPTY_OUTPUT, SCHEMA_VIOLATION, SC
 
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 # No leading zeros, no exponent: the string "01234" is not the number 1234.
-_PLAIN_NUMBER = re.compile(r"-?(?:0|[1-9]\d*)(?:\.\d+)?")
+_PLAIN_NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
 _SHOWN = 5  # paths listed per category in `detail`
 
 
@@ -46,6 +47,8 @@ def normalise(value: Any, *, numeric_strings: bool = False) -> Any:
     if isinstance(value, int):
         return Decimal(value)
     if isinstance(value, float):
+        if not math.isfinite(value):
+            return Decimal("NaN")  # 1e400 parses to inf: never equal to anything, itself included
         return Decimal(repr(value))  # shortest round-trip text, so 5.1 == "5.10" without binary noise
     if isinstance(value, str):
         text = value.strip()
@@ -143,9 +146,9 @@ def _score(case: EvalCase, baseline: ModelOutput, candidate: ModelOutput, contra
         jsonschema.validate(got, schema)
     except jsonschema.ValidationError as exc:
         where = _show([tuple(exc.absolute_path)])
-        return _fail(case, SCHEMA_VIOLATION, f"schema violation at {where}: {exc.message}")
+        return _fail(case, SCHEMA_VIOLATION, f"schema violation at {where}: {exc.message[:200]}")
     except Exception as exc:  # SchemaError, unresolvable $ref: validity cannot be established
-        return _fail(case, SCHEMA_ERROR, f"schema unusable: {type(exc).__name__}: {exc}")
+        return _fail(case, SCHEMA_ERROR, f"schema unusable: {type(exc).__name__}: {str(exc)[:200]}")
 
     base_leaves, cand_leaves = dict(_leaves(normalise(want))), dict(_leaves(normalise(got)))
     missing = [p for p in base_leaves if p not in cand_leaves]

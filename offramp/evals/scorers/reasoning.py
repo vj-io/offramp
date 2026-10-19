@@ -18,8 +18,8 @@ WRONG_ANSWER = "wrong_answer"
 
 REL_TOL = 1e-6
 
-_ANSWER_LINE = re.compile(r"^[ \t>*_#-]*answer[ \t*_]*:[ \t*_]*(.+?)[ \t*_]*$", re.IGNORECASE)
-_NUMBER = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][-+]?\d+)?|\.\d+(?:[eE][-+]?\d+)?"
+_ANSWER_LINE = re.compile(r"^[ \t>*_#-]*answer[ \t*_]*:(.*)$", re.IGNORECASE)
+_NUMBER = r"(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?|\.[0-9]+(?:[eE][-+]?[0-9]+)?"
 _NUMBER_ONLY = re.compile(rf"[-+]?(?:{_NUMBER})")
 _LAST_NUMBER = re.compile(rf"(?<![\w.])[-+]?(?:{_NUMBER})")  # "2024-05-01" is not 2024 and -05 and -01
 _EMPHASIS = " \t*_`\"'"
@@ -30,11 +30,11 @@ def _clean(answer: str) -> str:
 
 
 def _final_answer(text: str) -> str | None:
-    text = text.replace("−", "-")  # unicode minus
+    text = text.replace("\u2212", "-")  # unicode minus
     for line in reversed(text.splitlines()):
         found = _ANSWER_LINE.match(line)
-        if found and _clean(found.group(1)):
-            return _clean(found.group(1))
+        if found and (answer := _clean(found.group(1))):
+            return answer
     numbers = _LAST_NUMBER.findall(text)
     return numbers[-1] if numbers else None
 
