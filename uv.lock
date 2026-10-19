@@ -706,6 +706,7 @@ tracing = [
 [package.dev-dependencies]
 dev = [
     { name = "anthropic" },
+    { name = "langsmith" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
@@ -729,6 +730,7 @@ provides-extras = ["baseline", "tracing"]
 [package.metadata.requires-dev]
 dev = [
     { name = "anthropic", specifier = ">=0.40" },
+    { name = "langsmith", specifier = ">=0.2" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-cov", specifier = ">=5" },
     { name = "ruff", specifier = ">=0.6" },

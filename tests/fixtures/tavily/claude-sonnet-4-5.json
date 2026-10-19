@@ -1,0 +1,187 @@
+{
+  "recorded_at": "2026-10-19T07:59:25.924075+00:00",
+  "status": 200,
+  "request": {
+    "query": "claude-sonnet-4-5 (claude sonnet 4.5) API pricing: input and output price per 1M tokens (MTok); deprecation, retirement or shutdown date",
+    "search_depth": "basic",
+    "max_results": 20,
+    "include_answer": true,
+    "include_domains": [
+      "anthropic.com",
+      "docs.anthropic.com",
+      "docs.claude.com",
+      "claude.com",
+      "platform.claude.com"
+    ]
+  },
+  "response": {
+    "query": "claude-sonnet-4-5 (claude sonnet 4.5) API pricing: input and output price per 1M tokens (MTok); deprecation, retirement or shutdown date",
+    "follow_up_questions": null,
+    "answer": "The sources indicate that the input price for the claude-sonnet-4-5 API is $3 per million tokens (MTok) and the output price is $15 per MTok. The model is deprecated and will retire on November 30, 2026. It is recommended to migrate to the newer Claude Sonnet 5.5 model, which has an input price of $2 per MTok and an output price of $10 per MTok.",
+    "images": [],
+    "results": [
+      {
+        "url": "https://platform.claude.com/docs/en/models/sonnet-4-5",
+        "title": "Claude Sonnet 4.5 - Claude Platform Docs",
+        "content": "Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nClaude Sonnet 4.5 is deprecated: it is still functional but no longer recommended, and retires on November 30, 2026. Recommended replacement: Claude Sonnet 5.5.\n\nSee Claude Sonnet 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Sonnet 4.5Deprecated\n\nMigrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $3/ MTok\n\nOutput pricing\n:   $15/ MTok\n\n## How it compares to the current lineup [...] ## Specifications\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $3 / MTok\n\nOutput\n:   $15 / MTok\n\n5m cache write\n:   $3.75 / MTok\n\n1h cache write\n:   $6 / MTok\n\nCache read\n:   $0.30 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended\n\nDefault effort\n:   Not supported [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 4.5This model | 200K | 64K | $3 / $15 | Extended | \u2014 | Jan 2025 |",
+        "score": 0.91023487,
+        "raw_content": null,
+        "id": "556d56-00"
+      },
+      {
+        "url": "https://platform.claude.com/docs/en/models/sonnet-4-5/overview",
+        "title": "Claude Sonnet 4.5 - Claude Platform Docs",
+        "content": "Models & pricing\ue02aLegacy models\n\n# Claude Sonnet 4.5Deprecated\n\nMigrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   200Ktokens\n\nMax output\n:   64Ktokens\n\nInput pricing\n:   $3/ MTok\n\nOutput pricing\n:   $15/ MTok\n\n## How it compares to the current lineup [...] ## Specifications\n\n### Model IDs\n\nClaude API\n\nClaude API alias\n\nAmazon Bedrock (InvokeModel)\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $3 / MTok\n\nOutput\n:   $15 / MTok\n\n5m cache write\n:   $3.75 / MTok\n\n1h cache write\n:   $6 / MTok\n\nCache read\n:   $0.30 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   200K tokens\n\nMax output\n:   64K tokens\n\nThinking\n:   Extended\n\nDefault effort\n:   Not supported [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 4.5This model | 200K | 64K | $3 / $15 | Extended | \u2014 | Jan 2025 |",
+        "score": 0.8282873,
+        "raw_content": null,
+        "id": "b31325-01"
+      },
+      {
+        "url": "https://docs.claude.com/docs/en/models/sonnet-5/overview",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 | [...] Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Sonnet 5 is still available, you should consider migrating to Claude Sonnet 5.5.\n\nSee Claude Sonnet 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Sonnet 5Legacy\n\nMigrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "01b852-02"
+      },
+      {
+        "url": "https://docs.claude.com/en/docs/models/sonnet-5/overview",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] Migrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 |",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "0436d1-03"
+      },
+      {
+        "url": "https://platform.claude.com/docs/en/models/sonnet-5",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 | [...] Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Sonnet 5 is still available, you should consider migrating to Claude Sonnet 5.5.\n\nSee Claude Sonnet 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Sonnet 5Legacy\n\nMigrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "a9328b-04"
+      },
+      {
+        "url": "https://docs.claude.com/docs/en/models/sonnet-5/whats-new-sonnet-5",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] Migrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 |",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "f4b50c-05"
+      },
+      {
+        "url": "https://docs.claude.com/en/docs/about-claude/models/whats-new-sonnet-5",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 | [...] Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Sonnet 5 is still available, you should consider migrating to Claude Sonnet 5.5.\n\nSee Claude Sonnet 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Sonnet 5Legacy\n\nMigrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "5cffd6-06"
+      },
+      {
+        "url": "https://platform.claude.com/docs/en/models/sonnet-5/whats-new-sonnet-5",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 | [...] Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Sonnet 5 is still available, you should consider migrating to Claude Sonnet 5.5.\n\nSee Claude Sonnet 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Sonnet 5Legacy\n\nMigrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "c0c6f4-07"
+      },
+      {
+        "url": "https://docs.claude.com/docs/en/about-claude/models/whats-new-sonnet-5",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 | [...] Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Sonnet 5 is still available, you should consider migrating to Claude Sonnet 5.5.\n\nSee Claude Sonnet 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Sonnet 5Legacy\n\nMigrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "f43eda-08"
+      },
+      {
+        "url": "https://platform.claude.com/docs/en/about-claude/models/whats-new-sonnet-5",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] Migrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 |",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "0cc546-09"
+      },
+      {
+        "url": "https://docs.anthropic.com/docs/en/about-claude/models/whats-new-sonnet-5",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 | [...] Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Sonnet 5 is still available, you should consider migrating to Claude Sonnet 5.5.\n\nSee Claude Sonnet 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Sonnet 5Legacy\n\nMigrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "f5c867-10"
+      },
+      {
+        "url": "https://platform.claude.com/docs/en/models/sonnet-5/whats-new-sonnet-5#sampling-parameters-not-accepted",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 | [...] Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Sonnet 5 is still available, you should consider migrating to Claude Sonnet 5.5.\n\nSee Claude Sonnet 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Sonnet 5Legacy\n\nMigrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "3dc7ad-11"
+      },
+      {
+        "url": "https://docs.anthropic.com/en/docs/models/sonnet-5",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 | [...] Claude Platform Docs\n\n\ue04aAPI reference\n\ue04fConsoleLog in\n\n\ue109\n\nAlthough Claude Sonnet 5 is still available, you should consider migrating to Claude Sonnet 5.5.\n\nSee Claude Sonnet 5.5\n\nModels & pricing\ue02aLegacy models\n\n# Claude Sonnet 5Legacy\n\nMigrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "cd6e4a-12"
+      },
+      {
+        "url": "https://docs.anthropic.com/en/docs/models/sonnet-5/overview",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] Migrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 |",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "dc8d9d-13"
+      },
+      {
+        "url": "https://console.anthropic.com/docs/en/models/sonnet-5/overview",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] Migrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 |",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "6300cf-14"
+      },
+      {
+        "url": "https://platform.claude.com/docs/en/models/sonnet-5/overview",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] Migrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 |",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "6af36a-15"
+      },
+      {
+        "url": "http://platform.claude.com/docs/en/models/sonnet-5/overview",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] Migrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 |",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "048be0-16"
+      },
+      {
+        "url": "https://docs.claude.com/en/models/sonnet-5/overview",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 |",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "06ef88-17"
+      },
+      {
+        "url": "https://docs.anthropic.com/en/about-claude/models/whats-new-sonnet-5",
+        "title": "Claude Sonnet 5 - Claude Platform Docs",
+        "content": "## Specifications\n\n### Model IDs\n\nClaude API\n\nAmazon Bedrock\n\nGoogle Cloud\n\nMicrosoft Foundry\n\nClaude Platform on AWS\n\n### Pricing\n\nInput\n:   $2 / MTok\n\nOutput\n:   $10 / MTok\n\n5m cache write\n:   $2.50 / MTok\n\n1h cache write\n:   $4 / MTok\n\nCache read\n:   $0.20 / MTok\n\nBatch API\n:   50% discount on input and output\n\nFull price list\n\n### Capabilities\n\nContext window\n:   1M tokens\n\nMax output\n:   128K tokens\n\nMax output (Batch API, beta)\n:   300K tokens\n\nThinking\n:   Adaptive [...] Migrate to Claude Sonnet 5.5\ue010\n\nContext window\n:   1Mtokens\n\nMax output\n:   128Ktokens\n\nInput pricing\n:   $2/ MTok\n\nOutput pricing\n:   $10/ MTok\n\n## How it compares to the current lineup [...] | Model | Context | Max output | Price / MTok | Thinking | Default effort | Knowledge cutoff |\n ---  ---  --- \n| Claude Fable 5.1 | 1M | 128K | $10 / $50 | Adaptive (always on) | `high` | Jun 2026 |\n| Claude Opus 5.5 | 1M | 128K | $4 / $20 | Adaptive (always on) | `medium` | Jun 2026 |\n| Claude Sonnet 5.5 | 1M | 128K | $2 / $10 | Adaptive | `high` | Jun 2026 |\n| Claude Sonnet 5This modelLegacy | 1M | 128K | $2 / $10 | Adaptive | `high` | Jan 2026 |",
+        "score": 0.71040785,
+        "raw_content": null,
+        "id": "1f5930-18"
+      },
+      {
+        "url": "https://platform.claude.com/docs/en/about-claude/models/overview.md",
+        "title": "App unavailable in region | Claude by Anthropic",
+        "content": "Claude Sonnet 5.5, Claude Sonnet 5, Claude Haiku 5.5, Claude Opus 4.8, Claude Opus 4.7, Claude Opus 4.6, and Claude Sonnet 4.6 support up to 300k output tokens with the output-300k-2026-03-24 beta header. \\ \\\\Reliable knowledge cutoff:\\\\ The date through which the model\u2019s knowledge is most extensive and reliable. Training data cutoff (under Additional details) is the broader range of data used. See Anthropic\u2019s Transparency Hub for details. \\ \\\\Retirement:\\\\ Anthropic\u2019s commitment for the [...] Model page | Claude Fable 5.1 | Claude Opus 5.5 | Claude Sonnet 5.5 | Claude Haiku 5.5 | | Comparative latency | Slower | Moderate | Fast | Fastest | | Pricing | $10 / input MTok, $50 / output MTok | $4 / input MTok, $20 / output MTok | $2 / input MTok, $10 / output MTok | From $0.10 / input MTok, From $0.50 / output MTok | | Claude API ID | `claude-fable-5-1` | `claude-opus-5-5` | `claude-sonnet-5-5` | `claude-haiku-5-5` | | Thinking | Adaptive (always on) | Adaptive (always on) | Adaptive | [...] on) | Adaptive | Adaptive | | Default effort | `high` | `medium` | `high` | `medium` | | Context window | 1M tokens | 1M tokens | 1M tokens | 1M tokens | | Max output | 128K tokens | 128K tokens | 128K tokens | 128K tokens | | Reliable knowledge cutoff | Jun 2026 | Jun 2026 | Jun 2026 | Jun 2026 | | Training data cutoff | Jun 2026 | Jun 2026 | Jun 2026 | Jun 2026 | | Retirement | Not sooner than September 1, 2027 | Not sooner than September 22, 2027 | Not sooner than September 28, 2027 | Not",
+        "score": 0.6244086,
+        "raw_content": null,
+        "id": "892842-19"
+      }
+    ],
+    "response_time": 3.82,
+    "request_id": "fb712477-d5d7-42cd-aa9b-149c78e8e0ab"
+  }
+}

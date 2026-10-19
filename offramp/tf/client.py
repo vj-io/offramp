@@ -15,9 +15,10 @@ from typing import Any, Literal, Protocol
 
 import httpx
 import jsonschema
-from openai import OpenAI
+from openai import APIStatusError, OpenAI
 from pydantic import BaseModel
 
+from offramp.integrations import keys
 from offramp.schemas import ModelOutput, Tier, ToolCall
 from offramp.tf.budget import Budget
 from offramp.tf.cache import Cache, cache_key
@@ -216,14 +217,18 @@ class TFClient:
         self.live = live
         self.budget = budget
         self._http_client = http_client  # tests inject httpx.MockTransport here
-        self._sdk: OpenAI | None = None
+        self._conn: tuple[OpenAI, str] | None = None  # (SDK client, key it carries); never logged
 
-    def _openai(self) -> OpenAI:
-        if self._sdk is None:  # built lazily so live=False (cassette replay) never needs a key
-            if not self.api_key:
+    def _connection(self) -> tuple[OpenAI, str]:
+        """The SDK client and the key it carries, as one pair: a thread that has sent a request with this
+        client must know which key that was even if another thread has since moved on to the fallback."""
+        conn = self._conn
+        if conn is None:  # built lazily so live=False (cassette replay) never needs a key
+            key = keys.current("nebius", self.api_key)
+            if not key:
                 raise RuntimeError("NEBIUS_API_KEY is not set (live=False replays the cache without a key)")
             sdk = OpenAI(
-                api_key=self.api_key,
+                api_key=key,
                 base_url=self.base_url,
                 max_retries=MAX_RETRIES,
                 timeout=TIMEOUT_S,
@@ -236,8 +241,24 @@ class TFClient:
                     pass
                 else:
                     sdk = wrap_openai(sdk)
-            self._sdk = sdk
-        return self._sdk
+            self._conn = conn = sdk, key
+        return conn  # the pair held here, not a re-read of the attribute another thread may have reset
+
+    def _openai(self) -> OpenAI:
+        return self._connection()[0]
+
+    def _create(self, model: str, messages: list[dict[str, Any]], params: dict[str, Any]) -> Any:
+        """chat.completions.create; a rejected / out-of-credit primary key moves the process to the
+        NEBIUS_API_KEY_FALLBACK and retries the same request once (Global Constraint 28)."""
+        sdk, key = self._connection()  # the key THIS request carries, whatever other threads do meanwhile
+        try:
+            return sdk.chat.completions.create(model=model, messages=messages, **params)
+        except APIStatusError as e:
+            if not keys.switch_to_fallback("nebius", key, *keys.status_and_body(e)):
+                raise
+            self._conn = None  # rebuilt on the fallback key
+            sdk, _ = self._connection()
+            return sdk.chat.completions.create(model=model, messages=messages, **params)
 
     def _complete(
         self, role: str, info: TierInfo, messages: list[dict[str, Any]], params: dict[str, Any]
@@ -253,7 +274,7 @@ class TFClient:
         if self.budget:
             self.budget.check(role, info.tier)
         started = time.perf_counter()
-        resp = self._openai().chat.completions.create(model=info.model_id, messages=messages, **params)
+        resp = self._create(info.model_id, messages, params)
         latency_ms = round((time.perf_counter() - started) * 1000)
         raw = resp.model_dump(mode="json", exclude_none=True)
         usage = raw.get("usage") or {}
