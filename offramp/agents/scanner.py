@@ -76,7 +76,12 @@ def scan_repo(path: str | Path) -> ScanResult:
     for file in _py_files(root):
         rel = file.relative_to(root).as_posix()
         try:
-            tree = ast.parse(file.read_bytes())  # bytes, so a BOM or a coding cookie is honoured
+            source = file.read_bytes()
+        except OSError as exc:  # unreadable, or a broken symlink named *.py
+            warnings.append(f"skipped {rel}: not readable ({type(exc).__name__})")
+            continue
+        try:
+            tree = ast.parse(source)  # bytes, so a BOM or a coding cookie is honoured
         except (SyntaxError, ValueError, RecursionError) as exc:
             warnings.append(f"skipped {rel}: not parseable as Python 3.12 ({type(exc).__name__})")
             continue
@@ -650,7 +655,7 @@ contract.output: label | json_schema | json | tool_call | text (json_schema when
 contract.tools / contract.streaming: whether the call passes tools / streams its response.
 contract.reasoning_heavy: true when the task needs multi-step reasoning.
 contract.latency_budget_ms: only when the code states a timeout, else null.
-contract.json_schema: only when the prompt or code spells out the output fields, else null.
+contract.json_schema: always null (the scanner sets it from the code).
 confidence: your probability, 0 to 1, that task_type is right.
 
 In the prompt template, {name} placeholders are runtime inputs. "<expr>" marks a value the scanner could not
@@ -689,12 +694,22 @@ def label_contracts(sites: list[CallSite], llm: LLM, root: str | Path | None = N
             reasoning="off",  # Nemotron thinks by default (docs/plan/tf-probe.md); labelling needs none
         )
         label: ContractLabel | None = result.parsed
-        if label is None:
+        hints = _hints(site)
+        certain = "task_type" in hints
+        if label is None:  # keep what the code settles, and ask a human for the rest
             flags = site.flags if "MANUAL_REVIEW" in site.flags else [*site.flags, "MANUAL_REVIEW"]
-            out.append(site.model_copy(update={"contract": None, "confidence": 0.0, "flags": flags}))
+            update = {
+                "contract": Contract(**hints) if certain else None,
+                "confidence": 1.0 if certain else 0.0,
+            }
+            out.append(site.model_copy(update={**update, "flags": flags}))
             continue
-        contract, confidence = _apply_hints(site, label.contract, label.confidence)
-        out.append(site.model_copy(update={"contract": contract, "confidence": confidence}))
+        # The labeller never supplies json_schema: it is set only from a literal schema in the code (or later
+        # from the resolved Pydantic model), since a model-written schema can dangle ($ref with no $defs).
+        contract = label.contract.model_copy(update={"json_schema": None, **hints})
+        out.append(
+            site.model_copy(update={"contract": contract, "confidence": 1.0 if certain else label.confidence})
+        )
     return out
 
 
@@ -723,8 +738,8 @@ def _describe(site: CallSite, root: str | Path | None) -> str:
     return text
 
 
-def _apply_hints(site: CallSite, contract: Contract, confidence: float) -> tuple[Contract, float]:
-    """Override the labeller where the call's own parameters are certain."""
+def _hints(site: CallSite) -> dict[str, Any]:
+    """Contract fields the call's own parameters settle; they override the labeller (task_type => certain)."""
     p = site.params
     fmt = p.get("response_format")
     if not isinstance(fmt, dict) and isinstance(p.get("text"), dict):
@@ -739,8 +754,6 @@ def _apply_hints(site: CallSite, contract: Contract, confidence: float) -> tuple
         update = {"task_type": "json_extraction", "output": "json_schema"}
         if isinstance(schema, dict):
             update["json_schema"] = schema
-    if update:
-        confidence = 1.0
     if p.get("stream") is True:
         update["streaming"] = True
-    return contract.model_copy(update=update), confidence
+    return update

@@ -1,0 +1,168 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You label one LLM call site from a Python codebase with its output contract, so its behaviour can be\nre-tested on another model. Return JSON with `contract` and `confidence`.\n\ncontract.task_type, one of:\n- classification: picks one label from a fixed set (put the labels, verbatim, in contract.labels)\n- json_extraction: returns JSON with a fixed set of fields\n- tool_call: is given tools and must call one\n- free_text: prose such as answers, replies or summaries\n- reasoning: multi-step math or logic whose final answer is checked\ncontract.output: label | json_schema | json | tool_call | text (json_schema when the code supplies a schema).\ncontract.tools / contract.streaming: whether the call passes tools / streams its response.\ncontract.reasoning_heavy: true when the task needs multi-step reasoning.\ncontract.latency_budget_ms: only when the code states a timeout, else null.\ncontract.json_schema: always null (the scanner sets it from the code).\nconfidence: your probability, 0 to 1, that task_type is right.\n\nIn the prompt template, {name} placeholders are runtime inputs. \"<expr>\" marks a value the scanner could not\nresolve and \"<pydantic:Name>\" stands for that Pydantic model's JSON schema."
+      },
+      {
+        "role": "user",
+        "content": "Call site:\n{\n  \"file\": \"helphub/summaries/summarize.py\",\n  \"lines\": [\n    16,\n    26\n  ],\n  \"sdk\": \"anthropic\",\n  \"call\": \"client.messages.create\",\n  \"function\": \"summarize_thread\",\n  \"source_model\": \"claude-haiku-4-5\",\n  \"prompt_source\": \"fstring\",\n  \"template\": {\n    \"system\": \"You write handoff notes for HelpHub support agents taking over a ticket.\\nSummarise the thread in English, in at most 120 words, with three labelled parts:\\nIssue, Tried so far, Next step.\\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\\nMention internal notes only as \\\"internal note\\\"; their wording is for agents, never the customer.\",\n    \"user\": \"Ticket thread, {len_messages} messages:\\n\\n{transcript}\",\n    \"variables\": [\n      \"len_messages\",\n      \"transcript\"\n    ]\n  },\n  \"params\": {\n    \"max_tokens\": 400,\n    \"system\": \"You write handoff notes for HelpHub support agents taking over a ticket.\\nSummarise the thread in English, in at most 120 words, with three labelled parts:\\nIssue, Tried so far, Next step.\\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\\nMention internal notes only as \\\"internal note\\\"; their wording is for agents, never the customer.\"\n  },\n  \"flags\": []\n}\n\nCode:\n```python\n\"\"\"Summarise a ticket thread so the next agent can pick it up cold.\"\"\"\n\nfrom anthropic import Anthropic\n\nfrom helphub.models import ThreadMessage\n\nSUMMARY_SYSTEM_PROMPT = \"\"\"You write handoff notes for HelpHub support agents taking over a ticket.\nSummarise the thread in English, in at most 120 words, with three labelled parts:\nIssue, Tried so far, Next step.\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\nMention internal notes only as \"internal note\"; their wording is for agents, never the customer.\"\"\"\n\n\ndef summarize_thread(client: Anthropic, messages: list[ThreadMessage]) -> str:\n    transcript = \"\\n\".join(f\"[{m.sent_at}] {m.role} ({m.author}): {m.text}\" for m in messages)\n    response = client.messages.create(\n        model=\"claude-haiku-4-5\",\n        max_tokens=400,\n        system=SUMMARY_SYSTEM_PROMPT,\n        messages=[\n            {\n                \"role\": \"user\",\n                \"content\": f\"Ticket thread, {len(messages)} messages:\\n\\n{transcript}\",\n            }\n        ],\n    )\n    return \"\".join(block.text for block in response.content if block.type == \"text\").strip()\n```"
+      }
+    ],
+    "params": {
+      "max_tokens": 1024,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "ContractLabel",
+          "schema": {
+            "$defs": {
+              "Contract": {
+                "properties": {
+                  "task_type": {
+                    "enum": [
+                      "classification",
+                      "json_extraction",
+                      "tool_call",
+                      "free_text",
+                      "reasoning"
+                    ],
+                    "title": "Task Type",
+                    "type": "string"
+                  },
+                  "output": {
+                    "enum": [
+                      "text",
+                      "label",
+                      "json_schema",
+                      "json",
+                      "tool_call"
+                    ],
+                    "title": "Output",
+                    "type": "string"
+                  },
+                  "tools": {
+                    "default": false,
+                    "title": "Tools",
+                    "type": "boolean"
+                  },
+                  "streaming": {
+                    "default": false,
+                    "title": "Streaming",
+                    "type": "boolean"
+                  },
+                  "latency_budget_ms": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Latency Budget Ms"
+                  },
+                  "reasoning_heavy": {
+                    "default": false,
+                    "title": "Reasoning Heavy",
+                    "type": "boolean"
+                  },
+                  "labels": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "title": "Labels",
+                    "type": "array"
+                  },
+                  "json_schema": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "title": "Json Schema"
+                  }
+                },
+                "required": [
+                  "task_type",
+                  "output"
+                ],
+                "title": "Contract",
+                "type": "object"
+              }
+            },
+            "description": "Super's answer for one call site.",
+            "properties": {
+              "contract": {
+                "$ref": "#/$defs/Contract"
+              },
+              "confidence": {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "title": "Confidence",
+                "type": "number"
+              }
+            },
+            "required": [
+              "contract",
+              "confidence"
+            ],
+            "title": "ContractLabel",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-8e7d6ca562a83e6a",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"contract\": {\"task_type\": \"free_text\", \"output\": \"text\"}, \"confidence\": 0.98}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792397286,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 28,
+      "prompt_tokens": 919,
+      "total_tokens": 947,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 919
+    }
+  },
+  "latency_ms": 1274,
+  "usage": {
+    "prompt_tokens": 919,
+    "completion_tokens": 28
+  },
+  "created_at": "2026-10-19T08:08:06.526656+00:00"
+}

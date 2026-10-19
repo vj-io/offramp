@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -81,9 +82,51 @@ def test_unresolved_params_do_not_force_a_contract(params):
     assert (out.contract, out.confidence) == (FREE_TEXT, 0.4)
 
 
-def test_invalid_reply_flags_manual_review():
-    [out] = label_contracts([_site()], fake("not a contract"))
-    assert (out.contract, out.confidence, out.flags) == (None, 0.0, ["MANUAL_REVIEW"])
+SCHEMA = {"type": "object", "properties": {"label": {"type": "string"}}}
+
+
+@pytest.mark.parametrize(
+    ("params", "contract", "confidence"),
+    [
+        ({"tools": [{"name": "t"}]}, Contract(task_type="tool_call", output="tool_call", tools=True), 1.0),
+        (
+            {"response_format": {"type": "json_schema", "json_schema": {"name": "x", "schema": SCHEMA}}},
+            Contract(task_type="json_extraction", output="json_schema", json_schema=SCHEMA),
+            1.0,
+        ),
+        ({}, None, 0.0),
+    ],
+    ids=["tools", "json_schema", "no-hint"],
+)
+def test_invalid_reply_keeps_certain_hints_and_flags_manual_review(params, contract, confidence):
+    [out] = label_contracts([_site(**params)], fake("not a contract"))
+    assert (out.contract, out.confidence, out.flags) == (contract, confidence, ["MANUAL_REVIEW"])
+
+
+def test_labeller_never_supplies_json_schema():
+    label = ContractLabel(
+        contract=Contract(task_type="json_extraction", output="json_schema", json_schema={"type": "object"}),
+        confidence=0.9,
+    )
+    [out] = label_contracts([_site()], fake(label))
+    assert (out.contract.task_type, out.contract.json_schema, out.confidence) == (
+        "json_extraction",
+        None,
+        0.9,
+    )
+
+
+# The first live recording (before the labeller prompt stopped asking for json_schema) gave cs_03 a dangling
+# {"$ref": "#/$defs/OrderFields"}; that real reply stays in the cassette directory as a regression input.
+CS03_DANGLING_REF = CASSETTES / "be7a13287797e7eae4cc11a8b0f626f955126afbc1497b975c28f49370a3a139.json"
+
+
+def test_recorded_dangling_ref_reply_loses_its_schema():
+    reply = json.loads(CS03_DANGLING_REF.read_text())["response"]["choices"][0]["message"]["content"]
+    assert json.loads(reply)["contract"]["json_schema"] == {"$ref": "#/$defs/OrderFields"}
+    cs03 = next(s for s in scan_repo(HELPHUB).sites if s.id == "cs_03")
+    [out] = label_contracts([cs03], fake(reply))
+    assert (out.contract.task_type, out.contract.json_schema) == ("json_extraction", None)
 
 
 def test_embeddings_are_not_labelled(labelled):
@@ -156,3 +199,4 @@ def test_record_helphub_cassette():
 def test_helphub_labels_replay_from_cassette():
     by_id = _label_helphub(live=False)
     assert {site_id: by_id[site_id].contract.task_type for site_id in DEMO_TASK_TYPES} == DEMO_TASK_TYPES
+    assert by_id["cs_03"].contract.json_schema is None  # set later from the resolved Pydantic model (Task 7)

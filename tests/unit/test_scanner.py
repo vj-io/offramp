@@ -522,6 +522,14 @@ def test_bom_and_coding_cookie_files_parse(tmp_path):
     assert [s.file for s in scan_repo(tmp_path).sites] == ["bom.py", "latin1.py"]
 
 
+def test_unreadable_file_is_a_warning_not_an_abort(tmp_path):
+    (tmp_path / "ok.py").write_text(OPENAI_FILE)
+    (tmp_path / "gone.py").symlink_to(tmp_path / "missing.py")  # broken symlink: read_bytes raises OSError
+    scan = scan_repo(tmp_path)
+    assert [s.file for s in scan.sites] == ["ok.py"]
+    assert scan.warnings == ["skipped gone.py: not readable (FileNotFoundError)"]
+
+
 def test_recursion_error_skips_only_that_file(tmp_path, caplog):
     (tmp_path / "deep.py").write_text("x = " + " + ".join(["1"] * 3000) + "\n")
     (tmp_path / "ok.py").write_text(OPENAI_FILE)
