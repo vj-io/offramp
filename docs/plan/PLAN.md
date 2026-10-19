@@ -56,7 +56,8 @@ nvidia/offramp-demo-app/   separate repo — the realistic target app Offramp mi
 13. **API (Task 12) — the web app's only contract with the backend:**
     - `POST /api/runs` body `RunConfig` → `{"run_id": str}`; `?replay=demo` → starts a replay run (no TF calls).
     - `GET /api/runs/{run_id}` → `RunSnapshot` `{run_id, config, stage, sites: CallSite[], tier_results:
-      TierResult[], verdicts: Verdict[], totals: RunTotals, artifacts: {pr_url?, report_url?}}`.
+      TierResult[], verdicts: Verdict[], case_summaries: CaseSummary[], totals: RunTotals, artifacts: {pr_url?,
+      report_url?}}`.
     - `GET /api/runs/{run_id}/events` → `text/event-stream`; each event `id: <seq>`, `event: <type>`,
       `data: <RunEvent json>`; honours `Last-Event-ID`; ends after `done` or `error`.
     - `GET /api/runs/{run_id}/report` → JSON download `{snapshot, pr_body_markdown}`.
@@ -382,7 +383,7 @@ not measured). KEEP_CLOSED reason wording: "parity vs reference <p>% < <threshol
 **Amendment A notes:** PR evidence columns: Site | File | Task | Before | After | Parity vs reference (holdout) |
 p50 latency (after) | $/1k calls before (est.) → after. Add a "How parity was measured" section: reference methods
 and audit counts per site (`evals/audit.json`), price sources + dates, LangSmith share links when present, and the
-sentence "No closed-model outputs were recorded; parity is agreement with references."
+sentence "The source models' own outputs were never recorded; parity is agreement with references."
 
 **Owns:** `offramp/agents/patcher.py`, `offramp/agents/pr_writer.py`, `offramp/github.py`,
 `offramp/sandbox.py`, `offramp/templates/client.py.tmpl`, `tests/unit/test_pr_render.py`,
