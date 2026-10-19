@@ -3,6 +3,7 @@
 import json
 import logging
 import sys
+import threading
 import time
 import types
 
@@ -696,6 +697,67 @@ def test_a_rejected_fallback_is_not_retried_again(tmp_path, fallback):
     with pytest.raises(openai.AuthenticationError):
         chat(keyed_client(tmp_path, server))
     assert server.tokens == ["primary-key", "fallback-key"]
+
+
+def test_a_request_that_fails_on_the_primary_after_another_thread_switched_still_retries_on_the_fallback(
+    tmp_path, fallback
+):
+    """Thread B's request is on the wire with the primary key when thread A's 401 moves the process to the
+    fallback; B's own 401 then arrives and B must retry on the fallback too (review finding I1)."""
+    held, release = threading.Event(), threading.Event()
+    tokens, lock = [], threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        token = request.headers["authorization"].removeprefix("Bearer ")
+        with lock:
+            tokens.append(token)
+            is_b = len(tokens) == 1
+        if token == "fallback-key":
+            return httpx.Response(200, json=completion("ok"))
+        if is_b:
+            held.set()
+            assert release.wait(10), "thread A never switched"
+        return httpx.Response(401, json={"error": {"message": "Incorrect API key"}})
+
+    client = TFClient(
+        api_key="primary-key",
+        base_url="https://tf.test/v1",
+        cache_dir=tmp_path / "cache",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    outcome = {}
+
+    def thread_b():
+        try:
+            outcome["b"] = chat(client, messages=[{"role": "user", "content": "B"}]).output.text
+        except Exception as e:
+            outcome["b"] = e
+
+    b = threading.Thread(target=thread_b)
+    b.start()
+    assert held.wait(10)
+    assert chat(client, messages=[{"role": "user", "content": "A"}]).output.text == "ok"  # A switches
+    release.set()
+    b.join(10)
+    assert outcome == {"b": "ok"}
+    assert tokens == ["primary-key", "primary-key", "fallback-key", "fallback-key"]
+
+
+def test_concurrent_rejections_all_get_the_fallback_but_the_switch_is_logged_once(caplog, fallback):
+    barrier = threading.Barrier(16)
+    answers = []
+
+    def rejected():
+        barrier.wait()
+        answers.append(keys.switch_to_fallback("nebius", "primary-key", 401))
+
+    threads = [threading.Thread(target=rejected) for _ in range(16)]
+    with caplog.at_level(logging.INFO):
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    assert answers == [True] * 16 and len(switch_logs(caplog)) == 1
 
 
 def test_the_api_key_is_never_part_of_the_cache_key_or_the_cassette(tmp_path):

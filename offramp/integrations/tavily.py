@@ -9,6 +9,7 @@ the extraction is rejected. Whatever cannot be verified falls back to pricing.ya
 import logging
 import os
 import re
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,7 +33,6 @@ ROLE = "pricing_extract"  # the Token Factory role of the extraction call (Super
 MAX_TOKENS = 700
 MAX_RESULTS = 20  # same one credit as 5: the vendor docs return many near-duplicate pages, so ask for plenty
 PAGE_CHARS = 2500  # of each result shown to Super (Tavily returns up to ~2.4k per page)
-PRICE_WINDOW = 400  # both prices must sit within this many characters after a mention of the model
 MAX_ATTEMPTS = 3  # transport errors, 429 (rate limit) and 5xx back off on the same key
 TIMEOUT_S = 30.0
 
@@ -178,7 +178,10 @@ def _post(http: httpx.Client, payload: dict) -> dict:
             error = type(e).__name__
         else:
             if resp.is_success:
-                return resp.json()
+                try:
+                    return resp.json()
+                except ValueError:
+                    raise TavilyError("response was not JSON") from None
             if keys.switch_to_fallback("tavily", key, resp.status_code, resp.text):
                 continue
             error = f"HTTP {resp.status_code}"
@@ -212,10 +215,6 @@ def _page(results: list[dict], url: str | None) -> str | None:
     return None
 
 
-def _numbers(text: str) -> set[float]:
-    return {float(n.replace(",", "")) for n in re.findall(r"\d[\d,]*(?:\.\d+)?", text)}
-
-
 def _flat(text: str) -> str:  # compares quotes regardless of markdown, punctuation and whitespace
     return re.sub(r"[\W_]+", " ", text.casefold()).strip()
 
@@ -231,42 +230,122 @@ _QUALIFIER = (
 def _mentions(text: str, model: str) -> list[re.Match]:
     """Where `text` names exactly this model, however the page spells it ("claude-sonnet-4-5", "Claude Sonnet
     4.5", a dated snapshot, a tag fused on by markdown flattening: "Claude Haiku 4.5Legacy"): "o3" is not
-    "o3-mini", "claude-sonnet-4" is not "Claude Sonnet 4.5"."""
+    "o3-pro" or "o3-mini", "claude-sonnet-4" is not "Claude Sonnet 4.5"."""
     base = re.sub(rf"({_SNAPSHOT})$", "", model)
     spelled = r"[-\s.]+".join(re.escape(t) for t in re.split(r"[-\s.]+", base))
     pattern = rf"(?<![\w.-]){spelled}(?:{_SNAPSHOT})?(?!(?-i:[a-z0-9_-])|\.\d)(?!{_QUALIFIER})"
     return list(re.finditer(pattern, text, re.I))
 
 
+# Prices count only as `$` amounts, in one of the shapes the vendors print them: a labelled list
+# ("Input ... $3 ... Output ... $15", cached-input lines skipped) or a "$3 / $15" pair in the model's row.
+_AMOUNT = r"\$\s*(\d[\d,]*(?:\.\d+)?)"
+_LABELLED = re.compile(
+    rf"(?<![\w-])(cached\s+)?(input|output)(?:\s+(?:price|pricing|tokens?))?[^\w$]{{0,12}}{_AMOUNT}", re.I
+)
+_PAIR = re.compile(rf"{_AMOUNT}\s*(?:/|\u2022)\s*{_AMOUNT}")
+_ROW_END = re.compile(r"\n+|\|\.\s")  # markdown rows, or rows flattened to "|. "
+
+
+def _number(text: str) -> float:
+    return float(text.replace(",", ""))
+
+
+def _input_then_output(text: str) -> tuple[float, float] | None:
+    """The first two labelled amounts in `text`, only if they are input then output."""
+    labelled = [(m.group(2).lower(), _number(m.group(3))) for m in _LABELLED.finditer(text) if not m.group(1)]
+    if len(labelled) >= 2 and labelled[0][0] == "input" and labelled[1][0] == "output":
+        return labelled[0][1], labelled[1][1]
+    return None
+
+
+def _is_model_page(url: str, model: str) -> bool:
+    """The vendor's own page for this model: the last path segment is the model ("gpt-4o-mini",
+    "sonnet-4-5" for claude-sonnet-4-5), not a sibling's ("o3-pro") or a table or guide."""
+    parts = [p for p in urlparse(url).path.split("/") if p]
+    while parts and parts[-1] in ("overview", "index"):
+        parts.pop()
+    slug = re.sub(r"\.md$", "", parts[-1]) if parts else ""
+    base = re.sub(rf"({_SNAPSHOT})$", "", model)
+    return slug != "" and slug in (base, base.removeprefix("claude-"))
+
+
+def _page_price(model: str, url: str, page: str) -> tuple[float, float] | None:
+    """(input, output) USD per 1M that `page` prints for exactly this model, None when it prints none or is
+    ambiguous. Either the vendor's own model page (the first labelled input then output amounts), or the
+    model's own table row (amounts AFTER the model's name in that row: labelled input then output, or one
+    "$in / $out" pair); prose, other rows, other models' pages and replacement columns never count."""
+    if _is_model_page(url, model) and _mentions(page, model):
+        found = _input_then_output(page)
+        if found:
+            return found
+    rows = set()
+    for row in _ROW_END.split(page):
+        mention = next(iter(_mentions(row, model)), None)
+        # table rows only: a prose sentence can price two models at once
+        if mention is None or "|" not in row:
+            continue
+        tail = row[mention.end() :]
+        found = _input_then_output(tail)
+        if not found and len(re.findall(_AMOUNT, tail)) == 2 and (pair := _PAIR.search(tail)):
+            found = _number(pair.group(1)), _number(pair.group(2))
+        if found:
+            rows.add(found)
+    return rows.pop() if len(rows) == 1 else None
+
+
 def _verified_price(model: str, ext: PricingExtraction, results: list[dict]) -> str | None:
-    """None when the prices are verified, else why they are not: both must be printed in the cited page, close
-    behind a mention of this model (not just anywhere on a page that happens to name it)."""
+    """None when Super's prices are exactly what the cited page prints for this model, else why not."""
     page = _page(results, ext.price_source_url)
     if page is None:
         return "the cited price source is not one of the search results"
     for label, value in (("input", ext.input_usd_per_m), ("output", ext.output_usd_per_m)):
         if value is None or not 0 < value < 1000:
             return f"no plausible {label} price extracted"
-    mentions = _mentions(page, model)
-    if not mentions:
-        return "the cited page does not name the model"
-    for m in mentions:
-        near = _numbers(page[m.start() : m.end() + PRICE_WINDOW])
-        if ext.input_usd_per_m in near and ext.output_usd_per_m in near:
-            return None
-    return f"prices {ext.input_usd_per_m:g}/{ext.output_usd_per_m:g} are not printed next to the model's name"
+    printed = _page_price(model, ext.price_source_url.strip(), page)
+    if printed is None:
+        return "the cited page prints no unambiguous price for exactly this model"
+    if printed != (ext.input_usd_per_m, ext.output_usd_per_m):
+        return f"the cited page prints {printed[0]:g}/{printed[1]:g} for this model, not what was extracted"
+    return None
 
 
 _NOTICE = re.compile(r"deprecat|retire|sunset|shut\s?down|end[- ]of[- ]life|no longer available", re.I)
+# Between the model's name and the retirement word: a sentence, row or chunk boundary ("[...]" joins Tavily's
+# excerpts), a replacement, a relative clause ("X replaces Y, which is deprecated") or a negation means the
+# notice is not about this model.
+_NOT_ABOUT_IT = re.compile(
+    r"\n|\|\.|\[\.\.\.\]|(?<![\d.])\.(?:\s|$)|replac|supersed|succe|migrat|recommend|instead|"
+    r"\b(?:which|that|while|where|not|never|no sooner|won't|isn't|aren't|hasn't|haven't|"
+    r"may|might|could|if)\b",
+    re.I,
+)
+_DELAYED = re.compile(r"\b(?:no|not) (?:sooner|earlier|before)\b", re.I)  # "retired no sooner than 2027"
+_MAX_SUBJECT_GAP = 80  # characters between the model's name and the retirement word
+
+
+def _is_subject_of_notice(quote: str, model: str) -> bool:
+    """The model is what the notice says is deprecated or retired: its name comes first, then the retirement
+    word in the same sentence or row ("o3 and o4-mini are ... deprecated", "| claude-x | Deprecated |"), not
+    as a recommended replacement or in a negation."""
+    for mention in _mentions(quote, model):
+        notice = _NOTICE.search(quote, mention.end())
+        if not notice or notice.start() - mention.end() > _MAX_SUBJECT_GAP:
+            continue
+        if _NOT_ABOUT_IT.search(quote[mention.end() : notice.start()]):
+            continue
+        if not _DELAYED.search(quote[notice.end() : notice.end() + 30]):
+            return True
+    return False
 
 
 def _verified_deprecation(model: str, ext: PricingExtraction, results: list[dict]) -> bool:
-    """The quote is on the cited page word for word, names exactly this model and says it is going away."""
+    """The quote is on the cited page word for word and says this model is going away."""
     page = _page(results, ext.deprecation_url)
     quote = ext.deprecation_quote
-    if not (quote and page is not None and _NOTICE.search(quote)):
+    if not (quote and page is not None and _flat(quote) in _flat(page)):
         return False
-    return _flat(quote) in _flat(page) and bool(_mentions(quote, model))
+    return _is_subject_of_notice(quote, model)
 
 
 # ---------------------------------------------------------------- the lookup
@@ -275,6 +354,35 @@ def _verified_deprecation(model: str, ext: PricingExtraction, results: list[dict
 def _cache_file(cache_dir: str | Path | None, model: str, now: datetime) -> Path:
     base = Path(cache_dir or Path(os.environ.get("OFFRAMP_DATA_DIR", "./var")) / "tavily-cache")
     return base / f"{re.sub(r'[^A-Za-z0-9._-]', '_', model)}-{now:%Y-%m-%d}.json"
+
+
+def _read_cache(path: Path) -> SourceModelInfo | None:
+    try:
+        return SourceModelInfo.model_validate_json(path.read_text())
+    except (OSError, ValueError):  # missing, or a partial / corrupt file: a miss
+        return None
+
+
+def _write_cache(path: Path, info: SourceModelInfo) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")  # write-then-rename: no partial reads
+    with os.fdopen(fd, "w") as f:
+        f.write(info.model_dump_json(indent=2))
+    os.replace(tmp, path)
+
+
+def _why(error: Exception) -> str:
+    """A short fixed reason for the note (it reaches the UI and the PR): never an SDK message, which can carry
+    server text."""
+    if isinstance(error, TavilyError):  # our own text: "HTTP 401", "TAVILY_API_KEY is not set", ...
+        return f"the Tavily search failed ({error})"
+    if isinstance(error, BudgetExceeded):
+        return "the token budget was reached before Super could read the pages"
+    if isinstance(error, CacheMiss):
+        return "Super's reply was not in the replay cache"
+    if isinstance(error, openai.OpenAIError):
+        return "the Super call failed"
+    return "Super was unavailable"
 
 
 def _from_yaml(model: str, now: datetime, why: str, dep: PricingExtraction | None) -> SourceModelInfo:
@@ -306,17 +414,21 @@ def lookup_source_model(
     """Published price + deprecation notice of `model_id`, fetched through Tavily at runtime.
 
     One Tavily search (official vendor domains only), then Nemotron Super (`llm`, default a TFClient) reads
-    the numbers out of the returned pages; they are used only if they appear in the page they are cited to.
-    A Tavily result is cached on disk per (model, UTC day). Anything else falls back to pricing.yaml with the
-    reason in `note`, which cost_before_note() shows; KeyError if pricing.yaml has no such model either.
+    the numbers out of the returned pages; they are used only if the page they are cited to prints exactly
+    them for this model (its own model page or table row).
+    Anything that cannot be verified falls back to pricing.yaml with a short reason in `note`, which
+    cost_before_note() shows; KeyError if pricing.yaml has no such model either. The outcome, verified or
+    rejected, is cached on disk per (model, UTC day) so a rejected lookup does not spend Tavily credits again;
+    a lookup that could not be judged (no key, Tavily or Super unavailable) is not cached.
     """
     now = now or datetime.now(UTC)
     model = model_id.rsplit("/", 1)[-1]
-    cached = _cache_file(cache_dir, model, now)
-    if cached.exists():
-        return SourceModelInfo.model_validate_json(cached.read_text())
+    path = _cache_file(cache_dir, model, now)
+    if (cached := _read_cache(path)) is not None:
+        return cached
 
     ext, results, problem = None, [], "no extraction"
+    settled = True  # False when the lookup could not be judged (search or Super unavailable): do not cache
     own_http = http is None
     http = http or httpx.Client(timeout=TIMEOUT_S)
     try:
@@ -339,24 +451,26 @@ def lookup_source_model(
         ext = reply.parsed
         problem = "the extraction was not valid JSON" if ext is None else _verified_price(model, ext, results)
     except (TavilyError, openai.OpenAIError, CacheMiss, BudgetExceeded, RuntimeError) as e:
-        problem = f"{type(e).__name__}: {e}"
+        problem, settled = _why(e), False
+        log.warning("tavily: %s lookup failed: %s", model, type(e).__name__)
     finally:
         if own_http:
             http.close()
 
     dep = ext if ext is not None and _verified_deprecation(model, ext, results) else None
-    if problem is not None:
+    if problem is None:
+        info = SourceModelInfo(
+            model=model,
+            input_usd_per_m=ext.input_usd_per_m,
+            output_usd_per_m=ext.output_usd_per_m,
+            price_source_url=ext.price_source_url.strip(),
+            fetched_at=now,
+            deprecation=dep.deprecation_quote if dep else None,
+            deprecation_url=dep.deprecation_url if dep else None,
+        )
+    else:
         log.warning("tavily: %s price from pricing.yaml (%s)", model, problem)
-        return _from_yaml(model, now, f"Tavily price not used ({problem})", dep)
-    info = SourceModelInfo(
-        model=model,
-        input_usd_per_m=ext.input_usd_per_m,
-        output_usd_per_m=ext.output_usd_per_m,
-        price_source_url=ext.price_source_url.strip(),
-        fetched_at=now,
-        deprecation=dep.deprecation_quote if dep else None,
-        deprecation_url=dep.deprecation_url if dep else None,
-    )
-    cached.parent.mkdir(parents=True, exist_ok=True)
-    cached.write_text(info.model_dump_json(indent=2))
+        info = _from_yaml(model, now, f"Tavily price not used ({problem})", dep)
+    if settled:  # a rejected lookup is cached too: asking Tavily again today would return the same pages
+        _write_cache(path, info)
     return info

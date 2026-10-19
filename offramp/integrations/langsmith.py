@@ -23,6 +23,8 @@ from offramp.schemas import BaselineResult, CallSite, CandidateResult, CaseScore
 
 log = logging.getLogger(__name__)
 
+TRACE_TIMEOUT_MS = (2_000, 5_000)  # connect, read: for the background trace uploads
+
 
 class CaseResult(NamedTuple):
     """One evaluated case: what was asked, what the tier answered, how it scored."""
@@ -48,11 +50,17 @@ def _langsmith() -> Any | None:
     return langsmith
 
 
-def _new_client(key: str) -> Any | None:
+def _new_client(key: str, *, tracing: bool = False) -> Any | None:
+    """The tracing client batches in a background thread with short timeouts: a slow or dead LangSmith must
+    never stall a Token Factory call. The dataset / experiment client is synchronous instead, so a rejected
+    key raises in the calling thread (Global Constraint 28) and is not swallowed by a background one."""
     sdk = _langsmith()
-    # auto_batch_tracing off: each call is synchronous, so a rejected key raises here instead of being
-    # swallowed by a background thread
-    return sdk.Client(api_key=key, auto_batch_tracing=False) if sdk else None
+    if sdk is None:
+        return None
+    if tracing:
+        # info={}: skip the GET /info the SDK would otherwise make in whichever thread traces first
+        return sdk.Client(api_key=key, timeout_ms=TRACE_TIMEOUT_MS, info={})
+    return sdk.Client(api_key=key, auto_batch_tracing=False)
 
 
 def _primary() -> str | None:
@@ -75,7 +83,12 @@ def run_project(run_id: str) -> Iterator[str | None]:
     `contextvars.copy_context().run(...)`.
     """
     sdk = _langsmith() if tracing_enabled() else None
-    client = _new_client(keys.current("langsmith", _primary()) or "") if sdk else None
+    client = None
+    if sdk is not None:
+        try:
+            client = _new_client(keys.current("langsmith", _primary()) or "", tracing=True)
+        except Exception as e:  # a failing constructor must not fail the run
+            log.warning("langsmith: tracing client failed: %s", type(e).__name__)
     if sdk is None or client is None:
         yield None
         return

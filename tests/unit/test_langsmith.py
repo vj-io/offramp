@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 import types
 from contextlib import contextmanager
@@ -138,13 +139,15 @@ class FakeClient:
 
 
 class Clients:
-    """Replaces langsmith._new_client: records the key of every client built; `fail` goes to the first one."""
+    """Replaces langsmith._new_client: records the key (and whether it is the tracing client) of every client
+    built; `fail` goes to the first one."""
 
     def __init__(self, *fails):
-        self.fails, self.keys, self.calls, self.datasets = list(fails), [], [], {}
+        self.fails, self.keys, self.tracing, self.calls, self.datasets = list(fails), [], [], [], {}
 
-    def __call__(self, key):
+    def __call__(self, key, *, tracing=False):
         self.keys.append(key)
+        self.tracing.append(tracing)
         return FakeClient(key, self, self.fails.pop(0) if self.fails else None)
 
     def named(self, name):
@@ -248,6 +251,7 @@ def test_run_project_routes_every_traced_call_inside_it_to_offramp_run_id(monkey
         kw["project_name"] == "offramp-r1" and kw["enabled"] is True and isinstance(kw["client"], FakeClient)
     )
     assert clients.keys == ["ls-primary"]
+    assert clients.tracing == [True]  # the batching client: tracing never blocks on LangSmith
 
 
 def test_run_project_is_a_no_op_when_tracing_is_off(monkeypatch, sdk, clients):
@@ -277,15 +281,16 @@ def test_token_factory_calls_inside_run_project_are_traced_into_that_project(mon
                 self.posts.append(kw.get("data") or kw.get("json"))
             return response
 
-    sessions = []
+    built = []
 
-    def new_client(key):
-        sessions.append(Session())
-        return sdk.Client(api_key=key, session=sessions[-1], auto_batch_tracing=False)
+    class Client(sdk.Client):  # the production client (as run_project builds it) over a fake session
+        def __init__(self, *args, **kw):
+            super().__init__(*args, session=Session(), **kw)
+            built.append(self)
 
+    monkeypatch.setattr(sdk, "Client", Client)
     monkeypatch.setenv("LANGSMITH_API_KEY", "ls-primary")
     monkeypatch.setenv("LANGSMITH_TRACING", "true")
-    monkeypatch.setattr(langsmith, "_new_client", new_client)
     http = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=COMPLETION)))
     tf = TFClient(api_key="k", base_url="https://tf.test/v1", cache_dir=tmp_path, http_client=http)
 
@@ -295,9 +300,81 @@ def test_token_factory_calls_inside_run_project_are_traced_into_that_project(mon
         )
 
     assert project == "offramp-r1" and reply.output.text == "hello"
-    (session,) = sessions
-    sent = [(b.decode() if isinstance(b, bytes) else json.dumps(b)).replace(" ", "") for b in session.posts]
-    assert sent and all('"session_name":"offramp-r1"' in body for body in sent)
+    (client,) = built
+    client.flush()  # tracing batches in the background; what it uploads:
+    sent = b"".join(b if isinstance(b, bytes) else json.dumps(b).encode() for b in client.session.posts)
+    assert b'"session_name":"offramp-r1"' in sent.replace(b" ", b"")
+    assert sent.count(b"session_name") == sent.count(b'"session_name":"offramp-r1"')  # no other project
+
+
+@pytest.mark.filterwarnings("ignore:langsmith.wrappers._openai_agents is deprecated:DeprecationWarning")
+def test_a_hanging_langsmith_endpoint_does_not_slow_a_traced_token_factory_call(monkeypatch, tmp_path):
+    """Review finding I2: the tracing client used to make two synchronous round trips per traced call."""
+    sdk = pytest.importorskip("langsmith")
+    requests = pytest.importorskip("requests")
+    hang_s = 1.5
+    recovered = threading.Event()
+
+    class Hanging(requests.Session):
+        def request(self, method, url, **kw):
+            if not recovered.wait(hang_s):  # LangSmith is up but unresponsive, for every request
+                raise requests.ConnectionError("down")
+            response = requests.Response()
+            response.status_code, response.url, response._content = 200, url, b"{}"
+            return response
+
+    built = []
+
+    class Client(sdk.Client):  # the production client (as run_project builds it) over a hanging session
+        def __init__(self, *args, **kw):
+            super().__init__(*args, session=Hanging(), **kw)
+            built.append(self)
+
+    monkeypatch.setattr(sdk, "Client", Client)
+    monkeypatch.setenv("LANGSMITH_API_KEY", "ls-primary")
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    http = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, json=COMPLETION)))
+    tf = TFClient(api_key="k", base_url="https://tf.test/v1", cache_dir=tmp_path, http_client=http)
+
+    started = time.perf_counter()
+    with langsmith.run_project("r1") as project:
+        for n in range(3):
+            reply = tf.chat(
+                role="scanner",
+                tier=Tier.SUPER,
+                messages=[{"role": "user", "content": f"hi {n}"}],
+                max_tokens=5,
+            )
+    elapsed = time.perf_counter() - started
+    recovered.set()  # let the background uploads finish: nothing may keep running or logging after the test
+    for client in built:
+        client.flush()
+
+    assert project == "offramp-r1" and reply.output.text == "hello"
+    assert elapsed < 0.5, (
+        f"3 traced calls took {elapsed:.2f}s against a LangSmith that hangs {hang_s}s per request"
+    )
+
+
+def test_the_tracing_client_batches_in_the_background_and_never_asks_the_server_for_info(monkeypatch):
+    sdk = pytest.importorskip("langsmith")
+    requests = pytest.importorskip("requests")
+    asked = []
+
+    class Session(requests.Session):
+        def request(self, method, url, **kw):
+            asked.append(url)
+            raise requests.ConnectionError("down")
+
+    class Client(sdk.Client):
+        def __init__(self, *args, **kw):
+            super().__init__(*args, session=Session(), **kw)
+
+    monkeypatch.setattr(sdk, "Client", Client)
+    tracing, sync = langsmith._new_client("k", tracing=True), langsmith._new_client("k")
+    assert tracing.tracing_queue is not None and sync.tracing_queue is None  # batching vs synchronous
+    assert tracing.timeout_ms == langsmith.TRACE_TIMEOUT_MS
+    assert tracing.info.version == "" and asked == []  # GET /info would block whichever thread traces first
 
 
 # ------------------------------------------------------------------ datasets
@@ -331,6 +408,13 @@ def test_upload_dataset_creates_one_dataset_per_run_and_site_with_cases_and_refe
     assert len({e["id"] for e in kw["examples"]}) == 3 and all(
         isinstance(e["id"], UUID) for e in kw["examples"]
     )
+
+
+def test_dataset_and_experiment_helpers_use_the_synchronous_client(clients):
+    langsmith.upload_dataset(SITE, [case(1)], [reference(1)], run_id="r1")
+    langsmith.log_experiment(SITE, Tier.SUPER, "dev", [result(1)], run_id="r1")
+    langsmith.share_link(SITE, run_id="r1")
+    assert clients.tracing == [False, False, False]  # errors must reach the caller (fallback key, logging)
 
 
 def test_upload_dataset_is_idempotent_per_run_and_site(clients):
@@ -546,10 +630,16 @@ def test_live_roundtrip_dataset_experiment_trace_then_delete(monkeypatch):
         assert exp_url
 
         def landed(project, n):
-            for _ in range(30):  # LangSmith ingests runs asynchronously
-                runs = list(client.list_runs(project_name=project))
+            runs = []
+            for _ in range(
+                40
+            ):  # LangSmith ingests runs asynchronously; a traced project appears with its first run
+                try:
+                    runs = list(client.list_runs(project_name=project))
+                except sdk.utils.LangSmithNotFoundError:
+                    runs = []
                 if len(runs) >= n:
-                    return runs
+                    break
                 time.sleep(1)
             return runs
 

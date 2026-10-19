@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
+import openai
 import pytest
 
 from offramp import pricing
@@ -191,8 +192,11 @@ def test_results_off_the_vendors_domains_are_ignored_even_if_tavily_returned_the
 @pytest.mark.parametrize(
     "over,reason",
     [
-        (dict(output_usd_per_m=0.66), "prices 0.15/0.66 are not printed next to the model's name"),
-        (dict(input_usd_per_m=0.10), "prices 0.1/0.6 are not printed next to the model's name"),
+        (
+            dict(output_usd_per_m=0.66),
+            "the cited page prints 0.15/0.6 for this model, not what was extracted",
+        ),
+        (dict(input_usd_per_m=0.10), "the cited page prints 0.15/0.6 for this model, not what was extracted"),
         (dict(price_source_url="https://openai.com/never-returned"), "not one of the search results"),
         (dict(price_source_url=None), "not one of the search results"),
         (dict(input_usd_per_m=None), "no plausible input price"),
@@ -217,46 +221,44 @@ def test_an_unverifiable_extraction_is_rejected_and_pricing_yaml_is_used_with_th
 def test_a_number_on_a_different_result_than_the_cited_one_does_not_count(tmp_path):
     server = Tavily(body((MINI_URL, "gpt-4o-mini Input: $0.15"), (O3_URL, "Output: $0.60 per 1M")))
     info, _ = lookup(tmp_path, server, mini())
-    assert info.via == "pricing.yaml" and "not printed next to the model's name" in info.note
+    assert info.via == "pricing.yaml" and "no unambiguous price for exactly this model" in info.note
 
 
-def test_a_page_that_prints_the_numbers_but_not_next_to_this_model_does_not_count(tmp_path):
-    # Seen in the real claude-sonnet-4-5 search: Sonnet 5's pages mention 4.5 yet print Sonnet 5's price.
-    page = (
-        "Migrate from Claude Sonnet 4.5 ... "
-        + "x" * 600
-        + " Input pricing: $2 / MTok Output pricing: $10 / MTok"
-    )
+SONNET_5_PAGE = (  # the shape of the real Sonnet 5 pages: they mention 4.5 but print Sonnet 5's price
+    "Migrate from Claude Sonnet 4.5 to Claude Sonnet 5.5\n\nInput pricing\n:   $2 / MTok\n\n"
+    "Output pricing\n:   $10 / MTok"
+)
+
+
+@pytest.mark.parametrize("url", [CLAUDE_URL, "https://platform.claude.com/docs/en/models/sonnet-5"])
+def test_a_page_that_prints_another_models_price_does_not_count(tmp_path, url):
     info, _ = lookup(
         tmp_path,
-        Tavily(body((CLAUDE_URL, page))),
-        PricingExtraction(input_usd_per_m=2.0, output_usd_per_m=10.0, price_source_url=CLAUDE_URL),
+        Tavily(body((url, SONNET_5_PAGE))),
+        PricingExtraction(input_usd_per_m=2.0, output_usd_per_m=10.0, price_source_url=url),
         model="claude-sonnet-4-5",
     )
-    assert info.via == "pricing.yaml" and "not printed next to the model's name" in info.note
+    assert info.via == "pricing.yaml" and "no unambiguous price for exactly this model" in info.note
     assert (info.input_usd_per_m, info.output_usd_per_m) == (3.0, 15.0)
 
 
 def test_a_cited_page_that_never_names_the_model_is_rejected(tmp_path):
     info, _ = lookup(tmp_path, Tavily(body((MINI_URL, "Input: $0.15  Output: $0.60"))), mini())
-    assert info.via == "pricing.yaml" and "the cited page does not name the model" in info.note
+    assert info.via == "pricing.yaml" and "no unambiguous price for exactly this model" in info.note
 
 
 @pytest.mark.parametrize(
     "model,page",
     [
-        (
-            "claude-sonnet-4-5",
-            "| Claude Sonnet 4.5 | $3 / MTok | $3.75 / MTok | $6 / MTok | $0.30 / MTok | $15 / MTok |",
-        ),
-        ("claude-sonnet-4-5", "| claude-sonnet-4-5-20250929 | $3 / MTok | $15 / MTok |"),
-        ("claude-sonnet-4-5-20250929", "| Claude Sonnet 4.5 | $3 / MTok | $15 / MTok |"),
-        ("gpt-4o-mini", "GPT-4o mini ... Input $3 Output $15"),
-        ("o3", "| o3-mini | $0.50 | $9 |\n| o3 | $3 | $15 |"),
+        ("claude-sonnet-4-5", "| Claude Sonnet 4.5 | $3 / $15 | Extended |"),
+        ("claude-sonnet-4-5", "| claude-sonnet-4-5-20250929 | $3 / $15 |"),
+        ("claude-sonnet-4-5-20250929", "| Claude Sonnet 4.5 | $3 / $15 |"),
+        ("gpt-4o-mini", "| GPT-4o mini | Input $3 | Output $15 |"),
+        ("o3", "| o3-mini | $0.50 / $9 |\n| o3 | $3 / $15 |"),
         (
             "claude-haiku-4-5",
             "| Claude Haiku 4.5This modelLegacy | 200K | 64K | $3 / $15 | Extended |",
-        ),  # real page
+        ),  # real
     ],
 )
 def test_the_model_is_found_however_the_page_spells_it(tmp_path, model, page):
@@ -302,7 +304,9 @@ def test_result_urls_with_trailing_spaces_still_match_the_citation(tmp_path):
 
 def test_the_vendor_docs_return_one_page_under_many_urls_and_super_sees_it_once(tmp_path):
     twin = "https://platform.openai.com/docs/models/gpt-4o-mini"
-    server = Tavily(body((MINI_URL, SYNTHETIC_MINI), (twin, SYNTHETIC_MINI), (O3_URL, "o3 $2 $8")))
+    server = Tavily(
+        body((MINI_URL, SYNTHETIC_MINI), (twin, SYNTHETIC_MINI), (O3_URL, "o3 Input $2 Output $8"))
+    )
     _, llm = lookup(tmp_path, server, mini())
     shown = llm.calls[0]["messages"][1]["content"]
     assert shown.count(SYNTHETIC_MINI) == 1 and MINI_URL in shown and twin not in shown and O3_URL in shown
@@ -339,7 +343,7 @@ SONNET_PRICE = dict(
 
 def sonnet_body():
     return body(
-        ("https://docs.claude.com/pricing", "claude-sonnet-4-5 $3 input $15 output"),
+        ("https://docs.claude.com/pricing", "| claude-sonnet-4-5 | $3 / $15 |"),
         (DEP["deprecation_url"], SYNTHETIC_DEPRECATION),
     )
 
@@ -428,12 +432,35 @@ def test_a_tavily_result_is_cached_per_model_and_day(tmp_path):
     ]
 
 
-def test_a_fallback_result_is_not_cached_so_the_next_call_tries_tavily_again(tmp_path):
+def test_a_rejected_lookup_is_cached_too_so_it_does_not_spend_tavily_credits_again(tmp_path):
     server = Tavily(body((MINI_URL, SYNTHETIC_MINI)), body((MINI_URL, SYNTHETIC_MINI)))
     first, _ = lookup(tmp_path, server, mini(output_usd_per_m=0.66))
+    assert first.via == "pricing.yaml" and len(list((tmp_path / "cache").glob("*.json"))) == 1
+    llm = FakeLLM()  # has no reply: a second lookup that reached Super would fail
+    again = lookup_source_model(
+        "gpt-4o-mini", llm=llm, http=server.client(), cache_dir=tmp_path / "cache", now=NOW
+    )
+    assert again == first and len(server.requests) == 1 and llm.calls == []
+
+
+@pytest.mark.parametrize("unjudged", ["tavily-500", "super-down", "no-key"])
+def test_a_lookup_that_could_not_be_judged_is_not_cached(tmp_path, monkeypatch, unjudged):
+    if unjudged == "no-key":
+        monkeypatch.delenv("TAVILY_API_KEY")
+    server = Tavily(500, 500, 500) if unjudged == "tavily-500" else Tavily(body((MINI_URL, SYNTHETIC_MINI)))
+    llm = FakeLLM({tavily.ROLE: [RuntimeError("down")]}) if unjudged == "super-down" else None
+    first, _ = lookup(tmp_path, server, mini(), **({"llm": llm} if llm else {}))
     assert first.via == "pricing.yaml" and not list((tmp_path / "cache").glob("*.json"))
-    second, _ = lookup(tmp_path, server, mini())
-    assert second.via == "tavily" and len(server.requests) == 2
+
+
+def test_a_corrupt_cache_file_is_a_miss_and_is_replaced_atomically(tmp_path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "gpt-4o-mini-2026-10-19.json").write_text('{"model": "gpt-4o-mini", "input_usd')  # half written
+    info, _ = lookup(tmp_path, Tavily(body((MINI_URL, SYNTHETIC_MINI))), mini())
+    assert info.via == "tavily"
+    assert SourceModelInfo.model_validate_json((cache / "gpt-4o-mini-2026-10-19.json").read_text()) == info
+    assert [p.name for p in cache.iterdir()] == ["gpt-4o-mini-2026-10-19.json"]  # no .tmp left behind
 
 
 def test_default_cache_dir_is_under_offramp_data_dir(tmp_path, monkeypatch):
@@ -474,22 +501,43 @@ def test_a_plain_rate_limit_backs_off_and_retries_on_the_same_key(tmp_path, monk
 def test_a_client_error_is_not_retried(tmp_path):
     server = Tavily(400, body((MINI_URL, SYNTHETIC_MINI)))
     info, _ = lookup(tmp_path, server, mini())
-    assert info.via == "pricing.yaml" and "HTTP 400" in info.note and len(server.requests) == 1
+    assert info.via == "pricing.yaml" and len(server.requests) == 1
+    assert "(the Tavily search failed (HTTP 400))" in info.note
+
+
+SERVER_TEXT = "Incorrect API key provided: nvapi-SECRET123. Visit https://internal.example/billing"
 
 
 @pytest.mark.parametrize(
-    "error",
+    "error,reason",
     [
-        CacheMiss("no cached response"),
-        BudgetExceeded("token cap reached"),
-        RuntimeError("NEBIUS_API_KEY is not set"),
+        (CacheMiss(SERVER_TEXT), "Super's reply was not in the replay cache"),
+        (BudgetExceeded(SERVER_TEXT), "the token budget was reached before Super could read the pages"),
+        (RuntimeError(SERVER_TEXT), "Super was unavailable"),
+        (
+            openai.AuthenticationError(
+                SERVER_TEXT,
+                response=httpx.Response(401, request=httpx.Request("POST", "https://x")),
+                body=None,
+            ),
+            "the Super call failed",
+        ),
     ],
 )
-def test_super_being_unavailable_falls_back_instead_of_crashing_the_run(tmp_path, error):
+def test_super_being_unavailable_falls_back_with_a_fixed_reason_not_the_exception_text(
+    tmp_path, error, reason
+):
     info, _ = lookup(
         tmp_path, Tavily(body((MINI_URL, SYNTHETIC_MINI))), None, llm=FakeLLM({tavily.ROLE: [error]})
     )
-    assert info.via == "pricing.yaml" and type(error).__name__ in info.note
+    assert info.via == "pricing.yaml" and reason in info.note
+    assert "SECRET123" not in info.note and "internal.example" not in info.note
+    assert "SECRET123" not in info.cost_before_note()
+
+
+def test_a_tavily_200_that_is_not_json_falls_back_instead_of_crashing(tmp_path):
+    info, llm = lookup(tmp_path, Tavily((200, "<html>maintenance</html>")), mini())
+    assert info.via == "pricing.yaml" and "response was not JSON" in info.note and llm.calls == []
 
 
 def test_a_super_reply_that_is_not_valid_json_falls_back(tmp_path):
@@ -538,7 +586,9 @@ def test_an_exhausted_primary_key_retries_once_on_the_fallback_for_the_rest_of_t
     tmp_path, monkeypatch, caplog, status, text
 ):
     monkeypatch.setenv("TAVILY_API_KEY_FALLBACK", "tvly-fallback")
-    server = KeyedTavily(status, text, body((MINI_URL, SYNTHETIC_MINI)), body((O3_URL, "o3 $2.00 $8.00")))
+    server = KeyedTavily(
+        status, text, body((MINI_URL, SYNTHETIC_MINI)), body((O3_URL, "o3 Input $2.00 Output $8.00"))
+    )
     with caplog.at_level(logging.INFO):
         info, _ = lookup(tmp_path, server, mini())
     assert info.via == "tavily" and server.tokens == ["tvly-primary", "tvly-fallback"]
@@ -688,6 +738,238 @@ def test_fixtures_hold_no_api_key_and_are_marked_as_recordings():
         assert "tvly-" not in text and "Bearer" not in text and "api_key" not in text.lower(), path.name
     assert {p.stem for p in FIXTURES.glob("*.json")} == set(MODELS)
     assert all("recorded_at" in json.loads(p.read_text()) for p in FIXTURES.glob("*.json"))
+
+
+# ------------------------------------------------------------------ the recorded pages as regression fixtures
+# Review finding C1: "two numbers near the model's name" verified o3-pro's price for o3, gpt-4-32k's for
+# gpt-4o,
+# and the digits of the model's own name. These run the verifier on the real recorded pages.
+
+
+def recorded_results(model: str) -> list[dict]:
+    """The search results exactly as lookup_source_model hands them to the verifier."""
+    results = json.loads((FIXTURES / f"{model}.json").read_text())["response"]["results"]
+    return [{"url": r["url"].strip(), "content": r["content"]} for r in results]
+
+
+def cited(model: str, url: str, input_usd_per_m: float, output_usd_per_m: float) -> str | None:
+    ext = PricingExtraction(
+        price_source_url=url, input_usd_per_m=input_usd_per_m, output_usd_per_m=output_usd_per_m
+    )
+    return tavily._verified_price(model, ext, recorded_results(model))
+
+
+O3_PRO = "https://platform.openai.com/docs/models/o3-pro"
+O3_PRO_TWIN = "https://developers.openai.com/api/docs/models/o3-pro"
+DEPRECATIONS = "https://developers.openai.com/api/docs/deprecations"
+HAIKU_PAGE = "https://docs.claude.com/docs/en/models/haiku-4-5/overview"
+
+
+@pytest.mark.parametrize(
+    "model,url,pair,why",
+    [
+        ("o3", O3_PRO, (20.0, 80.0), "o3-pro's own price, on o3-pro's page"),
+        ("o3", O3_PRO_TWIN, (2.0, 80.0), "o3's input with o3-pro's output"),
+        ("o3", O3_PRO, (2.0, 8.0), "the true o3 price, which the o3-pro page does not print"),
+        ("o3", O3_PRO, (3.0, 3.0), "the digit of the model's name"),
+        ("gpt-4o", DEPRECATIONS, (60.0, 120.0), "gpt-4-32k's price; gpt-4o is only its replacement"),
+        ("gpt-4o", DEPRECATIONS, (4.0, 4.0), "digits of the model's name"),
+        ("claude-haiku-4-5", HAIKU_PAGE, (4.5, 4.5), "digits of the model's name"),
+        ("claude-haiku-4-5", HAIKU_PAGE, (10.0, 50.0), "another model's row on the same page"),
+        ("claude-haiku-4-5", HAIKU_PAGE, (5.0, 1.0), "input and output swapped"),
+        ("claude-haiku-4-5", HAIKU_PAGE, (1.0, 1.0), "the input price twice"),
+        (
+            "claude-sonnet-4-5",
+            "https://platform.claude.com/docs/en/models/sonnet-4-5",
+            (15.0, 3.0),
+            "swapped",
+        ),
+        (
+            "claude-sonnet-4-5",
+            "https://platform.claude.com/docs/en/models/sonnet-4-5",
+            (2.0, 10.0),
+            "Sonnet 5.5's",
+        ),
+        ("gpt-4o-mini", "https://developers.openai.com/api/docs/models/gpt-4o-mini", (0.6, 0.15), "swapped"),
+        (
+            "gpt-4o-mini",
+            "https://developers.openai.com/api/docs/models/gpt-4o-mini",
+            (0.075, 0.6),
+            "cached input",
+        ),
+    ],
+    ids=lambda v: v if isinstance(v, str) and len(v) > 25 else None,
+)
+def test_recorded_pages_never_verify_a_price_the_page_does_not_print_for_this_model(model, url, pair, why):
+    assert cited(model, url, *pair) is not None, why
+
+
+@pytest.mark.parametrize(
+    "model,url",
+    [
+        ("gpt-4o-mini", "https://developers.openai.com/api/docs/models/gpt-4o-mini"),
+        ("claude-sonnet-4-5", "https://platform.claude.com/docs/en/models/sonnet-4-5"),
+        ("claude-sonnet-4-5", "https://platform.claude.com/docs/en/models/sonnet-4-5/overview"),
+        ("claude-haiku-4-5", HAIKU_PAGE),
+        ("claude-haiku-4-5", "https://docs.claude.com/en/docs/models/haiku-4-5/overview"),
+    ],
+)
+def test_recorded_pages_still_verify_the_genuine_price(model, url):
+    assert cited(model, url, *pricing.price(model)) is None
+
+
+@pytest.mark.parametrize("model", MODELS)
+def test_no_recorded_page_prints_anything_but_the_genuine_price_for_any_model(model):
+    """Every page of every recording, asked about every recorded model: only the genuine price comes out."""
+    for page in recorded_results(model):
+        for asked in MODELS:
+            printed = tavily._page_price(asked, page["url"], page["content"])
+            assert printed in (None, pricing.price(asked)), (asked, page["url"], printed)
+
+
+def test_o3_and_gpt_4o_have_no_verifiable_price_in_their_recordings():
+    for model in ("o3", "gpt-4o"):
+        assert [tavily._page_price(model, p["url"], p["content"]) for p in recorded_results(model)] == [
+            None
+        ] * len(recorded_results(model))
+
+
+# ---- the same rules on small pages (the shapes the vendors print)
+
+
+SONNET_PAGE = "https://platform.claude.com/docs/en/models/sonnet-4-5"
+
+
+def priced(page: str, model="claude-sonnet-4-5", url=CLAUDE_URL):
+    return tavily._page_price(model, url, page)
+
+
+def test_a_labelled_list_on_the_models_own_page_gives_input_then_output():
+    page = "# Claude Sonnet 4.5\n\nInput pricing\n:   $3/ MTok\n\nOutput pricing\n:   $15/ MTok"
+    assert priced(page, url="https://platform.claude.com/docs/en/models/sonnet-4-5") == (3.0, 15.0)
+
+
+def test_cached_input_lines_are_not_the_input_price():
+    page = "gpt-4o-mini\nInput\n\n$0.15\n\nCached input\n\n$0.075\n\nOutput\n\n$0.60"
+    assert priced(page, "gpt-4o-mini", MINI_URL) == (0.15, 0.60)
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        "Claude Sonnet 4.5\nOutput pricing: $15\nInput pricing: $3",  # output before input
+        "Claude Sonnet 4.5\nInput pricing: 3\nOutput pricing: 15",  # no currency sign
+        "Claude Sonnet 4.5\nInput pricing: $3\nInput pricing: $6\nOutput pricing: $15",  # two inputs in a row
+        "Claude Sonnet 4.5\nInput pricing: $3",  # no output
+        "| Claude Sonnet 4.5 | 3 / 15 |",  # no currency sign in a row
+        "| Claude Sonnet 4.5 | $3 / MTok | $3.75 / MTok | $6 / MTok | $0.30 / MTok | $15 / MTok |",  # five
+        "| 2025-06-06 | claude-x | $60 / $120 | Claude Sonnet 4.5 |",  # the model is the replacement column
+        "| Claude Sonnet 4.5 | $3 / $15 |\n| Claude Sonnet 4.5 | $4 / $20 |",  # two rows disagree: ambiguous
+        "| Claude Sonnet 4.5 | $3 / $15 | $3.75 / $18 |",  # two pairs in one row: which is it?
+        "Claude Sonnet 4.5 is cheaper than Claude Opus 5.5 ($10 / $50)",  # a comparison, not its price
+    ],
+)
+def test_ambiguous_or_unlabelled_prices_are_not_taken(page):
+    assert priced(page) is None
+    assert priced(page, url=SONNET_PAGE) is None  # nor on the model's own page
+
+
+def test_two_rows_that_agree_are_not_ambiguous():
+    assert priced("| Claude Sonnet 4.5 | $3 / $15 |\n| Claude Sonnet 4.5 (legacy) | $3 / $15 |") == (
+        3.0,
+        15.0,
+    )
+
+
+def test_the_models_own_page_is_told_from_a_siblings_by_its_url_slug():
+    row = "| Claude Sonnet 4.5 | Input pricing: $3 | Output pricing: $15 |"
+    assert tavily._is_model_page(
+        "https://platform.claude.com/docs/en/models/sonnet-4-5/overview", "claude-sonnet-4-5"
+    )
+    assert tavily._is_model_page("https://x.test/docs/models/gpt-4o-mini.md?v=1", "gpt-4o-mini-2024-07-18")
+    assert not tavily._is_model_page("https://x.test/docs/models/o3-pro", "o3")
+    assert not tavily._is_model_page("https://x.test/docs/models/gpt-4o-mini", "gpt-4o")
+    assert not tavily._is_model_page("https://x.test/docs/models/sonnet-5", "claude-sonnet-4-5")
+    assert not tavily._is_model_page("https://x.test/docs/about-claude/pricing", "claude-sonnet-4-5")
+    assert priced(row, url="https://platform.claude.com/docs/en/models/sonnet-5") == (
+        3.0,
+        15.0,
+    )  # a table row
+    assert priced(row.replace("|", "")) is None  # the same words as prose
+
+
+# ------------------------------------------------------------------ deprecation: the model is the subject
+
+
+REAL_NOTICES = [
+    (
+        "claude-sonnet-4-5",
+        "Claude Sonnet 4.5 is deprecated: it is still functional but no longer recommended.",
+    ),
+    ("o3", "o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API."),
+    ("o4-mini", "o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API."),
+    (
+        "claude-sonnet-4-5",
+        "| claude-sonnet-4-5-20250929 | Deprecated | September 30, 2026 | November 30, 2026 |",
+    ),
+    ("claude-3-7-sonnet", "| claude-3-7-sonnet-20250219 | Retired | October 28, 2025 | February 19, 2026 |"),
+]
+NOT_ABOUT_THE_MODEL = [
+    ("claude-sonnet-5-5", "Claude Sonnet 5.5 replaces Claude 3.7 Sonnet, which is deprecated."),
+    (
+        "claude-sonnet-5-5",
+        "Recommended replacement: Claude Sonnet 5.5. Claude Sonnet 4.5 retires on November 30, 2026.",
+    ),
+    (
+        "claude-sonnet-5-5",
+        "Claude Sonnet 4.5 is deprecated: it retires 2026-11-30. Recommended replacement: Claude Sonnet 5.5.",
+    ),
+    ("gpt-4o", "gpt-4-32k is deprecated and replaced by gpt-4o."),
+    ("gpt-4o", "Deprecated | gpt-4o"),
+    ("claude-x", "claude-x will not be retired before 2027."),
+    ("claude-x", "claude-x is not deprecated."),
+    ("claude-x", "claude-x is active and will be retired no sooner than 2027."),
+    (
+        "claude-haiku-4-5",
+        "| claude-haiku-4-5 | Active | N/A | Not sooner than October 15, 2026 |\n| claude-x | Deprecated |",
+    ),
+    ("claude-haiku-4-5", "| claude-haiku-4-5 | Active | N/A |"),
+    ("o3", "o3-mini is deprecated"),
+    ("o3", "o3-pro is deprecated"),
+    (  # the retirement word is a whole clause away from the name
+        "claude-x",
+        "claude-x is offered on the Claude API, Amazon Bedrock, Google Cloud and Microsoft Foundry, "
+        "deprecated models are listed elsewhere",
+    ),
+]
+
+
+@pytest.mark.parametrize("model,quote", REAL_NOTICES)
+def test_a_notice_whose_subject_is_the_model_counts(model, quote):
+    assert tavily._is_subject_of_notice(quote, model)
+
+
+@pytest.mark.parametrize("model,quote", NOT_ABOUT_THE_MODEL)
+def test_a_notice_where_the_model_is_a_replacement_or_negated_does_not_count(model, quote):
+    assert not tavily._is_subject_of_notice(quote, model)
+
+
+def test_the_recorded_gpt_4o_deprecations_page_is_not_a_notice_about_gpt_4o():
+    """gpt-4o appears there only in the 'Recommended replacement' column, next to $60 / $120 rows."""
+    page = next(p for p in recorded_results("gpt-4o") if p["url"] == DEPRECATIONS)["content"]
+    start = page.index("| Shutdown date | Deprecated model |")
+    quote = page[start : page.index("`gpt-4o` |", start) + len("`gpt-4o` |")]
+    ext = PricingExtraction(deprecation_url=DEPRECATIONS, deprecation_quote=quote)
+    assert tavily._NOTICE.search(quote) and tavily._mentions(
+        quote, "gpt-4o"
+    )  # the old check would have passed
+    assert not tavily._verified_deprecation("gpt-4o", ext, recorded_results("gpt-4o"))
+    for tail in (page[start:], page):  # and no larger slice of the page does either
+        assert not tavily._verified_deprecation(
+            "gpt-4o",
+            PricingExtraction(deprecation_url=DEPRECATIONS, deprecation_quote=tail),
+            recorded_results("gpt-4o"),
+        )
 
 
 @pytest.mark.live

@@ -217,11 +217,12 @@ class TFClient:
         self.live = live
         self.budget = budget
         self._http_client = http_client  # tests inject httpx.MockTransport here
-        self._sdk: OpenAI | None = None
-        self._sdk_key: str | None = None  # the key _sdk was built with (never logged)
+        self._conn: tuple[OpenAI, str] | None = None  # (SDK client, key it carries); never logged
 
-    def _openai(self) -> OpenAI:
-        if self._sdk is None:  # built lazily so live=False (cassette replay) never needs a key
+    def _connection(self) -> tuple[OpenAI, str]:
+        """The SDK client and the key it carries, as one pair: a thread that has sent a request with this
+        client must know which key that was even if another thread has since moved on to the fallback."""
+        if self._conn is None:  # built lazily so live=False (cassette replay) never needs a key
             key = keys.current("nebius", self.api_key)
             if not key:
                 raise RuntimeError("NEBIUS_API_KEY is not set (live=False replays the cache without a key)")
@@ -239,19 +240,24 @@ class TFClient:
                     pass
                 else:
                     sdk = wrap_openai(sdk)
-            self._sdk, self._sdk_key = sdk, key
-        return self._sdk
+            self._conn = sdk, key
+        return self._conn
+
+    def _openai(self) -> OpenAI:
+        return self._connection()[0]
 
     def _create(self, model: str, messages: list[dict[str, Any]], params: dict[str, Any]) -> Any:
         """chat.completions.create; a rejected / out-of-credit primary key moves the process to the
         NEBIUS_API_KEY_FALLBACK and retries the same request once (Global Constraint 28)."""
+        sdk, key = self._connection()  # the key THIS request carries, whatever other threads do meanwhile
         try:
-            return self._openai().chat.completions.create(model=model, messages=messages, **params)
+            return sdk.chat.completions.create(model=model, messages=messages, **params)
         except APIStatusError as e:
-            if not keys.switch_to_fallback("nebius", self._sdk_key, *keys.status_and_body(e)):
+            if not keys.switch_to_fallback("nebius", key, *keys.status_and_body(e)):
                 raise
-            self._sdk = None  # rebuilt on the fallback key
-            return self._openai().chat.completions.create(model=model, messages=messages, **params)
+            self._conn = None  # rebuilt on the fallback key
+            sdk, _ = self._connection()
+            return sdk.chat.completions.create(model=model, messages=messages, **params)
 
     def _complete(
         self, role: str, info: TierInfo, messages: list[dict[str, Any]], params: dict[str, Any]

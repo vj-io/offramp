@@ -8,6 +8,7 @@ cached or put in an exception message: this module only ever compares them.
 import logging
 import os
 import re
+import threading
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -18,6 +19,7 @@ _REJECTED = {401, 402, 403, 432, 433}
 _OUT_OF_CREDIT = re.compile(r"quota|credit|balance|insufficient", re.I)
 
 _exhausted: set[str] = set()  # providers whose primary key was rejected; process-wide on purpose
+_lock = threading.Lock()
 
 
 def current(provider: str, primary: str | None) -> str | None:
@@ -37,8 +39,10 @@ def switch_to_fallback(provider: str, used_key: str | None, status: int | None, 
         return False
     if status not in _REJECTED and not (status == 429 and _OUT_OF_CREDIT.search(body)):
         return False
-    if provider not in _exhausted:
+    with _lock:
+        first = provider not in _exhausted
         _exhausted.add(provider)
+    if first:
         log.warning("%s: primary key exhausted, using fallback", provider)
     return True
 
