@@ -1,17 +1,19 @@
 """Per-site routing loop (PRD §6.6, §6.7): the cheapest Nemotron tier that reaches parity, or an honest no.
 
-For each tier in config.tiers (cheapest first), starting from the Adapter Agent's v0:
-  dev; on a failure the Iterator writes the next adapter from failing dev cases only (at most
+For each tier in config.tiers, cheapest first and once each (TIER_ORDER), starting from the Adapter Agent's
+v0: dev; on a failure the Iterator writes the next adapter from failing dev cases only (at most
   config.max_iterations per tier) and dev runs again; once dev passes, and only then, holdout. A holdout
   pass is MIGRATE(tier). A holdout failure moves on to the next tier without iterating: holdout never steers
   the Iterator.
 All tiers failing: KEEP_CLOSED with the best tier, i.e. the adapter with the highest dev score (the first one
-wins a tie), measured on holdout once so the verdict's parity is a holdout number.
+wins a tie), measured on holdout once so the verdict's parity is a holdout number; the verdict counts that
+adapter's iterations and changes, not the later ones tried on its tier.
 
-Run errors propagate and are never verdicts: ProviderError (outage, account), CacheMiss (replay without its
-cassette). Verdicts without a comparison: a per-run cap (BudgetStop from the runner, BudgetExceeded from the
-Iterator) is KEEP_CLOSED("budget: ..."); a site the loop cannot evaluate (no contract, flagged MANUAL_REVIEW,
-no dev or no holdout cases, a case without a reference, a call with unresolved parameters) is MANUAL_REVIEW.
+A ProviderError from a tier run (an outage, an account error, the judge leaving a case out) is retried once;
+a second one propagates as a run error, never a score. CacheMiss (replay without its cassette) propagates.
+Verdicts without a comparison: a per-run cap (BudgetStop from the runner, BudgetExceeded from the Iterator)
+is KEEP_CLOSED("budget: ..."); a site the loop cannot evaluate (no contract, flagged MANUAL_REVIEW, no dev or
+no holdout cases, a case without a reference, a call with unresolved parameters) is MANUAL_REVIEW.
 
 on_event(type, payload) gets JSON-ready RunEvent payloads: "tier_result" (TierResult without case_scores),
 "iteration" (Adapter), "log" ({"level", "message"}) and "verdict" (Verdict).
@@ -25,9 +27,10 @@ from typing import Any
 from offramp.agents.iterator import DevCase, Iterator, failing_dev_cases
 from offramp.agents.translate import UnresolvedCallSite
 from offramp.agents.verdict import Evidence, PriceLookup, closed_reference_parity, decide, stopped
-from offramp.evals.errors import MissingReference
+from offramp.evals.errors import MissingReference, ProviderError
 from offramp.evals.runner import BudgetStop, run_tier
 from offramp.schemas import (
+    TIER_ORDER,
     Adapter,
     BaselineResult,
     CallSite,
@@ -49,10 +52,9 @@ EventFn = Callable[[str, dict[str, Any]], None]
 @dataclass
 class SiteRoute:
     verdict: Verdict
-    adapter: (
-        Adapter | None
-    )  # MIGRATE: the adapter that passed (what the patch implements); KEEP_CLOSED: the best
-    # one tried; None when nothing was compared (budget stop, MANUAL_REVIEW)
+    # MIGRATE: the adapter that passed (what the patch implements); KEEP_CLOSED: the best one tried; None when
+    # nothing was compared (budget stop, MANUAL_REVIEW)
+    adapter: Adapter | None
     results: list[TierResult] = field(default_factory=list)  # every run, in order, case_scores kept
 
 
@@ -106,38 +108,53 @@ def _route(site, cases, references, adapter, client, config, closed, iterate, ru
         return SiteRoute(stopped(site, "MANUAL_REVIEW", unfit), None, results)
 
     def run(current: Adapter, tier: Tier, split: Split) -> tuple[TierResult, list[CandidateResult]]:
-        out, calls = runner(
-            site, cases, references, current, tier, client, split, config, return_candidates=True
-        )
+        args = (site, cases, references, current, tier, client, split, config)
+        try:
+            out, calls = runner(*args, return_candidates=True)
+        except ProviderError as e:  # once more: an outage may have passed (a cached failure replays for free)
+            emit(
+                "log",
+                {
+                    "level": "warn",
+                    "message": f"{site.id}: {tier.value} {split}: {e}"[:300] + "; retrying once",
+                },
+            )
+            out, calls = runner(*args, return_candidates=True)  # a second ProviderError is a run error
         if isinstance(out, BudgetStop):
             raise _BudgetStop(out.reason)
         results.append(out)
         emit("tier_result", out.model_dump(mode="json", exclude={"case_scores"}))
         return out, calls
 
-    def verdict(tier, dev, holdout, calls, iterations, changes) -> Verdict:
+    history: dict[Tier, list[Adapter]] = {}  # per tier: v0, then each iteration's adapter in order
+    holdouts: dict[
+        tuple[Tier, int], tuple[TierResult, list[CandidateResult]]
+    ] = {}  # by (tier, history index)
+
+    def verdict(tier: Tier, i: int, dev: TierResult, holdout: TierResult, calls) -> Verdict:
+        """The verdict for history[tier][i]: i iterations, and the change logs of exactly those."""
+        changes = [entry for a in history[tier][1 : i + 1] for entry in a.change_log]
         return decide(
             site,
-            Evidence(tier, dev, holdout, calls, iterations, changes),
+            Evidence(tier, dev, holdout, calls, i, changes),
             client,
             config,
             closed_parity=closed_reference_parity(site, cases, references, closed, config),
             price_lookup=price_lookup,
         )
 
-    # the adapter with the highest dev score so far: (score, tier, adapter, its dev result)
-    best: tuple[float, Tier, Adapter, TierResult] | None = None
-    holdouts: dict[tuple[Tier, int], tuple[TierResult, list[CandidateResult]]] = {}
-    tried: dict[Tier, list[str]] = {}  # change logs of the iterations run per tier
-    iterations: dict[Tier, int] = {}
+    # the adapter with the highest dev score so far: (score, tier, its history index, its dev result)
+    best: tuple[float, Tier, int, TierResult] | None = None
     try:
-        for tier in map(Tier, config.tiers):
-            current, iterations[tier], tried[tier] = adapter, 0, []
+        for tier in sorted(set(map(Tier, config.tiers)), key=TIER_ORDER.index):
+            history[tier] = [adapter]
             while True:
+                i = len(history[tier]) - 1
+                current = history[tier][i]
                 dev, calls = run(current, tier, "dev")
                 if best is None or dev.score > best[0]:
-                    best = (dev.score, tier, current, dev)
-                if dev.passed or iterations[tier] >= config.max_iterations:
+                    best = (dev.score, tier, i, dev)
+                if dev.passed or i >= config.max_iterations:
                     break
                 failed = [s for s in dev.case_scores if not s.passed]
                 counts = Counter(s.error_category or "failed" for s in failed)
@@ -153,19 +170,14 @@ def _route(site, cases, references, adapter, client, config, closed, iterate, ru
                     )
                     break
                 emit("iteration", new.model_dump(mode="json"))
-                current, iterations[tier] = new, iterations[tier] + 1
-                tried[tier] += new.change_log
+                history[tier].append(new)
             if dev.passed:
-                holdout, holdout_calls = holdouts[tier, current.version] = run(current, tier, "holdout")
+                holdout, holdout_calls = holdouts[tier, i] = run(current, tier, "holdout")
                 if holdout.passed:
-                    v = verdict(tier, dev, holdout, holdout_calls, iterations[tier], tried[tier])
-                    return SiteRoute(v, current, results)
-        _, tier, best_adapter, dev = best
-        holdout, holdout_calls = holdouts.get((tier, best_adapter.version)) or run(
-            best_adapter, tier, "holdout"
-        )
-        v = verdict(tier, dev, holdout, holdout_calls, iterations[tier], tried[tier])
-        return SiteRoute(v, best_adapter, results)
+                    return SiteRoute(verdict(tier, i, dev, holdout, holdout_calls), current, results)
+        _, tier, i, dev = best
+        holdout, holdout_calls = holdouts.get((tier, i)) or run(history[tier][i], tier, "holdout")
+        return SiteRoute(verdict(tier, i, dev, holdout, holdout_calls), history[tier][i], results)
     except (_BudgetStop, BudgetExceeded) as e:
         reason = str(e) if isinstance(e, _BudgetStop) else f"budget: {e}"
         return SiteRoute(stopped(site, "KEEP_CLOSED", reason), None, results)

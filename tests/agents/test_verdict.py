@@ -4,10 +4,8 @@ Verdict: rule-based decision, cost estimate (GC21), closed reference row (GC27c)
 FakeLLM and then cassettes recorded live from Token Factory. Routing: stub runners and a stub Iterator.
 """
 
-import dataclasses
 import hashlib
 import json
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -20,7 +18,6 @@ from offramp.agents.verdict import (
     VERDICT_MAX_TOKENS,
     VERDICT_ROLE,
     Evidence,
-    SourcePrice,
     VerdictReason,
     closed_reference_parity,
     decide,
@@ -30,6 +27,7 @@ from offramp.evals.errors import MissingReference, ProviderError
 from offramp.evals.route import SiteRoute, route_site
 from offramp.evals.runner import BudgetStop
 from offramp.evals.scorers.aggregate import site_pass
+from offramp.integrations.tavily import SourceModelInfo
 from offramp.schemas import (
     Adapter,
     AdapterSpec,
@@ -110,8 +108,8 @@ def gc10(case_id: str) -> str:
     return "holdout" if int(hashlib.sha256(case_id.encode()).hexdigest(), 16) % 100 < 30 else "dev"
 
 
-def price(model: str) -> SourcePrice:
-    return SourcePrice(
+def price(model: str) -> SourceModelInfo:
+    return SourceModelInfo(
         model=model,
         input_usd_per_m=0.15,
         output_usd_per_m=0.60,
@@ -201,10 +199,26 @@ def reason_llm(*replies) -> FakeLLM:
 
 # ---------------------------------------------------------------- the rule and the numbers (GC9, GC19, GC21)
 
+COST_MIGRATE = "cost per 1k calls $0.0618 before (est.), $0.0318 after"  # evidence(): 0.0618 est., 0.0318
+COST_KEEP = "cost per 1k calls $0.0618 before (est.)"
+RULE_MIGRATE = (
+    f"Lightning: parity vs reference 96.7% ≥ 95% on holdout after 0 adapter iterations; {COST_MIGRATE}."
+)
+GOOD = "Lightning returns the same queue labels as the references on the held-out tickets."
+
+
+def keep(site, tier, holdout, **kw):
+    return decide(
+        site,
+        evidence(site, tier, holdout=holdout, **kw),
+        reason_llm(BudgetExceeded("x")),
+        RunConfig(repo_url="x"),
+        price_lookup=price,
+    )
+
 
 def test_migrate_fills_tier_parity_and_cost_from_measured_calls():
-    llm = reason_llm("Lightning matches the reference labels on the held-out cases.")
-    v = decide(SITE, evidence(), llm, RunConfig(repo_url="x"), price_lookup=price)
+    v = decide(SITE, evidence(), reason_llm(GOOD), RunConfig(repo_url="x"), price_lookup=price)
     assert (v.site_id, v.decision, v.tier) == ("cs_01", "MIGRATE", Tier.LIGHTNING)
     assert v.model == get_tier(Tier.LIGHTNING).model_id
     assert v.parity_pct == 96.7  # 29/30 on holdout
@@ -213,30 +227,67 @@ def test_migrate_fills_tier_parity_and_cost_from_measured_calls():
     assert v.cost_after_per_1k == 0.0318  # the holdout run's measured $/1k calls
     # 1000 x (400 x $0.15 + 3 x $0.60) / 1M: means over the 29 calls that returned (the failed one: no usage)
     assert v.cost_before_per_1k == pytest.approx(0.0618)
-    note = v.cost_before_note
-    assert note.startswith("est.:") and "gpt-4o-mini" in note and "$0.15/$0.60 per 1M" in note
-    assert "developers.openai.com/api/docs/pricing" in note and "2026-10-19" in note and "tavily" in note
-    assert "Token Factory" in note
     assert v.sunset_risk is None and v.closed_reference_model is None
-    assert v.reason == "Lightning matches the reference labels on the held-out cases."
+    # Super's qualitative sentence, then the code-built clause that carries every number
+    assert v.reason == f"{GOOD} {RULE_MIGRATE}"
 
 
-def test_the_reason_comes_from_one_super_call_with_the_measured_facts():
-    llm = reason_llm("Lightning matches the reference labels on the held-out cases.")
+def test_cost_note_is_task17s_format_plus_the_calls_it_averages():
+    v = decide(SITE, evidence(), reason_llm(GOOD), RunConfig(repo_url="x"), price_lookup=price)
+    assert (
+        v.cost_before_note
+        == price("gpt-4o-mini").cost_before_note() + " (mean of 29 lightning holdout calls)"
+    )
+    assert v.cost_before_note.startswith(
+        "est.: gpt-4o-mini $0.15/$0.60 per 1M (developers.openai.com/api/docs/"
+    )
+    assert "fetched via Tavily 2026-10-19" in v.cost_before_note
+
+
+def test_a_lookups_pricing_yaml_fallback_keeps_its_reason():
+    def lookup(model):
+        return price(model).model_copy(
+            update={"via": "pricing.yaml", "note": "fallback: Tavily price not used (no row for this model)"}
+        )
+
+    v = decide(SITE, evidence(), reason_llm(GOOD), RunConfig(repo_url="x"), price_lookup=lookup)
+    assert "pricing.yaml as of 2026-10-19; fallback: Tavily price not used (no row for this model)" in (
+        v.cost_before_note
+    )
+
+
+def test_the_default_lookup_is_task17s(monkeypatch):
+    asked = []
+    monkeypatch.setattr("offramp.agents.verdict.lookup_source_model", lambda m: asked.append(m) or price(m))
+    decide(SITE, evidence(), reason_llm(GOOD), RunConfig(repo_url="x"))
+    assert asked == ["gpt-4o-mini"]
+
+
+def test_super_gets_qualitative_facts_and_no_numbers():
+    llm = reason_llm(GOOD)
     decide(
         SITE,
         evidence(changes=["Pinned the reply to the bare queue name"]),
         llm,
         RunConfig(repo_url="x"),
+        closed_parity=(CLAUDE, 88.0),
         price_lookup=price,
     )
     [call] = llm.calls
     assert (call["role"], call["tier"], call["reasoning"]) == (VERDICT_ROLE, Tier.SUPER, "off")
     assert call["response_model"] is VerdictReason and call["max_tokens"] == VERDICT_MAX_TOKENS
-    facts = json.loads(call["messages"][1]["content"])
-    assert facts["decision"] == "MIGRATE" and facts["tier"] == "lightning"
-    assert facts["result"] == "parity vs reference 96.7% ≥ 95% on holdout"
+    text = call["messages"][1]["content"]
+    assert not any(ch.isdigit() for ch in text)  # nothing to misattribute
+    facts = json.loads(text)
+    assert facts["decision"] == "MIGRATE" and facts["tier"] == "Lightning"
+    # recorded live: told "cheaper tiers did not" for Lightning, Super wrote "lower-cost tiers failed"
+    assert facts["outcome"].endswith("it is the cheapest tier") and "cheaper tiers" not in facts["outcome"]
     assert facts["adapter_changes"] == ["Pinned the reply to the bare queue name"]
+    assert facts["call_site"] == {
+        "file": "helphub/inbox/triage.py",
+        "function": "route_ticket",
+        "task_type": "classification",
+    }
 
 
 def test_keep_closed_reason_names_parity_and_threshold_and_never_rounds_up():
@@ -254,9 +305,8 @@ def test_keep_closed_reason_names_parity_and_threshold_and_never_rounds_up():
     assert (v.decision, v.tier, v.model) == ("KEEP_CLOSED", None, None)
     assert (v.best_tier, v.best_score, v.iterations) == (Tier.ULTRA, 27 / 31, 3)
     assert v.parity_pct == 87.0  # 87.096...: floored, so a failing parity never displays at the threshold
-    assert (
-        v.reason == "parity vs reference 87.0% < 90% on Ultra after 3 adapter iterations."
-    )  # reasoning: 90%
+    # reasoning: 90%; KEEP_CLOSED shows no "after" cost, the site stays where it is
+    assert v.reason == f"parity vs reference 87.0% < 90% on Ultra after 3 adapter iterations; {COST_KEEP}."
     assert v.cost_after_per_1k is None and v.cost_before_per_1k == pytest.approx(0.0618)
 
 
@@ -265,13 +315,7 @@ def test_floored_parity_keeps_float_noise_from_dropping_a_tenth():
         REASONING, Tier.ULTRA, "holdout", scores([True] * 23 + [False] * 17, "cs_05", "wrong_answer")
     )
     assert 100 * holdout.score == 57.49999999999999  # 23/40, found by search: floor alone would give 57.4
-    v = decide(
-        REASONING,
-        evidence(REASONING, Tier.ULTRA, holdout=holdout),
-        reason_llm(BudgetExceeded("x")),
-        RunConfig(repo_url="x"),
-        price_lookup=price,
-    )
+    v = keep(REASONING, Tier.ULTRA, holdout)
     assert v.parity_pct == 57.5 and v.reason.startswith("parity vs reference 57.5% < 90%")
 
 
@@ -299,21 +343,15 @@ def test_keep_closed_when_dev_failed_even_if_holdout_passed():
     )
     assert v.decision == "KEEP_CLOSED" and v.parity_pct == 100.0 and v.best_tier == Tier.SUPER
     assert v.reason == (
-        "dev parity vs reference 90.0% < 95% (holdout 100.0%) on Super after 3 adapter iterations."
+        "dev parity vs reference 90.0% < 95% (holdout 100.0%) on Super after 3 adapter iterations; "
+        f"{COST_KEEP}."
     )
 
 
 def test_json_extraction_fails_on_validity_with_parity_above_threshold():
     rows = [CaseScore(case_id=f"cs_03:{i:03d}", passed=True, score=1.0) for i in range(19)]
     rows.append(CaseScore(case_id="cs_03:099", passed=False, score=0.0, error_category="schema_violation"))
-    holdout = result(JSON_SITE, Tier.SUPER, "holdout", rows)
-    v = decide(
-        JSON_SITE,
-        evidence(JSON_SITE, Tier.SUPER, holdout=holdout),
-        reason_llm(BudgetExceeded("x")),
-        RunConfig(repo_url="x"),
-        price_lookup=price,
-    )
+    v = keep(JSON_SITE, Tier.SUPER, result(JSON_SITE, Tier.SUPER, "holdout", rows))
     assert v.decision == "KEEP_CLOSED" and v.parity_pct == 95.0
     assert v.reason.startswith(
         "parity vs reference 95.0% but 1/20 outputs not schema-valid (100% required) on Super"
@@ -326,42 +364,30 @@ def test_json_extraction_fails_on_the_share_of_passing_cases():
         CaseScore(case_id=f"cs_03:{i:03d}", passed=False, score=0.9, error_category="wrong_value")
         for i in (98, 99)
     ]
-    holdout = result(JSON_SITE, Tier.SUPER, "holdout", rows)
-    v = decide(
-        JSON_SITE,
-        evidence(JSON_SITE, Tier.SUPER, holdout=holdout),
-        reason_llm(BudgetExceeded("x")),
-        RunConfig(repo_url="x"),
-        price_lookup=price,
-    )
+    v = keep(JSON_SITE, Tier.SUPER, result(JSON_SITE, Tier.SUPER, "holdout", rows))
     assert v.decision == "KEEP_CLOSED" and v.parity_pct == 99.0
     assert v.reason.startswith("parity vs reference 99.0% but only 90.0% of cases pass (< 95%) on Super")
 
 
 def test_free_text_reason_names_the_judge_mean_and_parity_is_the_passing_share():
     rows = [CaseScore(case_id=f"cs_06:{i:03d}", passed=s >= 4, score=s) for i, s in enumerate([5, 4, 3, 2])]
-    holdout = result(FREE_TEXT, Tier.ULTRA, "holdout", rows)
-    v = decide(
-        FREE_TEXT,
-        evidence(FREE_TEXT, Tier.ULTRA, holdout=holdout),
-        reason_llm(BudgetExceeded("x")),
-        RunConfig(repo_url="x"),
-        price_lookup=price,
-    )
+    v = keep(FREE_TEXT, Tier.ULTRA, result(FREE_TEXT, Tier.ULTRA, "holdout", rows))
     assert v.decision == "KEEP_CLOSED" and v.parity_pct == 50.0 and v.best_score == 3.5
     assert v.reason.startswith("judge mean 3.50 < 4.0 (parity vs reference 50.0%) on Ultra")
+
+
+def test_a_failing_judge_mean_is_floored_like_parity():
+    rows = [CaseScore(case_id=f"cs_06:{i:03d}", passed=True, score=4.0) for i in range(249)]
+    rows.append(CaseScore(case_id="cs_06:999", passed=False, score=3.0))
+    holdout = result(FREE_TEXT, Tier.ULTRA, "holdout", rows)
+    assert holdout.score == pytest.approx(3.996) and not holdout.passed  # f"{3.996:.2f}" would print 4.00
+    assert keep(FREE_TEXT, Tier.ULTRA, holdout).reason.startswith("judge mean 3.99 < 4.0")
 
 
 def test_free_text_below_the_reference_mean_margin_says_so():
     rows = [CaseScore(case_id=f"cs_06:{i:03d}", passed=True, score=4.0) for i in range(4)]
     holdout = result(FREE_TEXT, Tier.SUPER, "holdout", rows).model_copy(update={"passed": False})
-    v = decide(
-        FREE_TEXT,
-        evidence(FREE_TEXT, Tier.SUPER, holdout=holdout),
-        reason_llm(BudgetExceeded("x")),
-        RunConfig(repo_url="x"),
-        price_lookup=price,
-    )
+    v = keep(FREE_TEXT, Tier.SUPER, holdout)
     assert v.reason.startswith("judge mean 4.00 more than 0.3 below the references' judge mean")
 
 
@@ -379,21 +405,36 @@ def test_migrate_free_text_parity_is_the_share_of_passing_cases():
         price_lookup=price,
     )
     assert v.decision == "MIGRATE" and v.parity_pct == 75.0
-    assert (
-        v.reason
-        == "Super: judge mean 4.42 ≥ 4.0 (parity vs reference 75.0%) on holdout after 0 adapter iterations."
+    assert v.reason == (
+        "Super: judge mean 4.42 ≥ 4.0 (parity vs reference 75.0%) on holdout after 0 adapter iterations; "
+        f"{COST_MIGRATE}."
+    )
+
+
+def test_the_clause_carries_the_closed_reference_row_and_an_unestimated_cost():
+    v = decide(
+        SITE.model_copy(update={"source_model": None}),
+        evidence(),
+        reason_llm(BudgetExceeded("x")),
+        RunConfig(repo_url="x"),
+        closed_parity=(CLAUDE, 88.0),
+        price_lookup=price,
+    )
+    assert v.reason == (
+        "Lightning: parity vs reference 96.7% ≥ 95% on holdout after 0 adapter iterations; cost per 1k calls "
+        f"$0.0318 after (before not estimated); closed reference {CLAUDE} 88.0% on the same references."
     )
 
 
 # ------------------------------------------------------------ the Super sentence is checked, never trusted
 
 
-def test_keep_closed_sentence_with_the_exact_phrase_is_used():
+def test_a_keep_closed_sentence_without_numbers_is_used_before_the_clause():
     holdout = result(
         REASONING, Tier.ULTRA, "holdout", scores([True] * 7 + [False] * 3, "cs_05", "wrong_answer")
     )
     sentence = (
-        "Multi-step refund arithmetic: parity vs reference 70.0% < 90% on Ultra after 3 adapter iterations."
+        "Refund planning stays on the current model: no Nemotron tier applied the policy arithmetic reliably"
     )
     v = decide(
         REASONING,
@@ -402,41 +443,36 @@ def test_keep_closed_sentence_with_the_exact_phrase_is_used():
         RunConfig(repo_url="x"),
         price_lookup=price,
     )
-    assert v.reason == sentence
+    assert v.reason == (
+        f"{sentence}. parity vs reference 70.0% < 90% on Ultra after 3 adapter iterations; {COST_KEEP}."
+    )
 
 
 @pytest.mark.parametrize(
     "sentence",
     [
-        "Ultra could not reproduce the refund arithmetic.",  # the measured phrase is missing
-        "Refund arithmetic: parity vs reference 70.0% < 90%.\nKeep it on o3.",  # not one sentence
-        "Multi-step refund arithmetic: parity vs reference 70.0% < 90%; migrating would cut cost by 73%.",
+        # the review's probe: a real number (the closed row's 88.0) attached to the wrong quantity
+        "Lightning reached 88.0% parity on held-out cases, so the call moves off gpt-4o-mini.",
+        "Lightning matched the references on 95% of held-out cases.",
+        "Lightning is 12x cheaper and matches the references.",
+        "Lightning matched the references after three rounds of prompt changes.",  # number words too
+        "Lightning matched the references on most cases.\nIt is cheaper.",  # not one sentence
         "",
     ],
 )
-def test_keep_closed_sentence_without_the_phrase_or_with_invented_numbers_is_replaced(sentence):
-    holdout = result(
-        REASONING, Tier.ULTRA, "holdout", scores([True] * 7 + [False] * 3, "cs_05", "wrong_answer")
-    )
-    v = decide(
-        REASONING,
-        evidence(REASONING, Tier.ULTRA, holdout=holdout, iterations=3),
-        reason_llm(sentence),
-        RunConfig(repo_url="x"),
-        price_lookup=price,
-    )
-    assert v.reason == "parity vs reference 70.0% < 90% on Ultra after 3 adapter iterations."
-
-
-def test_migrate_sentence_with_an_invented_number_is_replaced():
+def test_any_number_in_the_sentence_means_the_rule_sentence_alone(sentence):
     v = decide(
         SITE,
         evidence(),
-        reason_llm("Lightning is 12x cheaper and matches the references."),
+        reason_llm(sentence),
         RunConfig(repo_url="x"),
+        closed_parity=(CLAUDE, 88.0),
         price_lookup=price,
     )
-    assert v.reason == "Lightning: parity vs reference 96.7% ≥ 95% on holdout after 0 adapter iterations."
+    assert v.reason == (
+        "Lightning: parity vs reference 96.7% ≥ 95% on holdout after 0 adapter iterations; "
+        f"{COST_MIGRATE}; closed reference {CLAUDE} 88.0% on the same references."
+    )
 
 
 @pytest.mark.parametrize(
@@ -448,7 +484,7 @@ def test_migrate_sentence_with_an_invented_number_is_replaced():
 )
 def test_a_failed_reason_call_falls_back_to_the_rule_sentence(error):
     v = decide(SITE, evidence(), reason_llm(error), RunConfig(repo_url="x"), price_lookup=price)
-    assert v.decision == "MIGRATE" and v.reason.startswith("Lightning: parity vs reference 96.7%")
+    assert v.decision == "MIGRATE" and v.reason == RULE_MIGRATE
 
 
 def test_a_replay_cache_miss_is_not_hidden():
@@ -467,36 +503,44 @@ def test_a_replay_cache_miss_is_not_hidden():
 
 def test_sunset_risk_comes_from_the_lookups_deprecation_notice():
     def lookup(model):
-        return dataclasses.replace(
-            price(model),
-            deprecation="FIXTURE: retires 2026-11-30",
-            deprecation_url="https://example.com/deprecations",
+        return price(model).model_copy(
+            update={
+                "deprecation": "FIXTURE: retires 2026-11-30",
+                "deprecation_url": "https://example.com/dep",
+            }
         )
 
     v = decide(
         SITE, evidence(), reason_llm(BudgetExceeded("x")), RunConfig(repo_url="x"), price_lookup=lookup
     )
-    assert v.sunset_risk == "FIXTURE: retires 2026-11-30 (https://example.com/deprecations)"
+    assert v.sunset_risk == "FIXTURE: retires 2026-11-30 (https://example.com/dep)"
 
 
-def test_without_the_tavily_module_the_price_comes_from_pricing_yaml(monkeypatch):
-    monkeypatch.setitem(sys.modules, "offramp.integrations.tavily", None)  # import raises ImportError
-    v = decide(SITE, evidence(), reason_llm(BudgetExceeded("x")), RunConfig(repo_url="x"))
-    assert v.cost_before_per_1k == pytest.approx(0.0618)  # gpt-4o-mini $0.15/$0.60 in pricing.yaml
-    assert "pricing.yaml" in v.cost_before_note and OPENAI_PRICING.split("://")[1] in v.cost_before_note
-    assert "2026-10-19" in v.cost_before_note and v.sunset_risk is None
-
-
-def test_pricing_yaml_price_resolves_dated_snapshots():
+def test_the_offline_lookup_reads_pricing_yaml_and_says_so():
     p = pricing_yaml_price("gpt-4o-mini-2024-07-18")
     assert (p.input_usd_per_m, p.output_usd_per_m, p.via) == (0.15, 0.60, "pricing.yaml")
+    v = decide(
+        SITE,
+        evidence(),
+        reason_llm(BudgetExceeded("x")),
+        RunConfig(repo_url="x"),
+        price_lookup=pricing_yaml_price,
+    )
+    assert v.cost_before_per_1k == pytest.approx(0.0618)
+    assert "pricing.yaml as of 2026-10-19; fallback: offline run, Tavily not asked" in v.cost_before_note
+    assert OPENAI_PRICING.split("://")[1] in v.cost_before_note and v.sunset_risk is None
 
 
 @pytest.mark.parametrize("model", ["acme-llm-9", None])
-def test_no_known_price_means_no_cost_before(model, monkeypatch):
-    monkeypatch.setitem(sys.modules, "offramp.integrations.tavily", None)
+def test_no_known_price_means_no_cost_before(model):
     site = SITE.model_copy(update={"source_model": model})
-    v = decide(site, evidence(site), reason_llm(BudgetExceeded("x")), RunConfig(repo_url="x"))
+    v = decide(
+        site,
+        evidence(site),
+        reason_llm(BudgetExceeded("x")),
+        RunConfig(repo_url="x"),
+        price_lookup=pricing_yaml_price,
+    )
     assert v.cost_before_per_1k is None and v.cost_after_per_1k == 0.0318
     assert "not estimated" in v.cost_before_note
 
@@ -598,6 +642,8 @@ class Runner:
         assert return_candidates is True
         self.calls.append((Tier(tier), split, adapter.version))
         outcome = self.table.get((tier, split, adapter.version), self.table.get((tier, split)))
+        if isinstance(outcome, list):  # one outcome per call, in order
+            outcome = outcome.pop(0)
         if isinstance(outcome, BaseException):
             raise outcome
         if outcome == "budget":
@@ -736,13 +782,23 @@ def test_holdout_failure_moves_on_without_iterating():
 def test_all_tiers_failing_keeps_closed_with_the_best_dev_tier_measured_on_holdout():
     out, runner, it = route({(L, "dev"): 0.5, (S, "dev"): 0.8, (U, "dev"): 0.7, (S, "holdout"): 0.75})
     v = out.verdict
-    assert v.decision == "KEEP_CLOSED" and v.best_tier == S and v.iterations == 3
     assert runner.calls[-1] == (S, "holdout", 0)  # best = first adapter reaching the top dev score
+    # the iteration count is the measured adapter's (v0: none), though 3 were tried on Super
+    assert v.decision == "KEEP_CLOSED" and v.best_tier == S and v.iterations == 0
     assert (DEV_N, HOLD_N) == (25, 15) and v.parity_pct == 73.3  # 11/15 = 73.33...
-    assert v.reason.startswith("parity vs reference") and v.reason.endswith(
-        "on Super after 3 adapter iterations."
-    )
+    assert v.reason.startswith("parity vs reference 73.3% < 95% on Super after 0 adapter iterations;")
     assert out.adapter.version == 0 and len(it.calls) == 9
+
+
+def test_keep_closed_counts_the_iterations_and_changes_of_the_best_adapter_only():
+    llm = FakeLLM({VERDICT_ROLE: [{"reason": "Ticket routing stays on the current model."}]})
+    table = {(L, "dev"): 0.5, (S, "dev"): 0.6, (S, "dev", 2): 0.8, (U, "dev"): 0.5, (S, "holdout"): 0.6}
+    out, runner, it = route(table, llm=llm)
+    v = out.verdict
+    assert runner.calls[-1] == (S, "holdout", 2) and out.adapter.version == 2
+    assert v.decision == "KEEP_CLOSED" and v.best_tier == S and v.iterations == 2
+    facts = json.loads(llm.calls[0]["messages"][1]["content"])
+    assert facts["adapter_changes"] == ["stub change 1", "stub change 2"]  # not stub change 3
 
 
 def test_keep_closed_reuses_a_holdout_result_already_measured_for_the_best_adapter():
@@ -766,6 +822,15 @@ def test_max_iterations_zero_never_calls_the_iterator():
 def test_tiers_follow_the_config():
     out, runner, it = route({(S, "dev"): 1.0, (S, "holdout"): 1.0}, config=RunConfig(repo_url="x", tiers=[S]))
     assert runner.calls == [(S, "dev", 0), (S, "holdout", 0)]
+
+
+def test_configured_tiers_run_cheapest_first_and_once():
+    table = {(L, "dev"): 1.0, (L, "holdout"): 1.0, (U, "dev"): 1.0, (U, "holdout"): 1.0}
+    out, runner, it = route(table, config=RunConfig(repo_url="x", tiers=[U, L, L]))
+    assert runner.calls == [(L, "dev", 0), (L, "holdout", 0)] and out.verdict.tier == L
+    table = {(S, "dev"): 0.5, (U, "dev"): 0.5, (S, "holdout"): 0.5}
+    out, runner, it = route(table, config=RunConfig(repo_url="x", tiers=[U, S, U], max_iterations=0))
+    assert [t for t, split, _ in runner.calls if split == "dev"] == [S, U]
 
 
 def test_reasoning_sites_pass_at_the_reasoning_threshold():
@@ -831,9 +896,24 @@ def test_data_and_call_errors_send_the_site_to_manual_review(error, words):
     assert out.verdict.decision == "MANUAL_REVIEW" and words in out.verdict.reason
 
 
-def test_provider_errors_are_run_errors_not_verdicts():
-    with pytest.raises(ProviderError):
-        route({(L, "dev"): ProviderError("HTTP 402: insufficient credit", 402)})
+def test_a_provider_error_is_retried_once_and_the_retry_counts():
+    events = []
+    judge_omission = ProviderError("judge: the reply left out case 3")
+    out, runner, it = route({(L, "dev"): [judge_omission, 1.0], (L, "holdout"): 1.0}, events=events)
+    assert runner.calls == [(L, "dev", 0), (L, "dev", 0), (L, "holdout", 0)]
+    assert out.verdict.decision == "MIGRATE" and len(out.results) == 2  # the failed attempt left no result
+    [log] = [p for t, p in events if t == "log"]
+    assert log["level"] == "warn" and "retrying once" in log["message"] and "judge:" in log["message"]
+
+
+def test_a_second_provider_error_is_a_run_error_never_a_verdict():
+    events = []
+    outage = ProviderError("8/8 calls timed out or failed with a 5xx: a provider outage, not a measurement")
+    table = {(L, "dev"): 1.0, (L, "holdout"): [outage, outage, 1.0]}
+    with pytest.raises(ProviderError, match="outage"):
+        route(table, events=events)
+    assert table[(L, "holdout")] == [1.0]  # exactly two attempts
+    assert [t for t, _ in events] == ["tier_result", "log"]  # no verdict event, no measured holdout
 
 
 @pytest.mark.parametrize(
@@ -872,8 +952,12 @@ def test_closed_references_fill_the_verdicts_comparison_row():
 
 
 def recorded_verdicts(client) -> dict:
-    """Four verdicts with FIXTURE evidence (made-up measurements), each asking Super for its sentence."""
-    cs03 = JSON_SITE
+    """Verdicts with FIXTURE evidence (made-up measurements), each asking Super for its sentence.
+
+    A KEEP_CLOSED and a MIGRATE on Super. The two Lightning MIGRATEs recorded with them (cs_01, cs_03) were
+    dropped: their facts said "cheaper tiers did not", Super wrote "lower-cost tiers failed" of the cheapest
+    tier, and the corrected facts change their keys (the fix round's 4 live Super calls were spent).
+    """
     cs05_hold = result(
         REASONING, Tier.ULTRA, "holdout", scores([True] * 7 + [False] * 3, "cs_05", "wrong_answer")
     )
@@ -885,21 +969,6 @@ def recorded_verdicts(client) -> dict:
     ]
     config = RunConfig(repo_url="x")
     return {
-        "cs_01": decide(SITE, evidence(), client, config, price_lookup=price),
-        "cs_03": decide(
-            cs03,
-            evidence(
-                cs03,
-                changes=[
-                    "Switched to guided JSON decoding against OrderFields",
-                    "Added one worked example with a German date and amount",
-                ],
-                iterations=2,
-            ),
-            client,
-            config,
-            price_lookup=price,
-        ),
         "cs_05": decide(
             REASONING,
             evidence(
@@ -932,18 +1001,23 @@ def recorded_verdicts(client) -> dict:
 
 def test_verdicts_on_recorded_cassettes():
     verdicts = recorded_verdicts(TFClient(cache_dir=CASSETTES, live=False))
-    assert [v.decision for v in verdicts.values()] == ["MIGRATE", "MIGRATE", "KEEP_CLOSED", "MIGRATE"]
-    # Super's sentences as recorded (re-recording may change these pins): three passed the checks. For cs_05
-    # it wrote "below the required 90.0%" and that the call "remains on claude-sonnet-5.5" (it stays on o3,
-    # the closed reference is another model): the measured phrase was missing, so the rule sentence stands.
-    assert verdicts["cs_01"].reason.startswith("The route_ticket function classifies support tickets;")
-    assert verdicts["cs_03"].reason.startswith("The extract_order function extracts order data")
-    assert verdicts["cs_06"].reason.startswith("The summarize_thread function uses claude-haiku-4-5")
-    assert verdicts["cs_05"].reason == "parity vs reference 70.0% < 90% on Ultra after 3 adapter iterations."
-    assert verdicts["cs_05"].closed_reference_parity_pct == 90.0
+    # Super's sentences as recorded (re-recording may change these pins): qualitative, no numbers, accepted;
+    # every number comes after them, from code.
+    assert verdicts["cs_05"].decision == "KEEP_CLOSED" and verdicts["cs_05"].reason == (
+        "The plan_refund function reasons about refund eligibility using policy rules but none of the tested "
+        "tiers matched reference behavior on edge cases involving partial refunds. parity vs reference "
+        "70.0% < 90% on Ultra after 3 adapter iterations; cost per 1k calls $0.0618 before (est.); "
+        f"closed reference {CLAUDE} 90.0% on the same references."
+    )
+    assert verdicts["cs_06"].decision == "MIGRATE" and verdicts["cs_06"].reason == (
+        "The summarize_thread function generates free-text thread summaries using the current model, and "
+        "migration to Super is warranted because it matched reference outputs while lower-cost options fell "
+        "short. Super: judge mean 4.50 ≥ 4.0 (parity vs reference 100.0%) on holdout after 0 adapter "
+        "iterations; cost per 1k calls $0.0618 before (est.), $0.0318 after."
+    )
 
 
 @pytest.mark.live
 def test_record_cassettes():
-    """pytest --live: records the 4 Super calls above (hits are free)."""
+    """pytest --live: records the 2 Super calls above (hits are free)."""
     recorded_verdicts(TFClient(cache_dir=CASSETTES, live=True, budget=Budget(max_in=20_000, max_out=2_000)))

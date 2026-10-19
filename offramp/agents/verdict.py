@@ -5,40 +5,40 @@ tier tried and its holdout parity. Every number is measured (Global Constraint 9
 (GC21):
 - parity_pct: holdout parity vs reference (GC19): the site score x 100 for deterministic scorers, the share of
   passing cases for free text (whose score is a judge mean). A failing parity is floored, so it never displays
-  at the threshold ("90.0% < 90%");
+  at the threshold ("90.0% < 90%"); so is a failing judge mean;
 - cost_after_per_1k: the holdout run's measured $/1k calls. cost_before_per_1k: the source model's published
-  price (Tavily lookup, Task 17; pricing.yaml when that module is absent) x the mean tokens of the same Token
-  Factory calls, labelled "est." with its source and date;
+  price (Task 17's Tavily lookup, which falls back to pricing.yaml and says why) x the mean tokens of the same
+  Token Factory calls; cost_before_note is Task 17's "est." note plus how many calls were averaged;
 - latency_delta_ms: None, the source model's latency was never measured.
-Super writes the reason sentence. It is used only if every number in it appears in the facts it was given
-and, for KEEP_CLOSED, it quotes the measured shortfall verbatim; otherwise, or when the call fails, the rule
-sentence stands. A sentence is never worth a run error or an invented number.
+Verdict.reason = Super's qualitative sentence, then a code-built clause that carries every number (parity,
+threshold, tier, iterations, cost before (est.) and after, the closed-reference row). Super gets no numbers
+and may write none: a sentence with a digit or a number word, or none at all (the call failed), leaves the
+clause alone as the reason. A sentence is never worth a run error or a misattributed number.
 """
 
 import json
 import math
 import re
-from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import openai
 from pydantic import BaseModel, Field
 
-from offramp import pricing
 from offramp.evals.scorers import score_case
 from offramp.evals.scorers.aggregate import (
-    CANDIDATE_ERROR,
+    _NOT_VALID,
     JUDGE_FLOOR,
     JUDGE_MARGIN,
     Thresholds,
     _at_least,
     site_pass,
 )
-from offramp.evals.scorers.json_schema import INVALID_CATEGORIES
+from offramp.integrations.tavily import SourceModelInfo, _from_yaml, lookup_source_model
 from offramp.schemas import (
+    TIER_ORDER,
     BaselineResult,
     CallSite,
     CandidateResult,
@@ -57,18 +57,24 @@ from offramp.tf.tiers import get_tier
 VERDICT_ROLE = "verdict"
 VERDICT_MAX_TOKENS = 300  # thinking off; one sentence in a JSON object
 MAX_REASON = 400
-_NUMBER = re.compile(r"\d+(?:\.\d+)?")
-_NOT_VALID = INVALID_CATEGORIES | {CANDIDATE_ERROR}  # as aggregate.site_pass counts schema validity
+# Super may write no numbers: digits are checked one by one (str.isdigit), number words here. Left out: "one"
+# (mostly a pronoun) and "half" ("half-up rounding"). ponytail: extend if Super starts spelling numbers out.
+_NUMBER_WORDS = re.compile(
+    r"%|\b(?:two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|"
+    r"seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|"
+    r"million|billion|dozen|percent)\b",
+    re.I,
+)
 
-VERDICT_SYSTEM = """You write the one-sentence reason for one Offramp verdict. Offramp tested whether NVIDIA \
-Nemotron on Nebius Token Factory can take over one LLM call site of a Python repo, measured as agreement \
-with reference outputs on held-out cases. MIGRATE: the named tier reached parity on the held-out cases, \
-cheaper tiers did not. KEEP_CLOSED: no tier did, so the call stays on its current model.
+VERDICT_SYSTEM = """You write one qualitative sentence explaining one Offramp verdict. Offramp tested \
+whether NVIDIA Nemotron on Nebius Token Factory can take over one LLM call site of a Python repo, measured \
+as agreement with reference outputs on held-out cases. MIGRATE: the named tier reached parity on the \
+held-out cases, cheaper tiers did not. KEEP_CLOSED: no tier did, so the call stays on its current model.
 
-Write one sentence of at most 40 words for an engineer reviewing the pull request: what the call site does \
-and why the verdict follows. Use only the facts given. Every number you write must appear in the facts \
-exactly as written: never compute new numbers, prices or savings. For KEEP_CLOSED, include the "result" text \
-verbatim. Name tiers as Lightning, Super or Ultra.
+Write one sentence of at most 30 words for an engineer reviewing the pull request: what the call site does \
+and why the verdict follows, in words only. Write no numbers at all: no digits, no number words, no \
+percentages, and no model names or versions (say "the current model"). Offramp appends the measured numbers \
+after your sentence. Name the tier as given in the facts.
 
 Reply with one JSON object: {"reason": "<the sentence>"}."""
 
@@ -89,41 +95,12 @@ class Evidence:
     changes: list[str] = field(default_factory=list)  # their change logs, in order
 
 
-@dataclass(frozen=True)
-class SourcePrice:
-    """The fields of offramp.integrations.tavily.SourceModelInfo (Task 17) the verdict reads."""
-
-    model: str
-    input_usd_per_m: float
-    output_usd_per_m: float
-    price_source_url: str
-    fetched_at: datetime
-    deprecation: str | None = None
-    deprecation_url: str | None = None
-    via: str = "pricing.yaml"
+PriceLookup = Callable[[str], SourceModelInfo]  # model id -> price; KeyError when no price is known
 
 
-PriceLookup = Callable[[str], Any]  # model id -> SourceModelInfo-like; KeyError when no price is known
-
-
-def pricing_yaml_price(model: str) -> SourcePrice:
-    e = pricing.entry(model)  # KeyError when unknown
-    return SourcePrice(
-        model=model,
-        input_usd_per_m=e["input_usd_per_m"],
-        output_usd_per_m=e["output_usd_per_m"],
-        price_source_url=e["source"],
-        fetched_at=datetime.fromisoformat(str(e["as_of"])),
-    )
-
-
-def lookup_price(model: str) -> Any:
-    """GC21: the Tavily runtime lookup (Task 17), or pricing.yaml where that module is not installed."""
-    try:
-        from offramp.integrations.tavily import lookup_source_model
-    except ImportError:
-        return pricing_yaml_price(model)
-    return lookup_source_model(model)
+def pricing_yaml_price(model: str) -> SourceModelInfo:
+    """An offline lookup (replays, tests): pricing.yaml through Task 17's own fallback, which says so."""
+    return _from_yaml(model, datetime.now(UTC), "offline run, Tavily not asked", None)
 
 
 def stopped(site: CallSite, decision: Decision, reason: str) -> Verdict:
@@ -164,21 +141,23 @@ def parity_pct(result: TierResult, task_type: TaskType) -> float:
         share = sum(c.passed for c in rows) / (len(rows) or 1)
     else:
         share = result.score
-    return round(100 * share, 1) if result.passed else _floor(100 * share)
+    return round(100 * share, 1) if result.passed else _floor(100 * share, 1)
 
 
-def _floor(pct: float) -> float:
-    return math.floor(pct * 10 + 1e-6) / 10  # slack: 28.999999999999996 is 29.0
+def _floor(x: float, places: int) -> float:
+    """Round down, so a failing value never displays at its bar; slack: 28.999999999999996 is 29.0."""
+    return math.floor(x * 10**places + 1e-6) / 10**places
 
 
 def _phrase(result: TierResult, task_type: TaskType, thresholds: Thresholds | RunConfig) -> str:
     """One run's measured outcome, in the words of the reason ("parity vs reference 71.0% < 90%")."""
     pct = parity_pct(result, task_type)
     if task_type == "free_text":
-        mean, parity = result.score, f"(parity vs reference {pct:.1f}%)"
+        mean = result.score if result.passed else _floor(result.score, 2)
+        parity = f"(parity vs reference {pct:.1f}%)"
         if result.passed:
             return f"judge mean {mean:.2f} ≥ {JUDGE_FLOOR:.1f} {parity}"
-        if not _at_least(mean, JUDGE_FLOOR):
+        if not _at_least(result.score, JUDGE_FLOOR):
             return f"judge mean {mean:.2f} < {JUDGE_FLOOR:.1f} {parity}"
         return f"judge mean {mean:.2f} more than {JUDGE_MARGIN:g} below the references' judge mean {parity}"
     bar = thresholds.reasoning_threshold if task_type == "reasoning" else thresholds.threshold
@@ -191,72 +170,92 @@ def _phrase(result: TierResult, task_type: TaskType, thresholds: Thresholds | Ru
     invalid = sum(c.error_category in _NOT_VALID for c in rows)
     if invalid:
         return f"{head} but {invalid}/{len(rows)} outputs not schema-valid (100% required)"
-    passing = _floor(100 * sum(c.passed for c in rows) / len(rows))
+    passing = _floor(100 * sum(c.passed for c in rows) / len(rows), 1)
     return f"{head} but only {passing:.1f}% of cases pass (< {t})"
-
-
-def _usd(x: float) -> str:
-    return f"${x:.2f}" if round(x, 2) == x else f"${x:g}"
 
 
 def _cost_before(
     model: str | None, evidence: Evidence, lookup: PriceLookup
 ) -> tuple[float | None, str, str | None]:
-    """(cost_before_per_1k, cost_before_note, sunset_risk), GC21."""
+    """(cost_before_per_1k, cost_before_note, sunset_risk), GC21: Task 17's note, plus the calls averaged."""
     if model is None:
         return None, "source model unknown: cost before not estimated", None
     try:
         info = lookup(model)
     except KeyError:
         return None, f"no published price found for {model}: cost before not estimated", None
-    sunset = None
-    if info.deprecation:
-        sunset = f"{info.deprecation} ({info.deprecation_url})" if info.deprecation_url else info.deprecation
     ok = [c for c in evidence.calls if c.output is not None]  # a failed call reports no usage
     if not ok:
-        return None, "no Token Factory call returned output: cost before not estimated", sunset
+        return None, "no Token Factory call returned output: cost before not estimated", info.sunset_risk()
     mean_in = math.fsum(c.input_tokens for c in ok) / len(ok)
     mean_out = math.fsum(c.output_tokens for c in ok) / len(ok)
     cost = 1000 * (mean_in * info.input_usd_per_m + mean_out * info.output_usd_per_m) / 1_000_000
-    via = getattr(info, "via", None)
-    source = (
-        f"{info.price_source_url.split('://', 1)[-1]}, {f'{via} ' if via else ''}{info.fetched_at:%Y-%m-%d}"
-    )
-    prices = f"{_usd(info.input_usd_per_m)}/{_usd(info.output_usd_per_m)} per 1M"
-    note = (
-        f"est.: {info.model} {prices} ({source}) x mean tokens measured on {len(ok)} Token Factory calls "
-        f"({evidence.tier.value}, holdout)"
-    )
-    return cost, note, sunset
+    note = f"{info.cost_before_note()} (mean of {len(ok)} {evidence.tier.value} holdout calls)"
+    return cost, note, info.sunset_risk()
+
+
+def _money(x: float) -> str:
+    return f"${x:.2f}" if x >= 1 else f"${x:.3g}"
 
 
 def _iterations(n: int) -> str:
     return f"{n} adapter iteration{'' if n == 1 else 's'}"
 
 
-def _accept(sentence: str, facts: str, required: str | None) -> bool:
-    sentence = sentence.strip()
-    if not sentence or "\n" in sentence or (required and required not in sentence):
-        return False
-    return set(_NUMBER.findall(sentence)) <= set(_NUMBER.findall(facts))
+def _accept(sentence: str) -> bool:
+    """One line, no digit, no number word: every number belongs to the code-built clause."""
+    return (
+        bool(sentence)
+        and "\n" not in sentence
+        and not any(ch.isdigit() for ch in sentence)
+        and not (_NUMBER_WORDS.search(sentence))
+    )
 
 
-def _reason(llm: LLM, facts: dict[str, Any], required: str | None, fallback: str) -> str:
-    text = json.dumps(facts, indent=1, ensure_ascii=False)
+def _sentence(llm: LLM, facts: dict[str, Any]) -> str | None:
+    """Super's qualitative sentence, or None when it failed the checks or the call failed."""
     try:
         result = llm.chat(
             role=VERDICT_ROLE,
             tier=Tier.SUPER,
-            messages=[{"role": "system", "content": VERDICT_SYSTEM}, {"role": "user", "content": text}],
+            messages=[
+                {"role": "system", "content": VERDICT_SYSTEM},
+                {"role": "user", "content": json.dumps(facts, indent=1, ensure_ascii=False)},
+            ],
             max_tokens=VERDICT_MAX_TOKENS,
             temperature=0.0,
             response_model=VerdictReason,
             reasoning="off",
         )
     except (BudgetExceeded, openai.APIError):  # CacheMiss (a replay without its cassette) propagates
-        return fallback
-    parsed: VerdictReason | None = result.parsed
-    return parsed.reason.strip() if parsed and _accept(parsed.reason, text, required) else fallback
+        return None
+    sentence = result.parsed.reason.strip() if result.parsed else ""
+    if not _accept(sentence):
+        return None
+    return sentence if sentence.endswith((".", "!", "?")) else f"{sentence}."
+
+
+def _clause(
+    migrate: bool,
+    name: str,
+    result: str,
+    n: int,
+    cost_before: float | None,
+    cost_after: float | None,
+    closed_parity: tuple[str, float] | None,
+) -> str:
+    """The code-built part of the reason: every number the verdict states."""
+    parts = [f"{name}: {result} on holdout" if migrate else f"{result} on {name}"]
+    parts[0] += f" after {_iterations(n)}"
+    if migrate and cost_before is not None:
+        parts.append(f"cost per 1k calls {_money(cost_before)} before (est.), {_money(cost_after)} after")
+    elif migrate:
+        parts.append(f"cost per 1k calls {_money(cost_after)} after (before not estimated)")
+    elif cost_before is not None:
+        parts.append(f"cost per 1k calls {_money(cost_before)} before (est.)")
+    if closed_parity:
+        parts.append(f"closed reference {closed_parity[0]} {closed_parity[1]:.1f}% on the same references")
+    return "; ".join(parts) + "."
 
 
 def decide(
@@ -274,35 +273,29 @@ def decide(
     migrate = dev.passed and holdout.passed
     name = tier.value.capitalize()
     if migrate:
-        result, required = f"{_phrase(holdout, task, thresholds)} on holdout", None
-        fallback = f"{name}: {result} after {_iterations(n)}."
+        result = _phrase(holdout, task, thresholds)
+    elif holdout.passed:  # dev never passed: the holdout pass is not a qualification
+        result = f"dev {_phrase(dev, task, thresholds)} (holdout {parity_pct(holdout, task):.1f}%)"
     else:
-        if holdout.passed:  # dev never passed: the holdout pass is not a qualification
-            result = f"dev {_phrase(dev, task, thresholds)} (holdout {parity_pct(holdout, task):.1f}%)"
-        else:
-            result = _phrase(holdout, task, thresholds)
-        required, fallback = result, f"{result} on {name} after {_iterations(n)}."
-    cost_before, note, sunset = _cost_before(site.source_model, evidence, price_lookup or lookup_price)
-    facts = {
-        "site": {
-            "id": site.id,
-            "file": site.file,
-            "function": site.function,
-            "source_model": site.source_model,
-            "task_type": task,
-        },
+        result = _phrase(holdout, task, thresholds)
+    cost_before, note, sunset = _cost_before(site.source_model, evidence, price_lookup or lookup_source_model)
+    cost_after = holdout.metrics.cost_per_1k_calls_usd if migrate else None
+    facts = {  # qualitative only: Super has no number to misattribute
+        "call_site": {"file": site.file, "function": site.function, "task_type": task},
         "decision": "MIGRATE" if migrate else "KEEP_CLOSED",
-        "tier": tier.value,
-        "result": result,
-        "iterations": n,
+        "tier": name,
+        "outcome": "reached parity with the references on the held-out cases; "
+        + ("it is the cheapest tier" if tier == TIER_ORDER[0] else "cheaper tiers did not")
+        if migrate
+        else "no tier reached parity with the references; this tier came closest",
         "adapter_changes": evidence.changes,
-        "holdout_failures_by_category": Counter(
-            c.error_category for c in holdout.case_scores if not c.passed
+        "holdout_failure_kinds": sorted(
+            {c.error_category or "failed" for c in holdout.case_scores if not c.passed}
         ),
-        "closed_reference": None
-        if closed_parity is None
-        else {"model": closed_parity[0], "parity_pct": closed_parity[1]},
+        "closed_reference_compared": closed_parity is not None,
     }
+    clause = _clause(migrate, name, result, n, cost_before, cost_after, closed_parity)
+    sentence = _sentence(llm, facts)
     return Verdict(
         site_id=site.id,
         decision="MIGRATE" if migrate else "KEEP_CLOSED",
@@ -315,9 +308,9 @@ def decide(
         latency_delta_ms=None,
         cost_before_per_1k=cost_before,
         cost_before_note=note,
-        cost_after_per_1k=holdout.metrics.cost_per_1k_calls_usd if migrate else None,
+        cost_after_per_1k=cost_after,
         sunset_risk=sunset,
         closed_reference_model=closed_parity[0] if closed_parity else None,
         closed_reference_parity_pct=closed_parity[1] if closed_parity else None,
-        reason=_reason(llm, facts, required, fallback),
+        reason=f"{sentence} {clause}" if sentence else clause,
     )
