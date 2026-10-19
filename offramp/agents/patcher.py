@@ -123,15 +123,21 @@ class PatchResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)  # e.g. symlinks dropped from the sandbox copy
 
 
-def client_location(repo: Path, files: list[str]) -> tuple[str, str]:
+def client_location(repo: Path, files: list[str]) -> tuple[str, str] | None:
     """(path, module) of the client: `<pkg>/offramp_client.py` in the one top-level package that holds every
-    migrated site, so it ships in that package's wheel; else `offramp/client.py` at the repository root."""
+    migrated site, so it ships in that package's wheel; else `offramp/client.py` at the repository root.
+
+    None when a site sits directly in a repository root that is itself a package (`__init__.py`): there is
+    no package below the root to hold the module, and the root's own import name is not known here."""
+    repo = repo.resolve()
     tops = set()
     for f in files:
-        top = (repo / f).parent
+        top = (repo / f).resolve().parent
+        if top == repo:
+            return None if (repo / "__init__.py").is_file() else ROOT_CLIENT
         if not (top / "__init__.py").is_file():
             return ROOT_CLIENT
-        while (top.parent / "__init__.py").is_file():
+        while top.parent != repo and (top.parent / "__init__.py").is_file():  # never climb to the root
             top = top.parent
         tops.add(top)
     if len(tops) != 1:
@@ -148,11 +154,18 @@ def copy_repo(src: Path, dst: Path) -> list[str]:
     for dirpath, dirnames, filenames in os.walk(dst):
         for name in [*dirnames, *filenames]:
             path = Path(dirpath) / name
-            if path.is_symlink() and not path.resolve().is_relative_to(root):
+            if not path.is_symlink():
+                continue
+            try:
+                path.resolve(strict=True)  # 3.12 raises RuntimeError on a loop, 3.13 OSError (ELOOP)
+                why = None if path.resolve().is_relative_to(root) else "it points outside the repository"
+            except FileNotFoundError:  # dangling: judged by where it points
+                why = None if path.resolve().is_relative_to(root) else "it points outside the repository"
+            except (OSError, RuntimeError):
+                why = "it is a symlink loop"
+            if why:
                 path.unlink()
-                warnings.append(
-                    f"dropped symlink {path.relative_to(dst).as_posix()}: it points outside the repository"
-                )
+                warnings.append(f"dropped symlink {path.relative_to(dst).as_posix()}: {why}")
     return sorted(warnings)
 
 
@@ -813,6 +826,11 @@ def compose_patches(
         )
 
     client_at = client_location(repo, [by_id[v.site_id].file for v in to_migrate if v.site_id in by_id])
+    if client_at is None:
+        return stop(
+            "no package to hold Offramp's client module: the migrated call sites sit in the repository root, "
+            "which is itself a Python package (it has __init__.py)"
+        )
     client = client_module()
     write(client_at[0], client)
     if client_at == ROOT_CLIENT and read("offramp/__init__.py") is None:

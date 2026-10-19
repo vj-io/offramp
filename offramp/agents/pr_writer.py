@@ -10,6 +10,7 @@ import json
 import re
 from collections import Counter
 
+import openai
 from pydantic import BaseModel, Field
 
 from offramp.evals.errors import ProviderError
@@ -474,7 +475,7 @@ def write_pr(ctx: PRContext, llm: LLM) -> PRDraft:
             response_model=PRProse,
             reasoning="off",
         )
-    except (BudgetExceeded, CacheMiss, ProviderError):  # prose is optional: the evidence never needs it
+    except (openai.APIError, BudgetExceeded, CacheMiss, ProviderError):  # prose is optional; evidence is not
         return render_pr(ctx)
     prose = res.parsed if isinstance(res.parsed, PRProse) else None
     if prose is None:

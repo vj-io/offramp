@@ -23,6 +23,7 @@ from offramp.agents.patcher import (
     call_params,
     client_location,
     compose_patches,
+    copy_repo,
     edits_text,
     keep_comment,
     parse_edits,
@@ -534,13 +535,13 @@ def demo_inputs():
 
 
 def run_demo(live: bool):
+    if not (docker_available() or os.environ.get("OFFRAMP_ALLOW_LOCAL_SANDBOX") == "1"):
+        pytest.skip("the demo replay needs a sandbox: docker, or OFFRAMP_ALLOW_LOCAL_SANDBOX=1")
     if not live and not any(CASSETTES.glob("*.json")):
         pytest.skip("demo patcher cassettes not recorded for the current patcher prompt: pytest --live")
     repo = demo_repo()
     if repo is None:
         pytest.skip("offramp-demo-app checkout not found (set OFFRAMP_DEMO_REPO_DIR)")
-    if not (docker_available() or shutil.which("uv")):
-        pytest.skip("no sandbox runtime (docker or uv)")
     sites, verdicts, adapters, config = demo_inputs()
     llm = TFClient(cache_dir=CASSETTES, live=live)
     return compose_patches(
@@ -683,8 +684,17 @@ def test_a_json_object_request_is_not_patched():
         (["src/pkg/a.py"], ["src/pkg"], ("src/pkg/offramp_client.py", "pkg.offramp_client")),
         (["app.py"], [], ("offramp/client.py", "offramp.client")),
         (["one/a.py", "two/b.py"], ["one", "two"], ("offramp/client.py", "offramp.client")),
+        (["pkg/a.py"], [".", "pkg"], ("pkg/offramp_client.py", "pkg.offramp_client")),
+        (["app.py"], ["."], None),
     ],
-    ids=["package", "src-layout", "top-level-module", "two-packages"],
+    ids=[
+        "package",
+        "src-layout",
+        "top-level-module",
+        "two-packages",
+        "root-package-sites-in-pkg",
+        "root-package-sites-at-root",
+    ],  # fmt: skip
 )
 def test_client_location_is_the_package_holding_the_sites(files, packages, expected):
     repo = work_dir("location")
@@ -787,3 +797,34 @@ def test_failure_summaries_are_stable_across_runs():
 
     assert _summary(run_a) == _summary(run_b)
     assert "FAILED t.py::x - boom" in _summary(run_a)
+
+
+def test_a_symlink_loop_is_dropped_not_fatal():
+    """Python 3.12's Path.resolve() raises on a loop; a hostile repo must not abort the run."""
+    src = work_dir("loop") / "src"
+    shutil.copytree(TINY, src)
+    (src / "tinyapp" / "a").symlink_to("b")
+    (src / "tinyapp" / "b").symlink_to("a")
+    (src / "tinyapp" / "self").symlink_to("self")
+
+    warnings = copy_repo(src, src.parent / "copy")
+
+    copy = src.parent / "copy" / "tinyapp"
+    assert not (copy / "self").is_symlink() and not (copy / "a").is_symlink()
+    assert "dropped symlink tinyapp/self: it is a symlink loop" in warnings
+
+
+def test_a_repo_root_package_holding_the_sites_has_no_place_for_the_client():
+    repo = work_dir("rootpkg") / "src"
+    shutil.copytree(TINY, repo)
+    (repo / "__init__.py").write_text("")
+    (repo / "greet.py").write_text((repo / "tinyapp" / "greet.py").read_text())
+    site = tiny_sites()[0].model_copy(update={"file": "greet.py"})
+
+    work = repo.parent / "w"
+    result = compose_patches(repo, [site], [tiny_verdicts()[0]], tiny_adapters(), FakeLLM(), work,
+                             config=CONFIG, sandbox_factory=FakeSandbox, build_request=BUILD)  # fmt: skip
+
+    (v,) = result.verdicts
+    assert v.decision == "MANUAL_REVIEW" and "repository root, which is itself a Python package" in v.reason
+    assert result.files == {}

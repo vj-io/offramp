@@ -3,12 +3,14 @@
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from offramp.agents.pr_writer import PRContext, PRProse, SiteNote, render_pr, write_pr
 from offramp.evals.errors import ProviderError
 from offramp.schemas import Tier
 from offramp.tf import BudgetExceeded, CacheMiss, FakeLLM, TFClient
+from offramp.tf import client as tf_client
 
 FIXTURES = Path(__file__).parents[1] / "fixtures"
 CASSETTES = FIXTURES / "cassettes" / "pr_writer"
@@ -114,3 +116,12 @@ def test_spelled_out_and_backticked_numbers_are_dropped_too(prose):
     llm = FakeLLM().add("pr_writer", PRProse(summary=prose, sites=[SiteNote(site_id="cs_02", note=prose)]))
 
     assert prose not in write_pr(ctx(), llm).body
+
+
+@pytest.mark.parametrize("status", [400, 503])
+def test_a_real_token_factory_error_falls_back_to_the_deterministic_body(monkeypatch, tmp_path, status):
+    monkeypatch.setattr(tf_client, "MAX_RETRIES", 0)  # the SDK would retry the 503 with backoff
+    transport = httpx.MockTransport(lambda request: httpx.Response(status, json={"error": {"message": "x"}}))
+    llm = TFClient(api_key="test-key", cache_dir=tmp_path, http_client=httpx.Client(transport=transport))
+
+    assert write_pr(ctx(), llm) == render_pr(ctx())
