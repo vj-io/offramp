@@ -13,7 +13,7 @@ import httpx
 import openai
 import pytest
 
-from offramp.evals.runner import MAX_CONCURRENCY, BudgetStop, run_tier
+from offramp.evals.runner import MAX_CONCURRENCY, BudgetStop, MissingReference, ProviderError, run_tier
 from offramp.evals.scorers.aggregate import CANDIDATE_ERROR, Thresholds
 from offramp.pricing import load_pricing
 from offramp.schemas import (
@@ -21,6 +21,7 @@ from offramp.schemas import (
     AdapterSpec,
     BaselineResult,
     CallSite,
+    CandidateResult,
     Contract,
     EvalCase,
     ModelOutput,
@@ -103,8 +104,25 @@ def _ok(text: str, latency: int = 100, tin: int = 10, tout: int = 5):
     return make
 
 
-def _api_error() -> openai.APIConnectionError:
-    return openai.APIConnectionError(request=httpx.Request("POST", "https://example.invalid/v1/chat"))
+_REQ = httpx.Request("POST", "https://example.invalid/v1/chat/completions")
+
+
+def _timeout() -> openai.APITimeoutError:
+    """A per-request failure of the model service: scored as a failed case."""
+    return openai.APITimeoutError(request=_REQ)
+
+
+def _status(status: int, body: str = "") -> openai.APIStatusError:
+    return openai.APIStatusError(
+        f"Error code: {status} - {body}", response=httpx.Response(status, request=_REQ, text=body), body=None
+    )
+
+
+class Slow:
+    """Reply that takes `seconds` and then raises `exc` (a call that timed out after a while)."""
+
+    def __init__(self, exc: BaseException, seconds: float):
+        self.exc, self.seconds = exc, seconds
 
 
 class CaseClient:
@@ -128,6 +146,9 @@ class CaseClient:
         try:
             time.sleep(self.delay)
             reply = self.replies[kw["messages"][-1]["content"]]
+            if isinstance(reply, Slow):
+                time.sleep(reply.seconds)
+                raise reply.exc
             if isinstance(reply, BaseException):
                 raise reply
             return reply(kw["tier"])
@@ -151,6 +172,7 @@ def _run(client, cases, baselines, *, site=None, tier=Tier.LIGHTNING, split="dev
         split,
         kw.pop("thresholds", Thresholds()),
         build_request=kw.pop("build_request", stub_build_request),
+        **kw,
     )
 
 
@@ -164,7 +186,7 @@ def test_scores_every_case_including_failed_calls():
             "cs_01:001": _ok("billing"),
             "cs_01:002": _ok("billing"),
             "cs_01:003": _ok("bug"),
-            "cs_01:004": _api_error(),
+            "cs_01:004": _timeout(),
         }
     )
     result = _run(client, cases, [_ref(i) for i in range(1, 5)])
@@ -173,7 +195,7 @@ def test_scores_every_case_including_failed_calls():
     assert [c.case_id for c in result.case_scores] == [c.id for c in cases]  # none dropped, case order kept
     assert result.failing_case_ids == ["cs_01:003", "cs_01:004"]
     assert result.case_scores[3].error_category == CANDIDATE_ERROR
-    assert result.case_scores[3].detail.startswith("candidate call failed: APIConnectionError")
+    assert result.case_scores[3].detail.startswith("candidate call failed: APITimeoutError")
     assert (result.score, result.passed) == (0.5, False)
     assert (result.site_id, result.tier, result.split, result.adapter_version) == (
         "cs_01",
@@ -236,11 +258,20 @@ def test_runs_only_the_requested_split():
     assert result.split == "holdout"
 
 
-def test_case_without_reference_is_neither_run_nor_scored():
-    cases = [_case(1), _case(2)]
+def test_case_without_reference_raises_before_any_call():
+    cases = [_case(1)] + [_case(i, "holdout") for i in range(2, 12)]
+    client = CaseClient({c.id: _ok("billing") for c in cases})
+    with pytest.raises(MissingReference) as err:
+        _run(client, cases, [_ref(2)], split="holdout")  # 10 holdout cases, 1 reference
+    assert err.value.case_ids == [f"cs_01:{i:03d}" for i in range(3, 12)]
+    assert "cs_01:003" in str(err.value)
+    assert client.target_calls == []  # nothing spent on a split that cannot be scored
+
+
+def test_reference_check_covers_only_the_requested_split():
+    cases = [_case(1), _case(2, "holdout")]  # the holdout case has no reference; a dev run does not need it
     client = CaseClient({c.id: _ok("billing") for c in cases})
     result = _run(client, cases, {"cs_01:001": _ref(1)})  # a mapping works as well as a list
-    assert [c["messages"][-1]["content"] for c in client.target_calls] == ["cs_01:001"]
     assert [c.case_id for c in result.case_scores] == ["cs_01:001"]
 
 
@@ -269,11 +300,11 @@ def test_metrics_latency_percentiles_tokens_and_cost():
     toks = [(100, 10), (200, 20), (300, 30), (400, 40), (500, 50)]
     cases = [_case(i) for i in range(1, 7)]
     replies = {f"cs_01:{i:03d}": _ok("billing", lat[i - 1], *toks[i - 1]) for i in range(1, 6)}
-    replies["cs_01:006"] = _api_error()  # no latency or tokens measured: excluded from metrics
+    replies["cs_01:006"] = _timeout()  # fails at once: in the percentiles (~0 ms), no tokens or cost
     result = _run(CaseClient(replies), cases, [_ref(i) for i in range(1, 7)])
 
     m = result.metrics
-    assert (m.p50_ms, m.p95_ms) == (300, 1000)  # nearest rank over [100, 200, 300, 400, 1000]
+    assert (m.p50_ms, m.p95_ms) == (200, 1000)  # nearest rank over [~0, 100, 200, 300, 400, 1000]
     assert (m.tokens_in, m.tokens_out) == (1500, 150)
     p_in, p_out = _lightning_price()
     mean_cost = sum(i * p_in + o * p_out for i, o in toks) / 1_000_000 / 5
@@ -285,6 +316,15 @@ def test_percentiles_are_nearest_rank_on_even_counts():
     replies = {c.id: _ok("billing", lat) for c, lat in zip(cases, [400, 100, 300, 200], strict=True)}
     m = _run(CaseClient(replies), cases, [_ref(i) for i in range(1, 5)]).metrics
     assert (m.p50_ms, m.p95_ms) == (200, 400)  # rank ceil(0.5 * 4) = 2 -> 200, not an interpolated 250
+
+
+def test_failed_call_counts_in_percentiles_at_its_time_until_failure():
+    cases = [_case(i) for i in range(1, 5)]
+    replies = {c.id: _ok("billing", 100) for c in cases[:3]}
+    replies["cs_01:004"] = Slow(_timeout(), 0.3)
+    m = _run(CaseClient(replies), cases, [_ref(i) for i in range(1, 5)]).metrics
+    assert m.p50_ms == 100
+    assert 300 <= m.p95_ms < 2000  # the timed-out call is the tail, not 0 ms
 
 
 def test_cost_uses_tier_price_even_when_model_id_is_overridden(monkeypatch):
@@ -329,6 +369,72 @@ def test_cache_miss_propagates():
         _run(CaseClient({case.id: CacheMiss("no cached response")}), [case], [_ref(1)])
 
 
+# ------------------------------------------------------------------ provider errors are run errors
+
+PROVIDER_ERRORS = [
+    _status(401, '{"error": "invalid api key"}'),
+    _status(402, '{"error": "insufficient balance"}'),
+    _status(403, '{"error": "forbidden"}'),
+    _status(404, '{"error": "model nvidia/unknown not found"}'),
+    _status(429, '{"error": "quota exceeded: credit balance is 0"}'),
+    _status(429, '{"error": "rate limit reached, retry later"}'),  # still limited after the SDK retries
+    openai.APIConnectionError(request=_REQ),  # network down: says nothing about the model
+]
+CASE_FAILURES = [_timeout(), _status(400, '{"error": "context length exceeded"}'), _status(500), _status(503)]
+
+
+@pytest.mark.parametrize(
+    "exc", PROVIDER_ERRORS, ids=lambda e: type(e).__name__ + str(getattr(e, "status_code", ""))
+)
+def test_provider_error_is_raised_never_scored(exc):
+    cases = [_case(i) for i in range(1, 4)]
+    replies = {c.id: _ok("billing") for c in cases}
+    replies["cs_01:002"] = exc
+    with pytest.raises(ProviderError) as err:
+        _run(CaseClient(replies), cases, [_ref(i) for i in range(1, 4)])
+    assert err.value.__cause__ is exc
+    assert err.value.status == getattr(exc, "status_code", None)
+
+
+@pytest.mark.parametrize(
+    "exc", CASE_FAILURES, ids=lambda e: type(e).__name__ + str(getattr(e, "status_code", ""))
+)
+def test_model_side_failure_is_a_scored_failed_case(exc):
+    cases = [_case(1), _case(2)]
+    result = _run(CaseClient({"cs_01:001": _ok("billing"), "cs_01:002": exc}), cases, [_ref(1), _ref(2)])
+    assert result.failing_case_ids == ["cs_01:002"]
+    assert result.case_scores[1].error_category == CANDIDATE_ERROR
+
+
+def test_provider_error_from_the_judge_is_raised():
+    case = _case(1)
+    client = CaseClient({case.id: _ok("x")}, judge_replies=(_status(402, "insufficient balance"),))
+    with pytest.raises(ProviderError):
+        _run(client, [case], [], site=_site("free_text"))
+
+
+# ------------------------------------------------------------------ candidate outputs for the Iterator
+
+
+def test_return_candidates_gives_every_raw_output_in_case_order():
+    cases = [_case(1), _case(2), _case(3)]
+    client = CaseClient({"cs_01:001": _ok("billing"), "cs_01:002": _ok("bug"), "cs_01:003": _timeout()})
+    result, candidates = _run(client, cases, [_ref(i) for i in range(1, 4)], return_candidates=True)
+    assert isinstance(result, TierResult) and result.failing_case_ids == ["cs_01:002", "cs_01:003"]
+    assert all(isinstance(c, CandidateResult) for c in candidates)
+    assert [c.case_id for c in candidates] == ["cs_01:001", "cs_01:002", "cs_01:003"]
+    assert [c.output.text if c.output else None for c in candidates] == ["billing", "bug", None]
+    assert candidates[2].error.startswith("APITimeoutError")
+    assert {(c.tier, c.adapter_version) for c in candidates} == {(Tier.LIGHTNING, 2)}
+
+
+def test_return_candidates_on_budget_stop():
+    case = _case(1)
+    client = CaseClient({case.id: BudgetExceeded("token cap reached")})
+    stop, candidates = _run(client, [case], [_ref(1)], return_candidates=True)
+    assert isinstance(stop, BudgetStop) and candidates == []
+
+
 # ------------------------------------------------------------------ free_text sites (judge)
 
 
@@ -360,7 +466,7 @@ def test_free_text_without_reference_text_uses_absolute_judge_and_floor():
 def test_free_text_failed_call_scores_one_and_is_not_judged():
     cases = [_case(1), _case(2), _case(3)]
     client = CaseClient(
-        {"cs_01:001": _ok("a1"), "cs_01:002": _ok("a2"), "cs_01:003": _api_error()},
+        {"cs_01:001": _ok("a1"), "cs_01:002": _ok("a2"), "cs_01:003": _timeout()},
         judge_replies=(
             _judge_reply({"case": 1, "note": "", "a": _rub(5)}, {"case": 2, "note": "", "a": _rub(4)}),
         ),

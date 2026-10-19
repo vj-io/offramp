@@ -23,6 +23,7 @@ from offramp.agents.judge import (
     judge,
     judge_agreement,
 )
+from offramp.evals.errors import ProviderError
 from offramp.schemas import CaseScore, EvalCase, ModelOutput, Tier
 from offramp.tf import Budget, BudgetExceeded, FakeLLM, TFClient
 
@@ -207,7 +208,12 @@ def test_case_the_judge_skipped_scores_one():
         {"scores": [_single(1, _r(7, 5, 5))]},  # 7 is off the rubric: invalid, never clamped
         {"scores": [_single(1, _r(0, 5, 5))]},  # 0 too
         {"scores": [{"case": 1, "note": "x", "a": {"groundedness": 5}}]},  # criteria missing
-        openai.APIConnectionError(request=httpx.Request("POST", "https://example.invalid")),  # call failed
+        openai.APITimeoutError(request=httpx.Request("POST", "https://example.invalid")),  # call timed out
+        openai.InternalServerError(  # 5xx after the SDK's retries
+            "Error code: 502",
+            response=httpx.Response(502, request=httpx.Request("POST", "https://x")),
+            body=None,
+        ),
     ],
 )
 def test_invalid_judge_reply_scores_one(reply):
@@ -239,6 +245,26 @@ def test_unknown_and_duplicate_case_numbers_ignored():
     )
     result = judge(fake, cases, {"cs_04:001": ModelOutput(text="x")})
     assert result.scores[0].candidate == 2.0  # first entry for case 1 wins; case 9 does not exist
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (401, "invalid api key"),
+        (402, "insufficient balance"),
+        (404, "model not found"),
+        (429, "quota exceeded"),
+    ],
+)
+def test_provider_error_is_raised_not_scored(status, body):
+    exc = openai.APIStatusError(
+        body,
+        response=httpx.Response(status, request=httpx.Request("POST", "https://x"), text=body),
+        body=None,
+    )
+    fake = FakeLLM().add(JUDGE_ROLE, exc)
+    with pytest.raises(ProviderError):
+        judge(fake, [_case(1)], {"cs_04:001": ModelOutput(text="x")})
 
 
 def test_budget_exceeded_propagates():

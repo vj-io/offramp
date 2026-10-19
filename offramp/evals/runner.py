@@ -21,6 +21,7 @@ from typing import Any
 import openai
 
 from offramp.agents.judge import LOW_SCORE, case_passes, judge
+from offramp.evals.errors import MissingReference, ProviderError
 from offramp.evals.scorers import score_case
 from offramp.evals.scorers.aggregate import CANDIDATE_ERROR, DEFAULT_THRESHOLDS, Thresholds, site_pass
 from offramp.schemas import (
