@@ -128,7 +128,7 @@ make install
 | `LANGSMITH_API_KEY`, `LANGSMITH_TRACING`, `LANGSMITH_PROJECT` | Tracing and datasets |
 | `TENDEM_API_KEY` | Human audit of references |
 | `NEBIUS_PROJECT_ID`, `OFFRAMP_EVAL_IMAGE` | Submit the eval matrix as a Serverless Job instead of running it locally (needs an AI Cloud account) |
-| `OFFRAMP_DATA_DIR`, `OFFRAMP_RATE_LIMIT_PER_MIN`, `OFFRAMP_WEB_ORIGIN` | API data directory, rate limit on `POST /api/runs`, allowed web origin for CORS |
+| `OFFRAMP_DATA_DIR`, `OFFRAMP_RATE_LIMIT_PER_MIN`, `OFFRAMP_WEB_ORIGIN`, `OFFRAMP_ALLOW_LIVE_RUNS` | API data directory, rate limit on `POST /api/runs`, allowed web origin for CORS, opt-in for live runs through the API (off by default) |
 | `*_FALLBACK` (Nebius, Tavily, LangSmith, Tendem) | Second key, used for the rest of the process when the primary is rejected or out of credit; the switch is logged without the key |
 
 `.env` is gitignored, keys are read server-side only, and CI scans the full history with gitleaks.
@@ -145,7 +145,7 @@ The API contract the dashboard depends on:
 
 | Endpoint | |
 |---|---|
-| `POST /api/runs` | Body is the run config; returns `{"run_id"}`. `?replay=demo` starts a replay with no Token Factory calls. 30 requests per minute per IP |
+| `POST /api/runs` | Body is the run config; returns `{"run_id"}`. `?replay=demo` starts a replay with no Token Factory calls. A live run (`"live": true`) answers 403 unless the server sets `OFFRAMP_ALLOW_LIVE_RUNS=1`, because it imports the target repo's code on that host; cache-only runs and replays are always allowed. Repo URLs must be `https://` with no credentials (422). 30 requests per minute per IP |
 | `GET /api/runs/{id}` | Snapshot: stage, sites, tier results, verdicts, case summaries, totals, artifacts |
 | `GET /api/runs/{id}/events` | Server-sent events, resumable with `Last-Event-ID` |
 | `GET /api/runs/{id}/report` | JSON download of the snapshot and the PR body |
