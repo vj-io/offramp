@@ -1,7 +1,15 @@
 """SQLite persistence (PRD §7). Thin on purpose: one table per PRD entity, JSON-valued fields stored as text.
 
-Columns mirror the offramp.schemas models so the API can build rows with model_dump(); every per-run
-table has a surrogate `id` plus `run_id` because site and case ids ("cs_01", "cs_01:003") repeat across runs.
+Every per-run table has a surrogate `id` plus `run_id` because site and case ids ("cs_01", "cs_01:003")
+repeat across runs. SQLite keeps no tzinfo: datetimes are stored and returned as naive UTC.
+
+What the rows can rebuild (these tables are queryable summaries, not a full snapshot store):
+- Verdict and Baseline rows carry every field of `schemas.Verdict` / `schemas.BaselineResult` (Baseline
+  keeps `output` and `verified_by` as `*_json` text; latency/tokens/cost are NULL for references).
+- TierResult rows carry the metrics and failing ids but not `case_scores`.
+- They cannot rebuild the rest of a `RunSnapshot`: CallSite lacks `call`, `prompt_source`, `template`,
+  `params` and `flags`; Adapter lacks `risk_flags` and `change_log`; EvalCase lacks `variables`,
+  `expected_kind` and `source`; Run has no `config`. Task 12 must store those elsewhere (e.g. the event log).
 """
 
 import os
@@ -52,12 +60,15 @@ class Baseline(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     run_id: str = Field(index=True)
     case_id: str
+    source: str = "reference"  # reference | closed_model
     model: str
     output_json: str
-    latency_ms: int
-    input_tokens: int
-    output_tokens: int
-    cost_usd: float
+    latency_ms: int | None = None  # None for references: nothing was measured
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    verified_by_json: str = "[]"
+    recorded_at: datetime = Field(default_factory=_now)
 
 
 class Adapter(SQLModel, table=True):
@@ -101,7 +112,9 @@ class Verdict(SQLModel, table=True):
     iterations: int = 0
     latency_delta_ms: int | None = None
     cost_before_per_1k: float | None = None
+    cost_before_note: str | None = None
     cost_after_per_1k: float | None = None
+    sunset_risk: str | None = None
     reason: str
 
 

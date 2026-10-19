@@ -4,17 +4,22 @@ import json
 from collections import deque
 from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from offramp.schemas import ModelOutput, Tier
-from offramp.tf.client import ChatResult
+from offramp.tf.client import ChatResult, plan_structured, validate_structured
+from offramp.tf.tiers import get_tier
 
 
 class FakeLLM:
     """Queue of canned replies per role; every chat() call is recorded in `calls` (the kwargs passed).
 
     A reply is a ChatResult (returned as is), ModelOutput, str (the text), pydantic instance or dict/list
-    (serialised to JSON text, also set as `parsed`), or an Exception instance (raised, e.g. BudgetExceeded).
+    (serialised to JSON text), or an Exception instance (raised, e.g. BudgetExceeded).
+
+    `parsed` and `json_path` come from the same code TFClient uses: with response_model or json_schema the
+    reply text is validated (a model instance, or the decoded JSON; None if invalid, with no repair retry);
+    with neither, `parsed` is None, as with the real client.
     """
 
     def __init__(self, replies: dict[str, list[Any]] | None = None):
@@ -35,6 +40,7 @@ class FakeLLM:
         temperature: float = 0.0,
         response_model: type[BaseModel] | None = None,
         json_schema: dict[str, Any] | None = None,
+        json_mode_fallback: bool = False,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
         reasoning: str = "off",
@@ -42,7 +48,8 @@ class FakeLLM:
     ) -> ChatResult:
         self.calls.append(
             dict(role=role, tier=tier, messages=messages, max_tokens=max_tokens, temperature=temperature,
-                 response_model=response_model, json_schema=json_schema, tools=tools, tool_choice=tool_choice,
+                 response_model=response_model, json_schema=json_schema,
+                 json_mode_fallback=json_mode_fallback, tools=tools, tool_choice=tool_choice,
                  reasoning=reasoning, extra_body=extra_body)
         )
         queue = self.queues.get(role)
@@ -51,24 +58,21 @@ class FakeLLM:
         reply = queue.popleft()
         if isinstance(reply, BaseException):
             raise reply
-        return self._as_result(reply, tier, response_model)
-
-    @staticmethod
-    def _as_result(reply: Any, tier: Tier, response_model: type[BaseModel] | None) -> ChatResult:
         if isinstance(reply, ChatResult):
             return reply
-        parsed = None
         if isinstance(reply, ModelOutput):
             output = reply
         elif isinstance(reply, str):
             output = ModelOutput(text=reply)
         elif isinstance(reply, BaseModel):
-            output, parsed = ModelOutput(text=reply.model_dump_json()), reply
+            output = ModelOutput(text=reply.model_dump_json())
         else:
-            output, parsed = ModelOutput(text=json.dumps(reply)), reply
-        if parsed is None and response_model is not None and output.text:
-            try:
-                parsed = response_model.model_validate_json(output.text)
-            except ValidationError:
-                pass  # like the real client: invalid JSON leaves parsed None
-        return ChatResult(output=output, parsed=parsed, model="fake", tier=tier)
+            output = ModelOutput(text=json.dumps(reply))
+        info = get_tier(tier)
+        plan = plan_structured(json_schema, response_model, json_mode_fallback, info.supports_json_schema)
+        parsed = None
+        if plan.json_path != "none":
+            parsed, _ = validate_structured(output.text or "", plan.schema, response_model)
+        return ChatResult(
+            output=output, parsed=parsed, model=info.model_id, tier=info.tier, json_path=plan.json_path
+        )

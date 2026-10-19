@@ -7,7 +7,7 @@ from typing import Any
 from offramp.pricing import load_pricing
 from offramp.schemas import Tier
 
-# Defaults come from third-party listings; Task 14 verifies them against GET /v1/models.
+# Ids confirmed against GET /v1/models (docs/plan/tf-probe.md, 2026-10-19).
 # Override per tier with OFFRAMP_MODEL_{LIGHTNING,SUPER,ULTRA}. Each default must be a key in pricing.yaml.
 DEFAULT_MODEL_IDS: dict[Tier, str] = {
     Tier.LIGHTNING: "nvidia/Nemotron-3_5-Lightning",
@@ -15,8 +15,8 @@ DEFAULT_MODEL_IDS: dict[Tier, str] = {
     Tier.ULTRA: "nvidia/Nemotron-3-Ultra-550b-a55b",
 }
 
-# PRD §16 open question: json_schema response_format support per tier is unverified (Task 14 probes it).
-# Flip a tier to False and the client uses json_object + validation + one repair retry instead.
+# Verified by the live probe (docs/plan/tf-probe.md): json_schema and json_object work on all three tiers.
+# Set a tier to False and the client uses json_object + validation + one repair retry for it.
 SUPPORTS_JSON_SCHEMA: dict[Tier, bool] = {Tier.LIGHTNING: True, Tier.SUPER: True, Tier.ULTRA: True}
 
 
@@ -46,7 +46,8 @@ def get_tier(tier: Tier) -> TierInfo:
 def reasoning_params(tier: Tier, level: str) -> dict[str, Any]:
     """Map AdapterSpec.reasoning ("off"|"low"|"medium"|"high") to chat.completions.create kwargs.
 
-    The single place the reasoning-control mechanism lives; Task 14 verifies it against the live API
-    (and may add effort levels). Default: toggle Nemotron's thinking via chat_template_kwargs.
+    The single place the reasoning-control mechanism lives. Nemotron thinks by default; the live probe
+    (docs/plan/tf-probe.md) showed chat_template_kwargs.enable_thinking=false turns it off, while
+    reasoning_effort="low" did not shorten Ultra output, so the levels low/medium/high all mean "on".
     """
     return {"extra_body": {"chat_template_kwargs": {"enable_thinking": level != "off"}}}

@@ -8,8 +8,19 @@ from pathlib import Path
 from typing import Any
 
 
+def _normalise(obj: Any) -> Any:
+    """Whole-number floats become ints, so temperature 0 and 0.0 (or max_tokens 64.0) share one key."""
+    if isinstance(obj, dict):
+        return {k: _normalise(v) for k, v in obj.items()}
+    if isinstance(obj, list | tuple):
+        return [_normalise(v) for v in obj]
+    if isinstance(obj, float) and obj.is_integer():
+        return int(obj)
+    return obj
+
+
 def canonical_json(obj: Any) -> str:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(_normalise(obj), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def cache_key(model: str, messages: list[dict[str, Any]], params: dict[str, Any]) -> str:

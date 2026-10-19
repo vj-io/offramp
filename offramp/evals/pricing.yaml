@@ -1,29 +1,37 @@
-# Published USD prices per 1M tokens (standard tier: no batch, no prompt-cache discounts).
-# Every entry carries its own `as_of` date and `source` URL (PRD §6.5). `tier` marks Token Factory models:
-# offramp/tf/tiers.py reads TF prices by tier, so overriding a model id via OFFRAMP_MODEL_* keeps the tier price.
+# USD prices per 1M tokens (standard tier: no batch, no prompt-cache discounts).
+# Every entry carries its own `as_of` date (when the value was recorded), a `source` URL (PRD §6.5) and a
+# `price_status`:
+#   published              - read from the vendor's own price page on `as_of`.
+#   unverified-list-price  - a list price taken from the PRD/brief that could not be read from the source page;
+#                            a UI or PR must show it as unverified. Task 14 flips it once checked.
+# `tier` marks Token Factory models: offramp/tf/tiers.py reads TF prices by tier, so overriding a model id
+# via OFFRAMP_MODEL_* keeps the tier price.
 models:
-  # --- Nebius Token Factory (Nemotron) ---
+  # --- Nebius Token Factory (Nemotron). Model ids confirmed via GET /v1/models (docs/plan/tf-probe.md). ---
   nvidia/Nemotron-3-Ultra-550b-a55b:
     tier: ultra
     input_usd_per_m: 1.00
     output_usd_per_m: 3.00
     as_of: "2026-10-19"
     source: https://nebius.com/token-factory/prices
-    note: "Price from PRD §1; the Nebius price page was not machine-readable on as_of, re-check in Task 14."
+    price_status: unverified-list-price
+    note: "Price from PRD §1; the Nebius price page is login-gated for machine reads, re-check against the console."
   nvidia/nemotron-3-super-120b-a12b:
     tier: super
     input_usd_per_m: 0.30
     output_usd_per_m: 0.90
     as_of: "2026-10-19"
     source: https://nebius.com/token-factory/prices
-    note: "Matches PRD §1; also listed at $0.30/$0.90 for Nebius by Artificial Analysis (artificialanalysis.ai)."
+    price_status: unverified-list-price
+    note: "Matches PRD §1; third-party listings (Artificial Analysis) show Nebius at $0.30/$0.90, but the Nebius page itself was not read."
   nvidia/Nemotron-3_5-Lightning:
     tier: lightning
     input_usd_per_m: 0.06
     output_usd_per_m: 0.24
     as_of: "2026-10-19"
     source: https://nebius.com/token-factory/prices
-    note: "Price from PRD §1; the Nebius price page was not machine-readable on as_of, re-check in Task 14."
+    price_status: unverified-list-price
+    note: "Price from PRD §1; the Nebius price page is login-gated for machine reads, re-check against the console."
 
   # --- OpenAI (closed source models used by the demo) ---
   gpt-4o-mini:
@@ -31,26 +39,31 @@ models:
     output_usd_per_m: 0.60
     as_of: "2026-10-19"
     source: https://developers.openai.com/api/docs/pricing
+    price_status: published
   gpt-4o:
     input_usd_per_m: 2.50
     output_usd_per_m: 10.00
     as_of: "2026-10-19"
     source: https://developers.openai.com/api/docs/pricing
+    price_status: published
   gpt-4.1-mini:
     input_usd_per_m: 0.40
     output_usd_per_m: 1.60
     as_of: "2026-10-19"
     source: https://developers.openai.com/api/docs/pricing
+    price_status: published
   o3:
     input_usd_per_m: 2.00
     output_usd_per_m: 8.00
     as_of: "2026-10-19"
     source: https://developers.openai.com/api/docs/pricing
+    price_status: published
   o4-mini:
     input_usd_per_m: 1.10
     output_usd_per_m: 4.40
     as_of: "2026-10-19"
     source: https://developers.openai.com/api/docs/pricing
+    price_status: published
 
   # --- Anthropic ---
   claude-sonnet-4-5:
@@ -58,9 +71,11 @@ models:
     output_usd_per_m: 15.00
     as_of: "2026-10-19"
     source: https://platform.claude.com/docs/en/about-claude/pricing
+    price_status: published
     note: "Listed as deprecated on the Anthropic pricing page at as_of; price still published."
   claude-haiku-4-5:
     input_usd_per_m: 1.00
     output_usd_per_m: 5.00
     as_of: "2026-10-19"
     source: https://platform.claude.com/docs/en/about-claude/pricing
+    price_status: published

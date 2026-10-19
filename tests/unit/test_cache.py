@@ -2,6 +2,8 @@ import json
 import os
 import threading
 
+import pytest
+
 from offramp.tf.cache import Cache, cache_key
 
 MESSAGES = [{"role": "system", "content": "be terse"}, {"role": "user", "content": "héllo 🌍"}]
@@ -97,3 +99,17 @@ def test_concurrent_puts_to_one_key_never_corrupt(tmp_path):
     [t.start() for t in threads]
     [t.join() for t in threads]
     assert errors == []
+
+
+@pytest.mark.parametrize("a,b", [(0, 0.0), (1, 1.0), (64, 64.0), (-3, -3.0), (1000, 1e3)])
+def test_key_treats_equal_int_and_float_numbers_as_the_same(a, b):
+    assert cache_key("m", MESSAGES, {"temperature": a}) == cache_key("m", MESSAGES, {"temperature": b})
+    nested_a = {"response_format": {"json_schema": {"schema": {"minimum": a}}}, "stop": [a]}
+    nested_b = {"response_format": {"json_schema": {"schema": {"minimum": b}}}, "stop": [b]}
+    assert cache_key("m", MESSAGES, nested_a) == cache_key("m", MESSAGES, nested_b)
+
+
+def test_key_still_distinguishes_different_numbers_and_bools():
+    assert cache_key("m", MESSAGES, {"temperature": 0}) != cache_key("m", MESSAGES, {"temperature": 0.1})
+    assert cache_key("m", MESSAGES, {"temperature": 0.5}) != cache_key("m", MESSAGES, {"temperature": 1})
+    assert cache_key("m", MESSAGES, {"flag": True}) != cache_key("m", MESSAGES, {"flag": 1})

@@ -5,9 +5,9 @@ from typing import Any
 
 from offramp.schemas import Tier
 
-# Eval-target calls (role starts with this) count toward the token caps but not the Ultra-agent cap.
-# Every other Ultra call (case_gen adversarial, adapter, iterator, judge) is an Ultra *agent* call.
-EVAL_ROLE_PREFIX = "eval"
+# Eval-target calls (exactly this role) count toward the token caps but not the Ultra-agent cap.
+# Every other Ultra call (case_gen adversarial, adapter, iterator, judge, ...) is an Ultra *agent* call.
+EVAL_TARGET_ROLE = "eval_target"
 
 
 class BudgetExceeded(Exception):
@@ -23,7 +23,7 @@ class Budget:
 
     @staticmethod
     def _is_ultra_agent(role: str, tier: Tier) -> bool:
-        return tier == Tier.ULTRA and not role.startswith(EVAL_ROLE_PREFIX)
+        return tier == Tier.ULTRA and role != EVAL_TARGET_ROLE
 
     def check(self, role: str, tier: Tier) -> None:
         """Pre-call gate: refuse a call that cannot fit. Costs nothing, records nothing."""

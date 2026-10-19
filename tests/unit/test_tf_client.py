@@ -72,6 +72,15 @@ def chat(client, **kw):
 
 
 @pytest.fixture(autouse=True)
+def hermetic_env(monkeypatch):
+    """Nothing in the developer's shell (model overrides, keys, tracing) may change these tests."""
+    ambient = [f"OFFRAMP_MODEL_{t.name}" for t in Tier]
+    ambient += ["NEBIUS_API_KEY", "NEBIUS_BASE_URL", "LANGSMITH_TRACING", "OFFRAMP_DATA_DIR"]
+    for name in ambient:
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def no_retry_sleep(monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda s: None)  # the SDK backs off with time.sleep
 
@@ -170,7 +179,35 @@ def test_reasoning_is_off_by_default_and_toggled_by_level(tmp_path):
     assert server.requests[1]["chat_template_kwargs"] == {"enable_thinking": True}
 
 
-def test_caller_extra_body_is_deep_merged_over_reasoning_params(tmp_path):
+@pytest.mark.parametrize("level,expected", [("off", False), ("low", True), ("medium", True), ("high", True)])
+@pytest.mark.parametrize(
+    "extra_body",
+    [None, {}, {"top_k": 1}, {"chat_template_kwargs": {}}, {"chat_template_kwargs": {"low_effort": True}}],
+    ids=["none", "empty", "other-key", "empty-kwargs", "other-kwarg"],
+)
+def test_enable_thinking_is_always_sent_explicitly(tmp_path, level, expected, extra_body):
+    """Nemotron thinks by default (docs/plan/tf-probe.md), so the flag must be on every request (GC25)."""
+    server = Server(completion("a"))
+    chat(make_client(tmp_path, server), reasoning=level, extra_body=extra_body)
+    body = server.requests[0]
+    assert body["chat_template_kwargs"]["enable_thinking"] is expected
+    for key, value in (extra_body or {}).items():  # the caller's own extras are kept, merged in
+        if key == "chat_template_kwargs":
+            assert value.items() <= body[key].items()
+        else:
+            assert body[key] == value
+
+
+def test_reasoning_level_is_authoritative_over_a_caller_enable_thinking(tmp_path):
+    server = Server(completion("a"), completion("b"))
+    client = make_client(tmp_path, server)
+    chat(client, reasoning="off", extra_body={"chat_template_kwargs": {"enable_thinking": True}})
+    chat(client, reasoning="high", extra_body={"chat_template_kwargs": {"enable_thinking": False}})
+    assert server.requests[0]["chat_template_kwargs"]["enable_thinking"] is False
+    assert server.requests[1]["chat_template_kwargs"]["enable_thinking"] is True
+
+
+def test_caller_extra_body_is_deep_merged_with_reasoning_params(tmp_path):
     server = Server(completion("a"))
     chat(make_client(tmp_path, server), extra_body={"chat_template_kwargs": {"low_effort": True}, "top_k": 1})
     body = server.requests[0]
@@ -241,6 +278,78 @@ def test_cached_repair_round_trip_costs_no_requests(tmp_path, no_json_schema):
     assert (first.cached, again.cached) == (False, True)
     assert again.repaired is True and again.parsed == first.parsed
     assert len(server.requests) == 2
+
+
+# ------------------------------------------------------------------ AdapterSpec.response_format forms
+
+OBJECT_MODE = {"type": "json_object"}
+BAD_SCHEMA = {"type": "bogus"}  # not a valid JSON Schema (an Ultra-written adapter could produce this)
+
+
+def test_json_object_response_format_is_passed_through_and_validated_parse_only(tmp_path):
+    server = Server(completion('{"anything": [1, 2]}'))
+    r = chat(make_client(tmp_path, server), json_schema=OBJECT_MODE)
+    assert server.requests[0]["response_format"] == {"type": "json_object"}
+    assert (r.parsed, r.json_path, r.repaired) == ({"anything": [1, 2]}, "json_object", False)
+
+
+def test_json_object_reply_that_is_not_an_object_gets_one_repair(tmp_path):
+    server = Server(completion("[1, 2]"), completion('{"a": 1}'))
+    r = chat(make_client(tmp_path, server), json_schema=OBJECT_MODE)
+    assert (r.parsed, r.repaired, len(server.requests)) == ({"a": 1}, True, 2)
+    assert "JSON object" in server.requests[1]["messages"][-1]["content"]
+
+
+def test_json_object_case_replays_from_the_cache_without_crashing(tmp_path, monkeypatch):
+    chat(make_client(tmp_path, Server(completion('{"a": 1}'))), json_schema=OBJECT_MODE)
+    replay = chat(TFClient(cache_dir=tmp_path / "cache", live=False), json_schema=OBJECT_MODE)
+    assert (replay.cached, replay.parsed, replay.json_path) == (True, {"a": 1}, "json_object")
+
+
+def test_text_response_format_means_no_structured_output(tmp_path):
+    server = Server(completion("just prose"))
+    r = chat(make_client(tmp_path, server), json_schema={"type": "text"})
+    assert "response_format" not in server.requests[0]
+    assert (r.json_path, r.parsed, r.output.text) == ("none", None, "just prose")
+
+
+def test_json_mode_fallback_forces_the_json_object_path_even_when_the_tier_supports_json_schema(tmp_path):
+    server = Server(completion("oops {"), completion('{"n": 3}'))
+    r = chat(make_client(tmp_path, server), json_schema=SCHEMA, json_mode_fallback=True)
+    assert [b["response_format"] for b in server.requests] == [OBJECT_MODE, OBJECT_MODE]
+    assert (r.json_path, r.repaired, r.parsed) == ("json_object", True, {"n": 3})
+    repair = server.requests[1]["messages"][-1]["content"]
+    assert json.dumps(SCHEMA) in repair  # the repair carries the schema
+
+
+def test_json_mode_fallback_validates_against_the_response_model(tmp_path):
+    server = Server(completion('{"label": 7}'), completion('{"label": "seven"}'))
+    r = chat(make_client(tmp_path, server), response_model=Label, json_mode_fallback=True)
+    assert (r.json_path, r.repaired, r.parsed) == ("json_object", True, Label(label="seven"))
+
+
+def test_json_mode_fallback_with_nothing_to_fall_back_from_changes_nothing(tmp_path):
+    """No response_format and no response_model: there is no structured contract, so no JSON mode either."""
+    server = Server(completion('{"a": 1}'))
+    r = chat(make_client(tmp_path, server), json_mode_fallback=True)
+    assert "response_format" not in server.requests[0]
+    assert (r.json_path, r.parsed) == ("none", None)
+
+
+def test_an_invalid_json_schema_gives_parsed_none_not_an_exception_on_the_json_schema_path(tmp_path):
+    server = Server(completion('{"a": 1}'))
+    client = make_client(tmp_path, server)
+    r = chat(client, json_schema=BAD_SCHEMA)
+    assert (r.parsed, r.repaired, len(server.requests)) == (None, False, 1)
+    assert r.output.text == '{"a": 1}'
+    replay = chat(TFClient(cache_dir=tmp_path / "cache", live=False), json_schema=BAD_SCHEMA)
+    assert (replay.cached, replay.parsed) == (True, None)  # a paid, cached call never crashes on replay
+
+
+def test_an_invalid_json_schema_on_the_json_object_path_does_not_waste_a_repair_call(tmp_path):
+    server = Server(completion('{"a": 1}'), completion('{"a": 2}'))
+    r = chat(make_client(tmp_path, server), json_schema=BAD_SCHEMA, json_mode_fallback=True)
+    assert (r.parsed, r.repaired, len(server.requests)) == (None, False, 1)
 
 
 # ------------------------------------------------------------------ output extraction
@@ -552,3 +661,45 @@ def test_fake_llm_passes_chat_results_through_raises_exceptions_and_errors_when_
     assert len(fake.calls) == 3
 
 
+
+
+# ------------------------------------------------------------------ FakeLLM `parsed` matches the real client
+
+_PARITY = [
+    ("dict-reply+response_model", {"label": "x", "confidence": 0.5}, {"response_model": Label}),
+    ("json-text+response_model", '{"label": "x"}', {"response_model": Label}),
+    ("model-reply+response_model", Label(label="x"), {"response_model": Label}),
+    ("json-text+json_schema", '{"n": 3}', {"json_schema": SCHEMA}),
+    ("dict-reply+json_schema", {"n": 3}, {"json_schema": SCHEMA}),
+    ("json-text+json_object", '{"a": [1]}', {"json_schema": OBJECT_MODE}),
+    ("json-text+json_mode+model", '{"label": "y"}', {"response_model": Label, "json_mode_fallback": True}),
+    ("invalid-vs-model", '{"nope": 1}', {"response_model": Label}),
+    ("invalid-vs-schema", '{"n": "x"}', {"json_schema": SCHEMA}),
+    ("dict-reply+no-contract", {"a": 1}, {}),
+    ("plain-text+no-contract", "hello", {}),
+    ("model-reply+no-contract", Label(label="x"), {}),
+]
+
+
+@pytest.mark.parametrize("reply,kw", [p[1:] for p in _PARITY], ids=[p[0] for p in _PARITY])
+def test_fake_and_real_client_return_the_same_parsed_value_type_and_json_path(tmp_path, reply, kw):
+    if isinstance(reply, str):
+        wire = reply
+    elif isinstance(reply, BaseModel):
+        wire = reply.model_dump_json()
+    else:
+        wire = json.dumps(reply)
+    real = chat(make_client(tmp_path, Server(completion(wire))), **kw)
+    fake = FakeLLM({"scanner": [reply]}).chat(
+        role="scanner", tier=Tier.SUPER, messages=MSGS, max_tokens=64, **kw
+    )
+    assert type(fake.parsed) is type(real.parsed)
+    assert fake.parsed == real.parsed
+    assert fake.json_path == real.json_path
+    assert fake.output.text == real.output.text
+
+
+def test_fake_llm_records_json_mode_fallback_and_other_chat_kwargs():
+    fake = FakeLLM({"scanner": ['{"a": 1}']})
+    fake.chat(role="scanner", tier=Tier.SUPER, messages=MSGS, max_tokens=5, json_mode_fallback=True)
+    assert fake.calls[0]["json_mode_fallback"] is True

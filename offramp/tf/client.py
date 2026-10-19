@@ -62,6 +62,7 @@ class LLM(Protocol):
         temperature: float = 0.0,
         response_model: type[BaseModel] | None = None,
         json_schema: dict[str, Any] | None = None,
+        json_mode_fallback: bool = False,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
         reasoning: str = "off",
@@ -88,39 +89,79 @@ def _merge(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _response_format(
-    json_schema: dict[str, Any] | None, response_model: type[BaseModel] | None
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """(OpenAI response_format, bare JSON Schema). json_schema may be a full response_format, its inner
-    {"name", "schema"} payload, or a bare JSON Schema; with none given, the schema is response_model's."""
-    js = json_schema if json_schema is not None else response_model.model_json_schema()
-    if js.get("type") == "json_schema":
-        return js, js["json_schema"]["schema"]
-    if isinstance(js.get("schema"), dict):
-        return {"type": "json_schema", "json_schema": js}, js["schema"]
-    name = response_model.__name__ if response_model else "response"
-    return {"type": "json_schema", "json_schema": {"name": name, "schema": js}}, js
+BAD_SCHEMA = "invalid JSON schema: "
 
 
-def _validate(
-    text: str, schema: dict[str, Any], response_model: type[BaseModel] | None
+@dataclass(frozen=True)
+class StructuredPlan:
+    """What structured output a call asks for. `schema` None means parse-only (any JSON object)."""
+
+    response_format: dict[str, Any] | None
+    schema: dict[str, Any] | None
+    json_path: JsonPath
+
+
+def plan_structured(
+    json_schema: dict[str, Any] | None,
+    response_model: type[BaseModel] | None,
+    json_mode_fallback: bool,
+    supports_json_schema: bool,
+) -> StructuredPlan:
+    """Pick response_format, validation schema and json_path for one call.
+
+    json_schema may be an OpenAI response_format ({"type": "json_schema", ...}, {"type": "json_object"} or
+    {"type": "text"}: AdapterSpec.response_format passes straight through), its inner {"name", "schema"}
+    payload, or a bare JSON Schema; with none given the schema is response_model's. The json_object path is
+    used for {"type": "json_object"}, for json_mode_fallback=True (AdapterSpec.json_mode_fallback) and for
+    tiers without json_schema support.
+    """
+    if json_schema is not None and json_schema.get("type") == "text":
+        json_schema = None
+    if json_schema is None and response_model is None:
+        return StructuredPlan(None, None, "none")
+    full: dict[str, Any] | None = None
+    if json_schema is not None and json_schema.get("type") == "json_object":
+        schema = response_model.model_json_schema() if response_model else None
+    else:
+        js = json_schema if json_schema is not None else response_model.model_json_schema()
+        if js.get("type") == "json_schema":
+            full, schema = js, js["json_schema"]["schema"]
+        elif isinstance(js.get("schema"), dict):
+            full, schema = {"type": "json_schema", "json_schema": js}, js["schema"]
+        else:
+            name = response_model.__name__ if response_model else "response"
+            full, schema = {"type": "json_schema", "json_schema": {"name": name, "schema": js}}, js
+    if full is None or json_mode_fallback or not supports_json_schema:
+        return StructuredPlan({"type": "json_object"}, schema, "json_object")
+    return StructuredPlan(full, schema, "json_schema")
+
+
+def validate_structured(
+    text: str, schema: dict[str, Any] | None, response_model: type[BaseModel] | None
 ) -> tuple[Any, str | None]:
-    """(parsed, None) when valid, else (None, error message)."""
+    """(parsed, None) when valid, else (None, error message). Never raises on bad output or a bad schema."""
     try:
         if response_model is not None:
             return response_model.model_validate_json(text), None
         obj = json.loads(text)
-        jsonschema.validate(obj, schema)
+        if schema is None:
+            if not isinstance(obj, dict):
+                raise ValueError(f"expected a JSON object, got {type(obj).__name__}")
+        else:
+            jsonschema.validate(obj, schema)
         return obj, None
+    except jsonschema.SchemaError as e:  # the schema itself is broken: no reply can satisfy it
+        return None, f"{BAD_SCHEMA}{e.message}"
     except (ValueError, jsonschema.ValidationError) as e:  # JSONDecodeError and pydantic's are ValueErrors
         return None, str(e)[:1500]
 
 
-def _repair_messages(messages: list[dict[str, Any]], bad: str, error: str, schema: dict[str, Any]):
+def _repair_messages(messages: list[dict[str, Any]], bad: str, error: str, schema: dict[str, Any] | None):
+    shown = f"\n\nJSON schema:\n{json.dumps(schema)}" if schema is not None else ""
     ask = (
-        "Your previous reply is not valid against the required JSON schema.\n"
-        f"Validation error: {error}\n\nJSON schema:\n{json.dumps(schema)}\n\n"
-        "Reply again with only the corrected JSON, no commentary."
+        "Your previous reply is not valid.\n"
+        f"Validation error: {error}{shown}\n\n"
+        "Reply again with only the corrected JSON object, no commentary."
     )
     return [*messages, {"role": "assistant", "content": bad}, {"role": "user", "content": ask}]
 
@@ -240,36 +281,34 @@ class TFClient:
         temperature: float = 0.0,
         response_model: type[BaseModel] | None = None,
         json_schema: dict[str, Any] | None = None,
+        json_mode_fallback: bool = False,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
         reasoning: str = "off",
         extra_body: dict[str, Any] | None = None,
     ) -> ChatResult:
         info = get_tier(tier)
+        plan = plan_structured(json_schema, response_model, json_mode_fallback, info.supports_json_schema)
         params: dict[str, Any] = {"max_tokens": max_tokens, "temperature": temperature}
-        json_path: JsonPath = "none"
-        schema: dict[str, Any] = {}
-        if response_model is not None or json_schema is not None:
-            response_format, schema = _response_format(json_schema, response_model)
-            json_path = "json_schema" if info.supports_json_schema else "json_object"
-            params["response_format"] = (
-                response_format if json_path == "json_schema" else {"type": "json_object"}
-            )
+        if plan.response_format is not None:
+            params["response_format"] = plan.response_format
         if tools is not None:
             params["tools"] = tools
         if tool_choice is not None:
             params["tool_choice"] = tool_choice
-        params["extra_body"] = _merge(reasoning_params(info.tier, reasoning)["extra_body"], extra_body or {})
+        # Nemotron thinks by default (docs/plan/tf-probe.md): enable_thinking is ALWAYS sent, and `reasoning`
+        # (not a caller's extra_body) decides its value.
+        params["extra_body"] = _merge(extra_body or {}, reasoning_params(info.tier, reasoning)["extra_body"])
 
         call = self._complete(role, info, messages, params)
         parsed, repaired = None, False
-        if json_path != "none":
-            parsed, error = _validate(call.output.text or "", schema, response_model)
-            if error and json_path == "json_object":  # exactly one repair retry (Global Constraint 6)
-                repaired = True
-                retry_messages = _repair_messages(messages, call.output.text or "", error, schema)
+        if plan.json_path != "none":
+            parsed, error = validate_structured(call.output.text or "", plan.schema, response_model)
+            if error and plan.json_path == "json_object" and not error.startswith(BAD_SCHEMA):
+                repaired = True  # exactly one repair retry (Global Constraint 6)
+                retry_messages = _repair_messages(messages, call.output.text or "", error, plan.schema)
                 retry = self._complete(role, info, retry_messages, params)
-                parsed, _ = _validate(retry.output.text or "", schema, response_model)
+                parsed, _ = validate_structured(retry.output.text or "", plan.schema, response_model)
                 call = _Call(
                     output=retry.output,
                     input_tokens=call.input_tokens + retry.input_tokens,
@@ -288,6 +327,6 @@ class TFClient:
             cost_usd=(call.input_tokens * info.input_usd_per_m + call.output_tokens * info.output_usd_per_m)
             / 1_000_000,
             cached=call.cached,
-            json_path=json_path,
+            json_path=plan.json_path,
             repaired=repaired,
         )

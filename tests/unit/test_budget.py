@@ -87,3 +87,29 @@ def test_thread_safe_accounting():
     snap = b.snapshot()
     assert (snap["tokens_in"], snap["tokens_out"], snap["ultra_agent_calls"]) == (48_000, 32_000, 16_000)
     assert snap["tf_spend_usd"] == pytest.approx(16.0)
+
+
+@pytest.mark.parametrize("role", ["eval_judge", "evaluator", "eval", "judge", "case_gen"])
+def test_only_the_exact_eval_target_role_escapes_the_ultra_agent_cap(role):
+    b = Budget(max_ultra_agent_calls=1)
+    b.charge(role, Tier.ULTRA, 1, 1)
+    assert b.snapshot()["ultra_agent_calls"] == 1
+    with pytest.raises(BudgetExceeded, match="Ultra agent call cap"):
+        b.check(role, Tier.ULTRA)
+
+
+def test_eval_target_role_is_exempt_from_the_ultra_agent_cap_but_not_the_token_cap():
+    b = Budget(max_in=10, max_ultra_agent_calls=0)
+    b.check("eval_target", Tier.ULTRA)
+    b.charge("eval_target", Tier.ULTRA, 10, 1)
+    assert b.snapshot()["ultra_agent_calls"] == 0
+    with pytest.raises(BudgetExceeded, match="token cap"):
+        b.check("eval_target", Tier.ULTRA)
+
+
+def test_a_call_with_zero_tokens_still_counts_toward_the_ultra_agent_cap():
+    b = Budget(max_ultra_agent_calls=1)
+    b.charge("adapter", Tier.ULTRA, 0, 0)  # e.g. the response carried no usage block
+    assert b.snapshot()["ultra_agent_calls"] == 1
+    with pytest.raises(BudgetExceeded):
+        b.check("adapter", Tier.ULTRA)

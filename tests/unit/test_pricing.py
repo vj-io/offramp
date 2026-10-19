@@ -1,8 +1,16 @@
+import re
+
 import pytest
 
 from offramp.pricing import cost_per_1k_calls, cost_usd, load_pricing, price
 from offramp.schemas import TIER_ORDER, Tier
 from offramp.tf.tiers import DEFAULT_MODEL_IDS, get_tier, reasoning_params
+
+
+@pytest.fixture(autouse=True)
+def no_ambient_model_overrides(monkeypatch):
+    for tier in Tier:
+        monkeypatch.delenv(f"OFFRAMP_MODEL_{tier.name}", raising=False)
 
 
 def test_token_factory_prices_from_the_prd():
@@ -27,13 +35,30 @@ def test_closed_model_prices(model, expected):
     assert price(model) == expected
 
 
-def test_every_entry_is_timestamped_and_sourced():
+REQUIRED_MODELS = {
+    "nvidia/Nemotron-3-Ultra-550b-a55b", "nvidia/nemotron-3-super-120b-a12b", "nvidia/Nemotron-3_5-Lightning",
+    "gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "o3", "o4-mini", "claude-sonnet-4-5", "claude-haiku-4-5",
+}
+
+
+def test_every_entry_is_timestamped_sourced_and_says_how_trustworthy_the_price_is():
     table = load_pricing()
-    assert len(table) == 10
+    assert REQUIRED_MODELS <= set(table)
     for model, e in table.items():
-        assert e["as_of"] == "2026-10-19", model
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", e["as_of"]), model
         assert e["source"].startswith("https://"), model
         assert e["input_usd_per_m"] > 0 and e["output_usd_per_m"] > 0, model
+        assert e["price_status"] in {"published", "unverified-list-price"}, model
+        if e["price_status"] == "unverified-list-price":
+            assert e.get("note"), f"{model}: an unverified price must say where it came from"
+
+
+def test_token_factory_prices_are_marked_unverified_until_read_from_the_nebius_page():
+    table = load_pricing()
+    tf = {m: e for m, e in table.items() if "tier" in e}
+    assert {e["tier"] for e in tf.values()} == {"lightning", "super", "ultra"}
+    assert {e["price_status"] for e in tf.values()} == {"unverified-list-price"}
+    assert all(e["price_status"] == "published" for m, e in table.items() if m not in tf)
 
 
 def test_cost_usd_is_per_million_arithmetic():
@@ -80,6 +105,11 @@ def test_tier_info_prices_and_ids():
     sup, lightning = get_tier(Tier.SUPER), get_tier(Tier.LIGHTNING)
     assert (sup.input_usd_per_m, sup.output_usd_per_m) == (0.30, 0.90)
     assert (lightning.input_usd_per_m, lightning.output_usd_per_m) == (0.06, 0.24)
+
+
+@pytest.mark.parametrize("tier", list(Tier))
+def test_json_schema_is_supported_on_every_tier(tier):  # verified by the live probe, docs/plan/tf-probe.md
+    assert get_tier(tier).supports_json_schema is True
 
 
 def test_tiers_are_ordered_cheapest_first_by_price():
