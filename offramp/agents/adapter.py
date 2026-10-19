@@ -10,7 +10,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from offramp.agents.translate import REASONING_ROOM, Translation, site_schema, strict_json_schema, translate
+from offramp.agents.translate import (
+    REASONING_ROOM,
+    Translation,
+    site_schema,
+    strict_json_schema,
+    translate,
+    unresolved,
+)
 from offramp.schemas import Adapter, CallSite, Tier
 from offramp.tf.client import LLM, _repair_messages, validate_structured
 from offramp.tf.tiers import SUPPORTS_JSON_SCHEMA
@@ -148,11 +155,18 @@ def adapt(site: CallSite, llm: LLM, schemas: dict[str, dict[str, Any]] | None = 
     """Adapter v0 for one labelled call site. `schemas` maps Pydantic class names to model_json_schema().
 
     One Ultra call (role "adapter"); an invalid reply gets exactly one repair retry, and if that is invalid
-    too the deterministic translation is used as v0 with a risk flag. BudgetExceeded and CacheMiss propagate.
+    too the deterministic translation is used as v0 with a risk flag. A site whose call cannot be evaluated
+    (translate.unresolved) gets the translation without a call. BudgetExceeded and CacheMiss propagate.
     """
     if site.contract is None:
         raise ValueError(f"{site.id}: no contract; label the site (scanner.label_contracts) first")
     tr = translate(site, schemas)
+    if problems := unresolved(tr.spec):  # build_request would refuse every case: no Ultra call for it
+        adapter = _apply(site, tr, AdapterDecision(reasoning=tr.spec.reasoning, output_mode="text"), schemas)
+        adapter.notes.append(
+            f"adapter agent: not called, the call cannot be evaluated ({'; '.join(problems)})"
+        )
+        return adapter
     messages = [
         {"role": "system", "content": ADAPTER_SYSTEM},
         {"role": "user", "content": _facts(site, tr, schemas)},

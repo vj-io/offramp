@@ -11,6 +11,7 @@ import pytest
 from offramp.agents.translate import (
     DEFAULT_MAX_TOKENS,
     REASONING_ROOM,
+    UnresolvedCallSite,
     build_messages,
     build_request,
     max_tokens_for,
@@ -117,6 +118,7 @@ def test_tool_translation_edge_cases():
         ("auto", "auto"),  # OpenAI values pass through
         ("required", "required"),
         ({"type": "function", "function": {"name": "f"}}, {"type": "function", "function": {"name": "f"}}),
+        ({"type": "function", "name": "f"}, {"type": "function", "function": {"name": "f"}}),  # Responses API
         (None, None),
     ],
 )
@@ -252,6 +254,48 @@ def test_responses_api_text_format_becomes_response_format():
     }
 
 
+def test_responses_api_tools_tool_choice_and_reasoning():
+    params = {"type": "object", "properties": {"order_id": {"type": "string"}}, "required": ["order_id"]}
+    tool = {
+        "type": "function",
+        "name": "lookup_order",
+        "description": "Fetch an order.",
+        "parameters": params,
+        "strict": True,
+    }
+    chat_tool = {
+        "type": "function",
+        "function": {
+            "name": "lookup_order",
+            "description": "Fetch an order.",
+            "parameters": params,
+            "strict": True,
+        },
+    }
+    assert openai_tool(tool) == chat_tool
+    assert openai_tool({"type": "web_search_preview"}) is None  # Responses built-in tool
+    s = site(
+        call="client.responses.create",
+        source_model="gpt-5",
+        params={
+            "tools": [tool],
+            "tool_choice": {"type": "function", "name": "lookup_order"},
+            "reasoning": {"effort": "high"},
+            "max_output_tokens": 800,
+        },
+    )
+    t = translate(s)
+    assert t.spec == AdapterSpec(
+        tools=[chat_tool],
+        tool_choice={"type": "function", "function": {"name": "lookup_order"}},
+        reasoning="high",
+        max_tokens=800,
+    )
+    assert t.risk_flags == []
+    assert spec_v0(site(params={"reasoning": {"effort": "minimal"}})).reasoning == "low"
+    assert spec_v0(site(params={"reasoning": {"summary": "auto"}})).reasoning == "off"
+
+
 def test_pydantic_response_format_resolved_or_flagged():
     s = site(call="client.beta.chat.completions.parse", params={"response_format": "<pydantic:OrderFields>"})
     assert spec_v0(s, SCHEMAS).response_format == strict_json_schema(ORDER_SCHEMA, "OrderFields")
@@ -295,10 +339,57 @@ def test_unresolved_params_streaming_and_server_tools_are_flagged():
     assert t.risk_flags == [
         "unresolved_param: max_tokens",
         "unresolved_param: temperature",
-        "unsupported_tool: web_search (Anthropic server tool, no Token Factory equivalent)",
+        "unsupported_tool: web_search (server-side tool, no Token Factory equivalent)",
         "streaming: the source streams; Offramp evaluates the non-streaming call",
     ]
-    assert translate(site(params={"tools": "<expr>"})).spec.tools is None
+    assert "NEEDS_RUNTIME_CAPTURE" not in s.flags  # max_tokens/temperature are re-chosen, not translated
+    build_request(t.spec, case(MSGS), Tier.SUPER)
+
+
+TOOL = {"name": "f", "input_schema": {"type": "object"}}
+
+
+@pytest.mark.parametrize(
+    ("params", "key"),
+    [
+        ({"tools": "<expr>"}, "tools"),
+        ({"tools": [TOOL, "<expr>"]}, "tools"),
+        ({"tools": [{"name": "f", "input_schema": {"type": "object", "properties": "<expr>"}}]}, "tools"),
+        ({"tools": [TOOL], "tool_choice": "<expr>"}, "tool_choice"),
+        ({"tools": [TOOL], "tool_choice": {"type": "tool", "name": "<expr>"}}, "tool_choice"),
+        ({"response_format": "<expr>"}, "response_format"),
+        (
+            {"response_format": {"type": "json_schema", "json_schema": {"name": "x", "schema": "<expr>"}}},
+            "response_format",
+        ),
+        ({"text": "<expr>"}, "text"),
+        ({"text": {"format": "<expr>"}}, "text"),
+    ],
+)
+def test_unresolved_call_shaping_param_blocks_evaluation(params, key):
+    """tools / tool_choice / response_format define the call's contract: unknown at any depth, the call that
+    ships is unknown, so it is never evaluated with a guess in its place."""
+    s = site(sdk="anthropic", params=params)
+    t = translate(s)
+    assert f"unresolved_param: {key}" in t.risk_flags
+    assert any(f.startswith("unevaluable: ") and f.endswith("needs runtime capture") for f in t.risk_flags)
+    assert s.flags == ["NEEDS_RUNTIME_CAPTURE"]
+    translate(s)
+    assert s.flags == ["NEEDS_RUNTIME_CAPTURE"]  # marked once
+    with pytest.raises(UnresolvedCallSite, match="<expr>"):
+        build_request(t.spec, case(MSGS), Tier.SUPER)
+
+
+def test_unresolved_schema_in_tools_is_flagged_and_blocks_evaluation():
+    s = site(sdk="anthropic", params={"tools": [{"name": "f", "input_schema": "<pydantic:Args>"}]})
+    t = translate(s)
+    assert t.risk_flags == ["unresolved_schema: Args (pass its model_json_schema() in schemas)"]
+    with pytest.raises(UnresolvedCallSite, match="Args"):
+        build_request(t.spec, case(MSGS), Tier.SUPER)
+    resolved = spec_v0(s, {"Args": {"type": "object"}})
+    assert resolved.tools == [
+        {"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}
+    ]
 
 
 def test_disable_parallel_tool_use_maps_to_parallel_tool_calls():
@@ -382,9 +473,9 @@ def test_lightning_gets_auto_instead_of_required_tool_choice():
 
 def test_build_request_refuses_unresolved_values():
     bad = site(params={"response_format": "<pydantic:OrderFields>"})
-    with pytest.raises(ValueError, match="OrderFields"):
+    with pytest.raises(UnresolvedCallSite, match="OrderFields"):
         build_request(spec_v0(bad), case(MSGS), Tier.SUPER)
-    with pytest.raises(ValueError, match="<expr>"):
+    with pytest.raises(UnresolvedCallSite, match="<expr>"):
         build_request(
             AdapterSpec(tools=[{"type": "function", "function": {"name": "f", "parameters": "<expr>"}}]),
             case(MSGS),

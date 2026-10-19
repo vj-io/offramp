@@ -31,10 +31,13 @@ TRANSLATED = (
     *MAX_TOKEN_PARAMS,
     "temperature",
     "reasoning_effort",
+    "reasoning",  # Responses API {"effort": ...}
     "stream",
     "system",
     "instructions",
 )
+NEEDS_RUNTIME_CAPTURE = "NEEDS_RUNTIME_CAPTURE"  # CallSite flag, as the scanner sets it for dynamic prompts
+UNKNOWN = {"type": EXPR}  # stands for a tool or response_format the scanner could not resolve
 ANTHROPIC_TOOL_CHOICE = {"auto": "auto", "any": "required", "none": "none"}  # plus {"type": "tool", "name"}
 REASONING_MODEL = re.compile(r"^o\d")  # OpenAI o-series: reasons by default, effort "medium"
 # Per-tier capability, like tiers.SUPPORTS_JSON_SCHEMA. Recorded 2026-10-19 (tests/agents/test_adapter.py):
@@ -44,6 +47,12 @@ REASONING_MODEL = re.compile(r"^o\d")  # OpenAI o-series: reasons by default, ef
 REQUIRED_TOOL_CHOICE_OK = {Tier.LIGHTNING: False, Tier.SUPER: True, Tier.ULTRA: True}
 
 
+class UnresolvedCallSite(ValueError):
+    """The spec still holds a value the scanner could not resolve ("<expr>", "<pydantic:X>") in a parameter
+    that defines the call. Sending it would evaluate a call the code never makes, so the runner reports the
+    site as MANUAL_REVIEW instead."""
+
+
 class Translation(NamedTuple):
     spec: AdapterSpec
     notes: list[str]
@@ -51,9 +60,14 @@ class Translation(NamedTuple):
 
 
 def openai_tool(tool: dict[str, Any]) -> dict[str, Any] | None:
-    """One tool definition as an OpenAI function tool; None for an Anthropic server tool (web_search...)."""
+    """One tool definition as a chat.completions function tool; None for a server-side tool (Anthropic
+    web_search, Responses web_search_preview...)."""
     if tool.get("type") == "function":
-        return tool
+        if "function" in tool:  # chat.completions shape
+            return tool
+        # Responses API shape: the function fields sit at the top level
+        fn = {k: tool[k] for k in ("name", "description", "parameters", "strict") if k in tool}
+        return {"type": "function", "function": fn}
     if "input_schema" not in tool:
         return None
     # cache_control has no OpenAI equivalent: dropped
@@ -64,8 +78,9 @@ def openai_tool(tool: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def openai_tool_choice(choice: Any) -> Any:
-    """Anthropic {"type": auto|any|none|tool} -> OpenAI; OpenAI values pass through unchanged."""
-    if isinstance(choice, dict) and choice.get("type") == "tool":
+    """Anthropic {"type": auto|any|none|tool} and Responses {"type": "function", "name"} -> chat.completions;
+    chat.completions values pass through unchanged."""
+    if isinstance(choice, dict) and choice.get("type") in ("tool", "function") and "function" not in choice:
         return {"type": "function", "function": {"name": choice["name"]}}
     if isinstance(choice, dict) and choice.get("type") in ANTHROPIC_TOOL_CHOICE:
         return ANTHROPIC_TOOL_CHOICE[choice["type"]]
@@ -146,10 +161,15 @@ def site_schema(
 
 def _response_format(params: dict[str, Any], schemas: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     rf, text = params.get("response_format"), params.get("text")
-    if rf is None and isinstance(text, dict) and isinstance(text.get("format"), dict):  # Responses API
-        fmt = dict(text["format"])
+    fmt = text.get("format") if isinstance(text, dict) else text  # Responses API text={"format": {...}}
+    if rf is None and isinstance(fmt, dict):
+        fmt = dict(fmt)
         kind = fmt.pop("type", None)
         rf = {"type": "json_schema", "json_schema": fmt} if kind == "json_schema" else {"type": kind}
+    elif rf is None and fmt == EXPR:
+        rf = EXPR
+    if rf == EXPR:
+        return dict(UNKNOWN)
     if isinstance(rf, str) and (m := MARKER.match(rf)):  # .parse(response_format=PydanticModel)
         name = m[1]
         return (
@@ -161,28 +181,35 @@ def _response_format(params: dict[str, Any], schemas: dict[str, dict[str, Any]])
 
 
 def translate(site: CallSite, schemas: dict[str, dict[str, Any]] | None = None) -> Translation:
-    """Spec v0 for one call site, with what was mapped (notes) and what could not be (risk flags)."""
+    """Spec v0 for one call site, with what was mapped (notes) and what could not be (risk flags).
+
+    When tools, tool_choice or response_format is unresolved ("<expr>" at any depth), the placeholder stays in
+    the spec (build_request refuses it) and the site gets the flag NEEDS_RUNTIME_CAPTURE (added once)."""
     p, schemas = site.params, schemas or {}
     notes: list[str] = []
     flags = [f"unresolved_param: {k}" for k in TRANSLATED if k in p and EXPR in _leaves(p[k])]
 
     tools = None
-    if isinstance(p.get("tools"), list):
-        converted = [(t, openai_tool(_resolve(t, schemas))) for t in p["tools"]]
+    if p.get("tools") == EXPR:
+        tools = [dict(UNKNOWN)]
+    elif isinstance(p.get("tools"), list):
+        converted = [
+            (t, openai_tool(_resolve(t, schemas)) if t != EXPR else dict(UNKNOWN)) for t in p["tools"]
+        ]
         tools = [o for _, o in converted if o is not None]
         flags += [
-            f"unsupported_tool: {t.get('name', t.get('type'))} (Anthropic server tool, no Token Factory "
+            f"unsupported_tool: {t.get('name', t.get('type'))} (server-side tool, no Token Factory "
             "equivalent)"
             for t, o in converted
             if o is None
         ]
-        anthropic = sum("input_schema" in t for t, _ in converted)
+        anthropic = sum(isinstance(t, dict) and "input_schema" in t for t, _ in converted)
         if anthropic:
             notes.append(f"tools: {anthropic} Anthropic tools -> OpenAI function tools")
 
     extra_body: dict[str, Any] = {}
     source_choice = p.get("tool_choice")
-    tool_choice = openai_tool_choice(source_choice) if source_choice != EXPR else None
+    tool_choice = openai_tool_choice(source_choice)
     if tool_choice != source_choice and tool_choice is not None:
         notes.append(f"tool_choice: {source_choice} -> {tool_choice!r}")
     if isinstance(source_choice, dict) and source_choice.get("disable_parallel_tool_use"):
@@ -204,6 +231,8 @@ def translate(site: CallSite, schemas: dict[str, dict[str, Any]] | None = None) 
         notes.append("temperature: not set in source -> 0 (deterministic eval)")
 
     effort = p.get("reasoning_effort")
+    if effort is None and isinstance(p.get("reasoning"), dict):  # Responses API reasoning={"effort": ...}
+        effort = p["reasoning"].get("effort")
     if effort in ("low", "medium", "high"):
         reasoning = effort
     elif effort == "minimal":
@@ -221,8 +250,21 @@ def translate(site: CallSite, schemas: dict[str, dict[str, Any]] | None = None) 
 
     response_format = _response_format(p, schemas)
     flags += [
-        f"unresolved_schema: {n} (pass its model_json_schema() in schemas)" for n in _markers(response_format)
+        f"unresolved_schema: {n} (pass its model_json_schema() in schemas)"
+        for n in _markers([response_format, tools])
     ]
+    # tools / tool_choice / response_format define the call: with any part unknown, the call that ships is
+    # unknown, so the site waits for runtime capture instead of being evaluated with a guess (build_request
+    # refuses it). max_tokens, temperature and reasoning are re-chosen for Nemotron and evaluated as chosen.
+    unknown = [
+        k
+        for k, v in (("tools", tools), ("tool_choice", tool_choice), ("response_format", response_format))
+        if EXPR in _leaves(v)
+    ]
+    if unknown:
+        flags.append(f"unevaluable: {', '.join(unknown)} not resolvable statically; needs runtime capture")
+        if NEEDS_RUNTIME_CAPTURE not in site.flags:
+            site.flags.append(NEEDS_RUNTIME_CAPTURE)
 
     spec = AdapterSpec(
         response_format=response_format,
@@ -238,6 +280,13 @@ def translate(site: CallSite, schemas: dict[str, dict[str, Any]] | None = None) 
 
 def spec_v0(site: CallSite, schemas: dict[str, dict[str, Any]] | None = None) -> AdapterSpec:
     return translate(site, schemas).spec
+
+
+def unresolved(spec: AdapterSpec) -> list[str]:
+    """Why the spec cannot be sent: scanner placeholders left in the parameters that define the call."""
+    shaping = {"tools": spec.tools, "tool_choice": spec.tool_choice, "response_format": spec.response_format}
+    problems = [f"<pydantic:{m}> in {k}" for k, v in shaping.items() for m in _markers(v)]
+    return problems + [f"{EXPR} in {k}" for k, v in shaping.items() if EXPR in _leaves(v)]
 
 
 def max_tokens_for(spec: AdapterSpec) -> int:
@@ -265,11 +314,8 @@ def build_messages(spec: AdapterSpec, input_messages: list[dict[str, Any]]) -> l
 def build_request(spec: AdapterSpec, case: EvalCase, tier: Tier | str) -> dict[str, Any]:
     """`TFClient.chat(**build_request(...))` runs one eval case exactly as the migrated code would call it on
     `tier`. The patch composer takes the call's parameters from here too (tier quirks included)."""
-    unresolved = _markers([spec.response_format, spec.tools])
-    if unresolved:
-        raise ValueError(f"spec still holds <pydantic:{unresolved[0]}>: resolve the schema before evaluating")
-    if EXPR in _leaves([spec.response_format, spec.tools, spec.tool_choice]):
-        raise ValueError(f"spec holds an unresolved {EXPR} value: it cannot be sent")
+    if problems := unresolved(spec):
+        raise UnresolvedCallSite(f"call cannot be evaluated: {'; '.join(problems)}")
     tier = Tier(tier)
     tool_choice = spec.tool_choice
     if tool_choice == "required" and not REQUIRED_TOOL_CHOICE_OK[tier]:

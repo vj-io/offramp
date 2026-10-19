@@ -15,6 +15,7 @@ from offramp.agents.adapter import (
 )
 from offramp.agents.translate import (
     REASONING_ROOM,
+    UnresolvedCallSite,
     build_request,
     max_tokens_for,
     spec_v0,
@@ -212,6 +213,19 @@ def test_errors_propagate():
         adapt(SITES["cs_01"], FakeLLM().add("adapter", BudgetExceeded("Ultra agent call cap reached (40)")))
     with pytest.raises(ValueError, match="contract"):
         adapt(SITES["cs_01"].model_copy(update={"contract": None}), FakeLLM())
+
+
+def test_unevaluable_site_spends_no_ultra_call():
+    """tool_choice unresolved: the call cannot be evaluated, so Ultra is not asked to adapt it."""
+    site = SITES["cs_02"].model_copy(deep=True)
+    site.params["tool_choice"] = "<expr>"
+    llm = FakeLLM()
+    adapter = adapt(site, llm)
+    assert llm.calls == [] and site.flags == ["NEEDS_RUNTIME_CAPTURE"]
+    assert any(f.startswith("unevaluable: tool_choice") for f in adapter.risk_flags)
+    assert any(n.startswith("adapter agent: not called") for n in adapter.notes)
+    with pytest.raises(UnresolvedCallSite):
+        build_request(adapter.spec, render(site, {v: "x" for v in site.template.variables}), Tier.SUPER)
 
 
 # ---------------------------------------------------------------- cassettes recorded live from Token Factory
