@@ -270,3 +270,27 @@ def test_recorder_refuses_a_site_with_unresolved_scanner_placeholders(tmp_path):
         rec.record(tmp_path, openai_client=oa)
 
     assert oa.calls == []  # refused before any call: never recorded without the parameter
+
+
+def test_a_refused_site_stops_the_recorder_before_any_call_or_write(tmp_path):
+    rec = load_recorder()
+    from offramp.agents.translate import UnresolvedCallSite
+
+    fmt = {"type": "json_schema", "json_schema": {"name": "Order", "schema": "<pydantic:Order>"}}
+    b.save_sites(
+        tmp_path,
+        [
+            site("cs_01", "openai", "classification", max_tokens=8),
+            site("cs_02", "openai", "classification", response_format=fmt),
+        ],
+    )
+    b.save_cases(tmp_path, "cs_01", [case(1)])
+    b.save_cases(tmp_path, "cs_02", [case(1, "cs_02")])
+    b.write_manifest(tmp_path)
+    oa = FakeOpenAI(["billing", "billing"])
+
+    with pytest.raises(UnresolvedCallSite, match="cs_02"):
+        rec.record(tmp_path, openai_client=oa)
+
+    assert oa.calls == [] and not (tmp_path / "closed").exists()
+    assert b.verify_manifest(tmp_path) == []  # nothing was written, so the manifest still matches

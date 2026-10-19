@@ -135,6 +135,8 @@ def record(
 ) -> dict[str, int]:
     evals_dir = Path(evals_dir)
     sites = [s for s in b.load_sites(evals_dir) if site_ids is None or s.id in site_ids]
+    for site in sites:  # refuse before the first call or write, so a refusal leaves the dataset untouched
+        _literal_params(site, ANTHROPIC_PARAMS if site.sdk == "anthropic" else OPENAI_PARAMS)
     if openai_client is None and any(s.sdk == "openai" for s in sites):
         from openai import OpenAI
 

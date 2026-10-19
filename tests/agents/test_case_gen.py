@@ -193,6 +193,43 @@ def test_resolving_schemas_writes_nothing_into_the_target(tmp_path, monkeypatch,
     assert list((tmp_path / "data" / "envs").iterdir())  # the environment lives in Offramp's data dir
 
 
+def test_workspace_members_are_not_installed_into_the_target(tmp_path, monkeypatch):
+    import shutil as sh
+    import subprocess
+
+    if not sh.which("uv"):
+        pytest.skip("uv not installed")
+    monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path / "data"))
+    repo = tmp_path / "target"
+    member = repo / "packages" / "member"
+    (member / "member").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "root"\nversion = "0"\nrequires-python = ">=3.12"\ndependencies = ["member"]\n'
+        '[tool.uv.sources]\nmember = { workspace = true }\n[tool.uv.workspace]\nmembers = ["packages/*"]\n'
+    )
+    (member / "pyproject.toml").write_text(
+        '[project]\nname = "member"\nversion = "0"\nrequires-python = ">=3.12"\ndependencies = []\n'
+        '[build-system]\nrequires = ["setuptools>=61"]\nbuild-backend = "setuptools.build_meta"\n'
+    )
+    (member / "member" / "__init__.py").write_text("")
+    (member / "member" / "mod.py").write_text(SCHEMA_MODULE)
+    subprocess.run(["uv", "lock", "--quiet", "--project", str(repo)], check=True, cwd=tmp_path)
+    site = CallSite(
+        id="cs_01",
+        file="packages/member/member/mod.py",
+        lines=[1, 2],
+        sdk="openai",
+        call="c",
+        prompt_source="fstring",
+        template=PromptTemplate(user="<pydantic:Model> {x}", variables=["x"]),
+    )
+    before = tree(repo)
+
+    assert cg.resolved_schemas(site, repo) == {"Model": {"type": "object"}}  # imports via PYTHONPATH
+
+    assert tree(repo) == before and not list(repo.rglob("*.egg-info"))
+
+
 def test_a_hanging_target_import_is_killed_with_its_process_group(tmp_path, monkeypatch):
     import os
     import time
@@ -726,6 +763,122 @@ def test_written_records_must_state_input_values_and_not_give_answers_away():
     assert "lookup_order" in problem(
         lookup, f"please run lookup_order for {lookup.output.tool_calls[0].arguments['order_id']}"
     )
+
+
+def test_nested_values_need_evidence_and_nested_booleans_never_have_any():
+    site = close_ticket_site("- close_ticket: when solved.")  # template: {ticket_text}
+    recipes = [cg.Recipe(var="ticket_text", field="ticket_text")]
+
+    def problem(stated, text):
+        seed = cg.Seed(cg.ModelOutput(), "x", stated=stated)
+        return cg.record_problem(site, recipes, seed, {"ticket_text": text})
+
+    items = [("items", [{"sku": "SK-4821", "qty": 2}], None)]  # a nested string and a nested integer enum
+    assert problem(items, "Please send 2 x SK-4821 again.") is None
+    assert problem(items, "Please send SK-4821 again.") is not None  # the quantity is not stated
+    assert problem(items, "Please send 2 of them again.") is not None  # the sku is not stated
+    ticket = [("ticket", {"order_id": "HH-66048", "notify_customer": True}, None)]
+    assert problem(ticket, "Hi, my order HH-66048 never arrived.") is not None  # nothing states the boolean
+
+
+def test_a_tool_with_a_boolean_inside_an_input_argument_is_not_seeded():
+    tool = {
+        "name": "create_ticket",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticket": {
+                    "type": "object",
+                    "properties": {
+                        "order_id": {"type": "string", "description": "e.g. HH-48213"},
+                        "notify_customer": {"type": "boolean"},
+                    },
+                    "required": ["order_id", "notify_customer"],
+                }
+            },
+            "required": ["ticket"],
+        },
+    }
+    site = close_ticket_site("- create_ticket: when an order is lost.")
+    site = site.model_copy(update={"params": {"tools": [tool, site.params["tools"][1]]}})
+    notes: list[str] = []
+
+    rules = cg.classify_tool_args(site, FakeLLM(), notes)
+
+    assert rules["create_ticket"].unseedable and "notify_customer" in rules["create_ticket"].unseedable
+    assert any("create_ticket" in n and "not seeded" in n for n in notes)
+
+
+def test_an_incidental_number_in_the_tools_sentence_does_not_decide_an_integer_enum():
+    site = close_ticket_site(
+        "- close_ticket: use when the customer confirms the fix; wait 2 days for a reply "
+        "first.\n- lookup_order: when an id is given."
+    )
+    echo = {
+        "enums": [
+            {"tool": "close_ticket", "arg": "severity", "values": [1, 2, 3]},
+            {"tool": "close_ticket", "arg": "notify_customer", "values": [True, False]},
+        ]
+    }
+
+    rules = cg.classify_tool_args(site, FakeLLM({"case_gen": [echo]}))
+
+    assert rules["close_ticket"].classes["severity"] == "undetermined" and rules["close_ticket"].unseedable
+
+
+def test_a_policy_that_never_names_the_tool_decides_none_of_its_values():
+    site = demo_like_agent_site()
+    site = site.model_copy(
+        update={
+            "template": site.template.model_copy(
+                update={
+                    "system": "Refund the customer when the item arrived damaged.\n\n"
+                    "Escalate anything the other tools cannot resolve."
+                }
+            )
+        }
+    )
+    echo = {"enums": [{"tool": "issue_refund", "arg": "reason", "values": ["damaged", "other"]}]}
+
+    rules = cg.classify_tool_args(site, FakeLLM({"case_gen": [echo]}))
+
+    assert rules["issue_refund"].classes["reason"] == "free"  # presence-only: never a wrong reference
+
+
+def test_otherwise_is_not_the_value_other():
+    site = demo_like_agent_site()
+    site = site.model_copy(
+        update={
+            "template": site.template.model_copy(
+                update={
+                    "system": "- issue_refund: when the item arrived damaged; otherwise escalate.\n"
+                    "- escalate_to_human: else."
+                }
+            )
+        }
+    )
+    echo = {"enums": [{"tool": "issue_refund", "arg": "reason", "values": ["damaged", "other"]}]}
+
+    assert cg.classify_tool_args(site, FakeLLM({"case_gen": [echo]}))["issue_refund"].allowed["reason"] == [
+        "damaged"
+    ]
+
+
+def test_an_enum_without_a_type_is_classed_by_its_values():
+    tool = {
+        "name": "set_level",
+        "input_schema": {
+            "type": "object",
+            "properties": {"level": {"enum": [1, 2, 3]}},
+            "required": ["level"],
+        },
+    }
+    site = close_ticket_site("- set_level: when asked.")
+    site = site.model_copy(update={"params": {"tools": [tool]}})
+
+    rules = cg.classify_tool_args(site, FakeLLM({"case_gen": [{"enums": []}]}))
+
+    assert rules["set_level"].classes["level"] == "undetermined"  # not free: 2 is no string
 
 
 def test_classification_records_must_not_give_the_expected_label_away(tmp_path):

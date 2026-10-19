@@ -146,12 +146,13 @@ def _run(
 
 def _target_python(repo: Path) -> tuple[list[str], dict[str, str]]:
     """Command and environment for running python in the target's own dependencies without writing into the
-    target. The virtualenv lives in Offramp's data dir (UV_PROJECT_ENVIRONMENT) and holds the dependencies
-    only: from an existing uv.lock (--frozen --no-install-project) or else from pyproject.toml's dependencies
-    (no lockfile is created). The project itself is never installed, since an editable setuptools install
-    writes <name>.egg-info/ into the target; its code imports from PYTHONPATH (src/ and the repo root). Every
-    run uses --no-sync; a changed lock or pyproject re-syncs the env."""
-    path = os.pathsep.join(str(p) for p in (repo / "src", repo) if p.is_dir())
+    target. The virtualenv lives in Offramp's data dir (UV_PROJECT_ENVIRONMENT) and holds the third-party
+    dependencies only: from an existing uv.lock (--frozen --no-install-workspace --no-install-local) or else
+    from pyproject.toml's dependencies (no lockfile is created). The project, its workspace members and local
+    path sources are never installed, since an editable setuptools install writes <name>.egg-info/ into the
+    target; their code imports from PYTHONPATH (_import_roots). Every run uses --no-sync; a changed lock or
+    pyproject re-syncs the env."""
+    path = os.pathsep.join(str(p) for p in _import_roots(repo))
     base = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"} | {"PYTHONPATH": path}
     if not (repo / "pyproject.toml").exists():
         return [sys.executable], base  # ponytail: no project metadata to build an env from; Offramp's python
@@ -164,7 +165,16 @@ def _target_python(repo: Path) -> tuple[list[str], dict[str, str]]:
         shutil.rmtree(env_dir, ignore_errors=True)
         env_dir.parent.mkdir(parents=True, exist_ok=True)
         if lock.exists():
-            sync = ["uv", "sync", "--quiet", "--frozen", "--no-install-project", "--project", str(repo)]
+            sync = [
+                "uv",
+                "sync",
+                "--quiet",
+                "--frozen",
+                "--no-install-workspace",
+                "--no-install-local",
+                "--project",
+                str(repo),
+            ]
             _run(sync, env_dir.parent, env=env, timeout=SETUP_TIMEOUT_S)
         else:
             project = tomllib.loads((repo / "pyproject.toml").read_text()).get("project", {})
@@ -206,10 +216,36 @@ print(json.dumps(out))
 """
 
 
-def _module_name(file: str) -> str:
-    parts = list(PurePosixPath(file).with_suffix("").parts)
-    if parts[0] == "src":
-        parts = parts[1:]
+def _import_roots(repo: Path) -> list[Path]:
+    """Where the target's own code imports from: src/ or the root of the repo, of each uv workspace member
+    and of each local path source (none of them is installed, see _target_python)."""
+    roots: list[Path] = []
+
+    def add(directory: Path) -> None:
+        roots.extend(p for p in (directory / "src", directory) if p.is_dir() and p not in roots)
+
+    add(repo)
+    try:
+        uv = tomllib.loads((repo / "pyproject.toml").read_text()).get("tool", {}).get("uv", {})
+    except (OSError, tomllib.TOMLDecodeError):
+        return roots
+    for pattern in uv.get("workspace", {}).get("members", []):
+        for member in sorted(repo.glob(pattern)):
+            if (member / "pyproject.toml").exists():
+                add(member)
+    for source in uv.get("sources", {}).values():
+        if isinstance(source, dict) and "path" in source and (repo / source["path"]).is_dir():
+            add((repo / source["path"]).resolve())
+    return roots
+
+
+def _module_name(repo: Path, file: str) -> str:
+    """Dotted module name of `file` under the deepest import root that contains it."""
+    path = (repo / file).with_suffix("")
+    roots = sorted((r for r in _import_roots(repo) if path.is_relative_to(r)), key=lambda r: len(r.parts))
+    parts = (
+        list(path.relative_to(roots[-1]).parts) if roots else list(PurePosixPath(file).with_suffix("").parts)
+    )
     if parts[-1] == "__init__":
         parts = parts[:-1]
     return ".".join(parts)
@@ -230,7 +266,7 @@ def resolved_schemas(site: CallSite, repo_path: str | Path) -> dict[str, dict[st
     if not names:
         return {}
     try:
-        out = _run_in_repo(Path(repo_path), _SCHEMA_CODE, _module_name(site.file), *names)
+        out = _run_in_repo(Path(repo_path), _SCHEMA_CODE, _module_name(Path(repo_path), site.file), *names)
         schemas = json.loads(out.strip().splitlines()[-1])
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         return {}
@@ -766,20 +802,54 @@ def _value_str(value: Any) -> str:
 
 
 def _tool_text(policy: str, tool: str) -> str:
-    """The policy's blocks (bullets, numbered items, paragraphs) naming `tool`; the whole policy if none."""
+    """The policy's blocks (bullets, numbered items, paragraphs) naming `tool`; "" if none does, so a policy
+    that never names the tool decides none of its values."""
     blocks = re.split(r"\n\s*\n|\n(?=\s*(?:[-*•]|\d+[.)])\s)", policy)
-    named = [b for b in blocks if _verbatim(b, tool) or _verbatim(b, tool.replace("_", " "))]
-    return "\n".join(named) or policy
+    return "\n".join(b for b in blocks if _verbatim(b, tool) or _verbatim(b, tool.replace("_", " ")))
 
 
-def _value_mentioned(text: str, value: Any) -> bool:
-    """A word of the value occurs in `text`: words of 4+ letters as a word start ("charge" in "charged"),
-    shorter ones as whole words ("3", "low")."""
-    for word in re.split(r"[_\W]+", _value_str(value).casefold()):
-        end = "" if len(word) >= 4 else r"(?!\w)"
-        if word and re.search(rf"(?<!\w){re.escape(word)}{end}", text, re.IGNORECASE):
-            return True
-    return False
+_INFLECTION = r"(?:s|es|d|ed|ing)?(?!\w)"  # "charge" also matches "charged", "other" never "otherwise"
+
+
+def _value_mentioned(text: str, value: Any, arg: str) -> bool:
+    """Whether `text` names the value. A string: one of its words occurs (words of 4+ letters with an
+    inflection, shorter ones exactly). A number or boolean: its token follows the argument's name within three
+    words ("severity 3", "set notify_customer to true"); an incidental number elsewhere ("wait 2 days") does
+    not count."""
+    if isinstance(value, str):
+        for word in re.split(r"[_\W]+", value.casefold()):
+            end = _INFLECTION if len(word) >= 4 else r"(?!\w)"
+            if word and re.search(rf"(?<!\w){re.escape(word)}{end}", text, re.IGNORECASE):
+                return True
+        return False
+    names = {arg, arg.replace("_", " "), *(w for w in re.split(r"[_\W]+", arg) if len(w) >= 4)}
+    alts = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    token = re.escape(_value_str(value))
+    return re.search(rf"(?<!\w)(?:{alts})\W+(?:\w+\W+){{0,3}}?{token}(?!\w)", text, re.IGNORECASE) is not None
+
+
+def _is_string_arg(schema: dict[str, Any]) -> bool:
+    """A string argument: its type, or for an enum without a type, all its values."""
+    if "enum" in schema and "type" not in schema:
+        return all(isinstance(v, str) for v in schema["enum"])
+    return _schema_type(schema) == "string"
+
+
+def _booleans(schema: dict[str, Any], root: dict[str, Any], path: str = "", depth: int = 0) -> list[str]:
+    """Paths of the booleans inside an object/array argument (no input can state them; see _derivable)."""
+    schema = _flat(schema, root)
+    if depth > 8:
+        return []
+    if _schema_type(schema) == "boolean" and "enum" not in schema:
+        return [path or "(value)"]
+    found = [
+        p
+        for k, v in schema.get("properties", {}).items()
+        for p in _booleans(v, root, f"{path}.{k}".lstrip("."), depth + 1)
+    ]
+    if isinstance(schema.get("items"), dict):
+        found += _booleans(schema["items"], root, f"{path}[]", depth + 1)
+    return found
 
 
 def classify_tool_args(
@@ -841,25 +911,29 @@ Reply {{"enums": [{{"tool", "arg", "values"}}], "tools": [{{"tool", "requires"}}
         {(e.tool, e.arg): {_value_str(v).casefold() for v in e.values} for e in reply.enums} if reply else {}
     )
     policy = site.template.system or ""
+    why: dict[tuple[str, str], str] = {}
     for t, a, values in enums:
         text, listed = _tool_text(policy, t), said.get((t, a), set())
-        allowed = [v for v in values if _value_mentioned(text, v) and _value_str(v).casefold() in listed]
+        allowed = [v for v in values if _value_mentioned(text, v, a) and _value_str(v).casefold() in listed]
         prop = _flat(rules[t].schema["properties"][a], rules[t].schema)
         if allowed:
             rules[t].allowed[a] = allowed
-        elif _schema_type(prop) == "string":
+        elif _is_string_arg(prop):
             rules[t].classes[a] = "free"
         else:
             rules[t].classes[a] = "undetermined"
+            why[t, a] = f"{a} ({_schema_type(prop)}): not decided by the policy"
     for t, r in rules.items():
-        undetermined = [a for a, c in r.classes.items() if c == "undetermined"]
+        for a, c in r.classes.items():
+            nested = _booleans(r.schema["properties"][a], r.schema) if c == "input" else []
+            if nested:  # e.g. ticket.notify_customer: _fake would pick it at random
+                r.classes[a] = "undetermined"
+                why[t, a] = f"{a} holds boolean {', '.join(nested)}, which no input states"
+        undetermined = [why[t, a] for a, c in r.classes.items() if c == "undetermined"]
         if undetermined:
-            types = ", ".join(
-                f"{a} ({_schema_type(_flat(r.schema['properties'][a], r.schema))})" for a in undetermined
-            )
             r.unseedable = (
-                f"required {types}: neither stated by an input nor decided by the policy, and only "
-                "string arguments can be compared presence-only"
+                f"required {'; '.join(undetermined)}; only string arguments can be compared "
+                "presence-only, so these values could only be guessed"
             )
             if notes is not None:
                 notes.append(f"{t}: not seeded: {r.unseedable}")
@@ -1035,7 +1109,7 @@ def _derivable(value: Any, kind: str | None, text: str) -> bool:
         items = value.values() if isinstance(value, dict) else value
         return all(_derivable(v, kind if isinstance(v, str) else None, text) for v in items if v is not None)
     if isinstance(value, bool):
-        return True
+        return False  # no evidence rule can show an input "states" True/False: the seed is rejected
     if isinstance(value, int | float):
         return Decimal(str(value)) in _numbers(text)
     if kind == "currency":
