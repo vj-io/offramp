@@ -14,12 +14,13 @@ from offramp.evals.scorers.aggregate import Thresholds, site_pass
 from offramp.schemas import CaseScore, Contract, EvalCase, ModelOutput, RunConfig, ToolCall
 
 
-def _case(task: str = "x") -> EvalCase:
+def _case(task: str = "x", tags: tuple[str, ...] = ()) -> EvalCase:
     return EvalCase(
         id=f"cs_01:{task}",
         site_id="cs_01",
         input_messages=[{"role": "user", "content": "hi"}],
         expected_kind="text",
+        tags=list(tags),
         split="dev",
     )
 
@@ -32,8 +33,10 @@ def _calls(*calls: tuple[str, dict]) -> ModelOutput:
     return ModelOutput(tool_calls=[ToolCall(name=n, arguments=a) for n, a in calls])
 
 
-def _run(scorer, baseline: ModelOutput, candidate: ModelOutput, contract: Contract) -> CaseScore:
-    return scorer.score(_case(), baseline, candidate, contract)
+def _run(
+    scorer, baseline: ModelOutput, candidate: ModelOutput, contract: Contract, tags: tuple[str, ...] = ()
+) -> CaseScore:
+    return scorer.score(_case(tags=tags), baseline, candidate, contract)
 
 
 # ------------------------------------------------------------------ json_schema
@@ -271,6 +274,132 @@ def test_tool_call_abstention_needs_a_non_blank_candidate(baseline_text, candida
     got = _run(tool_call, _text(baseline_text), _text(candidate_text), contract)
     assert (got.passed, got.error_category) == (passed, category)
     assert got.score == (1.0 if passed else 0.0)
+
+
+# ------------------------------------------------------------------ tool_call: free-text arguments
+
+REASON = "free_text_arg:reason"
+NOTE = "free_text_arg:note"
+ESC_REASON = "Customer is angry about a double charge"
+ESC = ("escalate_to_human", {"reason": ESC_REASON, "priority": "High"})
+
+
+def _esc(**args) -> tuple[str, dict]:
+    return "escalate_to_human", {"reason": "wants a manager", "priority": "high", **args}
+
+
+def _without(call: tuple[str, dict], *names: str) -> tuple[str, dict]:
+    return call[0], {k: v for k, v in call[1].items() if k not in names}
+
+
+# (id, baseline calls, candidate calls, tags, passed, error_category)
+FREE_TEXT_ROWS = [
+    ("different_wording_passes", [ESC], [_esc()], [REASON], True, None),
+    ("same_wording_passes", [ESC], [("escalate_to_human", dict(ESC[1]))], [REASON], True, None),
+    ("free_arg_case_and_padding_irrelevant", [ESC], [_esc(reason="  ANYTHING  ")], [REASON], True, None),
+    ("other_args_normalised_as_before", [ESC], [_esc(priority=" HIGH ")], [REASON], True, None),
+    ("other_arg_still_compared", [ESC], [_esc(priority="low")], [REASON], False, "wrong_args"),
+    ("other_arg_missing", [ESC], [_without(_esc(), "priority")], [REASON], False, "wrong_args"),
+    ("extra_arg_still_fails", [ESC], [_esc(lang="fr")], [REASON], False, "wrong_args"),
+    ("blank_free_arg_fails", [ESC], [_esc(reason="")], [REASON], False, "wrong_args"),
+    ("whitespace_free_arg_fails", [ESC], [_esc(reason=" \n\t ")], [REASON], False, "wrong_args"),
+    ("missing_free_arg_fails", [ESC], [_without(_esc(), "reason")], [REASON], False, "wrong_args"),
+    ("null_free_arg_fails", [ESC], [_esc(reason=None)], [REASON], False, "wrong_args"),
+    ("number_free_arg_fails", [ESC], [_esc(reason=42)], [REASON], False, "wrong_args"),
+    ("list_free_arg_fails", [ESC], [_esc(reason=["a"])], [REASON], False, "wrong_args"),
+    ("object_free_arg_fails", [ESC], [_esc(reason={"a": 1})], [REASON], False, "wrong_args"),
+    ("wrong_tool_still_fails", [ESC], [("get_weather", {"reason": "x", "priority": "high"})], [REASON],
+     False, "wrong_tool"),
+    ("no_call_still_fails", [ESC], [], [REASON], False, "no_tool_call"),
+    ("no_tag_compares_wording", [ESC], [_esc()], [], False, "wrong_args"),
+    ("other_tags_do_not_exempt", [ESC], [_esc()], ["length:long", "locale:de"], False, "wrong_args"),
+    ("tag_for_another_arg_does_not_exempt", [ESC], [_esc()], ["free_text_arg:priority"], False, "wrong_args"),
+    ("tag_prefix_must_match", [ESC], [_esc()], ["free_text_args:reason", "free_text:reason"], False,
+     "wrong_args"),
+    ("tag_arg_name_is_exact", [ESC], [_esc()], ["free_text_arg:Reason"], False, "wrong_args"),
+    ("empty_tag_name_exempts_nothing", [ESC], [_esc()], ["free_text_arg:"], False, "wrong_args"),
+    ("empty_tag_name_exempts_an_argument_named_empty", [("f", {"": "a"})], [("f", {"": "b"})],
+     ["free_text_arg:"], False, "wrong_args"),
+    ("tag_name_padding_is_ignored", [ESC], [_esc()], ["free_text_arg: reason "], True, None),
+    ("two_free_args_both_exempt", [("f", {"a": "x", "b": "y", "k": 1})],
+     [("f", {"a": "p", "b": "q", "k": 1})], ["free_text_arg:a", "free_text_arg:b"], True, None),
+    ("two_free_args_one_blank", [("f", {"a": "x", "b": "y", "k": 1})], [("f", {"a": "p", "b": " ", "k": 1})],
+     ["free_text_arg:a", "free_text_arg:b"], False, "wrong_args"),
+    ("only_tagged_arg_is_exempt", [("f", {"a": "x", "b": "y"})], [("f", {"a": "p", "b": "q"})],
+     ["free_text_arg:a"], False, "wrong_args"),
+    ("tag_absent_from_reference_call_exempts_nothing", [ESC], [_esc(note="hello")], [REASON, NOTE],
+     False, "wrong_args"),
+    ("tag_absent_from_both_calls_is_inert", [ESC], [_esc()], [REASON, NOTE], True, None),
+    ("free_arg_in_every_call", [ESC, ("log", {"note": "a"})], [_esc(), ("log", {"note": "b"})],
+     [REASON, NOTE], True, None),
+    ("free_arg_blank_in_second_call", [ESC, ("log", {"note": "a"})], [_esc(), ("log", {"note": ""})],
+     [REASON, NOTE], False, "wrong_args"),
+    ("exemption_is_per_call", [ESC, ("log", {"reason": "a"})], [_esc(), ("log", {})], [REASON],
+     False, "wrong_args"),
+]
+
+
+@pytest.mark.parametrize(
+    "baseline,candidate,tags,passed,category",
+    [r[1:] for r in FREE_TEXT_ROWS],
+    ids=[r[0] for r in FREE_TEXT_ROWS],
+)
+def test_tool_call_free_text_arguments(baseline, candidate, tags, passed, category):
+    contract = Contract(task_type="tool_call", output="tool_call", tools=True)
+    got = _run(tool_call, _calls(*baseline), _calls(*candidate), contract, tags=tuple(tags))
+    assert (got.passed, got.error_category) == (passed, category)
+    assert got.score == (1.0 if passed else 0.0)
+
+
+@pytest.mark.parametrize(
+    "candidate,passed",
+    [(_esc(), True), (_esc(priority="low"), False), (_esc(reason=""), False)],
+    ids=["pass", "fail_other_arg", "fail_blank"],
+)
+def test_free_text_exclusion_is_named_in_the_detail(candidate, passed):
+    contract = Contract(task_type="tool_call", output="tool_call", tools=True)
+    got = _run(tool_call, _calls(ESC), _calls(candidate), contract, tags=(REASON,))
+    assert got.passed is passed
+    assert "escalate_to_human.reason" in got.detail
+    assert "not value-compared" in got.detail
+
+
+def test_free_text_detail_lists_every_excluded_argument_once():
+    contract = Contract(task_type="tool_call", output="tool_call", tools=True)
+    base = _calls(("f", {"a": "x", "b": "y"}), ("f", {"a": "x", "b": "y"}))
+    cand = _calls(("f", {"a": "p", "b": "q"}), ("f", {"a": "r", "b": "s"}))
+    tags = ("free_text_arg:b", "free_text_arg:a", "free_text_arg:a")
+    got = _run(tool_call, base, cand, contract, tags=tags)
+    assert got.passed
+    assert got.detail.count("f.a") == 1 and got.detail.count("f.b") == 1
+
+
+def test_without_a_tag_the_detail_is_unchanged():
+    contract = Contract(task_type="tool_call", output="tool_call", tools=True)
+    assert _run(tool_call, _calls(W), _calls(W), contract).detail == ""
+    rome = ("get_weather", {"city": "Rome", "units": "metric"})
+    failed = _run(tool_call, _calls(W), _calls(rome), contract)
+    assert failed.detail == "call 0 get_weather: arguments differ at city"
+
+
+def test_free_text_tag_never_exempts_the_tool_name_or_abstention():
+    contract = Contract(task_type="tool_call", output="tool_call", tools=True)
+    got = _run(tool_call, _text("I can answer"), _text(None), contract, tags=(REASON,))
+    assert (got.passed, got.error_category) == (False, "empty_output")
+
+
+def test_free_text_tags_pass_a_site_end_to_end():
+    contract = Contract(task_type="tool_call", output="tool_call", tools=True)
+    tags = (REASON,)
+    scores = [
+        score_case(_case(str(i), tags), _calls(ESC), _calls(_esc(reason=f"wording {i}")), contract)
+        for i in range(20)
+    ]
+    assert site_pass("tool_call", scores) == (True, 1.0)
+    untagged = [
+        score_case(_case(str(i)), _calls(ESC), _calls(_esc(reason=f"w {i}")), contract) for i in range(20)
+    ]
+    assert site_pass("tool_call", untagged) == (False, 0.0)
 
 
 # ------------------------------------------------------------------ reasoning
