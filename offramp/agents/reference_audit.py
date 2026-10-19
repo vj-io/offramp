@@ -9,14 +9,17 @@ Nemotron wrote. Only when an `llm` is passed does Ultra (role `reference_audit`,
 the cases the closed reference has not. Oracle and fixture references are not blind-audited: their answers
 come from code. Per-site counts go to evals/audit.json. Re-running never re-asks an audited reference.
 
+    python -m offramp.agents.reference_audit <repo> --export-blind [--out DIR]  # closed auditor's bundle
     python -m offramp.agents.reference_audit <repo> [--closed answers.jsonl] [--ultra-fallback]
 
-answers.jsonl rows: {"case_id": "cs_01:004", "output": {"text": ...} | {"tool_calls": [...]}}.
+answers.jsonl rows: {"case_id": "cs_01:004", "output": {"text": ...} | {"tool_calls": [...]}}. References that
+carry a human verdict (verified_by "human:...") are final: no auditor ever re-checks or drops them.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import UTC, datetime
@@ -172,7 +175,14 @@ def _ultra_answers(site: CallSite, cases: list[EvalCase], llm: LLM) -> dict[str,
 def audit_site(evals_dir: Path, site: CallSite, llm: LLM | None = None) -> None:
     cases = {c.id: c for c in baselines.load_cases(evals_dir, site.id)}
     refs = baselines.load_references(evals_dir, site.id)
-    todo = [c for c in cases.values() if c.id in refs and refs[c.id].model == SEED and not _blind(refs[c.id])]
+    todo = [
+        c
+        for c in cases.values()
+        if c.id in refs
+        and refs[c.id].model == SEED
+        and not _blind(refs[c.id])
+        and not any(v.startswith("human:") for v in refs[c.id].verified_by)
+    ]  # an expert verdict is final
     closed = baselines.load_closed(evals_dir, site.id)
     answers = {c.id: (f"blind:{closed[c.id].model}", closed[c.id].output) for c in todo if c.id in closed}
     rest = [c for c in todo if c.id not in answers]
@@ -255,6 +265,104 @@ def import_closed(evals_dir: Path, rows: list[dict[str, Any]], model: str = base
     return {k: len(v) for k, v in by_site.items()}
 
 
+# ---------------------------------------------------------------- blind bundle for the closed auditor (GC27b)
+
+
+_ANSWER_FORMAT = {
+    "classification": '{"text": "<exactly one of the labels>"}',
+    "json_extraction": '{"text": "<the JSON object the call replies with; it must match response_schema>"}',
+    "tool_call": '{"tool_calls": [{"name": "<tool name>", "arguments": {...}}]} (the one call it makes next)',
+    "reasoning": '{"text": "<your working, then a last line ANSWER: <number>>"}',
+    "free_text": '{"text": "<the reply the assistant sends>"}',
+}
+
+_BLIND_INSTRUCTIONS = """# Blind answers: {repo}
+
+You are the assistant inside each LLM call described by the `<site>.json` files in this folder. For every
+case, read its `input_messages` (the system message is that call's own instructions) and give the output
+the call should produce. Answer from the case alone: there is nothing else to look up.
+
+Each site file has `task_type`, `answer_format` and, depending on the task, the `labels`, the
+`response_schema`, or the `tools` (OpenAI function format) with `tool_choice`.
+
+Write one JSON object per line to `answers.jsonl` in this folder:
+
+    {{"case_id": "<case_id>", "output": <answer_format>}}
+"""
+
+
+def _default_bundle_dir(repo: Path) -> Path:
+    from offramp.agents.case_gen import data_dir
+
+    return data_dir() / "audit" / f"{repo.name}-{hashlib.sha256(str(repo).encode()).hexdigest()[:8]}"
+
+
+def export_blind_audit(repo_path: str | Path, out_dir: str | Path | None = None) -> Path:
+    """Write what the closed auditor (GC27: a Claude subagent) may see, outside the target repo (default
+    OFFRAMP_DATA_DIR/audit/<repo>-<hash>/): per site the case ids and input_messages, the tools in OpenAI
+    form, the label set or response JSON schema, and the answer format. Never a reference. Returns the
+    folder.
+    """
+    from offramp.agents.translate import openai_tool, openai_tool_choice
+
+    repo = Path(repo_path).resolve()
+    evals, out = repo / "evals", Path(out_dir) if out_dir else _default_bundle_dir(repo)
+    out.mkdir(parents=True, exist_ok=True)
+    sites = baselines.load_sites(evals)
+    for site in sites:
+        kind = site.contract.task_type
+        bundle: dict[str, Any] = {
+            "site_id": site.id,
+            "task_type": kind,
+            "answer_format": _ANSWER_FORMAT[kind],
+        }
+        if kind == "classification":
+            bundle["labels"] = site.contract.labels
+        if kind == "json_extraction" and site.contract.json_schema:
+            bundle["response_schema"] = site.contract.json_schema
+        if kind == "tool_call":
+            bundle["tools"] = [t for t in map(openai_tool, site.params.get("tools") or []) if t]
+            if site.params.get("tool_choice") is not None:
+                bundle["tool_choice"] = openai_tool_choice(site.params["tool_choice"])
+        bundle["cases"] = [
+            {"case_id": c.id, "input_messages": c.input_messages}
+            for c in baselines.load_cases(evals, site.id)
+        ]
+        (out / f"{site.id}.json").write_text(json.dumps(bundle, indent=1, ensure_ascii=False) + "\n")
+    (out / "INSTRUCTIONS.md").write_text(_BLIND_INSTRUCTIONS.format(repo=repo.name))
+    (out / "bundle.json").write_text(
+        json.dumps(
+            {"repo": str(repo), "sites": [s.id for s in sites], "created_at": datetime.now(UTC).isoformat()},
+            indent=1,
+        )
+        + "\n"
+    )
+    return out
+
+
+def ingest_blind_audit(
+    answers_file: str | Path,
+    repo_path: str | Path | None = None,
+    model: str = baselines.CLAUDE_CODE_REFERENCE,
+) -> dict[str, Any]:
+    """Store the closed auditor's answers (labelled `model`, GC27) and audit every seed reference against them
+    with the site's own scorer. The repo defaults to the one recorded in the bundle next to `answers_file`.
+    Answers for case ids the dataset does not have are reported, not stored."""
+    answers_file = Path(answers_file)
+    if repo_path is None:
+        repo_path = json.loads((answers_file.parent / "bundle.json").read_text())["repo"]
+    evals = Path(repo_path) / "evals"
+    known = {c.id for s in baselines.load_sites(evals) for c in baselines.load_cases(evals, s.id)}
+    rows = [json.loads(line) for line in answers_file.read_text().splitlines() if line.strip()]
+    stored = [r for r in rows if r["case_id"] in known]
+    import_closed(evals, stored, model)
+    return {
+        "stored": len(stored),
+        "unknown": [r["case_id"] for r in rows if r["case_id"] not in known],
+        "counts": audit_repo(evals),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Blind audit of seed references (GC18, GC27).")
     parser.add_argument("repo", type=Path)
@@ -268,11 +376,21 @@ def main(argv: list[str] | None = None) -> int:
         help="Ultra answers the seed cases no closed reference answered (Token Factory calls)",
     )
     parser.add_argument("--sites", help="comma-separated site ids")
+    parser.add_argument(
+        "--export-blind", action="store_true", help="write the blind bundle for the closed auditor and exit"
+    )
+    parser.add_argument(
+        "--out", type=Path, help="bundle folder for --export-blind (default under OFFRAMP_DATA_DIR)"
+    )
     args = parser.parse_args(argv)
     evals = args.repo / "evals"
+    if args.export_blind:
+        print(export_blind_audit(args.repo, args.out))
+        return 0
     if args.closed:
-        rows = [json.loads(line) for line in args.closed.read_text().splitlines() if line.strip()]
-        import_closed(evals, rows, args.model)
+        result = ingest_blind_audit(args.closed, args.repo, args.model)
+        if result["unknown"]:
+            print(f"ignored answers for unknown case ids: {result['unknown']}", file=sys.stderr)
     llm = None
     if args.ultra_fallback:
         from offramp.tf import Budget, TFClient

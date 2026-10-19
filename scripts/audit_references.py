@@ -125,8 +125,10 @@ def ingest(repo: Path, verdicts_path: Path) -> dict[str, Any]:
                 invalid.append(cid)
             elif cid in refs and cid in cases:
                 ref = refs[cid]
-                if verdict == "correct":
+                if verdict == "correct" and ra.HUMAN not in ref.verified_by:
                     refs[cid] = ref.model_copy(update={"verified_by": [*ref.verified_by, ra.HUMAN]})
+                elif verdict == "correct":
+                    pass  # already verified by a human: nothing to add
                 else:
                     dropped.append(
                         ra.dropped_row(cases.pop(cid), refs.pop(cid), ra.HUMAN, f"{ra.HUMAN}: wrong — {note}")

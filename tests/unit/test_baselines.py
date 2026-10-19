@@ -255,3 +255,15 @@ def test_recorder_self_agreement_scores_a_second_pass_against_the_first(tmp_path
     rec.record(tmp_path, self_agreement=True, openai_client=oa)
 
     assert json.loads((tmp_path / "closed" / "self_agreement.json").read_text()) == {"cs_01": 0.5}
+
+
+def test_recorder_never_sends_unresolved_scanner_placeholders(tmp_path):
+    rec = load_recorder()
+    fmt = {"type": "json_schema", "json_schema": {"name": "Order", "schema": "<pydantic:Order>"}}
+    b.save_sites(tmp_path, [site("cs_01", "openai", "classification", max_tokens=8, response_format=fmt)])
+    b.save_cases(tmp_path, "cs_01", [case(1)])
+    oa = FakeOpenAI(["billing"])
+
+    rec.record(tmp_path, openai_client=oa)
+
+    assert "response_format" not in oa.calls[0]

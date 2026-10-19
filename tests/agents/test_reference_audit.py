@@ -21,6 +21,7 @@ from offramp.schemas import (
     PromptTemplate,
     ScanResult,
     Tier,
+    ToolCall,
 )
 from offramp.tf import FakeLLM, TFClient
 
@@ -211,6 +212,169 @@ def test_cli_imports_closed_answers_with_the_gc27_label_and_audits(tmp_path):
     }
     assert all(r.latency_ms is r.cost_usd is None for r in stored.values())
     assert json.loads((repo / "evals" / "audit.json").read_text())["cs_01"]["dropped"] == 1
+
+
+def test_human_verdicts_survive_a_re_audit(tmp_path):
+    script, repo = load_script(), tmp_path / "repo"
+    evals = repo / "evals"
+    dataset(evals, triage_site(), ["billing", "shipping"])
+    b.save_closed(evals, "cs_01", closed("cs_01", {1: "billing", 2: "other"}))
+    ra.audit_repo(evals)
+    verdicts = tmp_path / "v.csv"
+    verdicts.write_text("case_id,verdict,note\ncs_01:002,correct,an expert says shipping\n")
+    script.ingest(repo, verdicts)
+    files = {p: p.read_bytes() for p in sorted(evals.rglob("*.jsonl"))}
+    counts = json.loads((evals / "audit.json").read_text())
+
+    assert ra.audit_repo(evals) == counts  # the closed answer that disagreed does not overrule the expert
+    assert {p: p.read_bytes() for p in sorted(evals.rglob("*.jsonl"))} == files
+    assert counts["cs_01"] == {
+        "checked": 2,
+        "agreed": 1,
+        "dropped": 0,
+        "human_verified": 1,
+        "unchecked": 0,
+        "auditors": [f"blind:{SONNET}"],
+    }
+
+
+def test_a_repeated_correct_verdict_does_not_duplicate_the_human_tag(tmp_path):
+    script, repo = load_script(), tmp_path / "repo"
+    dataset(repo / "evals", triage_site(), ["billing"])
+    verdicts = tmp_path / "v.csv"
+    verdicts.write_text("case_id,verdict,note\ncs_01:001,correct,\n")
+
+    script.ingest(repo, verdicts)
+    script.ingest(repo, verdicts)
+
+    assert b.load_references(repo / "evals", "cs_01")["cs_01:001"].verified_by == ["human:tendem"]
+
+
+def tool_site(sid="cs_03") -> CallSite:
+    tools = [
+        {
+            "name": "lookup_order",
+            "description": "Fetch an order.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"order_id": {"type": "string"}},
+                "required": ["order_id"],
+            },
+        }
+    ]
+    return CallSite(
+        id=sid,
+        file="a.py",
+        lines=[1, 2],
+        sdk="anthropic",
+        call="c",
+        prompt_source="fstring",
+        template=PromptTemplate(system="Pick a tool.", user="{t}", variables=["t"]),
+        params={"tools": tools, "tool_choice": {"type": "any"}},
+        contract=Contract(task_type="tool_call", output="tool_call", tools=True),
+    )
+
+
+def blind_dataset(repo: Path) -> list[str]:
+    evals = repo / "evals"
+    dataset(evals, triage_site(), ["billing", "shipping"])
+    seeds = [json.dumps({"order_id": "SH-4242"}), json.dumps({"order_id": None})]
+    dataset(evals, extract_site(), seeds, kind="json")
+    site = tool_site()
+    case = EvalCase(
+        id="cs_03:001",
+        site_id="cs_03",
+        split="dev",
+        source="synthetic",
+        expected_kind="tool_call",
+        input_messages=[
+            {"role": "system", "content": "Pick a tool."},
+            {"role": "user", "content": "where is HH-77?"},
+        ],
+    )
+    ref = BaselineResult(
+        case_id="cs_03:001",
+        model="reference:seed",
+        recorded_at=NOW,
+        output=ModelOutput(tool_calls=[ToolCall(name="lookup_order", arguments={"order_id": "HH-77"})]),
+    )
+    b.save_sites(evals, [site])
+    b.save_cases(evals, "cs_03", [case])
+    b.save_references(evals, "cs_03", [ref])
+    return seeds
+
+
+def test_blind_bundle_holds_inputs_and_formats_but_never_references(tmp_path, monkeypatch):
+    monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path / "data"))
+    repo = tmp_path / "repo"
+    seeds = blind_dataset(repo)
+
+    out = ra.export_blind_audit(repo)
+
+    assert out.is_relative_to(tmp_path / "data" / "audit") and not out.is_relative_to(repo)
+    assert json.loads((out / "bundle.json").read_text())["repo"] == str(repo.resolve())
+    text = "".join(p.read_text() for p in sorted(out.rglob("*")) if p.is_file())
+    assert not any(seed in text for seed in seeds) and "reference:seed" not in text
+    assert '"expected' not in text and "references" not in text
+    tools = json.loads((out / "cs_03.json").read_text())
+    assert tools["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup_order",
+                "description": "Fetch an order.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"order_id": {"type": "string"}},
+                    "required": ["order_id"],
+                },
+            },
+        }
+    ]
+    assert tools["cases"] == [
+        {
+            "case_id": "cs_03:001",
+            "input_messages": [
+                {"role": "system", "content": "Pick a tool."},
+                {"role": "user", "content": "where is HH-77?"},
+            ],
+        }
+    ]
+    assert json.loads((out / "cs_01.json").read_text())["labels"] == LABELS
+    assert (
+        json.loads((out / "cs_02.json").read_text())["response_schema"] == extract_site().contract.json_schema
+    )
+    assert "case_id" in (out / "INSTRUCTIONS.md").read_text()
+
+
+def test_ingest_blind_audit_scores_answers_with_the_exact_model_label(tmp_path, monkeypatch):
+    monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path / "data"))
+    repo = tmp_path / "repo"
+    blind_dataset(repo)
+    out = ra.export_blind_audit(repo)
+    rows = [
+        {"case_id": "cs_01:001", "output": {"text": "billing"}},
+        {"case_id": "cs_01:002", "output": {"text": "other"}},
+        {"case_id": "cs_02:001", "output": {"text": '{"order_id": "SH-4242"}'}},
+        {
+            "case_id": "cs_03:001",
+            "output": {"tool_calls": [{"name": "lookup_order", "arguments": {"order_id": "HH-77"}}]},
+        },
+        {"case_id": "cs_09:001", "output": {"text": "x"}},
+    ]
+    answers = out / "answers.jsonl"
+    answers.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    result = ra.ingest_blind_audit(answers)
+
+    assert result["unknown"] == ["cs_09:001"] and result["stored"] == 4
+    counts = result["counts"]
+    assert (counts["cs_01"]["agreed"], counts["cs_01"]["dropped"]) == (1, 1)
+    assert (counts["cs_02"]["agreed"], counts["cs_02"]["unchecked"]) == (1, 1)
+    assert counts["cs_03"]["agreed"] == 1 and counts["cs_03"]["auditors"] == [f"blind:{SONNET}"]
+    assert {r.model for r in b.load_closed(repo / "evals", "cs_01").values()} == {SONNET}
+    assert not (repo / "evals" / "closed" / "cs_09.jsonl").exists()
+    assert "disagrees" in b.load_dropped(repo / "evals", "cs_01")[0]["reason"]
 
 
 # ---------------------------------------------------------------- Tendem export / ingest (GC24)

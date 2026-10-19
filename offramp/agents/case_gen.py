@@ -12,6 +12,13 @@ Per call site, in this order:
      output stays the correct one. Oracle sites use the oracle's hard parameters instead.
 Every `reference:seed` is then checked blind by offramp.agents.reference_audit.
 
+Tool-call arguments are classed per site (classify_tool_args): input-determined values (ids, amounts, dates)
+must be stated in the written input; policy enums take a value the policy can lead to; free arguments (free
+text, or an enum the policy never mentions) get FREE_ARG plus the case tag `free_text_arg:<name>`, so the
+scorer checks presence only, and the writer is never asked for them. Every written record must pass
+record_problem (it states its seed's input values and gives no answer away) or is rewritten once, then
+dropped.
+
 Inputs are fixture-shaped records. `Recipe`s turn a record into the template's variables the way the call
 site's own code does (placeholder names come from expressions, e.g. `request_plan_name`, `len_messages`,
 so they are mapped explicitly: by exact/suffix/len_ names when unambiguous, else by one Super call that is
@@ -24,10 +31,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import re
+import shutil
+import signal
 import subprocess
 import sys
+import tomllib
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -56,7 +67,8 @@ ROLE, ROLE_ADVERSARIAL = "case_gen", "case_gen_adversarial"
 SEED, ORACLE, FIXTURE = "reference:seed", "reference:oracle", "reference:fixture"
 DEFAULT_TARGET, DEFAULT_ADVERSARIAL = 24, 4  # PRD §6.2: 20-30 cases per site, 3-5 of them adversarial
 BATCH = 8  # records written per LLM call
-RUN_TIMEOUT_S = 60
+RUN_TIMEOUT_S = 60  # one run of target code (schema import, oracle)
+SETUP_TIMEOUT_S = 600  # building the target's environment the first time
 NEEDS_RUNTIME_CAPTURE = "NEEDS_RUNTIME_CAPTURE"
 
 EXPECTED_KIND = {
@@ -94,24 +106,97 @@ def split_for(case_id: str) -> Split:
 # ---------------------------------------------------------------- running target-repo code
 
 
-def _run_in_repo(repo: Path, code: str, *args: str, stdin: str | None = None) -> str:
-    """Run `python -c code` in the target repo's own environment (uv project) or, without a pyproject, the
-    current interpreter; cwd is the repo, so its packages import. Raises on failure or timeout."""
-    python = (
-        ["uv", "run", "--quiet", "--project", str(repo), "python"]
-        if (repo / "pyproject.toml").exists()
-        else [sys.executable]
-    )
-    proc = subprocess.run(
-        [*python, "-B", "-c", code, *args],
-        cwd=repo,
-        input=stdin,
-        capture_output=True,
+def data_dir() -> Path:
+    """Offramp's own data directory (OFFRAMP_DATA_DIR, default ./var): target environments and audit bundles
+    live here, never in the target repo."""
+    return Path(os.environ.get("OFFRAMP_DATA_DIR", "./var")).resolve()
+
+
+def _run(
+    cmd: list[str],
+    cwd: Path,
+    stdin: str | None = None,
+    env: dict[str, str] | None = None,
+    timeout: float | None = None,
+) -> str:
+    """Like subprocess.run(check=True), but in a new process group that is killed as a whole on timeout, so a
+    hanging target import cannot outlive the `uv` that started it. Raises TimeoutExpired or
+    CalledProcessError.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
         text=True,
-        timeout=RUN_TIMEOUT_S,
-        check=True,
+        start_new_session=True,
+        stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
-    return proc.stdout
+    try:
+        out, err = proc.communicate(stdin, timeout=timeout or RUN_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        raise
+    if proc.returncode:
+        raise subprocess.CalledProcessError(proc.returncode, cmd, out, err)
+    return out
+
+
+def _target_python(repo: Path) -> tuple[list[str], dict[str, str] | None]:
+    """Command and environment for running python in the target's own dependencies without writing into the
+    target: the virtualenv lives in Offramp's data dir (UV_PROJECT_ENVIRONMENT), is synced from an existing
+    uv.lock with --frozen or else from pyproject.toml's dependencies (no lockfile is created), and every run
+    uses --no-sync. A changed lock or pyproject re-syncs it."""
+    if not (repo / "pyproject.toml").exists():
+        return [sys.executable], None  # ponytail: no project metadata to build an env from; Offramp's python
+    env_dir = data_dir() / "envs" / hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:16]
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"} | {
+        "UV_PROJECT_ENVIRONMENT": str(env_dir)
+    }
+    lock = repo / "uv.lock"
+    inputs = b"".join(p.read_bytes() for p in (repo / "pyproject.toml", lock) if p.exists())
+    stamp, synced = env_dir / ".offramp-synced", hashlib.sha256(inputs).hexdigest()
+    if not stamp.exists() or stamp.read_text() != synced:
+        shutil.rmtree(env_dir, ignore_errors=True)
+        env_dir.parent.mkdir(parents=True, exist_ok=True)
+        if lock.exists():
+            _run(
+                ["uv", "sync", "--quiet", "--frozen", "--project", str(repo)],
+                env_dir.parent,
+                env=env,
+                timeout=SETUP_TIMEOUT_S,
+            )
+        else:
+            project = tomllib.loads((repo / "pyproject.toml").read_text()).get("project", {})
+            python = ["--python", project["requires-python"]] if project.get("requires-python") else []
+            _run(["uv", "venv", "--quiet", *python, str(env_dir)], env_dir.parent, env=env)
+            if project.get("dependencies"):
+                _run(
+                    [
+                        "uv",
+                        "pip",
+                        "install",
+                        "--quiet",
+                        "--python",
+                        str(env_dir),
+                        "-r",
+                        str(repo / "pyproject.toml"),
+                    ],
+                    env_dir.parent,
+                    env=env,
+                    timeout=SETUP_TIMEOUT_S,
+                )
+        stamp.write_text(synced)
+    return ["uv", "run", "--quiet", "--no-sync", "--project", str(repo), "python"], env
+
+
+def _run_in_repo(repo: Path, code: str, *args: str, stdin: str | None = None) -> str:
+    """Run `python -B -c code` in the target repo's own environment (see _target_python); cwd is the repo, so
+    its packages import. Raises on failure or timeout (RUN_TIMEOUT_S; the env setup gets SETUP_TIMEOUT_S)."""
+    command, env = _target_python(repo)
+    return _run([*command, "-B", "-c", code, *args], repo, stdin=stdin, env=env)
 
 
 _SCHEMA_CODE = """
@@ -471,11 +556,21 @@ def map_fixtures(
 # ---------------------------------------------------------------- seeds: the expected output, picked first
 
 
+ArgClass = Literal["input", "policy", "free"]
+FREE_ARG = "(free: not compared)"  # reference value of an argument tagged free_text_arg:<name>
+
+
 @dataclass
 class Seed:
     output: ModelOutput
     shown: str  # the expected output as the writer is told it
     tags: list[str] = field(default_factory=list)
+    # Checked on every written record (record_problem):
+    stated: list[tuple[str, Any, str | None]] = field(default_factory=list)  # (name, value, kind) to state
+    requires: list[str] = field(default_factory=list)  # tools whose earlier results the input must show
+    giveaways: list[str] = field(default_factory=list)  # expected values never written as "Label: value"
+    verbatim: list[str] = field(default_factory=list)  # identifiers never written in what the person says
+    undetermined: list[str] = field(default_factory=list)  # values of free enums no input may dictate
 
 
 NULL_RATE = 0.25
@@ -495,12 +590,13 @@ NAMES = [
 ]
 HANDLES = ["priya.n", "j.mueller", "mjgarcia", "hanako.t", "chloe.d", "kwame", "o.ivanova", "liam.oc"]
 CURRENCIES = ["USD", "EUR", "GBP", "JPY"]
-FREE_TEXT = [
-    "Customer needs a decision the tools cannot make.",
-    "Customer asked to speak to a person.",
-    "Customer disputes the charge with their bank.",
-    "Customer reports a problem outside the policy.",
-]
+CURRENCY_ALIASES = {
+    "USD": ["usd", "$", "dollar"],
+    "EUR": ["eur", "€", "euro"],
+    "GBP": ["gbp", "£", "pound"],
+    "JPY": ["jpy", "¥", "円", "yen"],
+}
+FREE_TEXT = ["Customer reports a problem with the order.", "Customer asks for help with an invoice."]
 _EXAMPLE = re.compile(r"(?:e\.g\.|such as|for example)\s*:?\s*([A-Za-z]*-?\d[A-Za-z0-9-]*)")
 _AT_MOST = re.compile(r"(?:at most|maximum|up to)\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
 
@@ -515,30 +611,55 @@ def _deref(schema: dict[str, Any], root: dict[str, Any]) -> dict[str, Any]:
     return schema
 
 
-def _fake_string(name: str, schema: dict[str, Any], rng: random.Random, free: list[str]) -> str:
+def _flat(schema: dict[str, Any], root: dict[str, Any]) -> dict[str, Any]:
+    """The non-null branch of a nullable schema (anyOf/oneOf with null), $refs resolved."""
+    schema = _deref(schema, root)
+    options = [o for o in schema.get("anyOf") or schema.get("oneOf") or [] if o.get("type") != "null"]
+    if options:
+        return {k: v for k, v in schema.items() if k not in ("anyOf", "oneOf")} | _deref(options[0], root)
+    return schema
+
+
+def _string_kind(name: str, schema: dict[str, Any]) -> str | None:
+    """What a string field holds, from its name and description; None for free text."""
     desc = schema.get("description", "")
     text = f"{name} {desc}".lower().replace("_", " ")
     if "email" in text:
-        return f"{rng.choice(HANDLES)}{rng.randint(1, 99)}@example.{rng.choice(['com', 'de', 'es', 'jp'])}"
+        return "email"
     if schema.get("format") == "date" or "date" in text.split():
-        return (date(2024, 1, 1) + timedelta(days=rng.randint(0, 1000))).isoformat()
+        return "date"
     if "currency" in text:
-        return rng.choice(CURRENCIES)
-    example = _EXAMPLE.search(desc)
-    if example:
-        return "".join(str(rng.randint(0, 9)) if ch.isdigit() else ch for ch in example[1])
+        return "currency"
+    if _EXAMPLE.search(desc):
+        return "example"
     if "name" in text.split():
-        return rng.choice(NAMES)
+        return "name"
     if "id" in text.split():
+        return "id"
+    return None
+
+
+def _fake_string(name: str, schema: dict[str, Any], rng: random.Random) -> str:
+    kind = _string_kind(name, schema)
+    if kind == "email":
+        return f"{rng.choice(HANDLES)}{rng.randint(1, 99)}@example.{rng.choice(['com', 'de', 'es', 'jp'])}"
+    if kind == "date":
+        return (date(2024, 1, 1) + timedelta(days=rng.randint(0, 1000))).isoformat()
+    if kind == "currency":
+        return rng.choice(CURRENCIES)
+    if kind == "example":
+        example = _EXAMPLE.search(schema.get("description", ""))[1]
+        return "".join(str(rng.randint(0, 9)) if ch.isdigit() else ch for ch in example)
+    if kind == "name":
+        return rng.choice(NAMES)
+    if kind == "id":
         return str(rng.randint(10000, 99999))
-    free.append(name)  # a free-text value: no model can be expected to reproduce it word for word
     return rng.choice(FREE_TEXT)
 
 
-def _fake(
-    name: str, schema: dict[str, Any], rng: random.Random, root: dict[str, Any], free: list[str]
-) -> Any:
-    """A value valid under `schema`, shaped by field names and descriptions (ids mimic the schema example)."""
+def _fake(name: str, schema: dict[str, Any], rng: random.Random, root: dict[str, Any]) -> Any:
+    """A value valid under `schema`, shaped by field names and descriptions (ids mimic the schema example).
+    Objects get every property: an input can say a value is unknown (null), never that a key is absent."""
     schema = _deref(schema, root)
     if "enum" in schema:
         return rng.choice(schema["enum"])
@@ -549,8 +670,7 @@ def _fake(
         rest = [o for o in options if o.get("type") != "null"]
         if len(rest) < len(options) and (not rest or rng.random() < NULL_RATE):
             return None
-        merged = {k: v for k, v in schema.items() if k not in ("anyOf", "oneOf")} | _deref(rest[0], root)
-        return _fake(name, merged, rng, root, free)
+        return _fake(name, _flat(schema, root), rng, root)
     kind = schema.get("type", "string")
     if isinstance(kind, list):
         if "null" in kind and rng.random() < NULL_RATE:
@@ -559,13 +679,9 @@ def _fake(
     limit = _AT_MOST.search(schema.get("description", ""))
     high = schema.get("maximum", float(limit[1]) if limit else None)
     if kind == "object":
-        props = schema.get("properties", {})
-        required = set(schema.get("required", []))
-        return {
-            k: _fake(k, v, rng, root, free) for k, v in props.items() if k in required or rng.random() < 0.5
-        }
+        return {k: _fake(k, v, rng, root) for k, v in schema.get("properties", {}).items()}
     if kind == "array":
-        return [_fake(name, schema.get("items", {}), rng, root, free) for _ in range(rng.randint(1, 3))]
+        return [_fake(name, schema.get("items", {}), rng, root) for _ in range(rng.randint(1, 3))]
     if kind == "boolean":
         return rng.random() < 0.5
     if kind == "integer":
@@ -574,7 +690,7 @@ def _fake(
         return round(rng.uniform(float(schema.get("minimum", 1)), float(high or 500)), 2)
     if kind == "null":
         return None
-    return _fake_string(name, schema, rng, free)
+    return _fake_string(name, schema, rng)
 
 
 def _tools(site: CallSite) -> list[tuple[str, dict[str, Any]]]:
@@ -595,38 +711,335 @@ def _cycle(values: list[Any], n: int, rng: random.Random) -> list[Any]:
     return [order[i % len(order)] for i in range(n)]
 
 
-def make_seeds(site: CallSite, n: int, rng: random.Random) -> list[Seed]:
-    """n expected outputs, picked before any input exists. [] when the contract gives nothing to pick from."""
+# ---------------------------------------------------------------- tool arguments: what can determine them
+
+
+@dataclass
+class ToolArgs:
+    """How each required argument of one tool can be known: `input` (stated in the input: ids, amounts,
+    dates), `policy` (an enum the system prompt decides; `allowed` = values it can lead to) or `free` (free
+    text, or an enum the policy never says how to choose: tagged free_text_arg:<name>, value not compared)."""
+
+    schema: dict[str, Any]
+    classes: dict[str, ArgClass]
+    allowed: dict[str, list[Any]] = field(default_factory=dict)
+    requires: list[str] = field(default_factory=list)  # tools the policy wants called in an earlier step
+
+
+class _EnumRule(BaseModel):
+    tool: str
+    arg: str
+    values: list[str]  # values the policy can lead to; [] = the policy never says how to choose
+
+
+class _ToolRule(BaseModel):
+    tool: str
+    requires: list[str] = []
+
+
+class _PolicyReply(BaseModel):
+    enums: list[_EnumRule]
+    tools: list[_ToolRule] = []
+
+
+def _arg_class(name: str, schema: dict[str, Any], root: dict[str, Any]) -> ArgClass:
+    schema = _flat(schema, root)
+    if "enum" in schema:
+        return "policy"  # provisional: the policy call decides, else free
+    kind = schema.get("type", "string")
+    kind = next((k for k in kind if k != "null"), "string") if isinstance(kind, list) else kind
+    if kind == "string":
+        return "input" if _string_kind(name, schema) else "free"
+    return "free" if kind == "boolean" else "input"
+
+
+def _enum_values(schema: dict[str, Any], root: dict[str, Any]) -> list[Any]:
+    return list(_flat(schema, root).get("enum", []))
+
+
+def _mentions(policy: str, arg: str, values: list[Any]) -> bool:
+    """Whether the policy text speaks about an enum argument at all: its name or a word (4+ letters) of one of
+    its values. A model asked "which values can the policy lead to" lists them all for an argument the policy
+    never mentions, so this deterministic gate comes first."""
+    words = {
+        arg.casefold(),
+        *(w for v in values for w in re.split(r"[_\W]+", str(v).casefold()) if len(w) >= 4),
+    }
+    return any(re.search(rf"(?<!\w){re.escape(w.replace('_', ' '))}", policy, re.IGNORECASE) for w in words)
+
+
+def classify_tool_args(
+    site: CallSite, llm: LLM | None, notes: list[str] | None = None
+) -> dict[str, ToolArgs]:
+    """Per tool, the class of each required argument. Non-enum arguments are classed from their schema; for
+    enum arguments one Super call (role case_gen, thinking off) reads the policy (the system message) and
+    lists which values it can lead to per tool, and which tools it wants called first. Without an answer
+    (llm None or an invalid reply) every enum argument is free."""
+    rules = {}
+    for name, schema in _tools(site):
+        props = schema.get("properties", {})
+        required = [a for a in schema.get("required", list(props)) if a in props]
+        rules[name] = ToolArgs(schema, {a: _arg_class(a, props[a], schema) for a in required})
+    enums = [
+        (t, a, _enum_values(r.schema["properties"][a], r.schema))
+        for t, r in rules.items()
+        for a, c in r.classes.items()
+        if c == "policy"
+    ]
+    reply = None
+    if enums and llm is not None:
+        lines = "\n".join(f"- {t}.{a}: {json.dumps(values, ensure_ascii=False)}" for t, a, values in enums)
+        prompt = f"""## Policy (the call's system message)
+{site.template.system or "(none)"}
+
+## Tools
+{json.dumps(site.params.get("tools"), ensure_ascii=False)}
+
+## Task
+1. For each enum argument below, list the values the policy can lead to when that tool is called. Leave out
+values the policy rules out for that tool (for example a reason the policy never accepts). Give an empty list
+when the policy never says how the argument's value is chosen.
+{lines}
+2. For each tool, list the tools the policy requires to have been called in an earlier step (empty if none).
+Reply {{"enums": [{{"tool", "arg", "values"}}], "tools": [{{"tool", "requires"}}]}}."""
+        result = llm.chat(
+            role=ROLE,
+            tier=Tier.SUPER,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You read a support policy and say what it determines. JSON only.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=1500,
+            temperature=0.0,
+            response_model=_PolicyReply,
+            reasoning="off",
+        )
+        reply = result.parsed
+        if reply is None and notes is not None:
+            notes.append("tool policy reply invalid: every enum argument treated as free")
+    said = {(e.tool, e.arg): e.values for e in reply.enums} if reply else {}
+    policy = site.template.system or ""
+    for t, a, values in enums:
+        allowed = [v for v in values if v in said.get((t, a), [])] if _mentions(policy, a, values) else []
+        if allowed:
+            rules[t].allowed[a] = allowed
+        else:
+            rules[t].classes[a] = "free"
+    for rule in reply.tools if reply else []:
+        if rule.tool in rules:
+            rules[rule.tool].requires = [x for x in rule.requires if x in rules and x != rule.tool]
+    return rules
+
+
+def _tool_seed(name: str, rules: ToolArgs, rng: random.Random) -> Seed:
+    props = rules.schema["properties"]
+    args, free, stated, giveaways, undetermined = {}, [], [], [], []
+    for arg, cls in rules.classes.items():
+        if cls == "free":
+            args[arg] = FREE_ARG
+            free.append(arg)
+            undetermined += [str(v) for v in _enum_values(props[arg], rules.schema)]
+        elif cls == "policy":
+            args[arg] = rng.choice(rules.allowed[arg])
+            giveaways.append(str(args[arg]))
+        else:
+            args[arg] = _fake(arg, props[arg], rng, rules.schema)
+            stated.append((arg, args[arg], _string_kind(arg, _flat(props[arg], rules.schema))))
+    shown_args = {a: v for a, v in args.items() if a not in free}
+    shown = f"tool call {name}({json.dumps(shown_args, ensure_ascii=False)})"
+    if free:
+        shown += f"; leave {', '.join(free)} unstated: they are chosen freely"
+    return Seed(
+        ModelOutput(tool_calls=[ToolCall(name=name, arguments=args)]),
+        shown,
+        tags=[f"free_text_arg:{a}" for a in free],
+        stated=stated,
+        requires=list(rules.requires),
+        giveaways=giveaways,
+        verbatim=[name, *(v for v in giveaways if "_" in v)],
+        undetermined=undetermined,
+    )
+
+
+def _json_stated(record: dict[str, Any], schema: dict[str, Any]) -> list[tuple[str, Any, str | None]]:
+    """Top-level non-null values an input must state (enums and free text are judged by the audit)."""
+    out = []
+    for key, value in record.items():
+        prop = _flat(schema.get("properties", {}).get(key, {}), schema)
+        if value is None or "enum" in prop or isinstance(value, dict | list | bool):
+            continue
+        kind = _string_kind(key, prop) if isinstance(value, str) else None
+        if isinstance(value, str) and kind is None:
+            continue
+        out.append((key, value, kind))
+    return out
+
+
+def make_seeds(
+    site: CallSite, n: int, rng: random.Random, tool_args: dict[str, ToolArgs] | None = None
+) -> list[Seed]:
+    """n expected outputs, picked before any input exists. [] when the contract gives nothing to pick from.
+    Tool sites use `tool_args` (classify_tool_args); without it every enum argument counts as free."""
     contract = site.contract
     if n <= 0 or contract is None:
         return []
     if contract.task_type == "classification" and contract.labels:
         return [
-            Seed(ModelOutput(text=label), f"label {json.dumps(label, ensure_ascii=False)}")
+            Seed(
+                ModelOutput(text=label),
+                f"label {json.dumps(label, ensure_ascii=False)}",
+                giveaways=[label],
+                verbatim=[label] if "_" in label else [],
+            )
             for label in _cycle(contract.labels, n, rng)
         ]
     if contract.task_type == "tool_call" and _tools(site):
-        seeds = []
-        for name, schema in _cycle(_tools(site), n, rng):
-            free: list[str] = []
-            args = _fake(name, schema, rng, schema, free)
-            shown = f"tool call {name}({json.dumps(args, ensure_ascii=False)})"
-            seeds.append(
-                Seed(
-                    ModelOutput(tool_calls=[ToolCall(name=name, arguments=args)]),
-                    shown,
-                    ["free-text-args"] if free else [],
-                )
-            )
-        return seeds
+        rules = tool_args or classify_tool_args(site, None)
+        return [_tool_seed(name, rules[name], rng) for name in _cycle(list(rules), n, rng)]
     if contract.task_type == "json_extraction" and contract.json_schema:
         seeds = []
         for _ in range(n):
-            record = _fake("", contract.json_schema, rng, contract.json_schema, [])
+            record = _fake("", contract.json_schema, rng, contract.json_schema)
             text = json.dumps(record, ensure_ascii=False)
-            seeds.append(Seed(ModelOutput(text=text), f"JSON {text}"))
+            seeds.append(
+                Seed(
+                    ModelOutput(text=text), f"JSON {text}", stated=_json_stated(record, contract.json_schema)
+                )
+            )
         return seeds
     return []
+
+
+# ---------------------------------------------------------------- checking a written record
+
+
+_NUMBER_RUN = re.compile(r"\d(?:[\d.,'   ]*\d)?")
+_MONTHS = [
+    "january jan januar enero janvier",
+    "february feb februar febrero février",
+    "march mar märz marzo mars",
+    "april apr abril avril",
+    "may mai mayo",
+    "june jun juni junio juin",
+    "july jul juli julio juillet",
+    "august aug agosto août",
+    "september sep sept septiembre septembre",
+    "october oct oktober octubre octobre",
+    "november nov noviembre novembre",
+    "december dec dezember diciembre décembre",
+]
+_QUOTES = "\"'`“”‘’«»"
+
+
+def _squash(text: str) -> str:
+    return "".join(ch for ch in text.casefold() if ch.isalnum())
+
+
+def _numbers(text: str) -> set[Decimal]:
+    """Every number the text states, read with either decimal separator ("34,90", "1.234,56", "1,234.56")."""
+    out = set()
+    for run in _NUMBER_RUN.findall(text):
+        raw = re.sub(r"['   ]", "", run)
+        for candidate in (raw.replace(",", ""), raw.replace(".", "").replace(",", ".")):
+            try:
+                out.add(Decimal(candidate))
+            except InvalidOperation:
+                pass
+    return out
+
+
+def _date_stated(iso: str, text: str) -> bool:
+    try:
+        d = date.fromisoformat(iso)
+    except ValueError:
+        return _squash(iso) in _squash(text)
+    forms = [
+        d.isoformat(),
+        f"{d.year}/{d.month:02}/{d.day:02}",
+        f"{d.day:02}.{d.month:02}.{d.year}",
+        f"{d.day}.{d.month}.{d.year}",
+        f"{d.day:02}/{d.month:02}/{d.year}",
+        f"{d.month:02}/{d.day:02}/{d.year}",
+        f"{d.day}/{d.month}/{d.year}",
+        f"{d.month}/{d.day}/{d.year}",
+        f"{d.year}年{d.month}月{d.day}日",
+    ]
+    if any(f in text for f in forms):
+        return True
+    words = set(re.findall(r"\w+", text.casefold()))
+    return (
+        str(d.year) in words
+        and str(d.day) in {w.lstrip("0") for w in words if w.isdigit()}
+        and bool(words & set(_MONTHS[d.month - 1].split()))
+    )
+
+
+def _derivable(value: Any, kind: str | None, text: str) -> bool:
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, int | float):
+        return Decimal(str(value)) in _numbers(text)
+    if kind == "currency":
+        return any(
+            a in text.casefold() for a in CURRENCY_ALIASES.get(str(value).upper(), [str(value).casefold()])
+        )
+    if kind == "date":
+        return _date_stated(str(value), text)
+    return _squash(str(value)) in _squash(text)
+
+
+def _verbatim(text: str, value: str) -> bool:
+    return re.search(rf"(?<!\w){re.escape(value)}(?!\w)", text, re.IGNORECASE) is not None
+
+
+def _given_away(text: str, value: str) -> bool:
+    """`value` written as an answer: after a colon/equals sign ("Category: billing", "Prioridad: urgente";
+    any word continuing it counts) or alone in quotes ("classify as 'billing'")."""
+    v = re.escape(value).replace("_", "[_ ]")
+    q = re.escape(_QUOTES)
+    pattern = rf"[:=]\s*[*_{q}]*\s*{v}|[{q}]\s*{v}\s*[{q}]"
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
+def record_problem(
+    site: CallSite, recipes: list[Recipe], seed: Seed | None, record: dict[str, Any]
+) -> str | None:
+    """Why a written record cannot be a case for `seed`, or None. Deterministic: it must render; it must state
+    every input-determined value of the seed (anywhere, earlier tool results included) and show the earlier
+    tool results the policy requires; and what the person writes (the record's plain-value fields) must not
+    give the answer away: no expected label/enum value as "Label: value" or in quotes, no tool or label
+    identifier verbatim, no value of an argument the input should not decide."""
+    try:
+        variables, _ = render(site, recipes, record)
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
+        return f"does not render ({type(e).__name__}: {e})"
+    if seed is None:
+        return None
+    everything = "\n".join(variables.values())
+    written = "\n".join(variables[r.var] for r in recipes if r.op == "value")
+    problems = [
+        f"shows no earlier {t} result, which the policy requires first"
+        for t in seed.requires
+        if not _verbatim(everything, t)
+    ]
+    problems += [
+        f"does not state {name}={value!r}"
+        for name, value, kind in seed.stated
+        if not _derivable(value, kind, everything)
+    ]
+    problems += [f"gives the expected output away ({v!r})" for v in seed.verbatim if _verbatim(written, v)]
+    problems += [
+        f"gives the expected output away ({v!r})"
+        for v in seed.giveaways
+        if v not in seed.verbatim and _given_away(written, v)
+    ]
+    problems += [
+        f"states a value no input should decide ({v!r})" for v in seed.undetermined if _given_away(written, v)
+    ]
+    return "; ".join(problems) or None
 
 
 # ---------------------------------------------------------------- writing inputs (Super / Ultra)
@@ -674,7 +1087,9 @@ class _Writer:
         richest = max(self.examples, key=lambda r: len(json.dumps(r)))
         return _infer_schema({f: richest[f] for f in self.fields})
 
-    def prompt(self, items: list[tuple[Seed | None, str]], adversarial: bool) -> str:
+    def prompt(
+        self, items: list[tuple[Seed | None, str]], adversarial: bool, rejected: list[str] | None = None
+    ) -> str:
         site, kind = self.site, self.site.contract.task_type
         examples = (
             "\n".join(_clip({f: r[f] for f in self.fields}, 2500) for r in self.examples[:3]) or "(none)"
@@ -682,7 +1097,10 @@ class _Writer:
         lines = []
         for i, (seed, style) in enumerate(items, 1):
             expected = f"Expected output: {seed.shown}. " if seed else ""
-            lines.append(f"{i}. {expected}Style: {style} — {STYLES[style]}.")
+            again = (
+                f" Your previous record for this item was rejected: it {rejected[i - 1]}." if rejected else ""
+            )
+            lines.append(f"{i}. {expected}Style: {style} — {STYLES[style]}.{again}")
         rules = [
             f"Write exactly {len(items)} records, record i for item i, each with exactly the fields "
             f'{json.dumps(self.fields)} as in the examples; reply {{"records": [...]}}.',
@@ -725,7 +1143,30 @@ class _Writer:
 ## Rules
 {chr(10).join(f"- {r}" for r in rules)}"""
 
-    def write(self, items: list[tuple[Seed | None, str]], adversarial: bool) -> list[dict[str, Any] | None]:
+    def write(
+        self, items: list[tuple[Seed | None, str]], adversarial: bool, check: Any
+    ) -> list[dict[str, Any] | None]:
+        """Records for `items`. A record `check(seed, record)` rejects is asked for once more, with reason,
+        and dropped (None, with a note) if the rewrite is rejected too."""
+        role = ROLE_ADVERSARIAL if adversarial else ROLE
+        records = self._ask(items, adversarial)
+        problems = [
+            check(seed, r) if r is not None else "was missing"
+            for (seed, _), r in zip(items, records, strict=True)
+        ]
+        bad = [i for i, p in enumerate(problems) if p]
+        if bad:
+            again = self._ask([items[i] for i in bad], adversarial, [problems[i] for i in bad])
+            for i, record in zip(bad, again, strict=True):
+                problem = check(items[i][0], record) if record is not None else "was missing"
+                records[i] = None if problem else record
+                if problem:
+                    self.notes.append(f"{role}: record dropped after one rewrite: it {problem}")
+        return records
+
+    def _ask(
+        self, items: list[tuple[Seed | None, str]], adversarial: bool, rejected: list[str] | None = None
+    ) -> list[dict[str, Any] | None]:
         role, tier = (ROLE_ADVERSARIAL, Tier.ULTRA) if adversarial else (ROLE, Tier.SUPER)
         reply_schema = {
             "type": "object",
@@ -735,12 +1176,13 @@ class _Writer:
         out: list[dict[str, Any] | None] = []
         for start in range(0, len(items), BATCH):
             batch = items[start : start + BATCH]
+            reasons = rejected[start : start + BATCH] if rejected else None
             result = self.llm.chat(
                 role=role,
                 tier=tier,
                 messages=[
                     {"role": "system", "content": _WRITER_SYSTEM},
-                    {"role": "user", "content": self.prompt(batch, adversarial)},
+                    {"role": "user", "content": self.prompt(batch, adversarial, reasons)},
                 ],
                 max_tokens=800 * len(batch) + 800,
                 temperature=0.0,
@@ -851,6 +1293,12 @@ def _fixture_rows(
         if key is None:
             continue  # an input without an expected output cannot be scored on a deterministic site
         given = _expected_output(record[key], kind)
+        if kind == "json":
+            try:
+                json.loads(given.text)
+            except ValueError:
+                notes.append(f"fixture {record.get('id', i)}: {key} is not JSON; case dropped")
+                continue
         if oracle_answers is None:
             rows.append(_Row(record, "repo_fixture", tags, given, FIXTURE))
             continue
@@ -915,7 +1363,8 @@ def _generate_site(
         if kind == "text":
             seeds = [None] * (n_synthetic + adversarial)
         else:
-            seeds = make_seeds(site, n_synthetic + adversarial, rng)
+            tool_args = classify_tool_args(site, llm, notes) if kind == "tool_call" else None
+            seeds = make_seeds(site, n_synthetic + adversarial, rng, tool_args)
             if not seeds:
                 notes.append(
                     f"no oracle and nothing in the {site.contract.task_type} contract to pick expected "
@@ -923,6 +1372,10 @@ def _generate_site(
                 )
         styles = _cycle(list(STYLES), len(seeds), rng)
         writer = _Writer(site, mapping, records, llm, used_models, notes)
+
+        def check(seed: Seed | None, record: dict[str, Any]) -> str | None:
+            return record_problem(site, mapping.recipes, seed, record)
+
         split_at = len(seeds) - adversarial if seeds else 0
         for adv, part in (
             (False, list(zip(seeds, styles, strict=True))[:split_at]),
@@ -930,7 +1383,7 @@ def _generate_site(
         ):
             if not part:
                 continue
-            for (s, style), record in zip(part, writer.write(part, adv), strict=True):
+            for (s, style), record in zip(part, writer.write(part, adv, check), strict=True):
                 if record is None:
                     continue
                 tags = (["adversarial"] if adv else []) + [style] + (s.tags if s else [])

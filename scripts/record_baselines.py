@@ -42,7 +42,11 @@ ANTHROPIC_PARAMS = ("max_tokens", "temperature", "top_p", "tools", "tool_choice"
 def _literal_params(site: CallSite, keys: tuple[str, ...]) -> dict[str, Any]:
     """The site's resolved call parameters; scanner placeholders ("<expr>", "<pydantic:X>") are left out."""
 
-    def unresolved(v: Any) -> bool:
+    def unresolved(v: Any) -> bool:  # anywhere inside the value, e.g. a schema nested in response_format
+        if isinstance(v, dict):
+            return any(map(unresolved, v.values()))
+        if isinstance(v, list):
+            return any(map(unresolved, v))
         return isinstance(v, str) and v.startswith("<") and v.endswith(">")
 
     return {k: site.params[k] for k in keys if k in site.params and not unresolved(site.params[k])}
