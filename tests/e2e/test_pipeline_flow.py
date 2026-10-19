@@ -516,3 +516,18 @@ def test_the_pr_writer_renders_the_body_from_the_run_and_opens_the_pr(tmp_path, 
     assert "100.0%" in body  # the holdout parity the verdict was decided on
     assert pr_url(log) == "https://github.com/acme/tiny/pull/9"
     assert [e.payload["title"] for e in log.events if e.type == "pr"] == [opened["title"]]
+
+
+def test_a_pr_for_a_repo_that_is_not_on_github_is_a_run_error(tmp_path):
+    repo = make_repo(tmp_path)
+    git(repo, "remote", "remove", "origin")
+    n_dev, n_holdout = split_counts(repo)
+    log, _ = start(tmp_path, repo)
+    stub = Recorder()
+
+    run = pipeline.Pipeline(
+        log, llm_for_full_run(n_dev, n_holdout), eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr
+    )
+    assert run.execute() == Stage.FAILED
+    assert log.events[-1].payload["reason"].endswith("is not a GitHub repository")
+    assert stub.prs[0]["open_pr"] is False  # the body was still rendered; resuming after a fix opens it

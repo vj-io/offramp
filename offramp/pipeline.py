@@ -751,12 +751,12 @@ class Pipeline:
             self._stage(Stage.PR_OPENED)
         elif not self.config.open_pr:
             self._log("info", "pull request not opened (--no-pr); its body is in the report")
-        elif gh is None:
+        elif not patch["files"]:
+            self._log("info", "pull request not opened: no file changed")
+        else:
             raise RuntimeError(
                 f"cannot open a pull request: {self.config.repo_url} is not a GitHub repository"
             )
-        else:
-            self._log("info", "pull request not opened: no file changed")
         return draft
 
     def _finish(self, chat: list[CallSite], cases: dict[str, Any], patch: dict[str, Any]) -> None:
