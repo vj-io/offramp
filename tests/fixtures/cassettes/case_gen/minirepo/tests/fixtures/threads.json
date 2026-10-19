@@ -1,0 +1,5 @@
+[
+  {"id": "th-1", "tags": ["short", "en"], "messages": [{"role": "customer", "text": "Charged twice for order SH-3021 (24.50 EUR)."}, {"role": "agent", "text": "I see both charges and will refund one today."}]},
+  {"id": "th-2", "tags": ["de"], "messages": [{"role": "customer", "text": "Paket SH-7781 kam beschädigt an."}, {"role": "agent", "text": "Können Sie ein Foto schicken?"}, {"role": "customer", "text": "Foto anbei."}]},
+  {"id": "th-3", "tags": ["empty"], "messages": []}
+]

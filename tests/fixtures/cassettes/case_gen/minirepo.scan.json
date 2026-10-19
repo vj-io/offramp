@@ -1,0 +1,243 @@
+{
+ "repo": "minirepo",
+ "commit_sha": null,
+ "sites": [
+  {
+   "id": "cs_01",
+   "file": "shop/agent.py",
+   "lines": [
+    30,
+    41
+   ],
+   "kind": "chat",
+   "sdk": "anthropic",
+   "call": "client.messages.create",
+   "function": "next_tool",
+   "source_model": "claude-sonnet-4-5",
+   "prompt_source": "fstring",
+   "prompt_ref": "AGENT_PROMPT",
+   "template": {
+    "system": "You are the shop's order agent. Call exactly one tool per step.\n- lookup_order: when you need an order's details and the customer gave an order id.\n- escalate_to_human: for threats, fraud, abuse, or when there is no order id.",
+    "user": "Customer message:\n{ticket_text}\n\nTool results so far:\n{steps}\n\nChoose the next tool.",
+    "variables": [
+     "ticket_text",
+     "steps"
+    ]
+   },
+   "params": {
+    "tools": [
+     {
+      "name": "lookup_order",
+      "description": "Fetch an order's status and items.",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "order_id": {
+         "type": "string",
+         "description": "Order id, e.g. SH-1234"
+        }
+       },
+       "required": [
+        "order_id"
+       ]
+      }
+     },
+     {
+      "name": "escalate_to_human",
+      "description": "Hand the ticket to a human agent.",
+      "input_schema": {
+       "type": "object",
+       "properties": {
+        "priority": {
+         "type": "string",
+         "enum": [
+          "low",
+          "normal",
+          "urgent"
+         ]
+        }
+       },
+       "required": [
+        "priority"
+       ]
+      }
+     }
+    ],
+    "tool_choice": {
+     "type": "any"
+    },
+    "max_tokens": 256,
+    "system": "You are the shop's order agent. Call exactly one tool per step.\n- lookup_order: when you need an order's details and the customer gave an order id.\n- escalate_to_human: for threats, fraud, abuse, or when there is no order id."
+   },
+   "contract": {
+    "task_type": "tool_call",
+    "output": "tool_call",
+    "tools": true,
+    "streaming": false,
+    "latency_budget_ms": null,
+    "reasoning_heavy": false,
+    "labels": [],
+    "json_schema": null
+   },
+   "confidence": 1.0,
+   "flags": []
+  },
+  {
+   "id": "cs_02",
+   "file": "shop/extract.py",
+   "lines": [
+    22,
+    32
+   ],
+   "kind": "chat",
+   "sdk": "anthropic",
+   "call": "client.messages.create",
+   "function": "extract",
+   "source_model": "claude-sonnet-4-5",
+   "prompt_source": "fstring",
+   "prompt_ref": "EXTRACT_PROMPT",
+   "template": {
+    "system": "Extract the order from the email as one JSON object matching the schema.\nUse null for anything the email does not state. Reply with the JSON object only.",
+    "user": "Schema:\n<pydantic:OrderInfo>\n\nEmail:\n{email}",
+    "variables": [
+     "email"
+    ]
+   },
+   "params": {
+    "max_tokens": 300,
+    "system": "Extract the order from the email as one JSON object matching the schema.\nUse null for anything the email does not state. Reply with the JSON object only."
+   },
+   "contract": {
+    "task_type": "json_extraction",
+    "output": "json_schema",
+    "tools": false,
+    "streaming": false,
+    "latency_budget_ms": null,
+    "reasoning_heavy": false,
+    "labels": [],
+    "json_schema": null
+   },
+   "confidence": 1.0,
+   "flags": []
+  },
+  {
+   "id": "cs_03",
+   "file": "shop/refund.py",
+   "lines": [
+    10,
+    19
+   ],
+   "kind": "chat",
+   "sdk": "openai",
+   "call": "client.chat.completions.create",
+   "function": "charge",
+   "source_model": "o3",
+   "prompt_source": "fstring",
+   "prompt_ref": "CHARGE_PROMPT",
+   "template": {
+    "system": "Compute the charge: seats x price per seat, then take the coupon percentage off.\nRound to 2 decimals, half up. Show your working, then put the result alone on the last line as\n`ANSWER: <number>`.",
+    "user": "Seats: {req_seats}\nPrice per seat: {req_price} USD\nCoupon: {req_coupon}% off",
+    "variables": [
+     "req_seats",
+     "req_price",
+     "req_coupon"
+    ]
+   },
+   "params": {},
+   "contract": {
+    "task_type": "reasoning",
+    "output": "text",
+    "tools": false,
+    "streaming": false,
+    "latency_budget_ms": null,
+    "reasoning_heavy": true,
+    "labels": [],
+    "json_schema": null
+   },
+   "confidence": 1.0,
+   "flags": []
+  },
+  {
+   "id": "cs_04",
+   "file": "shop/summarize.py",
+   "lines": [
+    10,
+    16
+   ],
+   "kind": "chat",
+   "sdk": "anthropic",
+   "call": "client.messages.create",
+   "function": "summarize",
+   "source_model": "claude-haiku-4-5",
+   "prompt_source": "fstring",
+   "prompt_ref": "SUMMARY_PROMPT",
+   "template": {
+    "system": "Write a handoff note for the next support agent in at most 60 words:\nIssue, Tried so far, Next step.",
+    "user": "Thread, {len_messages} messages:\n\n{transcript}",
+    "variables": [
+     "len_messages",
+     "transcript"
+    ]
+   },
+   "params": {
+    "max_tokens": 200,
+    "system": "Write a handoff note for the next support agent in at most 60 words:\nIssue, Tried so far, Next step."
+   },
+   "contract": {
+    "task_type": "free_text",
+    "output": "text",
+    "tools": false,
+    "streaming": false,
+    "latency_budget_ms": null,
+    "reasoning_heavy": false,
+    "labels": [],
+    "json_schema": null
+   },
+   "confidence": 1.0,
+   "flags": []
+  },
+  {
+   "id": "cs_05",
+   "file": "shop/triage.py",
+   "lines": [
+    11,
+    20
+   ],
+   "kind": "chat",
+   "sdk": "openai",
+   "call": "client.chat.completions.create",
+   "function": "triage",
+   "source_model": "gpt-4o-mini",
+   "prompt_source": "fstring",
+   "prompt_ref": "TRIAGE_PROMPT",
+   "template": {
+    "system": "Classify the customer's ticket into exactly one queue:\n- billing: charges, invoices, refunds of charges\n- shipping: delivery, tracking, delays\n- other: anything else\nReply with the queue name only: billing, shipping or other.",
+    "user": "Subject: {subject}\n\n{body}",
+    "variables": [
+     "subject",
+     "body"
+    ]
+   },
+   "params": {
+    "max_tokens": 8,
+    "temperature": 0
+   },
+   "contract": {
+    "task_type": "classification",
+    "output": "label",
+    "tools": false,
+    "streaming": false,
+    "latency_budget_ms": null,
+    "reasoning_heavy": false,
+    "labels": [
+     "billing",
+     "shipping",
+     "other"
+    ],
+    "json_schema": null
+   },
+   "confidence": 1.0,
+   "flags": []
+  }
+ ]
+}

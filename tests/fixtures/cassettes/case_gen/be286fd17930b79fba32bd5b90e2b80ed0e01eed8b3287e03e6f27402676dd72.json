@@ -1,0 +1,141 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You map test-fixture records to the placeholders of an LLM prompt template, reproducing exactly what the application code does before it formats the prompt. Reply with JSON only."
+      },
+      {
+        "role": "user",
+        "content": "## Application code (shop/summarize.py; the LLM call is in `summarize`, lines [10, 16])\n```python\n\"\"\"Summarise a ticket thread for handoff.\"\"\"\n\nSUMMARY_PROMPT = \"\"\"Write a handoff note for the next support agent in at most 60 words:\nIssue, Tried so far, Next step.\"\"\"\n\n\ndef summarize(client, messages: list[dict]):\n    transcript = \"\\n\".join(f\"{m['role']}: {m['text']}\" for m in messages)\n    return client.messages.create(\n        model=\"claude-haiku-4-5\",\n        max_tokens=200,\n        system=SUMMARY_PROMPT,\n        messages=[{\"role\": \"user\", \"content\": f\"Thread, {len(messages)} messages:\\n\\n{transcript}\"}],\n    )\n\n```\n\n## Prompt template (str.format placeholders)\nSystem: \"Write a handoff note for the next support agent in at most 60 words:\\nIssue, Tried so far, Next step.\"\nUser: \"Thread, {len_messages} messages:\\n\\n{transcript}\"\nPlaceholders: [\"len_messages\", \"transcript\"]\n\n## Fixture sets in tests/fixtures/\n### threads.json (3 records)\nFirst record: {\"id\": \"th-1\", \"tags\": [\"short\", \"en\"], \"messages\": [{\"role\": \"customer\", \"text\": \"Charged twice for order SH-3021 (24.50 EUR).\"}, {\"role\": \"agent\", \"text\": \"I see both charges and will refund one today.\"}]}\n\n## Task\nPick the one fixture set whose records are the inputs of `summarize` (null if none is), and for EVERY\nplaceholder give a recipe that computes its value from one record, exactly as the code above does:\n- op \"value\": str(record[field])\n- op \"len\": str(len(record[field]))\n- op \"join\": sep.join(item.format(**element) for element in record[field]), or `empty` when the list is empty\n  (mirror the code's join separator, per-element f-string and any `or \"...\"` fallback).\n`item`, `sep` and `empty` are the contents of the Python string literals in the code, escapes included (write\nthe two characters \\n where the code has \\n). In `item` the placeholders are the element's keys: write\n{sent_at}, not {m.sent_at} or {m['sent_at']}.\n`field` is a top-level key of the record; never use a key whose name starts with \"expected\" (those are\nexpected outputs, not inputs).\nReply {\"fixture\": ..., \"recipes\": [{\"var\", \"field\", \"op\", \"item\", \"sep\", \"empty\"}]}."
+      }
+    ],
+    "params": {
+      "max_tokens": 2000,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "_MappingReply",
+          "schema": {
+            "$defs": {
+              "Recipe": {
+                "description": "How one template variable is computed from a record, mirroring the call site's own code.",
+                "properties": {
+                  "var": {
+                    "title": "Var",
+                    "type": "string"
+                  },
+                  "field": {
+                    "title": "Field",
+                    "type": "string"
+                  },
+                  "op": {
+                    "default": "value",
+                    "enum": [
+                      "value",
+                      "len",
+                      "join"
+                    ],
+                    "title": "Op",
+                    "type": "string"
+                  },
+                  "item": {
+                    "default": "",
+                    "title": "Item",
+                    "type": "string"
+                  },
+                  "sep": {
+                    "default": "\n",
+                    "title": "Sep",
+                    "type": "string"
+                  },
+                  "empty": {
+                    "default": "",
+                    "title": "Empty",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "var",
+                  "field"
+                ],
+                "title": "Recipe",
+                "type": "object"
+              }
+            },
+            "properties": {
+              "fixture": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Fixture"
+              },
+              "recipes": {
+                "items": {
+                  "$ref": "#/$defs/Recipe"
+                },
+                "title": "Recipes",
+                "type": "array"
+              }
+            },
+            "required": [
+              "fixture",
+              "recipes"
+            ],
+            "title": "_MappingReply",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-8f3ec1f39c9ae979",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"fixture\": \"threads.json\", \"recipes\": [{\"var\": \"len_messages\", \"field\": \"messages\", \"op\": \"len\", \"item\": \"\", \"sep\": \"\", \"empty\": \"\"}, {\"var\": \"transcript\", \"field\": \"messages\", \"op\": \"join\", \"item\": \"{role}: {text}\", \"sep\": \"\\\\n\", \"empty\": \"\"}]}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792408295,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 85,
+      "prompt_tokens": 659,
+      "total_tokens": 744,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 659
+    }
+  },
+  "latency_ms": 1361,
+  "usage": {
+    "prompt_tokens": 659,
+    "completion_tokens": 85
+  },
+  "created_at": "2026-10-19T11:11:35.889215+00:00"
+}

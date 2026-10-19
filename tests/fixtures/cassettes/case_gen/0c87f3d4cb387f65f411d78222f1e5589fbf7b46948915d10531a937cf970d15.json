@@ -1,0 +1,88 @@
+{
+  "request": {
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write realistic test inputs for one LLM call inside a software product. Each input is a JSON record in the same shape as the product's own test fixtures. Reply with JSON only."
+      },
+      {
+        "role": "user",
+        "content": "## The call's system message\nExtract the order from the email as one JSON object matching the schema.\nUse null for anything the email does not state. Reply with the JSON object only.\n\n## The call's user message template (fields of the record fill the placeholders)\nSchema:\n{{\"properties\": {{\"order_id\": {{\"anyOf\": [{{\"type\": \"string\"}}, {{\"type\": \"null\"}}], \"description\": \"Order id such as SH-1234, null if not stated\", \"title\": \"Order Id\"}}, \"total\": {{\"anyOf\": [{{\"type\": \"number\"}}, {{\"type\": \"null\"}}], \"description\": \"Order total as a plain number, null if not stated\", \"title\": \"Total\"}}, \"currency\": {{\"anyOf\": [{{\"type\": \"string\"}}, {{\"type\": \"null\"}}], \"description\": \"ISO 4217 currency code, e.g. EUR\", \"title\": \"Currency\"}}, \"issue\": {{\"enum\": [\"damaged\", \"late\", \"other\"], \"title\": \"Issue\", \"type\": \"string\"}}}}, \"required\": [\"order_id\", \"total\", \"currency\", \"issue\"], \"title\": \"OrderInfo\", \"type\": \"object\"}}\n\nEmail:\n{email}\n\n## Example records from the product's test fixtures\n{\"text\": \"From: Ana Ruiz <ana@example.com>\\nSubject: Broken lamp\\n\\nHi, order SH-5120 arrived with the lamp shade cracked. I paid 42.00 EUR.\\nAna\\n\"}\n{\"text\": \"From: Ken Ito <ken@example.jp>\\nSubject: 遅延\\n\\n注文がまだ届きません。いつ届きますか？\\n\"}\n\n## Items\n1. Expected output: JSON {\"order_id\": \"SH-3537\", \"total\": 460.85, \"currency\": null, \"issue\": \"other\"}. Style: length:long — long (150-300 words), with background details that do not change the answer.\n2. Expected output: JSON {\"order_id\": null, \"total\": 99.55, \"currency\": null, \"issue\": \"late\"}. Style: unicode — full of emoji, accented names, non-Latin script and special symbols.\n\n## Rules\n- Write exactly 2 records, record i for item i, each with exactly the fields [\"text\"] as in the examples; reply {\"records\": [...]}.\n- For each item, the call's correct output for your record must be exactly the item's expected output, unambiguously, under the system message's instructions. Never give the answer away in what the person writes (no label or tool names, no JSON); write like a real person or document.\n- Make each record HARD for a model while keeping the expected output the single correct answer for a careful reader who follows the system message: misleading keywords pointing elsewhere, several issues where only one decides, instructions inside the user content that try to change the answer, mixed languages, odd formatting.\n- Follow each item's style.\n- Where a field holds reference documents or other context (as in the examples), reuse passages from the examples verbatim instead of inventing new facts.\n- Every non-null value of the expected JSON must be stated in the record (it may be phrased or formatted differently, e.g. a local date format); a null field must not be stated or inferable."
+      }
+    ],
+    "params": {
+      "max_tokens": 2400,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "response",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "records": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "text"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "records"
+            ]
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-960fad9fd211b72b",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\n  \"records\": [\n    {\n      \"text\": \"From: Dr. Elara Vance <elara.vance@quantum-logistics.io>\\nSubject: URGENT: Discrepancy in Manifest SH-3537 — Customs Hold & Tariff Recalculation\\n\\nDear Fulfillment Team,\\n\\nI am writing regarding order SH-3537, a multi-pallet shipment of precision calibration instruments (HS Code 9027.80) currently held at the Port of Rotterdam pending revised customs valuation. The original commercial invoice declared a transaction value of €385.00; however, Dutch Customs (Douane) has issued a binding ruling (Besluit nr. 2024/11/045) reclassifying the embedded firmware licenses as \\\"royalty-bearing intellectual property\\\" under Article 70(1)(e) of the Union Customs Code. This triggers a retrospective duty assessment of 4.7% on the *total* invoice value plus a €125 administrative surcharge.\\n\\nConsequently, the landed cost has been recalculated to **460.85** (four hundred sixty point eight five). The currency of this revised figure remains ambiguous in the ruling — it cites \\\"EUR\\\" in the header but references \\\"USD equivalent at ECB ref rate 1.0823\\\" in Annex B — so I cannot confirm the settlement currency without legal counsel review.\\n\\nSeparately, the shipment shows no physical damage (inspection report INT-2024-08812 confirms \\\"zero visible defects, seals intact\\\") and arrived within the contracted Incoterms DDP window (ETA was 14 Nov, actual gate-in 13 Nov 06:42 CET). The delay you flagged in ticket #LOG-991 pertains to *a different consignment* (SH-3538, same PO, different SKU).\\n\\nPlease update your ERP to reflect the adjusted total of 460.85 for SH-3537. Do **not** mark this as \\\"damaged\\\" or \\\"late\\\"; the issue is purely a regulatory revaluation. I have attached the Douane ruling, the revised commercial invoice (Rev. 3), and the terminal handling receipt.\\n\\nRespectfully,\\nDr. Elara Vance\\nSenior Trade Compliance Officer\\nQuantum Logistics International B.V.\\nKVK: 78945612 | VAT: NL8592.14.789.B01\\n\\n---\\nCONFIDENTIALITY NOTICE: This email and attachments are privileged. Unauthorized disclosure violates GDPR Art. 9 & Wtt Art. 12.\\nPGP: 0x4F2A 9C1E 7B3D 8E0F\"\n    },\n    {\n      \"text\": \"From: 佐藤 花子 🌸 <hanako.sato@桜花.jp>\\nSubject: 📦❓ 遅延配送について / Delayed Delivery Inquiry — 訂正あり\\n\\nこんにちは！\\n\\n注文番号：**[未記入 / NOT PROVIDED]** 🙇\\n\\n実は、先週の金曜（11/22）に「もうすぐ届く」と通知が来たのに、今日（11/28）になっても **追跡番号 TRK-9944 が「配達完了」になっていない** んです… 😭\\n配送業者（ヤマト運輸）に問い合わせたら「住所不備で保管中」と言われました。\\n\\n支払い済み金額：**¥99.55** （税込・送料込）\\n通貨：特に指定なし（円建てと思われます）\\n\\n※ 破損・不良品の報告では **ありません** ❌\\n※ 「その他」の理由でもありません ❌\\n\\n至急、再配達の手配をお願いします！\\n\\n---\\n佐藤 花子 🌸\\n〒150-0001 東京都渋谷区神宮前 1-2-3 🏠\\nTel: 03-5555-0199 📞\\n\\nP.S. このメールは自動翻訳されていません。原文のままお読みください。\\n🌸🌸🌸\"\n    }\n  ]\n}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792408288,
+    "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
+    "usage": {
+      "completion_tokens": 1022,
+      "prompt_tokens": 796,
+      "total_tokens": 1818,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 796
+    }
+  },
+  "latency_ms": 6177,
+  "usage": {
+    "prompt_tokens": 796,
+    "completion_tokens": 1022
+  },
+  "created_at": "2026-10-19T11:11:34.322358+00:00"
+}

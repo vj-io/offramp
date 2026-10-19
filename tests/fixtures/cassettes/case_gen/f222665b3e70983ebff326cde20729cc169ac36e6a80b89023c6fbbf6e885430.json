@@ -1,0 +1,93 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write realistic test inputs for one LLM call inside a software product. Each input is a JSON record in the same shape as the product's own test fixtures. Reply with JSON only."
+      },
+      {
+        "role": "user",
+        "content": "## The call's system message\nClassify the customer's ticket into exactly one queue:\n- billing: charges, invoices, refunds of charges\n- shipping: delivery, tracking, delays\n- other: anything else\nReply with the queue name only: billing, shipping or other.\n\n## The call's user message template (fields of the record fill the placeholders)\nSubject: {subject}\n\n{body}\n\n## Example records from the product's test fixtures\n{\"subject\": \"Double charge\", \"body\": \"I see two charges of $19.00 for my May invoice.\"}\n{\"subject\": \"Wo ist mein Paket?\", \"body\": \"Meine Bestellung SH-2231 ist seit zehn Tagen unterwegs.\"}\n{\"subject\": \"\", \"body\": \"\"}\n\n## Items\n1. Expected output: label \"shipping\". Style: locale:de — written in German.\n2. Expected output: label \"other\". Style: unicode — full of emoji, accented names, non-Latin script and special symbols.\n3. Expected output: label \"billing\". Style: length:long — long (150-300 words), with background details that do not change the answer.\n4. Expected output: label \"shipping\". Style: empty — as terse as possible: the bare minimum of text that still determines the answer.\n5. Expected output: label \"other\". Style: length:short — very short: one line, the way people type on a phone.\n6. Expected output: label \"billing\". Style: malformed — messy: typos, broken line breaks, missing punctuation, stray pasted text.\n\n## Rules\n- Write exactly 6 records, record i for item i, each with exactly the fields [\"subject\", \"body\"] as in the examples; reply {\"records\": [...]}.\n- For each item, the call's correct output for your record must be exactly the item's expected output, unambiguously, under the system message's instructions. Never give the answer away in what the person writes (no label or tool names, no JSON); write like a real person or document.\n- Make the records realistic and varied: different names, ids, amounts and topics from each other and from the examples.\n- Follow each item's style.\n- Where a field holds reference documents or other context (as in the examples), reuse passages from the examples verbatim instead of inventing new facts."
+      }
+    ],
+    "params": {
+      "max_tokens": 5600,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "response",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "records": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "subject": {
+                      "type": "string"
+                    },
+                    "body": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "subject",
+                    "body"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "records"
+            ]
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-bb6fcd3e03de80c8",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"records\": [{\"subject\": \"Versandverzögerung bei meiner Bestellung\", \"body\": \"Mein Paket mit der Sendungsnummer DE-8845 kommt nicht an, obwohl es laut Tracking schon seit drei Tagen beim Zoll liegt.\"}, {\"subject\": \"🎉 Félicitations à José María 🎊\", \"body\": \"¡Gracias por todo! 🙏✨🌟💫🚀🔥💯💎\"}, {\"subject\": \"Refund request for duplicate transaction on April 12th\", \"body\": \"I noticed two identical charges of $49.99 on my credit card ending in 4321 for order #ORD-7789 on April 12th. The first charge posted at 10:15 AM and the second at 10:17 AM. I only placed one order for the wireless noise-cancelling headphones (model WH-1000XM5) which I received on April 10th and have been using without issues. I checked my order confirmation email and it shows only one item purchased. I've attached a screenshot of my bank statement showing both transactions. According to your refund policy, duplicate charges should be reversed within 5-7 business days once verified. Please investigate and process a refund for the duplicate amount of $49.99 to my original payment method. My account email is customer@example.com and I'm available for verification if needed. Thank you for resolving this promptly.\"}, {\"subject\": \"Tracking\", \"body\": \"Where is my package?\"}, {\"subject\": \"Hey can u fix this\", \"body\": \"app keeps crashing when i try to upload photo pls help\"}, {\"subject\": \"i was charged twice for the same thing\", \"body\": \"hey i see two charges on my card for the same order number abc123 from yesterday i only bought one thing can you check and remove the extra charge thanks\"}]}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792408299,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 431,
+      "prompt_tokens": 558,
+      "total_tokens": 989,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 558
+    }
+  },
+  "latency_ms": 3349,
+  "usage": {
+    "prompt_tokens": 558,
+    "completion_tokens": 431
+  },
+  "created_at": "2026-10-19T11:11:42.527033+00:00"
+}

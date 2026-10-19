@@ -1,0 +1,5 @@
+[
+  {"id": "a-1", "tags": ["en", "first-step"], "ticket_text": "Where is order SH-4410? It was due Monday.", "history": []},
+  {"id": "a-2", "tags": ["en", "after-lookup"], "ticket_text": "My order SH-1188 never came and I want my money back NOW or I call my lawyer.", "history": [{"tool": "lookup_order", "output": "{\"order_id\": \"SH-1188\", \"status\": \"delivered\", \"total\": 54.0}"}]},
+  {"id": "a-3", "tags": ["es"], "ticket_text": "Hola, no tengo número de pedido pero me cobraron dos veces.", "history": []}
+]
