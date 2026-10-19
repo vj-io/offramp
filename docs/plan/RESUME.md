@@ -1,26 +1,36 @@
-# Resume point — paused 2026-10-19 (session limit)
+# Resume the Offramp build
 
-Ledger with every ruling and review outcome: `.superpowers/sdd/PLAN/progress.md` (gitignored, on disk).
-Briefs, reports, reviews: `.superpowers/sdd/PLAN/task-*-{brief,report,review,rereview-*}.md`.
-Worktrees: `../wt/task-N` on branches `wave1/task-N` / `wave2/task-N` (also pushed to origin).
+Paused 2026-10-19 ~18:15 (second pause). All agents stopped; every branch is pushed to `origin`.
+Ledger with every ruling: `.superpowers/sdd/PLAN/progress.md` (gitignored; trust it and `git log` over memory).
 
-## Merged to main (reviewed clean)
-Task 1 TF client/cache/tiers/budget/pricing/db · Task 2 demo app (separate repo vj-io/offramp-demo-app) ·
-Task 3 scanner (+ integration follow-up) · Task 4 scorers · Task 5 doodle dashboard.
+## Main
 
-## In flight when paused
-| Task | Branch / state | Next step on resume |
-|---|---|---|
-| 6 adapter | wave2/task-6 @ 075baa5 — fix round 1 done | dispatch scoped re-review (6b103bf..075baa5); merge if clean |
-| 7 cases + references | wave2/task-7 @ 4bb8c77 = WIP commit (implementer stopped mid-work; demo repo has evals/reference/refund_oracle.py @ 8d76134) | resume implementer: read task-7-report.md + WIP diff, finish, squash WIP, report |
-| 8 runner + judge | wave2/task-8 @ e306eed = WIP over fix round 1 (provider errors, missing references, p95, return_candidates) | resume implementer to finish fix round 1, then scoped re-review |
-| 10 patcher + PR | wave2/task-10 @ d191191 = WIP (was recording patcher cassettes live) | resume implementer: finish, then task review |
-| 17 Tavily/LangSmith/fallback keys | wave2/task-17 @ 0a89e37 — implementation done | dispatch task review (review was stopped) |
+`main` = `2dd592b` (pushed). Merged: Tasks 1–6, 8, 11, 13, 17 (+ T3 integration, T4 free-text follow-up).
+Last full suite on main before the T13 merge: 937 passed, 10 skipped (T13 is docs/CI only, no Python changed; ruff clean).
 
-## Not started
-Task 9 iterator/verdict/routing · Task 11 serverless job · Task 12 API/CLI/pipeline · Task 13 CI/docs/README/FEEDBACK ·
-Task 14 live demo run (cases+references, GC27 Claude closed references, live pipeline, real PR) · Task 15 deploy (Vercel + API) ·
-Task 16 video + Devpost submission materials (docs/plan/PLAN.md "Devpost submission deliverables").
+## Open tasks
 
-## Keys (offramp/.env, all verified)
-NEBIUS, TAVILY, LANGSMITH, TENDEM primary + `_FALLBACK` (teammate account). Toloka: no API on new platform (UI only).
+| Task | Branch @ head | State | Next step |
+|---|---|---|---|
+| 7 cases + references | `wave2/task-7` @ `60f352f` | fix round 3 done; re-review 3 was stopped before it reported | re-dispatch scoped re-review of `a32e076..60f352f` (findings: task-7-rereview-2.md) |
+| 9 iterator/verdict/route | `wave2/task-9` @ `0e177f6` (WIP) | fix round 1 interrupted mid-edit (rebased on 5eeea9b; verdict.py/route.py partly changed) | resume implementer with task-9-review.md + ledger rulings (retry once, no digits in Super prose, minors); it must check its WIP commit first |
+| 10 patcher + PR | `wave2/task-10` @ `5e0dbee` (WIP) | fix round 1 interrupted (rebased on 8819652; 14 of 20 live Super calls used, 8 patcher cassettes recorded; PR-writer cassette being replaced) | resume implementer with task-10-review.md + rulings; remaining live budget 6 Super |
+| 12 orchestrator/API/CLI | — | not started | dispatch after 7 + 9 merge (brief: task-12-brief.md; carries in ledger) |
+| 14 live demo | — | not started | needs 7, 9, 10, 12 |
+| 15 deploy | — | not started | Vercel free tier only |
+| 16 video + Devpost | — | not started | brag-scaled:brag-slim |
+
+## Decisions since the first pause (all in the ledger)
+
+- Credits only: no AI Cloud billing, no real Serverless Job, no paid hosting. Job path ships tested with a fake CLI.
+- Nebius CLI installed (`~/.nebius/bin/nebius`, profile `offramp`); AI Cloud tenant exists but unused.
+- Target client module lives inside the target package (`helphub/offramp_client.py`), not root `offramp/client.py`.
+
+## Minors to fix before the repo goes public (from T13 re-review)
+
+FEEDBACK.md:116 wording ("no o3 model page"); VIDEO.md:21/:34 conditional line; re-run the README path check on
+the merged tree (Dockerfile.eval, scripts/audit_references.py, web/public/replay/demo-events.json).
+
+## Resume prompt
+
+"Resume the Offramp build from docs/plan/RESUME.md: re-dispatch the paused tasks and continue the remaining waves."
