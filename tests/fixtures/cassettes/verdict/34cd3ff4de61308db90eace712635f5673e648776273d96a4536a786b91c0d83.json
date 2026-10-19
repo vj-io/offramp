@@ -1,0 +1,81 @@
+{
+  "request": {
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You write one qualitative sentence explaining one Offramp verdict. Offramp tested whether NVIDIA Nemotron on Nebius Token Factory can take over one LLM call site of a Python repo, measured as agreement with reference outputs on held-out cases. MIGRATE: the named tier reached parity on the held-out cases, cheaper tiers did not. KEEP_CLOSED: no tier did, so the call stays on its current model.\n\nWrite one sentence of at most 30 words for an engineer reviewing the pull request: what the call site does and why the verdict follows, in words only. Write no numbers at all: no digits, no number words, no percentages, and no model names or versions (say \"the current model\"). Offramp appends the measured numbers after your sentence. Name the tier as given in the facts.\n\nReply with one JSON object: {\"reason\": \"<the sentence>\"}."
+      },
+      {
+        "role": "user",
+        "content": "{\n \"call_site\": {\n  \"file\": \"helphub/summaries/summarize.py\",\n  \"function\": \"summarize_thread\",\n  \"task_type\": \"free_text\"\n },\n \"decision\": \"MIGRATE\",\n \"tier\": \"Super\",\n \"outcome\": \"reached parity with the references on the held-out cases; cheaper tiers did not\",\n \"adapter_changes\": [],\n \"holdout_failure_kinds\": [],\n \"closed_reference_compared\": false\n}"
+      }
+    ],
+    "params": {
+      "max_tokens": 300,
+      "temperature": 0.0,
+      "response_format": {
+        "type": "json_schema",
+        "json_schema": {
+          "name": "VerdictReason",
+          "schema": {
+            "properties": {
+              "reason": {
+                "maxLength": 400,
+                "title": "Reason",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason"
+            ],
+            "title": "VerdictReason",
+            "type": "object"
+          }
+        }
+      },
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "chatcmpl-b9ccfea4cba31873",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "content": "{\"reason\": \"The summarize_thread function generates free-text thread summaries using the current model, and migration to Super is warranted because it matched reference outputs while lower-cost options fell short.\"}",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1792431176,
+    "model": "nvidia/nemotron-3-super-120b-a12b",
+    "object": "chat.completion",
+    "system_fingerprint": "vllm-0.1.dev1+g5001743e3-dp2-9bbaa064",
+    "usage": {
+      "completion_tokens": 38,
+      "prompt_tokens": 311,
+      "total_tokens": 349,
+      "completion_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "prompt_tokens_details": {
+        "cached_tokens": 0,
+        "created_cache_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 311
+    }
+  },
+  "latency_ms": 1465,
+  "usage": {
+    "prompt_tokens": 311,
+    "completion_tokens": 38
+  },
+  "created_at": "2026-10-19T17:32:56.685578+00:00"
+}
