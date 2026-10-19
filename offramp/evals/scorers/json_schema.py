@@ -2,8 +2,9 @@
 
 A case passes when the candidate parses, validates, and at least FIELD_MATCH_MIN of the compared
 fields agree. "Compared fields" is the union of baseline and candidate leaf paths, so a missing key,
-a wrong value and an invented key each cost a field (key-set + value equality). The site rule,
-including "100% schema-valid", lives in aggregate.site_pass.
+a wrong value and an invented key each cost a field (key-set + value equality). `CaseScore.score` is
+that field match. The site rule (100% schema-valid, fraction of passing cases, mean field match, all
+against the configurable threshold) lives in aggregate.site_pass.
 """
 
 from __future__ import annotations

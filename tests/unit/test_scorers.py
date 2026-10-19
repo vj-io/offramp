@@ -201,7 +201,6 @@ TOOL_ROWS = [
     ("negative_str", [("f", {"v": -5})], [("f", {"v": "-5"})], True, None),
     ("nested_args", [("q", {"f": {"tags": ["A", "b"], "n": 1}})],
      [("q", {"f": {"n": 1.0, "tags": ["a", " B"]}})], True, None),
-    ("both_abstain", [], [], True, None),
     ("two_calls_in_order", [W, SET], [W, SET], True, None),
     # --- must fail
     ("wrong_tool", [W], [("get_forecast", dict(W[1]))], False, "wrong_tool"),
@@ -253,6 +252,25 @@ def test_tool_call_ignores_text_channel():
     base = ModelOutput(text="calling it", tool_calls=[ToolCall(name=W[0], arguments=W[1])])
     cand = ModelOutput(text=None, tool_calls=[ToolCall(name=W[0], arguments=W[1])])
     assert _run(tool_call, base, cand, contract).passed
+
+
+@pytest.mark.parametrize("baseline_text", [None, "I can answer directly: 42"], ids=["ref_blank", "ref_text"])
+@pytest.mark.parametrize(
+    "candidate_text,passed,category",
+    [
+        ("42, no tool needed", True, None),
+        (None, False, "empty_output"),
+        ("", False, "empty_output"),
+        (" \n\t", False, "empty_output"),
+    ],
+    ids=["answers", "none", "empty", "whitespace"],
+)
+def test_tool_call_abstention_needs_a_non_blank_candidate(baseline_text, candidate_text, passed, category):
+    # Neither side calls a tool: a truncated or blank candidate is not a correct abstention.
+    contract = Contract(task_type="tool_call", output="tool_call", tools=True)
+    got = _run(tool_call, _text(baseline_text), _text(candidate_text), contract)
+    assert (got.passed, got.error_category) == (passed, category)
+    assert got.score == (1.0 if passed else 0.0)
 
 
 # ------------------------------------------------------------------ reasoning
@@ -416,6 +434,42 @@ def test_thresholds_are_parameters_and_split_by_task_family():
     assert Thresholds() == Thresholds(threshold=0.95, reasoning_threshold=0.90)
 
 
+def _borderline(n: int, score: float = 0.95) -> list[CaseScore]:
+    """n json cases that each passed with the given field match."""
+    return [CaseScore(case_id=f"b{i}", passed=True, score=score) for i in range(n)]
+
+
+def test_json_site_rule_gates_the_mean_field_match():
+    # 19 cases at exactly the 0.95 per-case bar plus one with every value wrong: 95% of cases pass,
+    # but the mean field match is 0.9025, below the 95% the rule asks for.
+    scores = [*_borderline(19), CaseScore(case_id="f", passed=False, score=0.0, error_category="wrong_value")]
+    passed, score = site_pass("json_extraction", scores)
+    assert passed is False
+    assert score == pytest.approx(0.9025)
+
+
+def test_json_site_threshold_applies_to_the_mean_field_match():
+    scores = _borderline(20)  # every case has one wrong field in twenty
+    passed, score = site_pass("json_extraction", scores)
+    assert passed is True
+    assert score == pytest.approx(0.95)  # the reported score is the field-match rate, not "100% of cases"
+    stricter = [Thresholds(threshold=1.0), Thresholds(threshold=0.96), RunConfig(repo_url="x", threshold=1.0)]
+    for thresholds in stricter:
+        assert site_pass("json_extraction", scores, thresholds)[0] is False
+    assert site_pass("json_extraction", _borderline(20, 1.0), Thresholds(threshold=1.0)) == (True, 1.0)
+
+
+def test_json_site_rule_still_needs_the_fraction_of_passing_cases():
+    # mean field match 0.97, but half the cases are below the per-case bar
+    scores = [
+        *_borderline(10, 1.0),
+        *[CaseScore(case_id=f"f{i}", passed=False, score=0.94, error_category="x") for i in range(10)],
+    ]
+    passed, score = site_pass("json_extraction", scores)
+    assert passed is False
+    assert score == pytest.approx(0.97)
+
+
 def test_site_pass_counts_passed_flags_not_scores():
     scores = [CaseScore(case_id=str(i), passed=False, score=0.99) for i in range(10)]
     assert site_pass("classification", scores) == (False, 0.0)
@@ -461,9 +515,41 @@ def test_free_text_ignores_fraction_thresholds():
     assert got[0] is True
 
 
-def test_free_text_needs_a_baseline_judge_mean():
+@pytest.mark.parametrize(
+    "judge,passed",
+    [([4.0] * 3, True), ([4.5, 3.5], True), ([5.0] * 3, True), ([3.9] * 3, False), ([5, 5, 5, 1, 1], False)],
+    ids=["at_floor", "mean_at_floor", "perfect", "just_under_floor", "mean_under_floor"],
+)
+def test_free_text_without_a_reference_mean_applies_only_the_floor(judge, passed):
+    explicit_none = site_pass("free_text", _judge(*judge), Thresholds(), None)
+    for got in (site_pass("free_text", _judge(*judge)), explicit_none):
+        assert got[0] is passed
+        assert got[1] == pytest.approx(sum(judge) / len(judge))
+
+
+def test_a_reference_mean_adds_the_margin_on_top_of_the_floor():
+    assert site_pass("free_text", _judge(4.0, 4.0))[0] is True
+    assert site_pass("free_text", _judge(4.0, 4.0), baseline_judge_mean=4.3)[0] is True
+    assert site_pass("free_text", _judge(4.0, 4.0), baseline_judge_mean=4.4)[0] is False
+
+
+@pytest.mark.parametrize("bad", [50.0, 5.01, 0.99, 0.0, -1.0, float("nan"), float("inf")])
+def test_free_text_rejects_judge_scores_outside_the_rubric(bad):
+    with pytest.raises(ValueError, match="judge score"):
+        site_pass("free_text", _judge(5.0, 5.0, bad))
+    with pytest.raises(ValueError, match="judge score"):
+        site_pass("free_text", _judge(5.0, 5.0, bad), Thresholds(), 4.0)
+
+
+def test_free_text_accepts_the_rubric_endpoints():
+    assert site_pass("free_text", _judge(1.0, 5.0)) == (False, 3.0)
+    assert site_pass("free_text", _judge(5.0, 5.0)) == (True, 5.0)
+
+
+@pytest.mark.parametrize("bad", [0.0, 0.99, 5.01, float("nan")])
+def test_free_text_rejects_a_reference_mean_outside_the_rubric(bad):
     with pytest.raises(ValueError, match="baseline_judge_mean"):
-        site_pass("free_text", _judge(5.0))
+        site_pass("free_text", _judge(5.0), Thresholds(), bad)
 
 
 # ------------------------------------------------------------------ properties
@@ -477,7 +563,8 @@ def _random_scores(rng: random.Random) -> list[CaseScore]:
     for i in range(rng.randint(1, 40)):
         ok = rng.random() < rng.choice([0.5, 0.9, 0.97, 1.0])
         category = None if ok else rng.choice(_FAILURES)
-        out.append(CaseScore(case_id=f"c{i}", passed=ok, score=1.0 if ok else 0.0, error_category=category))
+        score = rng.choice([0.95, 0.97, 1.0]) if ok else rng.choice([0.0, 0.5, 0.9])  # json field matches
+        out.append(CaseScore(case_id=f"c{i}", passed=ok, score=score, error_category=category))
     return out
 
 
@@ -508,9 +595,10 @@ def test_raising_the_judge_baseline_never_flips_fail_to_pass():
         (Contract(task_type="classification", output="label", labels=["a", "b"]), _text("a"), _text("")),
         (Contract(task_type="json_extraction", output="json"), _text(BASE), _text("lorem ipsum")),
         (Contract(task_type="tool_call", output="tool_call", tools=True), _calls(W), _calls()),
+        (Contract(task_type="tool_call", output="tool_call", tools=True), _text("I can answer"), _text(None)),
         (Contract(task_type="reasoning", output="text"), _text("ANSWER: 42"), _text("I do not know")),
     ],
-    ids=["classification", "json_extraction", "tool_call", "reasoning"],
+    ids=["classification", "json_extraction", "tool_call", "tool_call_abstain", "reasoning"],
 )
 def test_garbage_candidate_cannot_pass_a_site(contract, baseline, garbage):
     scores = [score_case(_case(str(i)), baseline, garbage, contract) for i in range(20)]
@@ -522,3 +610,16 @@ def test_matching_candidate_passes_a_site_end_to_end():
     scores = [score_case(_case(str(i)), _text("a"), _text("A."), contract) for i in range(20)]
     scores[3] = score_case(_case("3"), _text("a"), _text("b"), contract)
     assert site_pass("classification", scores) == (True, 0.95)
+
+
+def test_json_site_rule_end_to_end_uses_the_field_match_rate():
+    contract = Contract(task_type="json_extraction", output="json", json_schema=ANY_OBJECT)
+    cases = [_case(str(i)) for i in range(20)]
+    one_wrong = [score_case(c, _text(_twenty()), _text(_twenty(k07=99)), contract) for c in cases]
+    assert all(c.passed and c.score == pytest.approx(0.95) for c in one_wrong)
+    assert site_pass("json_extraction", one_wrong)[0] is True
+    assert site_pass("json_extraction", one_wrong, Thresholds(threshold=1.0))[0] is False
+
+    all_wrong = score_case(_case("x"), _text(_twenty()), _text(json.dumps({k: -1 for k in TWENTY})), contract)
+    mixed = [*one_wrong[:19], all_wrong]
+    assert site_pass("json_extraction", mixed)[0] is False

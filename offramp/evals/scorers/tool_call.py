@@ -1,8 +1,10 @@
 """tool_call scorer (PRD §6.5): same tool calls, in order, with semantically equal arguments.
 
 Names compare exactly (they are identifiers). Arguments compare after normalisation: key order is
-irrelevant, strings are trimmed and casefolded, and "5" / 5 / 5.0 are one value. Lists stay ordered,
-extra or missing arguments are a miss, and the text channel is ignored.
+irrelevant, strings are trimmed and casefolded, and "5" / 5 / 5.0 are one value. Lists stay ordered
+and extra or missing arguments are a miss. The text channel is ignored, except when neither side calls a
+tool: then the candidate must have answered with some text, so a blank or truncated output is not scored
+as a correct abstention.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 from offramp.evals.scorers.json_schema import normalise
 from offramp.schemas import CaseScore, Contract, EvalCase, ModelOutput
 
+EMPTY_OUTPUT = "empty_output"  # neither side calls a tool and the candidate returned no text
 NO_TOOL_CALL = "no_tool_call"  # baseline called a tool, candidate called none
 WRONG_TOOL = "wrong_tool"  # different tool names, or a different number of calls
 WRONG_ARGS = "wrong_args"
@@ -24,6 +27,8 @@ def _fail(case: EvalCase, category: str, detail: str) -> CaseScore:
 def score(case: EvalCase, baseline: ModelOutput, candidate: ModelOutput, contract: Contract) -> CaseScore:
     want, got = baseline.tool_calls, candidate.tool_calls
     want_names, got_names = [c.name for c in want], [c.name for c in got]
+    if not want and not got and not (candidate.text or "").strip():
+        return _fail(case, EMPTY_OUTPUT, "neither side called a tool and the candidate returned no text")
     if want and not got:
         return _fail(case, NO_TOOL_CALL, f"expected {want_names}, candidate called no tool")
     if want_names != got_names:
