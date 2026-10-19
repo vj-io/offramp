@@ -19,7 +19,7 @@ make demo
 
 The replay plays the event log of a real run (scan, tier matrix, iterations, verdicts, PR) at 4x speed, gaps capped at 1.5 s. It runs in the browser from `web/public/replay/demo-events.json`, so it needs no backend, no Token Factory key and no network. `make test` runs the whole Python suite on recorded Token Factory responses, also without a key.
 
-Things to look at in the replay: the stage stepper, the sites x tiers heatmap, the verdict table (per call site either `MIGRATE` with the tier that passed, or `KEEP_CLOSED` with the reason), and the "Open PR" link on the report page.
+Things to look at in the replay: the stage stepper, the sites x tiers heatmap, the verdict table (per call site either `MIGRATE` with the tier that passed, or `KEEP_CLOSED` with the reason), and the "Open the pull request" link on the report page.
 
 ## What it does
 
@@ -46,7 +46,7 @@ flowchart LR
   ITER -.-> TF
   PATCH -.-> TF
   TF[("Nebius Token Factory<br/>NVIDIA Nemotron")]
-  EVAL -.-> JOBS["Nebius AI Cloud<br/>Serverless Jobs"]
+  EVAL -.-> JOBS["Nebius AI Cloud<br/>Serverless Jobs (optional path)"]
   VERDICT -.-> TAVILY["Tavily<br/>price and deprecation lookup"]
   API -.-> LS["LangSmith<br/>traces and datasets"]
   CASES -.-> TENDEM["Tendem<br/>human audit of references"]
@@ -90,10 +90,10 @@ What did not work smoothly is written up, with evidence, in [docs/FEEDBACK.md](d
 
 ### Other Nebius and partner services
 
-- **Nebius AI Cloud Serverless Jobs** run the eval matrix (`offramp/evals/serverless_job`, image `Dockerfile.eval`), submitted with the `nebius` CLI when `NEBIUS_PROJECT_ID` is set and the CLI is installed. Otherwise the same matrix runs on an in-process worker with identical output.
+- **Nebius AI Cloud Serverless Jobs** are an optional home for the eval matrix (`offramp/evals/serverless_job`, image `Dockerfile.eval`), submitted with the `nebius` CLI when `NEBIUS_PROJECT_ID` is set and the CLI is installed. That path is built and tested against a fake `nebius` CLI, but it has not been run on a live AI Cloud account (the Token Factory balance cannot fund jobs, see [docs/FEEDBACK.md](docs/FEEDBACK.md)); by default the same matrix runs on an in-process worker with identical output.
 - **Tavily** looks up each source model's published price and deprecation notices at run time. The price feeds the "before" cost, shown as an estimate with its source URL and date; a deprecation notice becomes a sunset-risk badge. A price is accepted only if it is printed on the cited page next to that model's name, otherwise the run falls back to `offramp/evals/pricing.yaml` and says so.
 - **LangSmith** (when `LANGSMITH_API_KEY` is set) traces every Token Factory call under `offramp-<run_id>` and keeps each site's cases and references as a dataset, with experiments per tier and split.
-- **Tendem** (by Toloka) is used for human audit of references through `scripts/audit_references.py`; each paid task needs explicit approval of its quoted price.
+- **Tendem** (by Toloka): `scripts/audit_references.py` builds human-audit tasks for flagged references and ingests the verdicts; each paid task needs explicit approval of its quoted price.
 - **Toloka** has no API on its current platform, so it is not integrated.
 
 ## How parity is measured
@@ -127,7 +127,7 @@ make install
 | `TAVILY_API_KEY` | Price and deprecation lookup; without it prices come from `pricing.yaml` |
 | `LANGSMITH_API_KEY`, `LANGSMITH_TRACING`, `LANGSMITH_PROJECT` | Tracing and datasets |
 | `TENDEM_API_KEY` | Human audit of references |
-| `NEBIUS_PROJECT_ID`, `OFFRAMP_EVAL_IMAGE` | Run the eval matrix as a Serverless Job instead of locally |
+| `NEBIUS_PROJECT_ID`, `OFFRAMP_EVAL_IMAGE` | Submit the eval matrix as a Serverless Job instead of running it locally (needs an AI Cloud account) |
 | `OFFRAMP_DATA_DIR`, `OFFRAMP_RATE_LIMIT_PER_MIN`, `OFFRAMP_WEB_ORIGIN` | API data directory, rate limit on `POST /api/runs`, allowed web origin for CORS |
 | `*_FALLBACK` (Nebius, Tavily, LangSmith, Tendem) | Second key, used for the rest of the process when the primary is rejected or out of credit; the switch is logged without the key |
 
@@ -165,7 +165,7 @@ The image serves the API only; the dashboard in `web/` deploys separately. `Dock
 ```bash
 make help       # all targets
 make ci         # ruff, pytest with the coverage gate, web lint, test and build: what CI runs
-make live       # re-record cassettes against Token Factory (needs NEBIUS_API_KEY, spends credit)
+make live       # delete the recorded cassettes, then re-record them against Token Factory (needs NEBIUS_API_KEY, spends credit; git checkout tests/fixtures/cassettes restores)
 ```
 
 - Python 3.12, `uv`, ruff; tests under `tests/{unit,agents,harness,integration,e2e}`. Tests marked `live` run only with `--live`.

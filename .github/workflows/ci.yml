@@ -16,6 +16,7 @@ jobs:
   python:
     name: ruff + pytest (coverage >= 70% on offramp/)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.0
@@ -30,6 +31,7 @@ jobs:
   web:
     name: web test + lint + build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: web
@@ -51,6 +53,7 @@ jobs:
   gitleaks:
     name: gitleaks (full history)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -64,6 +67,7 @@ jobs:
   docker:
     name: API image builds
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - run: docker build -t offramp-api .

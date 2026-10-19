@@ -1,8 +1,9 @@
 name: Nightly live check
 
 # Re-records the cassettes against the real Token Factory and fails when the API's answers no longer
-# satisfy our parsers (schema drift). Spends a few cents of Token Factory credit per run, and only
-# runs when the repository has a NEBIUS_API_KEY secret; without it the live job is skipped.
+# satisfy our parsers (schema drift). It spends Token Factory credit on every run, so it runs only when the
+# repository has a NEBIUS_API_KEY secret; without it the live job is skipped. The fallback key is
+# deliberately not forwarded: a nightly must never spend the reserve key.
 on:
   schedule:
     - cron: "17 3 * * *"
@@ -14,6 +15,7 @@ permissions:
 jobs:
   check-secret:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       has_key: ${{ steps.key.outputs.has_key }}
     steps:
@@ -32,12 +34,12 @@ jobs:
     needs: check-secret
     if: needs.check-secret.outputs.has_key == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       issues: write
     env:
       NEBIUS_API_KEY: ${{ secrets.NEBIUS_API_KEY }}
-      NEBIUS_API_KEY_FALLBACK: ${{ secrets.NEBIUS_API_KEY_FALLBACK }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.0
@@ -49,17 +51,7 @@ jobs:
       # Cache hits are free, so with the committed cassettes `pytest --live` would call nothing.
       # Drop the recorded (non-synthetic) responses in this checkout so the recorders really call Token Factory.
       - name: Remove recorded cassettes
-        run: |
-          uv run python - <<'EOF'
-          import json, pathlib
-          removed = 0
-          for p in pathlib.Path("tests/fixtures/cassettes").rglob("*.json"):
-              d = json.loads(p.read_text())
-              if isinstance(d, dict) and {"request", "response"} <= d.keys() and not d.get("synthetic"):
-                  p.unlink()
-                  removed += 1
-          print(f"removed {removed} recorded cassettes")
-          EOF
+        run: make cassettes-clear
 
       - name: pytest --live (recorders only)
         run: uv run pytest --live -m live -q
@@ -69,9 +61,10 @@ jobs:
         run: |
           {
             echo '### Cassette changes after the live run'
-            echo 'D = committed cassette no current recorder reproduces (stale request), ?? = a request the committed set lacks.'
+            echo 'M = re-recorded (timestamps and latency always differ), D = committed cassette no current recorder reproduces (stale request), ?? = a request the committed set lacks.'
             echo '```'
-            git status --short tests/fixtures/cassettes | head -80
+            git status --short tests/fixtures/cassettes | cut -c1-2 | sort | uniq -c
+            git status --short tests/fixtures/cassettes | grep -v '^ M' | head -60 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -91,5 +84,5 @@ jobs:
           if [ "$open" = "0" ]; then
             gh issue create \
               --title "Nightly live check failed ($(date -u +%F))" \
-              --body "Token Factory answers no longer satisfy the recorders: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. The re-recorded cassettes are attached to that run as live-cassettes."
+              --body "The nightly live check failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Causes to rule out, in order: an outage or a quota or credit problem (a 4xx or 5xx in the log), then a change in Token Factory's answers that the recorders no longer accept. The re-recorded cassettes are attached to that run as live-cassettes."
           fi

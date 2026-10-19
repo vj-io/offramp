@@ -1,14 +1,15 @@
 .DEFAULT_GOAL := help
-.PHONY: help install lint test cov web-test web-build ci api web demo live docker
+.PHONY: help install lint test cov web-test web-build ci api web demo cassettes-clear live docker
 
 API_PORT ?= 8000
 WEB_PORT ?= 3000
 # Read .env for the server when it exists. Replay needs no keys, so a missing .env is fine.
 UV_RUN := uv run $(if $(wildcard .env),--env-file .env,)
-OPEN := $(shell command -v open 2>/dev/null || command -v xdg-open 2>/dev/null)
+# xdg-open first; `open` only on macOS (on Debian and Ubuntu `open` is openvt, which is not a browser launcher).
+OPEN := $(shell command -v xdg-open 2>/dev/null || { [ "$$(uname -s)" = Darwin ] && command -v open; } 2>/dev/null)
 
 help: ## List the targets
-	@awk -F':.*## ' '/^[a-z-]+:.*## /{printf "  make %-10s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk -F':.*## ' '/^[a-z-]+:.*## /{printf "  make %-16s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 install: ## Install Python (uv) and web (pnpm) dependencies
 	uv sync
@@ -45,11 +46,15 @@ demo: install ## One command, no keys: install, start API + web, open the record
 	(cd web && NEXT_PUBLIC_API_URL=http://localhost:$(API_PORT) pnpm dev --port $(WEB_PORT)) & \
 	for i in $$(seq 1 90); do curl -fs -o /dev/null http://localhost:$(WEB_PORT)/ && break; sleep 1; done; \
 	URL="http://localhost:$(WEB_PORT)/runs/demo?replay=demo"; \
-	if [ -n "$(OPEN)" ]; then $(OPEN) "$$URL"; else echo "Open $$URL"; fi; \
+	echo "Replay: $$URL"; \
+	if [ -n "$(OPEN)" ]; then $(OPEN) "$$URL"; fi; \
 	wait
 
-live: ## Re-record cassettes against Token Factory (needs NEBIUS_API_KEY; spends credit)
-	$(UV_RUN) pytest --live -q
+cassettes-clear: ## Delete the recorded (non-synthetic) cassettes, so --live must call Token Factory
+	uv run python -c 'import json, pathlib; ps = [p for p in pathlib.Path("tests/fixtures/cassettes").rglob("*.json") if isinstance(d := json.loads(p.read_text()), dict) and {"request", "response"} <= d.keys() and not d.get("synthetic")]; [p.unlink() for p in ps]; print(f"removed {len(ps)} recorded cassettes")'
+
+live: cassettes-clear ## Re-record the cassettes against Token Factory (needs NEBIUS_API_KEY, spends credit)
+	$(UV_RUN) pytest --live -m live -q
 
 docker: ## Build the API image
 	docker build -t offramp-api .
