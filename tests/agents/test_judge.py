@@ -218,11 +218,27 @@ def test_nothing_to_judge_makes_no_call():
     assert fake.calls == [] and result.scores[0].candidate == 1.0
 
 
-def test_case_the_judge_left_out_is_a_judge_failure_not_a_score():
+def test_case_the_judge_left_out_twice_is_a_judge_failure_not_a_score():
     cases = [_case(1), _case(2)]
-    fake = FakeLLM().add(JUDGE_ROLE, {"scores": [_single(2, _r(5, 5, 5))]})
+    fake = FakeLLM().add(JUDGE_ROLE, {"scores": [_single(2, _r(5, 5, 5))]}, {"scores": []})
     with pytest.raises(ProviderError, match="cs_04:001"):
         judge(fake, cases, {c.id: ModelOutput(text="x") for c in cases})
+    assert len(fake.calls) == 2
+
+
+def test_a_case_the_judge_skipped_is_asked_again_alone():
+    """Live: an Ultra batch skipped one Japanese case; the run must not fail on a judge's omission."""
+    cases = [_case(1), _case(2), _case(3)]
+    fake = FakeLLM().add(
+        JUDGE_ROLE,
+        {"scores": [_single(1, _r(5, 5, 5)), _single(3, _r(2, 2, 2))]},
+        {"scores": [_single(1, _r(4, 4, 4))]},  # the re-ask numbers its one case 1
+    )
+    result = judge(fake, cases, {c.id: ModelOutput(text="x") for c in cases})
+    assert len(fake.calls) == 2
+    again = _user_prompt(fake.calls[1])  # only the skipped case (case 2) is asked again
+    assert "question #2" in again and "question #1" not in again and "question #3" not in again
+    assert [s.candidate for s in result.scores] == [5.0, 4.0, 2.0]
 
 
 @pytest.mark.parametrize(
@@ -258,6 +274,7 @@ def test_pairwise_ordering_the_judge_skipped_raises():
         JUDGE_ROLE,
         {"scores": [_pair(1, _r(5, 5, 5), _r(5, 5, 5))]},
         {"scores": []},  # B/A ordering never scored the case
+        {"scores": []},  # nor when asked again about it alone
     )
     with pytest.raises(ProviderError, match="cs_04:001"):
         judge(fake, [case], {case.id: ModelOutput(text="c")}, {case.id: ModelOutput(text="r")})

@@ -139,10 +139,13 @@ def _prompt(items: list[tuple[EvalCase, str, str | None]]) -> str:
     return "\n\n".join(blocks)
 
 
-def _ask(client: LLM, items: list[tuple[EvalCase, str, str | None]], paired: bool) -> dict[int, Any]:
+def _ask(
+    client: LLM, items: list[tuple[EvalCase, str, str | None]], paired: bool, again: bool = True
+) -> dict[int, Any]:
     """One batched Ultra call: {1-based case number: item} with every case of the batch scored, or
-    ProviderError. (TFClient's one repair retry applies on the json_object path; with json_schema the
-    reply is decoded against the schema.)"""
+    ProviderError. A batch reply that skips cases is asked once more about just those cases (a new
+    request, so not the cached reply); still skipped is ProviderError. (TFClient's one repair retry
+    applies on the json_object path; with json_schema the reply is decoded against the schema.)"""
     try:
         result = client.chat(
             role=JUDGE_ROLE,
@@ -164,9 +167,13 @@ def _ask(client: LLM, items: list[tuple[EvalCase, str, str | None]], paired: boo
     for item in result.parsed.scores:
         if 1 <= item.case <= len(items):
             by_case.setdefault(item.case, item)  # first entry wins
-    missing = [case.id for n, (case, _, _) in enumerate(items, 1) if n not in by_case]
-    if missing:
-        raise ProviderError(f"judge: left {len(missing)} case(s) unscored: {', '.join(missing)}")
+    missing = [n for n in range(1, len(items) + 1) if n not in by_case]
+    if missing and again:
+        retried = _ask(client, [items[n - 1] for n in missing], paired, again=False)
+        by_case.update({missing[k - 1]: item for k, item in retried.items()})
+    elif missing:
+        ids = ", ".join(items[n - 1][0].id for n in missing)
+        raise ProviderError(f"judge: left {len(missing)} case(s) unscored: {ids}")
     return by_case
 
 
