@@ -1,0 +1,402 @@
+{
+  "_comment": "scan_repo(offramp-demo-app @ 2e746d9) output from the Task 3 scanner (wave1/task-3 c3a03da); contracts set by hand per the PLAN Task 2 table, not by the labeller. schemas: OrderFields.model_json_schema() from the demo repo.",
+  "sites": [
+    {
+      "id": "cs_01",
+      "file": "helphub/inbox/triage.py",
+      "lines": [
+        31,
+        39
+      ],
+      "kind": "chat",
+      "sdk": "openai",
+      "call": "client.chat.completions.create",
+      "function": "triage_ticket",
+      "source_model": "gpt-4o-mini",
+      "prompt_source": "fstring",
+      "prompt_ref": "TRIAGE_SYSTEM_PROMPT",
+      "template": {
+        "system": "You are the ticket router for HelpHub, a customer support platform.\nClassify the customer's ticket into exactly one queue:\n\n- billing: charges, invoices, payment methods, subscription pricing\n- shipping: delivery status, tracking, delays, lost parcels, address changes\n- returns_refunds: returns, exchanges, damaged or wrong items, refund requests\n- technical_support: bugs, errors, integrations, API and webhook problems\n- account_access: login, password reset, two-factor, locked or compromised accounts\n- general: anything else, including feedback, partnerships and sales questions\n\nReply with the queue name only, exactly one of: billing, shipping, returns_refunds, technical_support, account_access, general. No punctuation, no explanation.",
+        "user": "Subject: {subject}\n\n{body}",
+        "variables": [
+          "subject",
+          "body"
+        ]
+      },
+      "params": {
+        "max_tokens": 16,
+        "temperature": 0
+      },
+      "contract": {
+        "task_type": "classification",
+        "output": "label",
+        "labels": [
+          "billing",
+          "shipping",
+          "returns_refunds",
+          "technical_support",
+          "account_access",
+          "general"
+        ]
+      },
+      "confidence": 1.0,
+      "flags": []
+    },
+    {
+      "id": "cs_02",
+      "file": "helphub/ops/agent_step.py",
+      "lines": [
+        73,
+        89
+      ],
+      "kind": "chat",
+      "sdk": "anthropic",
+      "call": "client.messages.create",
+      "function": "next_action",
+      "source_model": "claude-sonnet-4-5",
+      "prompt_source": "fstring",
+      "prompt_ref": "AGENT_SYSTEM_PROMPT",
+      "template": {
+        "system": "You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\n\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve.",
+        "user": "Customer message:\n{ticket_text}\n\nTool results so far:\n{steps}\n\nChoose the next tool.",
+        "variables": [
+          "ticket_text",
+          "steps"
+        ]
+      },
+      "params": {
+        "tools": [
+          {
+            "name": "lookup_order",
+            "description": "Fetch an order's status, items, total and charges from the order system.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "order_id": {
+                  "type": "string",
+                  "description": "Order id, e.g. HH-48213"
+                }
+              },
+              "required": [
+                "order_id"
+              ]
+            }
+          },
+          {
+            "name": "issue_refund",
+            "description": "Refund part or all of an order to the original payment method.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "order_id": {
+                  "type": "string",
+                  "description": "Order id, e.g. HH-48213"
+                },
+                "amount": {
+                  "type": "number",
+                  "description": "Refund amount, at most 200.00"
+                },
+                "currency": {
+                  "type": "string",
+                  "description": "ISO 4217 code of the order"
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "damaged",
+                    "missing_item",
+                    "duplicate_charge",
+                    "other"
+                  ]
+                }
+              },
+              "required": [
+                "order_id",
+                "amount",
+                "currency",
+                "reason"
+              ]
+            }
+          },
+          {
+            "name": "escalate_to_human",
+            "description": "Hand the ticket to a human support agent.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "description": "One sentence for the human agent"
+                },
+                "priority": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "normal",
+                    "urgent"
+                  ]
+                }
+              },
+              "required": [
+                "reason",
+                "priority"
+              ]
+            }
+          }
+        ],
+        "tool_choice": {
+          "type": "any"
+        },
+        "max_tokens": 512,
+        "system": "You are HelpHub's order-support agent. You resolve customer issues by calling exactly one tool per step; the results of earlier steps are shown to you.\n\n- lookup_order: use when you need order details (status, items, total, charges) that you do not have yet. Only use an order id that appears in the customer's message.\n- issue_refund: use only after the order has been looked up and the customer is eligible: the item arrived damaged or missing, or the customer was charged twice. Refund no more than the amount paid, and never more than 200.00 in one step.\n- escalate_to_human: use for legal threats, fraud or chargeback claims, refunds above 200.00, abusive messages, requests without any order id, and anything the other tools cannot resolve."
+      },
+      "contract": {
+        "task_type": "tool_call",
+        "output": "tool_call",
+        "tools": true
+      },
+      "confidence": 1.0,
+      "flags": []
+    },
+    {
+      "id": "cs_03",
+      "file": "helphub/orders/extract.py",
+      "lines": [
+        47,
+        57
+      ],
+      "kind": "chat",
+      "sdk": "anthropic",
+      "call": "client.messages.create",
+      "function": "extract_order",
+      "source_model": "claude-sonnet-4-5",
+      "prompt_source": "fstring",
+      "prompt_ref": "EXTRACT_SYSTEM_PROMPT",
+      "template": {
+        "system": "You extract structured order data from customer support emails.\nReply with a single JSON object that validates against the JSON schema given in the user message.\nUse null for any field the email does not state; never guess.\nWrite dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot\nas the decimal separator. Keep names exactly as written. The email may be in any language.\nDo not wrap the JSON in markdown and do not add any commentary.",
+        "user": "JSON schema:\n<pydantic:OrderFields>\n\nEmail:\n{email}",
+        "variables": [
+          "email"
+        ]
+      },
+      "params": {
+        "max_tokens": 1024,
+        "system": "You extract structured order data from customer support emails.\nReply with a single JSON object that validates against the JSON schema given in the user message.\nUse null for any field the email does not state; never guess.\nWrite dates as YYYY-MM-DD, currencies as ISO 4217 codes, and amounts as plain numbers with a dot\nas the decimal separator. Keep names exactly as written. The email may be in any language.\nDo not wrap the JSON in markdown and do not add any commentary."
+      },
+      "contract": {
+        "task_type": "json_extraction",
+        "output": "json"
+      },
+      "confidence": 1.0,
+      "flags": []
+    },
+    {
+      "id": "cs_04",
+      "file": "helphub/qa/rag_answer.py",
+      "lines": [
+        24,
+        35
+      ],
+      "kind": "chat",
+      "sdk": "openai",
+      "call": "client.chat.completions.create",
+      "function": "answer_question",
+      "source_model": "gpt-4o",
+      "prompt_source": "fstring",
+      "prompt_ref": "RAG_SYSTEM_PROMPT",
+      "template": {
+        "system": "You are HelpHub's support assistant. Answer the customer's question using only the knowledge-base excerpts provided in the user message.\n\n- Cite every fact with the excerpt id in square brackets, for example [refund-policy].\n- If the excerpts do not answer the question, say you do not have that information and offer to connect the customer with a human agent. Do not guess.\n- Reply in the language the customer wrote in, in at most 120 words.",
+        "user": "Knowledge-base excerpts:\n{excerpts}\n\nCustomer question: {question}",
+        "variables": [
+          "excerpts",
+          "question"
+        ]
+      },
+      "params": {
+        "max_tokens": 400,
+        "temperature": 0.2
+      },
+      "contract": {
+        "task_type": "free_text",
+        "output": "text"
+      },
+      "confidence": 1.0,
+      "flags": []
+    },
+    {
+      "id": "cs_05",
+      "file": "helphub/refunds/plan.py",
+      "lines": [
+        68,
+        89
+      ],
+      "kind": "chat",
+      "sdk": "openai",
+      "call": "client.chat.completions.create",
+      "function": "plan_refund",
+      "source_model": "o3",
+      "prompt_source": "fstring",
+      "prompt_ref": "REFUND_POLICY",
+      "template": {
+        "system": "You compute subscription refunds for HelpHub billing. Follow this policy exactly, step by step, and show your arithmetic.\n\n1. Tiered price. The list price is in USD per seat per billing period. Seats are priced in graduated tiers: seats 1-10 cost 100% of list price, seats 11-50 cost 85%, seats 51 and above cost 70%. Subtotal = sum over the tiers of (seats in that tier x list price x tier rate). Round the subtotal to 2 decimals, half up.\n2. Coupon. Take the coupon percentage off the subtotal and round to 2 decimals, half up. The result is the USD amount paid for the period.\n3. Days used. Days used = the number of days from the period start date to the cancellation date, counting both dates. Unused days = billing period days - days used, never below 0.\n4. Refundable amount in USD. If the billing period is 365 days and days used is 14 or fewer, the refundable amount is the full amount paid. Otherwise, prorated = amount paid x unused days / billing period days, rounded to 2 decimals half up; then subtract a 3% processing fee on the prorated amount, rounded to 2 decimals half up. The fee is not charged on a full refund.\n5. Prior refunds. Subtract the USD refunds already issued from the refundable amount. If the result is negative, it is 0.\n6. Currency. Multiply by the exchange rate recorded at purchase (units of the customer's currency per 1 USD) and round half up to the currency's minor unit: 2 decimals for USD, EUR and GBP, 0 decimals for JPY.\n7. Show your working, then put the final refund in the customer's currency alone on the last line as `ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator).",
+        "user": "Plan: {request_plan_name}, billing period {request_period_days} days\nList price: {request_list_price_usd} USD per seat per period\nSeats: {request_seats}\nPeriod start: {request_period_start}\nCancelled on: {request_cancel_date}\nCoupon: {request_coupon_pct}% off\nRefunds already issued: {request_prior_refund_usd} USD\nCustomer paid in {request_currency} at {request_fx_rate} {request_currency} per 1 USD\n\nHow much do we refund, in {request_currency}?",
+        "variables": [
+          "request_plan_name",
+          "request_period_days",
+          "request_list_price_usd",
+          "request_seats",
+          "request_period_start",
+          "request_cancel_date",
+          "request_coupon_pct",
+          "request_prior_refund_usd",
+          "request_currency",
+          "request_fx_rate"
+        ]
+      },
+      "params": {
+        "max_completion_tokens": 16000
+      },
+      "contract": {
+        "task_type": "reasoning",
+        "output": "text",
+        "reasoning_heavy": true
+      },
+      "confidence": 1.0,
+      "flags": []
+    },
+    {
+      "id": "cs_06",
+      "file": "helphub/summaries/summarize.py",
+      "lines": [
+        16,
+        26
+      ],
+      "kind": "chat",
+      "sdk": "anthropic",
+      "call": "client.messages.create",
+      "function": "summarize_thread",
+      "source_model": "claude-haiku-4-5",
+      "prompt_source": "fstring",
+      "prompt_ref": "SUMMARY_SYSTEM_PROMPT",
+      "template": {
+        "system": "You write handoff notes for HelpHub support agents taking over a ticket.\nSummarise the thread in English, in at most 120 words, with three labelled parts:\nIssue, Tried so far, Next step.\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\nMention internal notes only as \"internal note\"; their wording is for agents, never the customer.",
+        "user": "Ticket thread, {len_messages} messages:\n\n{transcript}",
+        "variables": [
+          "len_messages",
+          "transcript"
+        ]
+      },
+      "params": {
+        "max_tokens": 400,
+        "system": "You write handoff notes for HelpHub support agents taking over a ticket.\nSummarise the thread in English, in at most 120 words, with three labelled parts:\nIssue, Tried so far, Next step.\nQuote order ids and amounts exactly as written. Skip greetings and pleasantries.\nMention internal notes only as \"internal note\"; their wording is for agents, never the customer."
+      },
+      "contract": {
+        "task_type": "free_text",
+        "output": "text"
+      },
+      "confidence": 1.0,
+      "flags": []
+    }
+  ],
+  "schemas": {
+    "OrderFields": {
+      "properties": {
+        "order_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Order id such as HH-48213, null if not stated",
+          "title": "Order Id"
+        },
+        "customer_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Full name of the customer as written",
+          "title": "Customer Name"
+        },
+        "customer_email": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Customer's email address",
+          "title": "Customer Email"
+        },
+        "order_date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Order date as YYYY-MM-DD, null if not stated",
+          "title": "Order Date"
+        },
+        "total_amount": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Order total as a plain number, no symbol",
+          "title": "Total Amount"
+        },
+        "currency": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "ISO 4217 currency code, e.g. EUR",
+          "title": "Currency"
+        },
+        "issue": {
+          "enum": [
+            "damaged",
+            "missing_item",
+            "wrong_item",
+            "late_delivery",
+            "billing_error",
+            "other"
+          ],
+          "title": "Issue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "order_id",
+        "customer_name",
+        "customer_email",
+        "order_date",
+        "total_amount",
+        "currency",
+        "issue"
+      ],
+      "title": "OrderFields",
+      "type": "object"
+    }
+  }
+}
