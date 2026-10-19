@@ -1,8 +1,8 @@
 # Feedback: Nebius Token Factory, NVIDIA Nemotron, and the other services we used
 
-Written while building Offramp (Nebius x NVIDIA Global AI Hackathon, 2026-10-19 onward). Offramp runs Nemotron 3.5 Lightning, Nemotron 3 Super and Nemotron 3 Ultra on Token Factory for every agent and as the models under test, so these notes come from real calls, not a reading of the docs. Each item says what we did, what broke or surprised us, how we worked around it, and what we would ask for.
+Written while building Offramp (Nebius x NVIDIA Global AI Hackathon, 2026-10-19 onward). Offramp runs Nemotron 3 Super and Nemotron 3 Ultra on Token Factory as its agents, and Nemotron 3.5 Lightning, Super and Ultra as the models under test, so these notes come from real calls, not a reading of the docs. Each item says what we did, what broke or surprised us, how we worked around it, and what we would ask for.
 
-Evidence paths: `docs/`, `tests/` and `scripts/` are in this repo and replay offline (`uv run pytest -q`). Paths starting `build-log/` are the per-task reports kept in `.superpowers/sdd/PLAN/` (outside git). Every probe row is a single call at `temperature=0`, so read the numbers as observations, not benchmarks.
+Evidence paths are all in this repo. Recorded responses and tests replay offline (`uv run pytest -q`); where the only record of a live call is the project's build log, a plain-text extract is committed under `docs/evidence/`. Every probe row is a single call at `temperature=0`, so read the numbers as observations, not benchmarks.
 
 | # | Item | Where it bit us | Our workaround |
 |---|---|---|---|
@@ -16,6 +16,10 @@ Evidence paths: `docs/`, `tests/` and `scripts/` are in this repo and replay off
 | 8 | Super escapes code badly inside JSON | patch writing, fixture mapping | plain-text edit blocks, decode escapes |
 | 9 | Ultra followed an instruction inside the input | blind reference audit | audit disagreements are dropped |
 | 10 | Tavily answers picked other models' prices | price lookup | verify on the cited page |
+| 11 | Token Factory credits cannot fund AI Cloud Serverless Jobs | eval matrix on Nebius | local worker, job path tested against a fake CLI |
+| 12 | A fresh CLI profile lists no tenant, with no hint why | AI Cloud setup | open the console once |
+| 13 | `iam v2 project list --all` fails with an invalid `parentId` | AI Cloud setup | none found |
+| 14 | Console onboarding created a project in each of 9 regions | AI Cloud setup | none |
 
 ## Token Factory API behaviour
 
@@ -33,7 +37,7 @@ Lightning with `response_format=json_schema`, `max_tokens=400` and thinking on r
 
 - Workaround: thinking off for structured calls; when thinking is on, at least 2000 tokens of budget.
 - Ask: a separate reasoning budget (for example `max_reasoning_tokens`), or at least a `finish_reason` that says the reasoning ate the answer's budget, plus the partial `reasoning_content`.
-- Evidence: `docs/plan/tf-probe.md` (rows `lightning/json_schema`, `super/json_schema`, `ultra/json_schema`); `build-log/task-10-report.md` (Decision 7 and the live-calls table).
+- Evidence: `docs/plan/tf-probe.md` (rows `lightning/json_schema`, `super/json_schema`, `ultra/json_schema`); `docs/evidence/live-observations.md` (E1, the patch-writer rounds).
 
 ### 3. Lightning put reasoning prose into `content`
 
@@ -49,7 +53,7 @@ On the demo app's tool-calling agent step (cs_02), Lightning with `tool_choice="
 
 - Workaround: `build_request` sends `"auto"` to Lightning when the source code said `"required"`, and the PR flags the substitution (`lightning_tool_choice_auto`).
 - Ask: fix the stop condition for forced tool calls on Lightning, or reject the combination with a 400.
-- Evidence: `tests/agents/test_adapter.py::test_required_tool_choice_on_token_factory` and the cassettes in `tests/fixtures/cassettes/adapter/`; `build-log/task-6-report.md` ("Live findings").
+- Evidence: `tests/agents/test_adapter.py::test_required_tool_choice_on_token_factory` (the looping and the no-effect of `parallel_tool_calls=false`, with the markup visible in two of the cassettes in `tests/fixtures/cassettes/adapter/`) and `test_adapted_requests_run_on_token_factory[cs_02]` (`"auto"` gives one correct call).
 
 ### 5. `reasoning_effort="low"` has a different effect on each tier
 
@@ -69,15 +73,15 @@ The catalogue spells the three models we use three different ways: `nvidia/Nemot
 
 ### 7. The Token Factory price page is login-gated
 
-`nebius.com/token-factory/prices` redirects to a login-gated organisation page, so a script, a judge or a reader without an account cannot confirm the list prices. We could corroborate only Super's price, through third-party aggregators; the Ultra and Lightning prices came from the hackathon brief and are marked `unverified-list-price` in our price file until they can be checked.
+`nebius.com/token-factory/prices` redirects to a login-gated organisation page, so a script, a judge or a reader without an account cannot confirm the list prices. We could corroborate only Super's price, through third-party aggregators; the Ultra and Lightning prices came from the project PRD (`docs/PRD.md`, section 1) and are marked `unverified-list-price` in our price file until they can be checked.
 
 - Ask: a public, machine-readable price list (a page or a `prices` field on `/v1/models`).
-- Evidence: `offramp/evals/pricing.yaml` (entries for the three tiers and their notes); `build-log/task-1-report.md` ("Pricing").
+- Evidence: `offramp/evals/pricing.yaml` (entries for the three tiers and their notes).
 
 ## What worked well on Token Factory
 
-- **`json_schema` and function tools on all three tiers**, with `strict: true` schemas. A strict `OrderFields` schema on Lightning with thinking off extracted a German order email correctly. Evidence: `docs/plan/tf-probe.md` (rows `*/json_schema`, `*/tools`), `tests/fixtures/cassettes/adapter/`.
-- **Ultra as judge.** On 20 classification tickets we wrote, with a mix of correct, wrong and badly formatted answers, the Ultra judge agreed with the deterministic label scorer on 19 of 20, and its position-swap consistency was 100%. The one disagreement was `"Billing."`: the scorer forgives the trailing period, the judge took 2 points off for format. Evidence: `tests/harness/test_judge_sanity.py` and `tests/fixtures/cassettes/judge/`.
+- **`json_schema` and function tools on all three tiers**, with `strict: true` schemas. A strict `OrderFields` schema on Lightning with thinking off extracted a German order email correctly. Evidence: `docs/plan/tf-probe.md` (rows `*/json_schema`, `*/tools`), `tests/agents/test_adapter.py::test_adapted_requests_run_on_token_factory[cs_03]` and its cassette.
+- **Ultra as judge.** On 20 classification tickets we wrote, with a mix of correct, wrong and badly formatted answers, the Ultra judge agreed with the deterministic label scorer on 19 of 20, and its position-swap consistency was 100%. The one disagreement was `"Billing."`: the scorer forgives the trailing period, the judge took 2 points off for format. Evidence: `docs/evidence/judge-sanity.md` (reproduces the figures offline from `tests/fixtures/cassettes/judge/`), `tests/harness/test_judge_sanity.py`.
 - **One OpenAI-compatible endpoint for all tiers**, so the tier matrix is three model ids and the client is the stock OpenAI SDK.
 
 ## NVIDIA Nemotron model behaviour
@@ -87,7 +91,7 @@ The catalogue spells the three models we use three different ways: `nvidia/Nemot
 Two related findings. (a) Asked for patch edits as JSON, Super wrote Python escapes as real newlines inside the JSON strings, which broke the JSON: 3 of 5 call-site patches were lost to this in the first live round. We switched that agent to plain-text SEARCH/REPLACE blocks. (b) Asked to map fixture fields onto prompt placeholders, Super copied source-code escapes as the two characters `\` and `n` instead of a newline, so the rendered prompt differed from what the app really sends. That was one of three causes behind 21 mismatched fixture renders and 2 rejected mappings in the first run; we now decode string-literal escapes in code and check every render.
 
 - Ask: guidance on `json_schema` with code-like or newline-heavy string values, and whether a plain-text mode is preferred for edits.
-- Evidence: `build-log/task-10-report.md` (Decision 6 and the live-calls table); `build-log/task-7-report.md` (Decision 5a and "Demo render parity").
+- Evidence: `docs/evidence/live-observations.md` (E1 for the patch writer, E2 for the fixture mapping).
 
 ### 9. Ultra followed an instruction embedded in the input
 
@@ -95,7 +99,7 @@ For the blind audit of seed references, Ultra (thinking on) answers each input w
 
 - Workaround: audit disagreements are dropped or sent to human audit; the main auditor is a different model family, so Nemotron never grades its own gold.
 - Ask: published guidance on instruction-following priority between a system prompt and instructions inside user data.
-- Evidence: `build-log/task-7-report.md` ("What the recorded mini-repo dataset looks like").
+- Evidence: `docs/evidence/live-observations.md` (E3); the rule that Nemotron never grades its own gold is in `docs/plan/PLAN.md` (Global Constraint 27).
 
 ### 10. Super invented a schema reference in a free-form JSON field
 
@@ -107,19 +111,45 @@ When labelling a call site whose prompt only held a placeholder for a Pydantic s
 
 ### Tavily: answers and domain filters (for the Best Use of Tavily prize)
 
-Offramp looks up each source model's price and deprecation notice with Tavily at run time (7 basic searches while building it).
+Offramp looks up each source model's price and deprecation notice with Tavily at run time (7 basic searches while building it, 5 kept as recordings).
 
-- The `answer` field was wrong in 2 of 7 searches: for `o3` it gave an output price of $80, which is `o3-pro`'s; for a `claude-sonnet-4-5` query it gave Sonnet 5's price. The model extracting the numbers copied the wrong figure, so the extractor now sees only the retrieved pages, and a price is accepted only if it is printed near that model's name on the cited page (otherwise we fall back to the price file and say so). `gpt-4o` (no retrieved page printed its own price; the from-memory answer was right but unverifiable) and `o3` (the extractor mixed it with the `o3-pro` page) ended on the fallback.
-- `include_domains` matches subdomains, so `community.openai.com` (user posts with wrong prices) entered a `gpt-4o-mini` search. We now send `exclude_domains` and also drop those results locally.
-- A bare model id query (`claude-sonnet-4-5 API pricing`) returned only Sonnet 5 pages; adding the table spelling ("claude sonnet 4.5") fixed it.
+- The `answer` field cannot be trusted for prices. In the recorded `o3` search (`tests/fixtures/tavily/o3.json`) Tavily's `answer` gives an output price of $80.00, which is `o3-pro`'s, and none of the 20 pages it returned is a page for `o3` itself. A model extracting numbers can copy such a figure, so the extractor sees only the retrieved pages, and a price is accepted only if the cited page prints it against that exact model, not a similarly named one; otherwise we fall back to the price file and say so. `gpt-4o` and `o3` ended on that fallback because no returned page printed their own price.
+- Ranking favours newer models: in the recorded `claude-sonnet-4-5` search (`tests/fixtures/tavily/claude-sonnet-4-5.json`), even with the model's table spelling in the query, 17 of the 20 results are Sonnet 5 pages and 2 are Sonnet 4.5 pages (ranked first). Our verifier has to tell them apart.
+- `include_domains` matches subdomains, so `community.openai.com` (user posts, one with the wrong price) entered a real `gpt-4o-mini` search. We now send `exclude_domains` and also drop those results locally.
 - Ask: an exact-domain option for `include_domains`, and the source passage behind each `answer`.
-- Evidence: `build-log/task-17-report.md` ("Real searches and live calls", decisions 2 to 4), recorded searches in `tests/fixtures/tavily/`.
+- Evidence: `tests/unit/test_tavily.py` (the search-request test and its subdomain comment; the recorded-search tests; the comment above `FELL_BACK` that counts the 7 searches), `tests/fixtures/tavily/*.json`.
 
 ### Toloka and Tendem
 
 - The new Toloka platform (`platform.toloka.ai`, beta) has no API keys, so Offramp cannot call it; label checks would be a manual UI project. We left `TOLOKA_API_KEY` empty and did not integrate it. Evidence: `.env.example`.
-- Tendem (by Toloka) worked through its MCP server (`https://mcp.tendem.ai/mcp`, streamable HTTP). The API key sits behind "Connect any MCP client with your own API key" on the agent page and is sent as `Authorization: ApiKey <key>`; `approve_task` spends credit, so every paid task needs a person's approval in our workflow. Evidence: `build-log/progress.md` ("Tendem key verified").
+- Tendem (by Toloka) worked through its MCP server (`https://mcp.tendem.ai/mcp`, streamable HTTP). The API key sits behind "Connect any MCP client with your own API key" on the agent page and is sent as `Authorization: ApiKey <key>`; `approve_task` spends credit, so every paid task needs a person's approval in our workflow. Evidence: `.env.example` (where the key is created and the header), `docs/evidence/live-observations.md` (E4).
 
-## Nebius AI Cloud: Serverless Jobs
+## Nebius AI Cloud
 
-<!-- AI Cloud Serverless Jobs feedback: filled after the first live job run (Task 14) -->
+First-hand notes from setting up AI Cloud for the eval matrix, observed during the build (2026-10-19, `nebius` CLI 0.12.292). They come from an interactive account setup, so there is nothing to replay; the repo's job path is built and tested against a fake `nebius` CLI and has not been run against a real account (see item 11).
+
+### 11. Token Factory credits cannot fund AI Cloud, so we could not run a real Serverless Job
+
+The Token Factory balance sits in an organisation (`aitenant-...`) that is a separate tenant from AI Cloud, and it cannot pay for Serverless Jobs. AI Cloud onboarding asks for a payment card and a $25 top-up. Our budget was hackathon credits only, so we did not run the eval matrix as a Serverless Job: the submit path (`nebius ai job ...`) is tested against a fake CLI on `PATH`, and the matrix runs on a local worker with the same output format.
+
+- Ask: let hackathon credits (or the Token Factory balance) cover a small AI Cloud job, or give participants a job-sized AI Cloud grant; say up front in the hackathon materials that the two balances are separate.
+
+### 12. A fresh CLI profile lists no tenant and does not say why
+
+After `nebius profile create`, `nebius iam v2 tenant list` returned `{}`. Nothing hinted that the tenant is created on the first visit to the web console. Separately, `nebius iam tenant list` printed a deprecation warning pointing at `iam v2 tenant`.
+
+- Ask: make the empty result explain itself (for example "no tenant yet: open the console once to create it").
+
+### 13. `nebius iam v2 project list --all` fails instead of listing
+
+`nebius iam v2 project list --all` failed with `'' is invalid for parentId` (InvalidArgument) instead of listing projects across tenants.
+
+- Ask: either make `--all` work, or return an error that names the parent it needs.
+
+### 14. Console onboarding created a default project in each of 9 regions
+
+Onboarding through the console auto-created a default project in each of 9 regions.
+
+- Ask: create one project in the chosen region, or ask which regions to create.
+
+<!-- AI Cloud Serverless Jobs: add run feedback here if a live job run happens (Task 14) -->
