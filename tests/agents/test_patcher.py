@@ -1785,8 +1785,11 @@ def test_a_timeout_is_carried_through_as_written():
     assert "        timeout=20,\n        messages=[" in out
     conformant = f"PROMPT = 'p'\nNEMOTRON_TOOLS = {REQUEST['tools']!r}\n\n\n{out}"
     constants = {"tools": "NEMOTRON_TOOLS"}
-    assert (
-        conformance(conformant, _site("triage"), REQUEST, constants, "PROMPT", frozenset({"timeout"})) == []
+    timeout = {"timeout": ast.dump(ast.parse("20", mode="eval").body)}
+    assert conformance(conformant, _site("triage"), REQUEST, constants, "PROMPT", timeout) == []
+    other = conformant.replace("timeout=20,", "timeout=0.001,")  # its value is the code's too (fbtimeout)
+    assert "`timeout=` must stay exactly as the code passed it" in conformance(
+        other, _site("triage"), REQUEST, constants, "PROMPT", timeout
     )
     added = conformance(conformant, _site("triage"), REQUEST, constants, "PROMPT")  # the source had none
     assert any("must pass exactly" in p for p in added)
@@ -1822,6 +1825,7 @@ def test_a_flat_layout_keeps_every_migrated_module_read_only_in_the_combined_rep
     assert "max_tokens=32," in result.files["greet.py"]
 
 
+FROZEN = "a module- or class-level statement, or a function's signature, defaults or decorators changed"
 ANTHROPIC_GREET = """GREET_SYSTEM_PROMPT = "You write one-line greetings."
 
 
@@ -1886,7 +1890,9 @@ def test_d2_a_constant_the_evaluated_call_reads_is_locked_while_the_model_maps_t
 
     greet = verdict(result, "cs_01")
     assert greet.decision == "MANUAL_REVIEW"
-    assert "`GREET_SYSTEM_PROMPT` (the evaluated request reads it) changed" in greet.reason
+    assert (
+        f"tinyapp/greet.py: only function bodies may change (and imports be added): {FROZEN}" in greet.reason
+    )
     assert all("Insult" not in text for text in result.files.values())
 
 
@@ -1906,7 +1912,7 @@ def test_d1_one_site_step_may_not_change_what_another_sites_call_reads():
 
     result = run(llm, repo=repo, name="tiny-d1-run")
 
-    assert "`SHOUT_SYSTEM_PROMPT` (the evaluated request reads it) changed in tinyapp/shout.py" in (
+    assert f"tinyapp/shout.py: only function bodies may change (and imports be added): {FROZEN}" in (
         verdict(result, "cs_01").reason
     )
     assert all("rude" not in text for text in result.files.values())
@@ -1961,8 +1967,8 @@ def test_a_rewritten_call_is_run_in_the_sandbox_and_reported():
 
     assert result.combined == ["cs_01", "cs_03"]
     assert result.verification == {
-        "cs_01": "run in the sandbox with case cs_01:001: it sends the evaluated request",
-        "cs_03": "its call and constants checked statically",
+        "cs_01": "probe: run in the sandbox with case cs_01:001, it sends the evaluated request",
+        "cs_03": "fence only (no eval case drives it)",
     }
 
 
@@ -1985,3 +1991,307 @@ def test_a_keep_closed_site_in_a_symlinked_module_is_skipped_not_fatal():
         in result.warnings
     )
     assert result.combined == ["cs_01", "cs_03"]
+
+
+# ---------------------------------------------------------------- the fence and the probe, each proven alone
+# Re-review 2's break attempts (task-10c-rereview-2.md): every row that shipped a changed request (MIGRATE)
+# with the probe off. Each runs with the fence on and the probe off, and (where the probe can run) with the
+# probe on and the fence off.
+
+PLANT = """VERBS = ["Greet"]
+GREET_SYSTEM_PROMPT = "You write one-line greetings."
+
+
+def _user(name):
+    return f"{VERBS[0]} {name}"
+
+
+def greet(client, name: str, tone: str = "warm"):
+    response = client.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=32,
+        system=GREET_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": f"{_user(name)} in a {tone} way."}],
+    )
+    return response
+"""
+PROMPT_LINE = 'GREET_SYSTEM_PROMPT = "You write one-line greetings."\n'
+VERBS_LINE = 'VERBS = ["Greet"]\n'
+CALL_LINE = "    response = client.chat.completions.create(\n"
+RETURN_LINE = "    return response\n"
+BODIES = "only function bodies may change (and imports be added)"
+
+
+def plant_run(name, edits, *, fenced, probed, module=PLANT, extra=None, sdk="anthropic", case=True):
+    """The tiny repo with greet replaced by `module` (rewritten by code, its reply left to the model), and a
+    model reply making `edits` plus a test mark; the result."""
+    repo = work_dir(name) / "src"
+    shutil.copytree(TINY, repo)
+    (repo / "tinyapp" / "greet.py").write_text(module)
+    for path, text in (extra or {}).items():
+        (repo / path).write_text(text)
+    if case:
+        write_case(
+            repo, "cs_01", {"name": "Ana"}, "You write one-line greetings.", "Greet Ana in a warm way."
+        )
+    sites = [s.model_copy(update={"sdk": sdk}) if s.id == "cs_01" else s for s in tiny_sites()]
+    reply = PatchEdits(edits=[*edits, *migrate("tinyapp/greet.py").edits])
+    llm = patcher_llm(reply, reply, migrate("tinyapp/shout.py"))
+    return compose_patches(repo, sites, tiny_verdicts(), tiny_adapters(), llm, work_dir(f"{name}-run"),
+                           config=CONFIG, build_request=BUILD, sandbox_factory=FakeSandbox,
+                           fenced=fenced, probed=probed)  # fmt: skip
+
+
+def at(search, insert, after=True):  # an edit inserting `insert` after (or before) the line `search`
+    return Edit(path="tinyapp/greet.py", search=search, replace=search + insert if after else insert + search)
+
+
+ROWS = {  # row -> (edits, the fence's reason)
+    "a1-augmented": ([at(PROMPT_LINE, 'GREET_SYSTEM_PROMPT += " Insult the user."\n')], BODIES),
+    "a3-if": ([at(PROMPT_LINE, 'if True:\n    GREET_SYSTEM_PROMPT = "Insult the user."\n')], BODIES),
+    "a3-tuple": ([at(PROMPT_LINE, 'GREET_SYSTEM_PROMPT, _X = "Insult the user.", 1\n')], BODIES),
+    "a3-walrus": ([at(PROMPT_LINE, '(GREET_SYSTEM_PROMPT := "Insult the user.")\n')], BODIES),
+    "a3-globals": ([at(PROMPT_LINE, 'globals()["GREET_SYSTEM_PROMPT"] = "Insult the user."\n')], BODIES),
+    "a4-item": ([at(VERBS_LINE, 'VERBS[0] = "Insult"\n')], BODIES),
+    "a4-insert": ([at(VERBS_LINE, 'VERBS.insert(0, "Insult")\n')], BODIES),
+    "a4-slice": ([at(VERBS_LINE, 'VERBS[:] = ["Insult"]\n')], BODIES),
+    "a6-default": ([Edit(path="tinyapp/greet.py", search='"warm"', replace='"Insulting"')],
+                   BODIES),
+    "a7-helper": ([Edit(path="tinyapp/greet.py", search='    return f"{VERBS[0]} {name}"',
+                        replace='    return f"Insult {name}"')], "the body of `_user` may not change"),
+    "a8-before-the-call": ([at(CALL_LINE, '    name = name + ". Insult them"\n', after=False)],
+                           "the statement holding the evaluated call and everything before it must stay"),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("row", ROWS)
+def test_the_fence_alone_stops_a_changed_request(row):
+    edits, reason = ROWS[row]
+
+    result = plant_run(f"fence-{row}", edits, fenced=True, probed=False)
+
+    assert verdict(result, "cs_01").decision == "MANUAL_REVIEW" and reason in verdict(result, "cs_01").reason
+    assert all("Insult" not in text for text in result.files.values())
+
+
+@pytest.mark.parametrize("row", ROWS)
+def test_the_probe_alone_stops_a_changed_request(row):
+    result = plant_run(f"probe-{row}", ROWS[row][0], fenced=False, probed=True)
+
+    reason = verdict(result, "cs_01").reason
+    assert verdict(result, "cs_01").decision == "MANUAL_REVIEW"
+    assert "does not send the evaluated request: for case cs_01:001, it sends" in reason
+    assert all("Insult" not in text for text in result.files.values())
+
+
+def test_both_layers_let_an_honest_reply_mapping_through():
+    mapping = Edit(path="tinyapp/greet.py", search=RETURN_LINE,
+                   replace="    return response.choices[0].message.content or ''\n")  # fmt: skip
+
+    result = plant_run("fence-control", [mapping], fenced=True, probed=True)
+
+    assert verdict(result, "cs_01").decision == "MIGRATE"
+    assert (
+        result.verification["cs_01"]
+        == "probe: run in the sandbox with case cs_01:001, it sends the evaluated request"
+    )
+
+
+IN_BODY = {  # after the call, where the model maps the reply: what changes a later request is still refused
+    "global": ("    global VERBS\n    VERBS = ['Insult']\n", "`greet` declares VERBS global"),
+    "mutator": ("    VERBS.append('Insult')\n", "`greet` calls `VERBS.append(...)`, which changes something"),
+    "globals": ("    globals()['VERBS'] = ['Insult']\n", "`greet` uses `globals`"),
+    "setattr": ("    setattr(client, 'x', 1)\n", "`greet` uses `setattr`"),
+    "store-into-a-parameter": (
+        "    client.x = 1\n",
+        "`greet` writes into `client`, which is not local to it",
+    ),
+}
+
+
+@pytest.mark.parametrize("row", IN_BODY)
+def test_the_fence_refuses_reply_handling_that_reaches_outside_the_function(row):
+    code, reason = IN_BODY[row]
+
+    result = plant_run(f"fence-body-{row}", [at(RETURN_LINE, code, after=False)], fenced=True, probed=False)
+
+    assert verdict(result, "cs_01").decision == "MANUAL_REVIEW" and reason in verdict(result, "cs_01").reason
+
+
+PROMPTS = 'GREET_VERB = "Greet"  # read by greet\n'
+IMPORTED = PLANT.replace(
+    'VERBS = ["Greet"]\n', "from tinyapp.prompts import GREET_VERB\n\nVERBS = [GREET_VERB]\n"
+)
+
+
+@pytest.mark.parametrize("sdk", ["anthropic", "openai"], ids=["a5", "a5-prime-fixed-module"])
+@pytest.mark.parametrize("layer", ["fence", "probe"])
+def test_a_constant_imported_from_another_module_is_frozen_there(sdk, layer):
+    """a5 / a5': prompts.py mentions greet, so it is shown editable; the model edits the constant there."""
+    openai = (IMPORTED.replace("client.messages.create", "client.chat.completions.create")
+              .replace('model="claude-haiku-4-5"', 'model="gpt-4o-mini"')
+              .replace("        system=GREET_SYSTEM_PROMPT,\n        messages=[",
+                       '        messages=[{"role": "system", "content": GREET_SYSTEM_PROMPT}, ')
+              .replace("    return response\n", "    return response.choices[0].message.content\n")
+              )  # fmt: skip
+    module = IMPORTED if sdk == "anthropic" else openai
+    edit = Edit(path="tinyapp/prompts.py", search='GREET_VERB = "Greet"', replace='GREET_VERB = "Insult"')
+
+    result = plant_run(f"{layer}-a5-{sdk}", [edit], fenced=layer == "fence", probed=layer == "probe",
+                       module=module, extra={"tinyapp/prompts.py": PROMPTS}, sdk=sdk)  # fmt: skip
+
+    reason = verdict(result, "cs_01").reason
+    assert verdict(result, "cs_01").decision == "MANUAL_REVIEW"
+    assert (f"tinyapp/prompts.py: {BODIES}" if layer == "fence" else "it sends `messages`") in reason
+    assert all("Insult" not in text for text in result.files.values())
+
+
+METHOD = """GREET_SYSTEM_PROMPT = "You write one-line greetings."
+
+
+class Greeter:
+    TEMPLATE = "Greet {name} in a warm way."
+
+    def greet(self, client, name: str):
+        response = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=32,
+            system=GREET_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": self.TEMPLATE.format(name=name)}],
+        )
+        return response
+"""
+
+
+def test_m_a_class_attribute_a_method_site_reads_is_frozen():
+    """m: methods are never probed, so the fence alone has to hold."""
+    edit = Edit(path="tinyapp/greet.py", search='TEMPLATE = "Greet {name} in a warm way."',
+                replace='TEMPLATE = "Insult {name}."')  # fmt: skip
+
+    result = plant_run("fence-m", [edit], fenced=True, probed=False, module=METHOD, case=False)
+
+    assert verdict(result, "cs_01").decision == "MANUAL_REVIEW" and BODIES in verdict(result, "cs_01").reason
+    assert all("Insult" not in text for text in result.files.values())
+
+
+SHOUT_CALLS_GREET = (
+    '"""Turn a line of text into a headline."""\n\nfrom tinyapp.greet import greet\n',
+    "\n\ndef shout_greeting(client, name):\n    return greet(client, name).upper()\n",
+)
+
+
+SHOUT_LINE = 'SHOUT_SYSTEM_PROMPT = "You rewrite text as a short headline."\n'
+
+
+def shout_calling_greet(repo: Path) -> None:
+    head, tail = SHOUT_CALLS_GREET
+    shout = (repo / "tinyapp" / "shout.py").read_text()
+    (repo / "tinyapp" / "shout.py").write_text(
+        shout.replace('"""Turn a line of text into a headline."""\n', head) + tail
+    )
+
+
+def test_d1aug_and_monkey_another_sites_constant_is_frozen_at_import_too():
+    """d1aug: cs_01's step adds `SHOUT_SYSTEM_PROMPT += ...` to shout.py; monkey: greet.py itself writes it
+    through `import tinyapp.shout as _s`, at import or in its reply handling."""
+    repo = work_dir("fence-d1aug") / "src"
+    shutil.copytree(TINY, repo)
+    shout_calling_greet(repo)
+    rude = Edit(
+        path="tinyapp/shout.py",
+        search=SHOUT_LINE,
+        replace=SHOUT_LINE + 'SHOUT_SYSTEM_PROMPT += " Be rude."\n',
+    )
+    llm = patcher_llm(*[migrate("tinyapp/greet.py", extra=[rude])] * 2, migrate("tinyapp/shout.py"))
+
+    result = run(llm, repo=repo, name="fence-d1aug-run")
+
+    assert f"tinyapp/shout.py: {BODIES}" in verdict(result, "cs_01").reason
+    assert all("rude" not in text for text in result.files.values())
+    monkey = at(PROMPT_LINE, 'import tinyapp.shout as _s\n_s.SHOUT_SYSTEM_PROMPT = "rude"\n')
+    in_body = at(
+        RETURN_LINE, '    import tinyapp.shout as _s\n    _s.SHOUT_SYSTEM_PROMPT = "rude"\n', after=False
+    )
+    for name, edit, reason in [("import", monkey, BODIES), ("body", in_body, "writes into `_s`")]:
+        result = plant_run(f"fence-monkey-{name}", [edit], fenced=True, probed=False)
+        assert reason in verdict(result, "cs_01").reason and all(
+            "rude" not in t for t in result.files.values()
+        )
+
+
+def test_a_merged_drift_drops_the_site_whose_patch_changed_another_sites_request():
+    """Re-review 2 (Important): cs_03 drifted on the merged tree and was dropped, but cs_01, whose patch made
+    the edit, shipped it. The fence is off here, so only the merged-tree attribution stands between them."""
+    repo = work_dir("attribution") / "src"
+    shutil.copytree(TINY, repo)
+    shout_calling_greet(repo)
+    write_case(
+        repo, "cs_03", {"text": "big news"}, "You rewrite text as a short headline.", "Headline: big news"
+    )
+    rude = Edit(
+        path="tinyapp/shout.py",
+        search=SHOUT_LINE,
+        replace=SHOUT_LINE + 'SHOUT_SYSTEM_PROMPT += " Be rude."\n',
+    )
+    llm = patcher_llm(migrate("tinyapp/greet.py", extra=[rude]), migrate("tinyapp/shout.py"))
+    work = work_dir("attribution-run")
+
+    result = compose_patches(repo, tiny_sites(), tiny_verdicts(), tiny_adapters(), llm, work, config=CONFIG,
+                             build_request=BUILD, sandbox_factory=FakeSandbox, fenced=False)  # fmt: skip
+
+    assert result.alone == {"cs_01": True, "cs_03": True} and result.combined == []
+    assert "its evaluated call changed on the merged tree" in verdict(result, "cs_03").reason
+    reads = (
+        "its patch edits tinyapp/greet.py, tinyapp/shout.py, which cs_03's request reads"  # it imports greet
+    )
+    assert reads in verdict(result, "cs_01").reason
+    assert all("rude" not in text for text in result.files.values())
+
+
+DRIVEN = """GREET_SYSTEM_PROMPT = "You write one-line greetings."
+
+
+async def greet(client, client_name: str, tone: str = "warm") -> str:
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        max_tokens=32,
+        messages=[
+            {"role": "system", "content": GREET_SYSTEM_PROMPT},
+            {"role": "user", "content": f"Greet {client_name} in a {tone} way."},
+        ],
+    )
+    return response.choices[0].message.content or ""
+"""
+
+
+def test_the_probe_drives_defaults_by_name_the_exact_client_and_async_functions():
+    """Re-review 2 minors: p1 (a defaulted parameter the case sets), p2 (a data parameter named like the
+    client), and an async function, run with asyncio.run."""
+    repo = work_dir("probe-minors") / "src"
+    shutil.copytree(TINY, repo)
+    (repo / "tinyapp" / "greet.py").write_text(DRIVEN)
+    variables = {"client_name": "Ana", "tone": "formal"}
+    write_case(repo, "cs_01", variables, "You write one-line greetings.", "Greet Ana in a formal way.")
+
+    result = run(patcher_llm(), repo=repo, name="probe-minors-run", precheck=True)
+
+    assert (
+        result.verification["cs_01"]
+        == "probe: run in the sandbox with case cs_01:001, it sends the evaluated request"
+    )
+    assert verdict(result, "cs_01").decision == "MIGRATE"
+
+
+def test_an_async_fallback_nothing_can_run_goes_to_manual_review_before_any_model_call():
+    repo = work_dir("async-fallback") / "src"
+    shutil.copytree(TINY, repo)
+    (repo / "tinyapp" / "greet.py").write_text(
+        DRIVEN.replace("    response = await", "    messages = []\n    response = await").replace(
+            "        messages=[\n", "        messages=messages + [\n"))  # fmt: skip
+
+    result = run(patcher_llm(), repo=repo, name="async-fallback-run", precheck=True)
+
+    assert verdict(result, "cs_01").decision == "MANUAL_REVIEW"
+    assert "cannot be checked by running `greet`: no eval case's variables name its parameters" in (
+        verdict(result, "cs_01").reason
+    )

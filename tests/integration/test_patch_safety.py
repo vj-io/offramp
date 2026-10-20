@@ -203,5 +203,5 @@ def test_the_probe_runs_the_migrated_function_in_docker_and_compares_its_request
     assert result.combined == ["cs_01", "cs_03"] and result.sandbox_mode == "docker"
     assert (
         result.verification["cs_01"]
-        == "run in the sandbox with case cs_01:001: it sends the evaluated request"
+        == "probe: run in the sandbox with case cs_01:001, it sends the evaluated request"
     )
