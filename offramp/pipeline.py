@@ -429,10 +429,14 @@ class Pipeline:
         route: Callable[..., Any] | None = None,
         patch: Callable[..., Any] | None = None,
         pr: Callable[..., dict[str, Any]] | None = None,
+        live: bool | None = None,
     ):
+        """`live` overrides the stored config's (a live run resumed cache-only)."""
         config = log.config
         if config is None:
             raise ValueError(f"run {log.run_id} has no QUEUED event with its config")
+        if live is not None:
+            config = config.model_copy(update={"live": live})
         self.log, self.config, self.client, self.dir = log, config, client, log.dir
         self.budget: Budget = getattr(client, "budget", None) or Budget()
         self._restore_budget()
@@ -925,9 +929,11 @@ def default_price_lookup(config: RunConfig, client: LLM) -> Callable[[str], Any]
     return lambda model: lookup_source_model(model, llm=client)
 
 
-def execute_run(log: RunLog, *, cache_dir: str | Path | None = None) -> Stage:
-    """Execute (or resume) the run in `log` with a Token Factory client built from its config."""
+def execute_run(log: RunLog, *, cache_dir: str | Path | None = None, cache_only: bool = False) -> Stage:
+    """Execute (or resume) the run in `log` with a Token Factory client built from its config. `cache_only`
+    replays the response cache even when the run was started live (`offramp run --resume ID --cache-only`)."""
     if log.config is None:
         raise ValueError(f"run {log.run_id} has no QUEUED event with its config")
-    client = TFClient(cache_dir=cache_dir, live=log.config.live, budget=Budget())
-    return Pipeline(log, client, cache_dir=cache_dir).execute()
+    live = log.config.live and not cache_only
+    client = TFClient(cache_dir=cache_dir, live=live, budget=Budget())
+    return Pipeline(log, client, cache_dir=cache_dir, live=live).execute()

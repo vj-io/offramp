@@ -3,7 +3,7 @@
 offramp scan <path>                          closed-LLM call sites (no model calls)
 offramp prepare <path>                       eval cases + references into <path>/evals (TF calls)
 offramp run <repo> [--no-pr] [--cache-only]  the whole pipeline on a repo URL or local path
-offramp run --resume <run_id>                an interrupted or failed run, after its last finished step
+offramp run --resume <run_id> [--cache-only] an interrupted or failed run, after its last finished step
 offramp serve [--host H] [--port P]          the API (offramp/api/app.py)
 offramp export-replay <run_id>               both replay files, from a finished run
 """
@@ -103,7 +103,7 @@ def run(args: argparse.Namespace) -> int:
     else:
         print("offramp run: give a repo, or --resume <run_id>", file=sys.stderr)
         return 2
-    stage = pipeline.execute_run(log, cache_dir=args.cache_dir)
+    stage = pipeline.execute_run(log, cache_dir=args.cache_dir, cache_only=args.cache_only)
     print(f"run {log.run_id}: {stage.value}  ({log.dir})")
     return 0 if stage == Stage.DONE else 1
 
@@ -166,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("run", help="run the pipeline on a repo (https URL or local path)")
     p.add_argument("repo", nargs="?")
     p.add_argument("--no-pr", action="store_true", help="render the PR body but do not open the PR")
-    p.add_argument("--resume", metavar="RUN_ID", help="resume this run (its own config applies)")
+    p.add_argument("--resume", metavar="RUN_ID", help="resume this run (its config, or --cache-only)")
     tf_options(p)
     p.set_defaults(func=run)
 
