@@ -105,7 +105,7 @@ Python, FastAPI, Pydantic, SQLModel, OpenAI Python SDK, Nebius Token Factory, NV
 | `03-report-summary.png` | The report: 3 of 6 calls move to Nemotron; estimated cost across all six sites $49.24 → $43.86 per 1,000 calls (−11%). |
 | `04-report-evidence.png` | The evidence table: before and after model, parity vs reference on holdout, p50 latency on Nemotron and estimated cost per 1,000 calls. The three manual-review rows show "—" for their after values, because those sites were not migrated. |
 | `05-pr-body.png` | The pull request Offramp opened, shown as its markdown body; its −82% covers the three migrated sites only. |
-| `06-call-site-card.png` | One call site up close: the RAG answerer fails on Lightning and Super after three adapter rewrites each, then passes on Ultra. |
+| `06-call-site-card.png` | One call site up close: the RAG answerer fails on Lightning and Super after three adapter rewrites each, then passes on Ultra. The log beside it shows the recorded PR title; its est. −82% covers the 3 migrated sites only. |
 
 ## Did this project exist before the hackathon?
 
