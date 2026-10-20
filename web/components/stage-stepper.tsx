@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { STAGE_NAME } from "@/lib/format";
+import { stageLabel } from "@/lib/format";
 import type { StageStatus } from "@/lib/run-state";
 import type { Stage } from "@/lib/types";
 import { checkPath, circlePath, crossPath, Ink, InkIcon } from "./doodle";
@@ -11,7 +11,7 @@ const STATUS_TEXT: Record<StageStatus, string> = {
   current: "current stage",
   pending: "not started",
   failed: "failed here",
-  skipped: "not opened",
+  skipped: "skipped",
 };
 
 export function StageStepper({
@@ -61,12 +61,8 @@ export function StageStepper({
                 <span
                   className={`font-hand text-base leading-tight ${status === "pending" || status === "skipped" ? "text-muted" : ""} ${status === "failed" ? "text-redpen" : ""}`}
                 >
-                  {STAGE_NAME[stage]}
-                  {status === "skipped" ? (
-                    <span className="block text-sm">({STATUS_TEXT.skipped})</span>
-                  ) : (
-                    <span className="sr-only">, {STATUS_TEXT[status]}</span>
-                  )}
+                  {stageLabel(stage, status === "skipped")}
+                  <span className="sr-only">, {STATUS_TEXT[status]}</span>
                 </span>
               </span>
             </li>

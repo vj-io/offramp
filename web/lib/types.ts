@@ -217,7 +217,7 @@ export interface CaseSummary {
   dev: number;
   holdout: number;
   references: number;
-  reference_methods: Record<string, number>; // {"reference:seed": 20, ...}; closed answers: {"closed:<model>": 24}
+  reference_methods: Record<string, number>; // {"reference:seed": 20, ...}; closed answers under the model: {"claude-…": 24}
   audit: ReferenceAudit;
 }
 

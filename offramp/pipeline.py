@@ -581,7 +581,8 @@ class Pipeline:
                 continue
             ids = {c.id for c in cases}
             # what these cases are compared against: their references, else the closed model's answers (GC27a,
-            # free text); a closed answer is named "closed:<model>". Rows of dropped cases are not counted.
+            # free text). Counted by BaselineResult.model, the label the PR's reference table uses too
+            # ("reference:*" methods; anything else is a closed model). Rows of dropped cases are not counted.
             against = {k: r for k, r in baselines.baselines_for(evals, site.id).items() if k in ids}
             a = audit.get(site.id, {})
             auditors = [x.removeprefix("blind:") for x in a.get("auditors", [])]
@@ -590,11 +591,7 @@ class Pipeline:
                 dev=sum(c.split == "dev" for c in cases),
                 holdout=sum(c.split == "holdout" for c in cases),
                 references=len(against),
-                reference_methods=dict(
-                    Counter(
-                        r.model if r.source == "reference" else f"closed:{r.model}" for r in against.values()
-                    )
-                ),
+                reference_methods=dict(Counter(r.model for r in against.values())),
                 audit=ReferenceAudit(
                     **{k: a.get(k, 0) for k in ("checked", "agreed", "dropped", "human_verified")},
                     auditor=", ".join(auditors) or None,

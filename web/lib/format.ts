@@ -21,6 +21,10 @@ export const STAGE_NAME: Record<Stage, string> = {
   FAILED: "Failed",
 };
 
+// The stepper's label: a finished run that opened no PR says so (stageProgress marks that stage "skipped").
+export const stageLabel = (stage: Stage, skipped: boolean) =>
+  skipped && stage === "PR_OPENED" ? "PR not opened" : STAGE_NAME[stage];
+
 export const DECISION_NAME: Record<Decision, string> = {
   MIGRATE: "Migrate",
   KEEP_CLOSED: "Not migrated",
@@ -80,15 +84,15 @@ export function latencyText(deltaMs: number | null | undefined, afterP50: number
 }
 
 // "How parity was measured", labelled exactly as the run reports it; absent parts are omitted.
-// A method "closed:<model>" counts a closed model's answers standing in for references (GC27a, free text).
-const CLOSED = "closed:";
+// reference_methods keys are the labels the PR uses too: "reference:*" methods, and anything else is a closed
+// model whose answers stand in for references (GC27a, free text).
+const isClosed = (method: string) => !method.startsWith("reference:");
 
 export function referencesText(c: CaseSummary): string {
   const entries = Object.entries(c.reference_methods ?? {});
-  const closed = entries.filter(([m]) => m.startsWith(CLOSED));
-  if (entries.length > 0 && closed.length === entries.length)
-    return `${c.references} closed references (${closed.map(([m]) => m.slice(CLOSED.length)).join(", ")})`;
-  const methods = entries.map(([m, n]) => `${m.startsWith(CLOSED) ? `closed ${m.slice(CLOSED.length)}` : m} ${n}`);
+  if (entries.length > 0 && entries.every(([m]) => isClosed(m)))
+    return `${c.references} closed references (${entries.map(([m]) => m).join(", ")})`;
+  const methods = entries.map(([m, n]) => `${isClosed(m) ? `closed ${m}` : m} ${n}`);
   return `${c.references} references${methods.length ? ` (${methods.join(", ")})` : ""}`;
 }
 

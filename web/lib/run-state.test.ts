@@ -19,6 +19,7 @@ import {
   latencyText,
   linkParts,
   referencesText,
+  stageLabel,
   thresholdFor,
 } from "./format";
 import { STAGE_ORDER, type CaseSummary, type RunEvent, type Verdict } from "./types";
@@ -148,6 +149,8 @@ describe("stageProgress", () => {
     const statuses = stageProgress(applyEvents(initialRunState, noPr));
     expect(statuses.find((s) => s.stage === "PR_OPENED")?.status).toBe("skipped");
     expect(statuses.filter((s) => s.stage !== "PR_OPENED").every((s) => s.status === "done")).toBe(true);
+    expect(stageLabel("PR_OPENED", true)).toBe("PR not opened");
+    expect(stageLabel("PR_OPENED", false)).toBe("PR opened");
   });
 
   it("an error event marks the failing stage and keeps the reason", () => {
@@ -260,7 +263,7 @@ describe("evidence text", () => {
   });
   it("free-text sites compared against closed answers say so (GC27a)", () => {
     const c = ofType("case_summary").find((e) => e.call_site_id === "cs_04")!.payload as unknown as CaseSummary;
-    const closed = "closed:claude-sonnet-5.5 (via Claude Code; not the repo's source model)";
+    const closed = "claude-sonnet-5.5 (via Claude Code; not the repo's source model)"; // the PR's label too
     expect(referencesText({ ...c, references: 24, reference_methods: { [closed]: 24 } })).toBe(
       "24 closed references (claude-sonnet-5.5 (via Claude Code; not the repo's source model))",
     );
