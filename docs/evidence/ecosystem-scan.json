@@ -1,6 +1,6 @@
 {
  "date": "2026-10-21",
- "offramp_commit": "ba2a29b0c2db359a2626b7320f0f6f9924193d23",
+ "offramp_commit": "f17ea30187274c98b683922b26a567affc09a30e",
  "python": "3.14.7",
  "queries": [
   "openai language:python archived:false fork:false stars:>1000",
@@ -38,6 +38,7 @@
   "deterministic_from_parameters": 27,
   "streams": 21,
   "may_stream": 6,
+  "prompt_at_runtime": 139,
   "model_known": 50,
   "sunset_retired": 12,
   "sunset_deprecated": 21,
@@ -61,7 +62,7 @@
  "repos": [
   {
    "repo": "langchain-ai/langchain",
-   "stars": 148148,
+   "stars": 148154,
    "commit": "e6d83ef6a6e2482cd55691023c51e45d7584a94f",
    "python_files": 2637,
    "imports": [
@@ -301,7 +302,7 @@
   },
   {
    "repo": "xtekky/gpt4free",
-   "stars": 66908,
+   "stars": 66910,
    "commit": "1dbac2541335a2312f53002dfa9d14119af53099",
    "python_files": 358,
    "imports": [
@@ -312,7 +313,7 @@
   },
   {
    "repo": "zylon-ai/private-gpt",
-   "stars": 57598,
+   "stars": 57599,
    "commit": "ff410fed574b8b2eab4e2f4c53d99e7065e5cdef",
    "python_files": 929,
    "imports": [
@@ -323,7 +324,7 @@
   },
   {
    "repo": "langchain-ai/langgraph",
-   "stars": 43594,
+   "stars": 43597,
    "commit": "a24fc97778fca67cfac4cd3fc63e508ee1d29f59",
    "python_files": 476,
    "imports": [
@@ -418,8 +419,18 @@
       "prompt built at runtime"
      ],
      "price_ratio": {
-      "input": 2.5,
-      "output": 2.5
+      "lightning": {
+       "input": 2.5,
+       "output": 2.5
+      },
+      "super": {
+       "input": 0.5,
+       "output": 0.67
+      },
+      "ultra": {
+       "input": 0.15,
+       "output": 0.2
+      }
      },
      "price_note": null
     },
@@ -436,8 +447,18 @@
       "prompt built at runtime"
      ],
      "price_ratio": {
-      "input": 41.7,
-      "output": 41.7
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
      },
      "price_note": null
     },
@@ -454,8 +475,18 @@
       "prompt built at runtime"
      ],
      "price_ratio": {
-      "input": 2.5,
-      "output": 2.5
+      "lightning": {
+       "input": 2.5,
+       "output": 2.5
+      },
+      "super": {
+       "input": 0.5,
+       "output": 0.67
+      },
+      "ultra": {
+       "input": 0.15,
+       "output": 0.2
+      }
      },
      "price_note": null
     },
@@ -472,8 +503,18 @@
       "prompt built at runtime"
      ],
      "price_ratio": {
-      "input": 2.5,
-      "output": 2.5
+      "lightning": {
+       "input": 2.5,
+       "output": 2.5
+      },
+      "super": {
+       "input": 0.5,
+       "output": 0.67
+      },
+      "ultra": {
+       "input": 0.15,
+       "output": 0.2
+      }
      },
      "price_note": null
     },
@@ -542,7 +583,7 @@
   },
   {
    "repo": "AstrBotDevs/AstrBot",
-   "stars": 42432,
+   "stars": 42433,
    "commit": "f2404c191716a64daaa422be7f3c567cace50d39",
    "python_files": 747,
    "imports": [
@@ -674,7 +715,7 @@
   },
   {
    "repo": "PDFMathTranslate/PDFMathTranslate",
-   "stars": 37705,
+   "stars": 37706,
    "commit": "17922e7610291d3f2f43098b34478059087549fe",
    "python_files": 33,
    "imports": [
@@ -761,7 +802,7 @@
   },
   {
    "repo": "mukul975/Anthropic-Cybersecurity-Skills",
-   "stars": 34759,
+   "stars": 34761,
    "commit": "54a798831d2266a3ca61ce68a7acb80b81160d57",
    "python_files": 1103,
    "imports": [
@@ -786,7 +827,7 @@
   },
   {
    "repo": "openai/openai-agents-python",
-   "stars": 30180,
+   "stars": 30182,
    "commit": "64cd5dfc5a1579870dcbed0ea42b27aa84033fee",
    "python_files": 1020,
    "imports": [
@@ -898,7 +939,7 @@
   },
   {
    "repo": "chidiwilliams/buzz",
-   "stars": 22103,
+   "stars": 22105,
    "commit": "6186d09a9f7c2b51c9d5de89592ace2e9cc0092c",
    "python_files": 226,
    "imports": [
@@ -1060,7 +1101,7 @@
   },
   {
    "repo": "langbot-app/LangBot",
-   "stars": 18317,
+   "stars": 18318,
    "commit": "fc62f2ee137f5936284fcc462bbaec4807ae36b3",
    "python_files": 1171,
    "imports": [
@@ -1254,7 +1295,7 @@
   },
   {
    "repo": "livekit/agents",
-   "stars": 14868,
+   "stars": 14869,
    "commit": "de40bb258b58e1aeb1b6350a24e6b6cca79b25a5",
    "python_files": 1181,
    "imports": [
@@ -1399,7 +1440,7 @@
   },
   {
    "repo": "simonw/llm",
-   "stars": 12647,
+   "stars": 12648,
    "commit": "cbeeb8f2b93b642107e51c735c7eb55734355da1",
    "python_files": 56,
    "imports": [
@@ -1608,8 +1649,18 @@
       "prompt built at runtime"
      ],
      "price_ratio": {
-      "input": 41.7,
-      "output": 41.7
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
      },
      "price_note": null
     },
@@ -1626,8 +1677,18 @@
       "prompt built at runtime"
      ],
      "price_ratio": {
-      "input": 41.7,
-      "output": 41.7
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
      },
      "price_note": null
     },
@@ -1644,8 +1705,18 @@
       "prompt built at runtime"
      ],
      "price_ratio": {
-      "input": 41.7,
-      "output": 41.7
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
      },
      "price_note": null
     },
@@ -1662,8 +1733,18 @@
       "prompt built at runtime"
      ],
      "price_ratio": {
-      "input": 41.7,
-      "output": 41.7
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
      },
      "price_note": null
     },
@@ -1680,8 +1761,18 @@
       "prompt built at runtime"
      ],
      "price_ratio": {
-      "input": 41.7,
-      "output": 41.7
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
      },
      "price_note": null
     },
@@ -1698,8 +1789,18 @@
       "prompt built at runtime"
      ],
      "price_ratio": {
-      "input": 41.7,
-      "output": 41.7
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
      },
      "price_note": null
     },
@@ -1716,8 +1817,18 @@
       "prompt built at runtime"
      ],
      "price_ratio": {
-      "input": 41.7,
-      "output": 41.7
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
      },
      "price_note": null
     },
@@ -2613,7 +2724,7 @@
   },
   {
    "repo": "langchain-ai/open-swe",
-   "stars": 11047,
+   "stars": 11048,
    "commit": "1f8699a90ed66f01a717af2022d83ffc1975bb87",
    "python_files": 1251,
    "imports": [
@@ -2646,8 +2757,18 @@
       "prompt built at runtime"
      ],
      "price_ratio": {
-      "input": 41.7,
-      "output": 41.7
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
      },
      "price_note": null
     }
@@ -3047,7 +3168,7 @@
   },
   {
    "repo": "RayVentura/ShortGPT",
-   "stars": 8053,
+   "stars": 8052,
    "commit": "3df4e0f7a422bf7386565d498bf4521a2544c614",
    "python_files": 68,
    "imports": [
@@ -3163,67 +3284,67 @@
  "skipped": [
   {
    "repo": "NousResearch/hermes-agent",
-   "stars": 255551,
+   "stars": 255573,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "microsoft/markitdown",
-   "stars": 191295,
+   "stars": 191305,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "Significant-Gravitas/AutoGPT",
-   "stars": 187675,
+   "stars": 187676,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "langgenius/dify",
-   "stars": 159053,
+   "stars": 159060,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "open-webui/open-webui",
-   "stars": 156288,
+   "stars": 156296,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "vllm-project/vllm",
-   "stars": 94394,
+   "stars": 94419,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "unslothai/unsloth",
-   "stars": 78322,
+   "stars": 78324,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "headroomlabs-ai/headroom",
-   "stars": 76686,
+   "stars": 76731,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "calesthio/OpenMontage",
-   "stars": 70265,
+   "stars": 70288,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "asgeirtj/system_prompts_leaks",
-   "stars": 69939,
+   "stars": 69940,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "BerriAI/litellm",
-   "stars": 61669,
+   "stars": 61670,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "hesreallyhim/awesome-claude-code",
-   "stars": 56097,
+   "stars": 56108,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "Aider-AI/aider",
-   "stars": 49665,
+   "stars": 49667,
    "reason": "The repository archive is over 25 MB."
   },
   {
@@ -3233,62 +3354,62 @@
   },
   {
    "repo": "zhayujie/CowAgent",
-   "stars": 47481,
+   "stars": 47482,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "anthropics/claude-plugins-official",
-   "stars": 43375,
+   "stars": 43397,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "wshobson/agents",
-   "stars": 41242,
+   "stars": 41246,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "mouredev/Hello-Python",
-   "stars": 37814,
+   "stars": 37815,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "davila7/claude-code-templates",
-   "stars": 32783,
+   "stars": 32785,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "openai/openai-python",
-   "stars": 31883,
+   "stars": 31889,
    "reason": "the OpenAI SDK itself"
   },
   {
    "repo": "mlflow/mlflow",
-   "stars": 28469,
+   "stars": 28470,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "SYSTRAN/faster-whisper",
-   "stars": 25994,
+   "stars": 25996,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "karpathy/minGPT",
-   "stars": 24959,
+   "stars": 24960,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "guillaumemeyer/watermarks-remover",
-   "stars": 24543,
+   "stars": 24545,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "comet-ml/opik",
-   "stars": 22783,
+   "stars": 22786,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "modelscope/FunASR",
-   "stars": 20768,
+   "stars": 20769,
    "reason": "The repository archive is over 25 MB."
   },
   {
@@ -3318,7 +3439,7 @@
   },
   {
    "repo": "wanshuiyin/Auto-claude-code-research-in-sleep",
-   "stars": 17791,
+   "stars": 17792,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
@@ -3348,12 +3469,12 @@
   },
   {
    "repo": "567-labs/instructor",
-   "stars": 14039,
+   "stars": 14038,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "DLR-RM/stable-baselines3",
-   "stars": 13914,
+   "stars": 13915,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
@@ -3388,7 +3509,7 @@
   },
   {
    "repo": "aden-hive/hive",
-   "stars": 11113,
+   "stars": 11112,
    "reason": "The repository archive is over 25 MB."
   },
   {

@@ -12,9 +12,9 @@ Built for the Nebius x NVIDIA Global AI Hackathon, track *Coding and Agentic Eng
 uvx --from git+https://github.com/vj-io/offramp offramp scan .
 ```
 
-Both list every OpenAI, Anthropic, LiteLLM and LangChain call site with its call shape and the list-price ratio of its model to Nemotron 3.5 Lightning. They read the code and never import or run it, and make no model call. Only a full run, with your own Token Factory key, measures parity.
+Both list every OpenAI, Anthropic, LiteLLM and LangChain call site with its call shape and the list-price ratio of its model to each Nemotron tier (Lightning, Super, Ultra). They read the code and never import or run it, and make no model call. Only a full run, with your own Token Factory key, measures parity.
 
-The same scan over the 30 most-starred public Python repos that import `openai` or `anthropic` ([ecosystem scan](docs/evidence/ecosystem-scan.md), 2026-10-21) found 184 call sites in 24 of them. Of the 166 chat calls, 17% have a tool-call, JSON or classification shape that Offramp scores deterministically, 72% build their prompt at runtime (a full run labels those), and 16% stream (flagged for manual review). 33 of the 50 chat calls that name their model use one its provider has retired or scheduled for shutdown.
+The same scan over 30 popular public Python repos ([ecosystem scan](docs/evidence/ecosystem-scan.md), 2026-10-21) found 184 call sites in 24 of them. The repos are the most-starred hits of a GitHub search for `openai` and `anthropic` that import either SDK and have an archive under 25 MB; 22 bigger top hits were skipped. Of the 166 chat calls, 17% have a tool-call, JSON or classification shape that Offramp scores deterministically, 84% build their prompt at runtime, 72% have a shape a static scan cannot tell (a full run labels those), and 16% stream (flagged for manual review). 33 of the 50 chat calls that name their model use one its provider has retired or scheduled for shutdown.
 
 ## Judges' path: no keys needed
 
