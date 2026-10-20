@@ -15,7 +15,7 @@ Per run, on a sandbox copy of the target repo:
 3. every patch is checked: the backstop (each file that ships as code, on disk, AST-identical to what
    Offramp's code wrote; no new ones), no removed tests; the repo's ruff + pytest in the sandbox; and, where
    an eval case can drive it, the probe (the migrated function, run there, must send exactly build_request's
-   request). Up to two repair rounds (Ultra). Any failure: the site becomes MANUAL_REVIEW;
+   request). Up to REPAIRS repair rounds (Ultra). Any failure: the site becomes MANUAL_REVIEW;
 4. the sites green alone are merged in site order and checked together, the backstop and the probe again
    too: a site whose code changed drops with every site whose patch edited code it reads; a red check gets
    one combined repair (tests and fakes only), then sites are added one at a time (MANUAL_REVIEW if dropped).

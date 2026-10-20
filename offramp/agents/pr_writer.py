@@ -300,7 +300,7 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
             "- Offramp's code rewrote each migrated call (the evaluated request as written-out keyword "
             "arguments, the reply read the OpenAI way) and the callers that build its client, and that code "
             "ships as Offramp wrote it; Nemotron 3 Super edited only tests and their fakes (each site's test "
-            "files are listed above) where they pinned the old provider, with up to two repair rounds on "
+            "files are listed above) where they pinned the old provider, with repair rounds on "
             "Nemotron 3 Ultra (thinking off) when this repo's checks failed."
         )
     green = sorted(sid for sid, ok in ctx.alone.items() if ok)
