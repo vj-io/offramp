@@ -82,6 +82,9 @@ class PRContext(BaseModel):
     site_files: dict[str, list[str]] = Field(default_factory=dict)  # PatchResult.site_files
     sandbox: str | None = None  # PatchResult.sandbox_mode: "docker" | "local"
     client_path: str | None = None  # PatchResult.client_path: where the Token Factory client module lives
+    alone: dict[str, bool] = Field(default_factory=dict)  # PatchResult.alone: site -> green on its own
+    combined: list[str] = Field(default_factory=list)  # PatchResult.combined: sites in the checked tree
+    combined_repair: list[str] = Field(default_factory=list)  # PatchResult.combined_repair: files it changed
 
 
 def is_test_path(path: str) -> bool:
@@ -259,7 +262,7 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         f"{len(migrated)} migrated to the cheapest Nemotron tier that passed parity on the holdout split; "
     )
     status += f"{len(kept)} kept on the original model"
-    status += f"; {len(manual)} need manual review." if manual else "."
+    status += f"; {len(manual)} {'needs' if len(manual) == 1 else 'need'} manual review." if manual else "."
     out += [f"Offramp evaluated {len(verdicts)} LLM call sites against references{cases}. {status}", ""]
 
     out += [
@@ -291,6 +294,29 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         text = " ".join(t for t in [notes.get(v.site_id, ""), changelog(v.site_id), files(v.site_id)] if t)
         out.append(
             f"- **{v.site_id}** `{site.file if site else '?'}` → {TIER_NAMES[Tier(v.tier)]}. {text}".rstrip()
+        )
+    if migrated:
+        out.append(
+            "- Offramp's code rewrote each migrated call (the evaluated request as written-out keyword "
+            "arguments, the reply read the OpenAI way) and the callers that build its client, and that code "
+            "ships as Offramp wrote it; Nemotron 3 Super edited only tests and their fakes (each site's test "
+            "files are listed above) where they pinned the old provider, with up to two repair rounds on "
+            "Nemotron 3 Ultra (thinking off) when this repo's checks failed."
+        )
+    green = sorted(sid for sid, ok in ctx.alone.items() if ok)
+    if len(green) > 1:
+        together = (
+            "all pass this repo's checks together" if set(ctx.combined) == set(green)
+            else f"{', '.join(ctx.combined) or 'none of them'} pass this repo's checks together"
+        )  # fmt: skip
+        if ctx.combined_repair:
+            files = ", ".join(f"`{p}`" for p in ctx.combined_repair)
+            together += f", after one combined repair by Nemotron 3 Ultra to {files}"
+        dropped = [sid for sid in green if sid not in ctx.combined]
+        if dropped:
+            together += f"; {', '.join(dropped)} dropped, see below"
+        out.append(
+            f"- The patches green on their own ({', '.join(green)}) were then checked merged: {together}."
         )
     if ctx.sandbox == "docker":
         out.append(

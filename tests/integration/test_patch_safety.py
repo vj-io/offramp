@@ -10,11 +10,14 @@ import pytest
 
 from offramp.agents.patcher import Edit, PatchEdits, compose_patches
 from offramp.sandbox import Sandbox, docker_available
-from offramp.schemas import RunConfig
+from offramp.schemas import RunConfig, Tier
+from offramp.tf import get_tier
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "agents"))
 from test_patcher import (  # noqa: E402  (shared tiny-repo fixtures)
+    BREAK_SHOUT,
     BUILD,
+    TESTS,
     TINY,
     migrate,
     patcher_llm,
@@ -22,21 +25,45 @@ from test_patcher import (  # noqa: E402  (shared tiny-repo fixtures)
     tiny_sites,
     tiny_verdicts,
     work_dir,
+    write_case,
 )
 
 pytestmark = pytest.mark.skipif(not docker_available(), reason="needs docker")
 CANARY = "canary-secret-123"
+PINS = """
+
+def test_greet_request():
+    client = FakeClient("x")
+    greet(client, "y")
+    assert client.calls[0]["model"] == "gpt-4o-mini"  # greet
+
+
+def test_shout_request():
+    client = FakeClient("x")
+    shout(client, "y")
+    assert client.calls[0]["model"] == "gpt-4o-mini"  # shout
+"""
+
+
+def pinned_tiny(name: str) -> Path:
+    """The tiny repo plus tests pinning each site's old model: Offramp's own changes alone fail them."""
+    repo = work_dir(name) / "src"
+    shutil.copytree(TINY, repo, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+    (repo / TESTS).write_text((repo / TESTS).read_text() + PINS)
+    return repo
+
+
+def repin(site: str) -> Edit:
+    old = f'== "gpt-4o-mini"  # {site}'
+    return Edit(path=TESTS, search=old, replace=f'== "{get_tier(Tier.LIGHTNING).model_id}"  # {site}')
 
 
 def test_a_patch_that_breaks_a_repo_test_is_downgraded_and_dropped():
-    breaking = migrate(
-        "tinyapp/shout.py",
-        extra=[Edit(path="tinyapp/shout.py", search=".strip().upper()", replace=".strip()")],
-    )
-    llm = patcher_llm(migrate("tinyapp/greet.py"), breaking, breaking)  # try + repair round
+    breaking = PatchEdits(edits=[repin("shout"), BREAK_SHOUT])  # the test now expects the wrong reply
+    llm = patcher_llm(PatchEdits(edits=[repin("greet")]), breaking, breaking)  # try + repair round
 
     result = compose_patches(
-        TINY,
+        pinned_tiny("safety-src"),
         tiny_sites(),
         tiny_verdicts(),
         tiny_adapters(),
@@ -146,16 +173,35 @@ def test_a_symlink_to_a_host_file_never_reaches_the_sandbox_or_a_reason():
 
 
 def test_a_patch_with_an_over_long_string_is_wrapped_and_passes_ruff():
-    """The model writes a long f-string on one line; ruff E501 would fail it. The wrap keeps its value."""
-    long = "Greet {name} warmly in one short sentence, mention the weather only if it is sunny, no emoji."
-    call = migrate("tinyapp/greet.py").edits[0]
-    content = Edit(path="tinyapp/greet.py", search='f"Greet {name}."', replace=f'f"{long} {long}"')
-    llm = patcher_llm(PatchEdits(edits=[call, content]), migrate("tinyapp/shout.py"))
+    """The model writes a long string on one line of a test; ruff E501 would fail it. The wrap keeps its
+    value."""
+    long = "Ship it, then ship it again, and keep shipping it until the release notes write themselves!"
+    old = 'assert motto(FakeClient("Ship it")) == "Ship it"'
+    content = Edit(path=TESTS, search=old, replace=f'assert motto(FakeClient("{long}")) == "{long}"')
+    llm = patcher_llm(PatchEdits(edits=[repin("greet"), content]), PatchEdits(edits=[repin("shout")]))
 
-    result = compose_patches(TINY, tiny_sites(), tiny_verdicts(), tiny_adapters(), llm, work_dir("e501"),
-                             config=RunConfig(repo_url="x"), build_request=BUILD)  # fmt: skip
+    src, config = pinned_tiny("e501-src"), RunConfig(repo_url="x")
+    result = compose_patches(src, tiny_sites(), tiny_verdicts(), tiny_adapters(), llm, work_dir("e501"),
+                             config=config, build_request=BUILD)  # fmt: skip
 
     assert result.alone == {"cs_01": True, "cs_03": True} and result.combined == ["cs_01", "cs_03"]
-    greet = result.files["tinyapp/greet.py"]
-    assert max(map(len, greet.splitlines())) <= 100 and "noqa" not in greet
-    assert "# offramp" not in greet.split("def greet")[1]  # nothing but the wrap changed around the string
+    tests = result.files[TESTS]
+    assert max(map(len, tests.splitlines())) <= 100 and "noqa" not in tests and long not in tests
+
+
+def test_the_probe_runs_the_migrated_function_in_docker_and_compares_its_request():
+    """The shipped call, run in the sandbox (network off) with a recorder for its client, sends exactly what
+    build_request evaluated for one of the site's own cases."""
+    src = work_dir("probe-src") / "src"
+    shutil.copytree(TINY, src, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+    write_case(src, "cs_01", {"name": "Ana"}, "You write one-line greetings.", "Greet Ana.")
+
+    work, config = work_dir("probe"), RunConfig(repo_url="x")
+    result = compose_patches(src, tiny_sites(), tiny_verdicts(), tiny_adapters(), patcher_llm(), work,
+                             config=config, build_request=BUILD)  # fmt: skip
+
+    assert result.combined == ["cs_01", "cs_03"] and result.sandbox_mode == "docker"
+    assert (
+        result.verification["cs_01"]
+        == "probe: run in the sandbox with case cs_01:001, it sends the evaluated request"
+    )
