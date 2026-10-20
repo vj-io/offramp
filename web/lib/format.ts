@@ -83,12 +83,26 @@ export function latencyText(deltaMs: number | null | undefined, afterP50: number
   return deltaMs != null ? signedMs(deltaMs) : "—";
 }
 
-// $/1k cell. Only a migrated call has an "after": the others stay on their source model, so it shows "—" there.
-export function costText(v: Pick<Verdict, "decision" | "cost_before_per_1k" | "cost_after_per_1k">): string {
+// The two "after" cells of the evidence table. Only a migrated call has an after: the others stay on their source
+// model, so latency is "—" and cost keeps its before and shows "—" after.
+export function afterCells(
+  v: Pick<Verdict, "decision" | "latency_delta_ms" | "cost_before_per_1k" | "cost_after_per_1k">,
+  afterP50: number | null,
+): { latency: string; cost: string } {
   const before = v.cost_before_per_1k;
-  if (before == null) return "—";
-  if (v.decision !== "MIGRATE") return `${usd(before)} → —`;
-  return v.cost_after_per_1k != null ? `${usd(before)} → ${usd(v.cost_after_per_1k)}` : `${usd(before)}, unchanged`;
+  const after = v.cost_after_per_1k;
+  const migrated = v.decision === "MIGRATE";
+  return {
+    latency: migrated ? latencyText(v.latency_delta_ms, afterP50) : "—",
+    cost:
+      before == null
+        ? "—"
+        : !migrated
+          ? `${usd(before)} → —`
+          : after != null
+            ? `${usd(before)} → ${usd(after)}`
+            : `${usd(before)}, unchanged`,
+  };
 }
 
 // "How parity was measured", labelled exactly as the run reports it; absent parts are omitted.

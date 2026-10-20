@@ -10,6 +10,8 @@ const mark = (m: string) => ({ "--mark": m }) as CSSProperties;
 
 // A reason can hold error text, file paths and tokens with no spaces: wrap anywhere, never widen the card.
 // Past this many characters it starts on 3 lines behind a native "more" toggle; the full text stays in the DOM.
+// The text sits outside the <summary>, so the toggle's accessible name stays short; the chip is the `group`, and
+// group-has-[details[open]] means its own <details> is open.
 const LONG_REASON = 120;
 
 function ManualReviewNote({ reason }: { reason: string }) {
@@ -22,13 +24,16 @@ function ManualReviewNote({ reason }: { reason: string }) {
       </span>
     );
   return (
-    <details className={`group ${chip}`} style={mark(DECISION_HL.MANUAL_REVIEW)}>
-      <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <span className="line-clamp-3 group-open:line-clamp-none">{text}</span>
-        <span className="text-base underline underline-offset-2 group-open:hidden">more</span>
-        <span className="hidden text-base underline underline-offset-2 group-open:inline">less</span>
-      </summary>
-    </details>
+    <div className={`group ${chip}`} style={mark(DECISION_HL.MANUAL_REVIEW)}>
+      <span className="line-clamp-3 group-has-[details[open]]:line-clamp-none">{text}</span>
+      <details>
+        <summary className="cursor-pointer list-none text-base underline underline-offset-2 [&::-webkit-details-marker]:hidden">
+          <span className="group-has-[details[open]]:hidden">more</span>
+          <span className="hidden group-has-[details[open]]:inline">less</span>
+          <span className="sr-only"> of the manual review reason</span>
+        </summary>
+      </details>
+    </div>
   );
 }
 
