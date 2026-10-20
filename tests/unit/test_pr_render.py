@@ -16,6 +16,7 @@ from offramp.agents.pr_writer import (
     PRContext,
     PRProse,
     SiteNote,
+    plain_reason,
     reference_summary,
     render_pr,
 )
@@ -283,3 +284,132 @@ def test_the_merged_check_a_combined_repair_and_a_dropped_site_are_reported():
     assert "; 2 need manual review." in plural and "cs_02 pass this repo's checks together" in plural
     c.combined = ["cs_04", "cs_03", "cs_02"]  # in site order, not sorted: still all of them (M5)
     assert "(cs_02, cs_03, cs_04) were then checked merged: all pass" in render_pr(c, PROSE).body
+
+
+# ---------------------------------------------------------------- Task 18: code-built site lines, the bar
+
+CS03_RAW = (  # a live cs_03 reason's shape (run 5): the repair broke the format, the try before failed
+    "the reply holds no complete edit block; last failure: repo checks failed on the patch (docker): "
+    "FAILED tests/test_extract.py::test_request_contract - pydantic_core._pydantic... | "
+    "FAILED tests/test_extract.py::test_every_fixture_email_is_sent_and_parsed[…] (13 cases) | "
+    "E       pydantic_core._pydantic_core.ValidationError: 1 validation error for ChatCompletion | "
+    "E       choices.0.message.content | E         Input should be a valid string [type=string_type, "
+    "input_value=TextBlock(citations=None,...damaged\"}', type='text'), input_type=TextBlock]"
+)
+
+
+def manual(c: PRContext, site_id: str, reason: str) -> PRContext:
+    c.verdicts = [
+        v.model_copy(update={"decision": "MANUAL_REVIEW", "reason": reason}) if v.site_id == site_id else v
+        for v in c.verdicts
+    ]
+    return c
+
+
+def test_a_manual_review_site_reads_as_one_plain_sentence_with_the_raw_failure_folded():
+    guess = PRProse(sites=[SiteNote(site_id="cs_03", note="A reviewer must confirm the German example.")])
+
+    body = render_pr(manual(ctx(), "cs_03", CS03_RAW), guess).body
+
+    line = next(ln for ln in body.splitlines() if ln.startswith("- **cs_03**"))
+    assert line == (
+        "- **cs_03** `helphub/orders/extract.py` needs manual review: The model's test edits fed an "
+        "Anthropic TextBlock into the OpenAI chat completion the test fake builds, so this repo's tests "
+        "failed (tests/test_extract.py)."
+    )
+    assert "A reviewer must confirm" not in body  # no model prose on a manual-review site
+    folded = body.split(line)[1].split("</details>")[0]
+    assert "<details><summary>Raw failure</summary>" in folded
+    assert "\n  FAILED tests/test_extract.py::test_every_fixture_email" in folded  # a check output per line
+    assert CS03_RAW.split(" | ")[0] in folded
+
+
+@pytest.mark.parametrize(
+    ("raw", "sentence"),
+    [
+        (
+            "repair produced no change; last failure: patch rejected (patch rules): patch removes tests "
+            "from tests/test_call_sites.py: ['test_o3_rules']",
+            "The model's edit to tests/test_call_sites.py deleted the test `test_o3_rules`, and Offramp "
+            "never ships a patch that deletes a test.",
+        ),
+        (
+            "the reply holds no complete edit block; last failure: patch rejected (patch rules): search "
+            "text not found in tests/test_triage.py: 'def test_request_contract():'",
+            "The model's edit to tests/test_triage.py quoted lines that are not in that file, so it could "
+            "not be applied.",
+        ),
+        (
+            "repo checks failed on the patch (docker): FAILED tests/test_a.py::test_x | "
+            "FAILED tests/test_b.py::y",
+            "With the model's test edits, this repo's checks still failed "
+            "(tests/test_a.py, tests/test_b.py).",
+        ),
+        (
+            "patch not composed: Ultra agent call cap reached (0)",
+            "The run's Token Factory budget ran out before a patch passed this repo's checks.",
+        ),
+        (
+            "patch rejected (patch rules): helphub/x.py is read-only: it ships as Offramp's code wrote it; "
+            "edit only tests and fakes",
+            "The model tried to edit helphub/x.py, which ships exactly as Offramp's code wrote it.",
+        ),
+        (
+            "green alone, but not together with cs_02 (docker): FAILED tests/test_cli.py::test_x",
+            "Its patch passes this repo's checks on its own, but not merged with the other migrated sites' "
+            "patches (tests/test_cli.py).",
+        ),
+    ],
+    ids=["deleted-test", "search-miss", "checks-failed", "budget", "read-only", "not-together"],
+)
+def test_patch_failures_get_a_code_built_plain_sentence(raw, sentence):
+    assert plain_reason(raw) == (sentence, raw)
+
+
+def test_a_reason_that_is_already_a_sentence_is_shown_as_it_is():
+    reason = "patch not composed: Offramp could not rewrite this call; a model-written call is not shipped"
+    assert plain_reason(reason) == (reason, None)
+
+    body = render_pr(manual(ctx(), "cs_03", reason)).body
+
+    assert f"needs manual review: {reason}" in body and "Raw failure" not in body
+
+
+def test_a_migrated_site_line_is_built_from_the_measurements_not_model_prose():
+    claim = PRProse(sites=[SiteNote(site_id="cs_02", note="Super matched reference behavior perfectly.")])
+    c = ctx()
+    tr = next(t for t in c.tier_results if t.site_id == "cs_01" and t.split == "holdout")
+
+    body = render_pr(c, claim).body
+
+    assert "matched reference behavior perfectly" not in body
+    line = next(ln for ln in body.splitlines() if ln.startswith("- **cs_01**"))
+    assert (
+        f"→ Nemotron 3.5 Lightning. `triage_ticket` now sends the request that passed parity on the holdout "
+        f"split: parity vs reference {verdict(c, 'cs_01').parity_pct:.1f}% over {len(tr.case_scores)} case"
+    ) in line
+
+
+def test_the_pass_bar_names_the_per_case_floor_for_free_text():
+    section = render_pr(ctx()).body.split("## How parity was measured")[1]
+
+    assert (
+        "free text: judge mean of at least 4.0 on a 1–5 rubric with no case below 3.0, and at least"
+        in section
+    )
+
+
+def test_a_reference_the_judge_scored_below_3_is_flagged_and_kept():
+    c = ctx()
+    c.verdicts = [
+        v.model_copy(update={"weak_references": {"cs_06:020": 1.0, "cs_06:011": 2.5}}) if v.site_id == "cs_06"
+        else v
+        for v in c.verdicts
+    ]  # fmt: skip
+
+    section = render_pr(c).body.split("## How parity was measured")[1]
+
+    assert (
+        "- cs_06: reference judged weak: cs_06:011, 2.5/5; cs_06:020, 1/5 (below 3; kept in the evaluation)."
+        in section
+    )

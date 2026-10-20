@@ -137,6 +137,14 @@ export function closedByConstructionText(v: Verdict): string | null {
   return `${v.closed_reference_model} is not compared: it audited these references, so it agrees with every one kept by construction`;
 }
 
+// Reference QA: free-text references the judge scored below 3. Shown on the report and in the PR, never excluded.
+export function weakReferencesText(v: Verdict): string | null {
+  const weak = Object.entries(v.weak_references ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  if (weak.length === 0) return null;
+  const cases = weak.map(([id, score]) => `${id}, ${Number(score.toFixed(2))}/5`).join("; ");
+  return `reference judged weak: ${cases} (below 3; kept in the evaluation)`;
+}
+
 // Split a note into text and http(s) links; anything else (bare domains) stays plain text.
 export function linkParts(text: string): { text: string; href?: string }[] {
   return text

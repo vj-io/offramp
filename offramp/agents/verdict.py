@@ -30,8 +30,10 @@ from pydantic import BaseModel, Field
 from offramp.evals.scorers import score_case
 from offramp.evals.scorers.aggregate import (
     _NOT_VALID,
+    JUDGE_CASE_FLOOR,
     JUDGE_FLOOR,
     JUDGE_MARGIN,
+    WEAK_REFERENCE,
     Thresholds,
     _at_least,
     site_pass,
@@ -159,6 +161,10 @@ def _phrase(result: TierResult, task_type: TaskType, thresholds: Thresholds | Ru
             return f"judge mean {mean:.2f} ≥ {JUDGE_FLOOR:.1f} {parity}"
         if not _at_least(result.score, JUDGE_FLOOR):
             return f"judge mean {mean:.2f} < {JUDGE_FLOOR:.1f} {parity}"
+        low = min(result.case_scores, key=lambda c: c.score, default=None)
+        if low is not None and not _at_least(low.score, JUDGE_CASE_FLOOR):
+            return (f"judge mean {mean:.2f} ≥ {JUDGE_FLOOR:.1f}, but case {low.case_id} scored "
+                    f"{low.score:.2f} < {JUDGE_CASE_FLOOR:.1f} {parity}")  # fmt: skip
         return f"judge mean {mean:.2f} more than {JUDGE_MARGIN:g} below the references' judge mean {parity}"
     bar = thresholds.reasoning_threshold if task_type == "reasoning" else thresholds.threshold
     head, t = f"parity vs reference {pct:.1f}%", f"{round(bar * 100, 4):g}%"
@@ -312,5 +318,10 @@ def decide(
         sunset_risk=sunset,
         closed_reference_model=closed_parity[0] if closed_parity else None,
         closed_reference_parity_pct=closed_parity[1] if closed_parity else None,
+        weak_references={
+            c.case_id: c.reference_score
+            for c in holdout.case_scores
+            if c.reference_score is not None and c.reference_score < WEAK_REFERENCE
+        },
         reason=f"{sentence} {clause}" if sentence else clause,
     )

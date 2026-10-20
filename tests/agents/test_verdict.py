@@ -391,6 +391,37 @@ def test_free_text_below_the_reference_mean_margin_says_so():
     assert v.reason.startswith("judge mean 4.00 more than 0.3 below the references' judge mean")
 
 
+def test_a_free_text_case_below_the_per_case_floor_keeps_the_site_and_says_which():
+    rows = [CaseScore(case_id=f"cs_06:{i:03d}", passed=True, score=5.0) for i in range(7)]
+    rows.append(CaseScore(case_id="cs_06:015", passed=False, score=2.5))
+    holdout = result(FREE_TEXT, Tier.LIGHTNING, "holdout", rows)
+    assert holdout.score == pytest.approx(4.6875) and not holdout.passed
+
+    v = keep(FREE_TEXT, Tier.LIGHTNING, holdout)
+
+    assert v.decision == "KEEP_CLOSED"
+    assert v.reason.startswith(
+        "judge mean 4.68 ≥ 4.0, but case cs_06:015 scored 2.50 < 3.0 (parity vs reference 87.5%) on Lightning"
+    )
+
+
+def test_references_the_judge_scored_below_3_are_flagged_on_the_verdict_and_kept():
+    rows = [
+        CaseScore(case_id="cs_06:001", passed=True, score=5.0, reference_score=4.5),
+        CaseScore(case_id="cs_06:020", passed=True, score=4.5, reference_score=1.0),
+        CaseScore(case_id="cs_06:021", passed=True, score=4.5, reference_score=3.0),  # at 3: not weak
+        CaseScore(case_id="cs_06:022", passed=True, score=4.5),  # judged without a reference
+    ]
+    holdout = result(FREE_TEXT, Tier.SUPER, "holdout", rows)
+    dev = result(FREE_TEXT, Tier.SUPER, "dev", [CaseScore(case_id="cs_06:900", passed=True, score=4.5)])
+
+    v = decide(FREE_TEXT, evidence(FREE_TEXT, Tier.SUPER, dev, holdout), reason_llm(BudgetExceeded("x")),
+               RunConfig(repo_url="x"), price_lookup=price)  # fmt: skip
+
+    assert v.decision == "MIGRATE" and v.parity_pct == 100.0  # shown, never excluded
+    assert v.weak_references == {"cs_06:020": 1.0}
+
+
 def test_migrate_free_text_parity_is_the_share_of_passing_cases():
     rows = [
         CaseScore(case_id=f"cs_06:{i:03d}", passed=s >= 4, score=s) for i, s in enumerate([5, 5, 4, 3.67])

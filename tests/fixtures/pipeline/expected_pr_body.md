@@ -16,8 +16,8 @@ Offramp evaluated 6 LLM call sites against references (69 cases, 24 in the holdo
 ## What changed
 
 - `helphub/offramp_client.py` added inside the `helphub` package, so it ships with it: OpenAI SDK client for Nebius Token Factory (`token_factory_client()`, reads `NEBIUS_API_KEY` and optional `NEBIUS_BASE_URL`) and the Nemotron tier constants `LIGHTNING`, `SUPER`, `ULTRA`. Every migrated call sends `chat_template_kwargs.enable_thinking` explicitly, since Nemotron reasons by default.
-- **cs_04** `helphub/qa/rag_answer.py` → Nemotron 3.5 Lightning. Files: `helphub/cli.py`, `helphub/qa/rag_answer.py`. Tests updated (they pinned the old provider's request or fakes): `tests/test_call_sites.py`, `tests/test_cli.py`, `tests/test_rag_answer.py`.
-- **cs_06** `helphub/summaries/summarize.py` → Nemotron 3.5 Lightning. Files: `helphub/cli.py`, `helphub/summaries/summarize.py`. Tests updated (they pinned the old provider's request or fakes): `tests/fakes.py`, `tests/test_call_sites.py`, `tests/test_cli.py`, `tests/test_summarize.py`.
+- **cs_04** `helphub/qa/rag_answer.py` → Nemotron 3.5 Lightning. `answer_question` now sends the request that passed parity on the holdout split: judge mean 5/5 over 5 cases, lowest case 5/5. Files: `helphub/cli.py`, `helphub/qa/rag_answer.py`. Tests updated (they pinned the old provider's request or fakes): `tests/test_call_sites.py`, `tests/test_cli.py`, `tests/test_rag_answer.py`.
+- **cs_06** `helphub/summaries/summarize.py` → Nemotron 3.5 Lightning. `summarize_thread` now sends the request that passed parity on the holdout split: judge mean 5/5 over 4 cases, lowest case 5/5. Files: `helphub/cli.py`, `helphub/summaries/summarize.py`. Tests updated (they pinned the old provider's request or fakes): `tests/fakes.py`, `tests/test_call_sites.py`, `tests/test_cli.py`, `tests/test_summarize.py`.
 - Offramp's code rewrote each migrated call (the evaluated request as written-out keyword arguments, the reply read the OpenAI way) and the callers that build its client, and that code ships as Offramp wrote it; Nemotron 3 Super edited only tests and their fakes (each site's test files are listed above) where they pinned the old provider, with repair rounds on Nemotron 3 Ultra (thinking off) when this repo's checks failed.
 - The patches green on their own (cs_04, cs_06) were then checked merged: all pass this repo's checks together.
 - Each site's patch was checked with this repo's own `ruff check` and `pytest` in Docker (network off, 2 CPUs); a patch that failed them was dropped and its site marked for manual review.
@@ -27,13 +27,22 @@ Offramp evaluated 6 LLM call sites against references (69 cases, 24 in the holdo
 - **cs_01** `helphub/inbox/triage.py` stays on gpt-4o-mini: The triage ticket function classifies support tickets but Lightning tier failed to match reference outputs on held-out cases, so the call remains on the current model. parity vs reference 85.7% < 95% on Lightning after 1 adapter iteration; cost per 1k calls $0.0543 before (est.). Adapter changes: Clarified technical_support description to explicitly include missing system emails/notifications; Added few-shot example for missing confirmation email -> technical_support; Added few-shot example for duplicate charge -> billing to reinforce boundary.
 - **cs_02** `helphub/ops/agent_step.py` stays on claude-sonnet-4-5: The call site selects actions based on user input; none of the tested tiers matched reference behavior closely enough, so the current model remains. parity vs reference 50.0% < 95% on Lightning after 3 adapter iterations; cost per 1k calls $4.14 before (est.). Adapter changes: Replaced few-shot assistant responses with natural-language reasoning that precedes tool calls, eliminating the conflicting text-only examples that taught the model to output tool names as plain text.; Kept the system prompt's explicit function-calling instruction as the primary behavioral anchor..
 - **cs_03** `helphub/orders/extract.py` stays on claude-sonnet-4-5: The function extracts structured order data from emails but none of the tested tiers matched reference outputs on held‑out cases, so the current model remains. parity vs reference 71.4% < 95% on Lightning after 2 adapter iterations; cost per 1k calls $3.47 before (est.). Adapter changes: Clarified customer_email rule: only use From header when sender is the ordering customer; Clarified customer_name rule: use body/signature name, not From header unless it matches customer identity; Clarified order_date rule: order placement date, not email date; Added explicit prohibition against cross-email contamination; Kept reasoning off and max_tokens unchanged.
-- **cs_05** `helphub/refunds/plan.py` needs manual review: repair produced no change; last failure: patch rejected (patch rules): patch removes tests from tests/test_call_sites.py: ['test_openai_reasoning_site_follows_the_o3_parameter_rules']
+- **cs_05** `helphub/refunds/plan.py` needs manual review: The model's edit to tests/test_call_sites.py deleted the test `test_openai_reasoning_site_follows_the_o3_parameter_rules`, and Offramp never ships a patch that deletes a test.
+
+  <details><summary>Raw failure</summary>
+
+  ```text
+  patch not composed: no recording of this patcher call; last failure: patch rejected (patch rules): patch removes tests from tests/test_call_sites.py: ['test_openai_reasoning_site_follows_the_o3_parameter_rules']
+  ```
+
+  </details>
+
 
 ## How parity was measured
 
 The source models' own outputs were never recorded; parity is agreement with references.
 
-Each site's cases are split once into dev (adapter iteration) and holdout (verdict only). Pass bar: 95% agreement with the references (90% for reasoning); free text: judge mean of at least 4.0 on a 1–5 rubric.
+Each site's cases are split once into dev (adapter iteration) and holdout (verdict only). Pass bar: 95% agreement with the references (90% for reasoning); free text: judge mean of at least 4.0 on a 1–5 rubric with no case below 3.0.
 - cs_02: free-text arguments escalate_to_human.priority, escalate_to_human.reason checked for presence, not wording.
 
 | Site | References | Cases (dev / holdout) | Reference audit (checked / agreed / dropped / human-verified, by) |

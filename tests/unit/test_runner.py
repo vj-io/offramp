@@ -530,6 +530,29 @@ def test_free_text_with_reference_is_pairwise_and_reference_mean_gates_pass():
     assert result.failing_case_ids == ["cs_01:001", "cs_01:002"]
 
 
+def test_free_text_case_scores_keep_the_judge_score_of_the_reference():
+    cases = [_case(1), _case(2)]
+    pair = [
+        {"case": 1, "note": "", "a": _rub(5), "b": _rub(1)},
+        {"case": 2, "note": "", "a": _rub(5), "b": _rub(4)},
+    ]
+    swap = [
+        {"case": 1, "note": "", "a": _rub(1), "b": _rub(5)},
+        {"case": 2, "note": "", "a": _rub(4), "b": _rub(5)},
+    ]
+    client = CaseClient(
+        {c.id: _ok("candidate") for c in cases}, judge_replies=(_judge_reply(*pair), _judge_reply(*swap))
+    )
+    refs = [_ref(1, text="a weak reference"), _ref(2, text="a good reference")]
+
+    result = _run(client, cases, refs, site=_site("free_text"))
+
+    assert [(c.case_id, c.score, c.reference_score) for c in result.case_scores] == [
+        ("cs_01:001", 5.0, 1.0),
+        ("cs_01:002", 5.0, 4.0),
+    ]
+
+
 def test_budget_exceeded_in_judge_returns_budget_stop():
     case = _case(1)
     client = CaseClient(

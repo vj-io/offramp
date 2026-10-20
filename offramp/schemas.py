@@ -197,6 +197,7 @@ class CaseScore(BaseModel):
     score: float  # 0..1 for deterministic checks; judge rubric mean 1..5 for free_text
     detail: str = ""
     error_category: str | None = None  # e.g. invalid_json, missing_key, wrong_label, wrong_tool
+    reference_score: float | None = None  # free_text judged pairwise: the judge's 1..5 score of the reference
 
 
 class TierMetrics(BaseModel):
@@ -239,6 +240,9 @@ class Verdict(BaseModel):
     # that model's holdout parity on the same references. Model named, parity None: that model blind-audited
     # these references (only those it agreed with were kept), so a comparison would be circular; none is made
     closed_reference_parity_pct: float | None = None
+    # free text: holdout case -> the judge's score of its reference, for references scored below 3 (reference
+    # QA: shown in the PR and the report, never excluded from the evaluation)
+    weak_references: dict[str, float] = Field(default_factory=dict)
     reason: str
 
 

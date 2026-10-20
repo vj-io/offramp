@@ -31,6 +31,7 @@ from offramp.agents.patcher import (
     _apply,
     _map_reply,
     _prepare,
+    _repair,
     _rewrite_call,
     _summary,
     add_fixtures,
@@ -626,9 +627,11 @@ def test_record_demo_patches():
     print({v.site_id: (v.decision, v.reason) for v in result.verdicts})
 
 
-def test_demo_patches_keep_the_demo_repo_green():
+def test_demo_patches_keep_the_demo_repo_green(unrecorded_patcher_calls_stop):
     """Task 12's MIGRATE set, recorded live (Super). Each site is checked alone against the same base, then
-    all green ones together; the outcome below is what the recording produced (see the task-10 report)."""
+    all green ones together; the outcome below is what the recording produced (see the task-10 report).
+    Task 18 changed the repair turn after a deleted test: cs_05's Ultra repair is not recorded for it yet, so
+    the replay stops cs_05 there, with the recorded first try's failure kept."""
     result = run_demo(live=False)
 
     assert result.client_path == (None if not result.combined else "helphub/offramp_client.py")
@@ -643,6 +646,11 @@ def test_demo_patches_keep_the_demo_repo_green():
     for path, text in result.files.items():  # E501 never reaches the PR
         assert max(map(len, text.splitlines()), default=0) <= 100, path
     assert DEMO_OUTCOME == ({s: result.alone[s] for s in sorted(result.alone)}, result.combined)
+    assert verdict(result, "cs_05").reason == (
+        "patch not composed: no recording of this patcher call; last failure: patch rejected (patch rules): "
+        "patch removes tests from tests/test_call_sites.py: "
+        "['test_openai_reasoning_site_follows_the_o3_parameter_rules']"
+    )
 
 
 def test_edit_blocks_round_trip_with_python_escapes_and_empty_replacements():
@@ -2216,6 +2224,10 @@ SHAPES = {
         [Edit(path="tinyapp/test_words.py", search='GREETING = "Greet"', replace='GREETING = "Insult"')],
         module=PLANT.replace(VERBS_LINE, "from tinyapp.test_words import GREETING\n\nVERBS = [GREETING]\n"),
         extra={"tinyapp/test_words.py": WORDS}),
+    "whole-file-test-path-module-shipped-code-imports": shape(  # a whole-file block: the same two layers
+        [Edit(path="tinyapp/test_words.py", search="", replace='GREETING = "Insult"\n', whole=True)],
+        module=PLANT.replace(VERBS_LINE, "from tinyapp.test_words import GREETING\n\nVERBS = [GREETING]\n"),
+        extra={"tinyapp/test_words.py": WORDS}),
     # re-review 3, F2: after the evaluated call (a later request changed, or a second one sent)
     "f2-alias": after_call('    v = VERBS\n    v[0] = "Insult"\n'),
     "f2-comprehension-shadow": after_call('    _ = [VERBS for VERBS in ()]\n    VERBS[0] = "Insult"\n'),
@@ -2461,3 +2473,112 @@ def test_a_test_edit_reading_a_constant_offramp_wrote_gets_its_import():
     assert verdict(result, "cs_01").decision == "MIGRATE"
     assert "from tinyapp.greet import NEMOTRON_FEW_SHOT\n" in result.files[TESTS]
     assert "from tinyapp.greet import NEMOTRON_FEW_SHOT" not in result.files[SHOUT]
+
+
+# ---------------------------------------------------------------- repairs that name the problem; format slips
+
+
+def test_a_repair_after_a_deleted_test_names_it_and_asks_for_a_rewrite_never_a_deletion():
+    gone = Edit(path=TESTS, search="def test_greet_strips_the_reply():", replace="def _skipped():")
+    llm = patcher_llm(PatchEdits(edits=[gone]), migrate(GREET), migrate(SHOUT))
+
+    result = run(llm)
+
+    repair = llm.calls[1]["messages"][-1]["content"]
+    assert repair.startswith(  # the refusal itself stays
+        f"Your edits were not accepted: patch rejected (patch rules): patch removes tests from {TESTS}: "
+        "['test_greet_strips_the_reply']"
+    )
+    assert f"`{TESTS}::test_greet_strips_the_reply`" in repair
+    assert "Never delete a test" in repair and "rewrite" in repair and "new Nemotron request" in repair
+    assert "WHOLE FILE" not in repair  # no SEARCH miss: no whole-file offer
+    assert verdict(result, "cs_01").decision == "MIGRATE"
+
+
+def test_a_repair_after_a_search_miss_offers_the_whole_test_file():
+    miss = Edit(path=TESTS, search="no such text", replace="x")
+    llm = patcher_llm(PatchEdits(edits=[miss]), migrate(GREET), migrate(SHOUT))
+
+    run(llm)
+
+    repair = llm.calls[1]["messages"][-1]["content"]
+    assert f"search text not found in {TESTS}" in repair
+    assert f"`{TESTS}`" in repair.split("search text not found")[1]
+    assert f"FILE: {TESTS}\n<<<<<<< WHOLE FILE\n" in repair and "\n>>>>>>> WHOLE FILE" in repair
+    assert "Never delete a test" not in repair
+
+
+def test_the_repair_offers_a_whole_file_only_for_test_files_under_300_lines():
+    short, long = "def test_a():\n    pass\n", "x = 1\n" * 300
+    shown = {"tests/test_a.py": short, "tests/test_long.py": long, "app/mod.py": short}
+
+    def offered(path):
+        return "WHOLE FILE" in _repair(
+            f"patch rejected (patch rules): search text not found in {path}: 'x'", shown
+        )
+
+    assert offered("tests/test_a.py")
+    assert not offered("tests/test_long.py") and not offered("app/mod.py") and not offered("tests/unseen.py")
+    nested = (
+        "the reply holds no complete edit block; last failure: patch rejected (patch rules): search text not "
+        "found in tests/test_a.py (an earlier block already changed these lines: merge the two): 'x'"
+    )
+    assert "`tests/test_a.py`" in _repair(nested, shown)  # a miss in the last checked try counts too
+
+
+def test_the_two_format_slips_seen_live_parse_and_content_is_not_loosened():
+    block = "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n"
+    files_line = "FILES: a.py\n" + block + "=======\n>>>>>>> REPLACE\nNOTES: n"  # cs_01's repair, live
+    bare = (
+        "FILE: a.py\n" + block + "=======\nREPLACE\n"  # cs_03's repairs, live: a bare REPLACE
+        "FILE: b.py\n<<<<<<< SEARCH\ny = 1\n=======\nREPLACE_ME = 2\n>>>>>>> REPLACE\nNOTES: n"
+    )
+
+    assert [(e.path, e.search, e.replace) for e in parse_edits(files_line).edits] == [
+        ("a.py", "x = 1", "x = 2")
+    ]
+    assert [(e.path, e.search, e.replace) for e in parse_edits(bare).edits] == [
+        ("a.py", "x = 1", "x = 2"),  # the bare marker closes its own block, never the next one's
+        ("b.py", "y = 1", "REPLACE_ME = 2"),  # a line that only starts with REPLACE is content
+    ]
+    near = Edit(path="t.py", search="x  = 1", replace="x = 2")  # the SEARCH text still matches exactly
+    assert "not found" in _apply([near], {"t.py": "x = 1\n"})[0]
+
+
+def test_a_whole_file_block_round_trips_and_replaces_a_short_test_file():
+    text = (TINY / TESTS).read_text().replace("def test_motto", "# whole file\ndef test_motto")
+    whole = Edit(path=TESTS, search="", replace=text, whole=True)
+    assert parse_edits(edits_text(PatchEdits(edits=[whole], notes="n"))).edits == [whole]
+    llm = patcher_llm(PatchEdits(edits=[whole]), migrate(SHOUT))
+
+    result = run(llm)
+
+    assert verdict(result, "cs_01").decision == "MIGRATE"
+    assert "# whole file" in result.files[TESTS]
+
+
+@pytest.mark.parametrize(
+    ("path", "lines", "problem"),
+    [
+        ("tests/test_long.py", 300, "has 300 lines: give SEARCH/REPLACE blocks"),
+        ("app/mod.py", 3, "a whole-file block is for test files only"),
+        ("tests/test_locked.py", 3, "is read-only"),
+        ("tests/unseen.py", 3, "is not editable for this site"),
+    ],
+)
+def test_whole_file_blocks_are_refused_outside_short_unlocked_test_files(path, lines, problem):
+    files = {p: "x = 1\n" * lines for p in ("tests/test_long.py", "app/mod.py", "tests/test_locked.py")}
+    whole = Edit(path=path, search="", replace="y = 2\n", whole=True)
+
+    assert problem in _apply([whole], files, frozenset({"tests/test_locked.py"}))[0]
+
+
+def test_a_whole_file_block_that_drops_a_test_is_refused_like_a_search_block():
+    text = (TINY / TESTS).read_text().split("def test_greet_strips_the_reply")[0]
+    whole = Edit(path=TESTS, search="", replace=text, whole=True)
+    llm = patcher_llm(PatchEdits(edits=[whole]), PatchEdits(edits=[whole]), migrate(SHOUT))
+
+    result = run(llm)
+
+    assert "patch removes tests from tests/test_tinyapp.py" in verdict(result, "cs_01").reason
+    assert verdict(result, "cs_01").decision == "MANUAL_REVIEW"

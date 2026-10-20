@@ -25,6 +25,7 @@ import pytest
 
 from offramp import pipeline
 from offramp.agents.verdict import pricing_yaml_price
+from offramp.evals.scorers import aggregate
 from offramp.sandbox import docker_available
 from offramp.schemas import RunConfig, Stage
 from offramp.tf import Budget, TFClient
@@ -127,7 +128,13 @@ def test_record_demo_run(tmp_path, monkeypatch):
     print({k: (v["decision"], v["reason"]) for k, v in verdicts(log).items()})
 
 
-def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch):
+def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch, unrecorded_patcher_calls_stop):
+    """Task 18 changed two things these cassettes predate; both go away with the next live re-record:
+    - the patcher's repair turn after a deleted test: cs_05's Ultra repair is not recorded for it, so the
+      replay stops cs_05 there (see the fixture), with its recorded first try's failure kept;
+    - the free-text per-case floor: under it cs_04's Lightning dev run (judge mean 4.24) fails on a case
+      below 3.0 and the pipeline iterates, which was never recorded. This replay keeps its recorded rule."""
+    monkeypatch.setattr(aggregate, "JUDGE_CASE_FLOOR", aggregate.RUBRIC_MIN)
     log = run_demo(tmp_path, monkeypatch, live=False)
     snap = pipeline.snapshot(log.run_id, log.events)
 
@@ -150,8 +157,9 @@ def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch):
         "cs_06": [("MIGRATE", "lightning")],
     }
     assert found["cs_05"]["reason"] == (
-        "repair produced no change; last failure: patch rejected (patch rules): patch removes tests from "
-        "tests/test_call_sites.py: ['test_openai_reasoning_site_follows_the_o3_parameter_rules']"
+        "patch not composed: no recording of this patcher call; last failure: patch rejected (patch rules): "
+        "patch removes tests from tests/test_call_sites.py: "
+        "['test_openai_reasoning_site_follows_the_o3_parameter_rules']"
     )
     # cs_04's and cs_06's patches passed the demo repo's own ruff + pytest, alone and together
     patch = json.loads((log.dir / "patch.json").read_text())
@@ -170,6 +178,8 @@ def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch):
     }
 
     body = pipeline.report(log.dir, log.run_id, log.events)["pr_body_markdown"]
+    if os.environ.get("UPDATE_SNAPSHOTS"):  # after an intended template change, offline; review the diff
+        SNAPSHOT.write_text(body)
     assert body == SNAPSHOT.read_text()
     for site_id, v in found.items():  # every verdict is in the PR, with the number it was decided on
         assert site_id in body

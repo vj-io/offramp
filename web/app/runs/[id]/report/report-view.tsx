@@ -22,6 +22,7 @@ import {
   TIER_NAME,
   TIER_SHORT,
   usd,
+  weakReferencesText,
 } from "@/lib/format";
 import { downloadPayload, pickSource, type RunSource } from "@/lib/run-state";
 import type { CallSite, CaseSummary, RunReport, TierResult, Verdict } from "@/lib/types";
@@ -274,6 +275,7 @@ function HowMeasured({ summaries, verdicts }: { summaries: CaseSummary[] | undef
             const audit = auditText(c.audit);
             const verdict = verdicts.find((v) => v.site_id === c.site_id);
             const byConstruction = verdict ? closedByConstructionText(verdict) : null;
+            const weak = verdict ? weakReferencesText(verdict) : null;
             return (
               <li key={c.site_id} className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-3">
                 <span className="font-mono text-sm font-bold">{c.site_id}</span>
@@ -282,6 +284,7 @@ function HowMeasured({ summaries, verdicts }: { summaries: CaseSummary[] | undef
                   <span className="font-mono text-sm">{c.holdout}</span> holdout.
                   {audit && <> Reference audit: {audit}.</>}
                   {byConstruction && <> {byConstruction}.</>}
+                  {weak && <> {weak[0].toUpperCase() + weak.slice(1)}.</>}
                 </span>
               </li>
             );

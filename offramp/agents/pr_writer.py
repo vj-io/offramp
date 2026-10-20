@@ -2,8 +2,9 @@
 
 The title, evidence table, every number and the <details> blocks are rendered deterministically from the run's
 Verdict / TierResult / reference inputs (`render_pr`). Nemotron 3 Super (role `pr_writer`) writes prose only
-(`write_pr`): a short summary and one note per site. Prose that contains a number is discarded, so a number in
-the PR can only come from a measurement.
+(`write_pr`): a short summary and a note per kept site. Prose that contains a number is discarded, so a number
+in the PR can only come from a measurement. A migrated site's line and a manual-review site's reason are built
+by code: the measurements, and the patch stage's failure as one plain sentence with the raw failure folded.
 """
 
 import json
@@ -14,6 +15,7 @@ import openai
 from pydantic import BaseModel, Field
 
 from offramp.evals.errors import ProviderError
+from offramp.evals.scorers.aggregate import JUDGE_CASE_FLOOR, JUDGE_FLOOR, JUDGE_MARGIN, WEAK_REFERENCE
 from offramp.pricing import entry
 from offramp.schemas import (
     TIER_ORDER,
@@ -226,6 +228,76 @@ def _failing(ctx: PRContext, v: Verdict) -> list[str]:
     return [*lines, "", "</details>", ""]
 
 
+def _migrated_line(ctx: PRContext, v: Verdict, site: CallSite | None) -> str:
+    """What the call does now and what was measured on the holdout split; nothing else is claimed."""
+    tr = _result(ctx, v)
+    measured = ""
+    if tr is not None and tr.split == "holdout" and tr.case_scores:
+        n = f"{len(tr.case_scores)} case{'s' if len(tr.case_scores) != 1 else ''}"
+        if _task(site) == "free_text":
+            low = min(c.score for c in tr.case_scores)
+            measured = f": judge mean {round(tr.score, 2):g}/5 over {n}, lowest case {round(low, 2):g}/5"
+        else:
+            measured = f": parity vs reference {_pct(v.parity_pct)} over {n}"
+    call = f"`{site.function}`" if site and site.function else "The call"
+    return f"{call} now sends the request that passed parity on the holdout split{measured}."
+
+
+def plain_reason(reason: str) -> tuple[str, str | None]:
+    """A patch-stage failure as one sentence a reviewer reads, plus the raw failure to fold under it:
+    (sentence, raw). Any other reason is a sentence already: (reason, None)."""
+    root = reason.rsplit("; last failure: ", 1)[-1]  # the last checked try: what actually failed
+    failing = sorted(set(re.findall(r"(?:FAILED|ERROR) ([^\s:]+)::", root)))
+    where = f" ({', '.join(failing)})" if failing else ""
+    if reason.startswith("green alone, but"):
+        sentence = (f"Its patch passes this repo's checks on its own, but not merged with the other migrated "
+                    f"sites' patches{where}.")  # fmt: skip
+    elif m := re.search(r"patch removes tests from (\S+): \[([^\]]*)\]", root):
+        names = re.findall(r"'(\w+)'", m[2])
+        tests = f"test{'s' if len(names) != 1 else ''} {', '.join(f'`{n}`' for n in names)}"
+        sentence = (f"The model's edit to {m[1]} deleted the {tests}, and Offramp never ships a patch that "
+                    "deletes a test.")  # fmt: skip
+    elif m := re.search(r"search text (not found|found \d+ times) in (\S+?)(?::| \()", root):
+        how = "are not in that file" if m[1] == "not found" else "occur in that file more than once"
+        sentence = f"The model's edit to {m[2]} quoted lines that {how}, so it could not be applied."
+    elif m := re.search(r"(\S+) is read-only", root):
+        sentence = f"The model tried to edit {m[1]}, which ships exactly as Offramp's code wrote it."
+    elif m := re.search(r"(\S+) is not editable for this site", root):
+        sentence = f"The model tried to edit {m[1]}, which this site's patch may not change."
+    elif m := re.search(r"(\S+) does not parse", root):
+        sentence = f"The model's edit left {m[1]} unparseable."
+    elif "the patch changes code that ships" in root:
+        sentence = "The model's patch changed code that ships, which only Offramp's code may write."
+    elif "does not send the evaluated request" in root:
+        sentence = "The patched call does not send the request that passed the evaluation."
+    elif (m := re.search(r"input_type=(\w+Block)\b", root)) and "validation error for ChatCompletion" in root:
+        sentence = (f"The model's test edits fed an Anthropic {m[1]} into the OpenAI chat completion the "
+                    f"test fake builds, so this repo's tests failed{where}.")  # fmt: skip
+    elif root.startswith("repo checks failed"):
+        sentence = f"With the model's test edits, this repo's checks still failed{where}."
+    elif root.startswith("the reply holds no complete edit block"):
+        sentence = "The model's reply held no complete edit."
+    elif re.search(r"cap (reached|exceeded)|no recording of this patcher call", root):
+        sentence = "The run's Token Factory budget ran out before a patch passed this repo's checks."
+    else:
+        return reason, None
+    return sentence, reason
+
+
+def _folded(raw: str) -> list[str]:
+    """The raw failure in a collapsed block under its list item, one check output per line."""
+    lines = raw.replace(" | ", "\n").splitlines()
+    fence = "`" * max(3, 1 + max((len(t) for t in re.findall(r"`+", raw)), default=0))
+    block = [f"{fence}text", *lines, fence, "", "</details>"]
+    return [
+        "",
+        "  <details><summary>Raw failure</summary>",
+        "",
+        *(f"  {ln}" if ln else "" for ln in block),
+        "",
+    ]
+
+
 def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
     prose = prose or PRProse()
     notes = {n.site_id: n.note for n in prose.sites}
@@ -293,7 +365,9 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         )
     for v in migrated:
         site = sites.get(v.site_id)
-        text = " ".join(t for t in [notes.get(v.site_id, ""), changelog(v.site_id), files(v.site_id)] if t)
+        text = " ".join(
+            t for t in [_migrated_line(ctx, v, site), changelog(v.site_id), files(v.site_id)] if t
+        )
         out.append(
             f"- **{v.site_id}** `{site.file if site else '?'}` → {TIER_NAMES[Tier(v.tier)]}. {text}".rstrip()
         )
@@ -343,13 +417,11 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         out.append(
             f"- **{v.site_id}** `{site.file if site else '?'}` stays on {before}: {v.reason} {extra}".rstrip()
         )
-    for v in manual:
+    for v in manual:  # no model prose: the code-built reason, the raw failure folded under it
         site = sites.get(v.site_id)
-        extra = notes.get(v.site_id, "")
-        out.append(
-            f"- **{v.site_id}** `{site.file if site else '?'}` needs manual review: {v.reason} "
-            f"{extra}".rstrip()
-        )
+        sentence, raw = plain_reason(v.reason)
+        out.append(f"- **{v.site_id}** `{site.file if site else '?'}` needs manual review: {sentence}")
+        out += _folded(raw) if raw else []
     if not kept and not manual:
         out.append("- Nothing: every evaluated call site was migrated.")
 
@@ -368,7 +440,8 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         and any(m not in ("reference:seed", "reference:oracle") for m in ctx.references.get(s.id, {}))
     ]
     pairwise = (
-        f", and at least the references' judge mean − 0.3 where references hold text ({', '.join(texts)})"
+        f", and at least the references' judge mean − {JUDGE_MARGIN:g} where references hold text "
+        f"({', '.join(texts)})"
         if texts
         else ""
     )
@@ -376,12 +449,19 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         "",
         "Each site's cases are split once into dev (adapter iteration) and holdout (verdict only). Pass bar: "
         f"{ctx.config.threshold * 100:g}% agreement with the references "
-        f"({ctx.config.reasoning_threshold * 100:g}% for reasoning); free text: judge mean of at least 4.0 "
-        f"on a 1–5 rubric{pairwise}.",
+        f"({ctx.config.reasoning_threshold * 100:g}% for reasoning); free text: judge mean of at least "
+        f"{JUDGE_FLOOR:.1f} on a 1–5 rubric with no case below {JUDGE_CASE_FLOOR:.1f}{pairwise}.",
         *(
             f"- {sid}: free-text argument{'s' if len(args) > 1 else ''} {', '.join(args)} checked for "
             "presence, not wording."
             for sid, args in sorted(ctx.free_text_args.items())
+        ),
+        *(  # reference QA: shown, never excluded
+            f"- {v.site_id}: reference judged weak: "
+            + "; ".join(f"{cid}, {round(x, 2):g}/5" for cid, x in sorted(v.weak_references.items()))
+            + f" (below {WEAK_REFERENCE:g}; kept in the evaluation)."
+            for v in verdicts
+            if v.weak_references
         ),
         "",
         "| Site | References | Cases (dev / holdout) "

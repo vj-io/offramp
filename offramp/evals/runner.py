@@ -242,6 +242,7 @@ def _judge_scores(
                 score=s.candidate,
                 detail=s.detail,
                 error_category=s.error_category or (None if passed else LOW_SCORE),
+                reference_score=s.reference,
             )
         )
     return scores, judged.reference_mean

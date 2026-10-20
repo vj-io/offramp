@@ -125,6 +125,7 @@ export interface CaseScore {
   score: number;
   detail: string;
   error_category: string | null;
+  reference_score?: number | null; // free text judged pairwise: the judge's 1..5 score of the reference
 }
 
 export interface TierMetrics {
@@ -165,6 +166,8 @@ export interface Verdict {
   closed_reference_model?: string | null; // GC27(c), e.g. "claude-sonnet-5.5 (via Claude Code; …)"
   // that model's holdout parity on the same references; null with a model set: it audited them (no comparison)
   closed_reference_parity_pct?: number | null;
+  // free text, reference QA: holdout case -> the judge's score of its reference, when below 3 (never excluded)
+  weak_references?: Record<string, number>;
   reason: string;
 }
 

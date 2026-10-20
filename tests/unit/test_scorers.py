@@ -639,6 +639,23 @@ def test_site_pass_free_text(judge, baseline_mean, passed):
     assert got_score == pytest.approx(sum(judge) / len(judge))
 
 
+@pytest.mark.parametrize(
+    "judge,baseline_mean,passed",
+    [
+        ([5.0] * 7 + [2.9], None, False),  # mean 4.74 >= 4.0, but one case below the per-case floor
+        ([5.0] * 7 + [2.9], 4.5, False),  # ... with a reference mean too
+        ([5.0] * 7 + [3.0], None, True),  # a case exactly at the floor passes
+        ([5.0] * 7 + [3.0], 4.5, True),
+    ],
+    ids=["below_floor", "below_floor_with_reference", "at_floor", "at_floor_with_reference"],
+)
+def test_free_text_fails_when_any_case_is_below_the_per_case_floor(judge, baseline_mean, passed):
+    assert aggregate.JUDGE_CASE_FLOOR == 3.0  # beside JUDGE_FLOOR (the mean) and JUDGE_MARGIN
+    got_passed, got_score = site_pass("free_text", _judge(*judge), Thresholds(), baseline_mean)
+    assert got_passed is passed
+    assert got_score == pytest.approx(sum(judge) / len(judge))
+
+
 def test_free_text_ignores_fraction_thresholds():
     got = site_pass("free_text", _judge(4.2, 4.2), Thresholds(threshold=1.0, reasoning_threshold=1.0), 4.5)
     assert got[0] is True
