@@ -114,12 +114,14 @@ export function applyEvent(s: RunState, e: RunEvent): RunState {
 
 export const applyEvents = (s: RunState, es: RunEvent[]) => es.reduce(applyEvent, s);
 
-export type StageStatus = "done" | "current" | "pending" | "failed";
+export type StageStatus = "done" | "current" | "pending" | "failed" | "skipped";
 
 // The stage names are past tense (CLONED = clone finished): the latest reached stage is
-// "current", everything before it is done.
+// "current", everything before it is done. A run that finished without a `pr` event opened no PR
+// (--no-pr, or nothing to commit): that stage is "skipped", never ticked.
 export function stageProgress(s: RunState): { stage: Stage; status: StageStatus }[] {
-  if (s.stage === "DONE") return STAGE_ORDER.map((stage) => ({ stage, status: "done" }));
+  if (s.stage === "DONE")
+    return STAGE_ORDER.map((stage) => ({ stage, status: stage === "PR_OPENED" && !s.pr ? "skipped" : "done" }));
   const failed = s.stage === "FAILED";
   const at = STAGE_ORDER.indexOf((failed ? s.failure?.stage : s.stage) as (typeof STAGE_ORDER)[number]);
   return STAGE_ORDER.map((stage, i) => ({

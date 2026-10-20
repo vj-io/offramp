@@ -8,6 +8,7 @@ import { DECISION_NOTE, Note, Stamp, Swipe, TIER_HL } from "@/components/doodle"
 import { NoRecording, NoticeNote, SourceLabel } from "@/components/run-notices";
 import {
   auditText,
+  closedByConstructionText,
   closedReferenceText,
   keepClosedStamp,
   latencyText,
@@ -254,6 +255,8 @@ function HowMeasured({ summaries, verdicts }: { summaries: CaseSummary[] | undef
         <ul className="mt-4 flex flex-col gap-3">
           {summaries.map((c) => {
             const audit = auditText(c.audit);
+            const verdict = verdicts.find((v) => v.site_id === c.site_id);
+            const byConstruction = verdict ? closedByConstructionText(verdict) : null;
             return (
               <li key={c.site_id} className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-3">
                 <span className="font-mono text-sm font-bold">{c.site_id}</span>
@@ -261,6 +264,7 @@ function HowMeasured({ summaries, verdicts }: { summaries: CaseSummary[] | undef
                   {referencesText(c)}, <span className="font-mono text-sm">{c.dev}</span> dev /{" "}
                   <span className="font-mono text-sm">{c.holdout}</span> holdout.
                   {audit && <> Reference audit: {audit}.</>}
+                  {byConstruction && <> {byConstruction}.</>}
                 </span>
               </li>
             );

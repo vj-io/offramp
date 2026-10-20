@@ -80,8 +80,15 @@ export function latencyText(deltaMs: number | null | undefined, afterP50: number
 }
 
 // "How parity was measured", labelled exactly as the run reports it; absent parts are omitted.
+// A method "closed:<model>" counts a closed model's answers standing in for references (GC27a, free text).
+const CLOSED = "closed:";
+
 export function referencesText(c: CaseSummary): string {
-  const methods = Object.entries(c.reference_methods ?? {}).map(([m, n]) => `${m} ${n}`);
+  const entries = Object.entries(c.reference_methods ?? {});
+  const closed = entries.filter(([m]) => m.startsWith(CLOSED));
+  if (entries.length > 0 && closed.length === entries.length)
+    return `${c.references} closed references (${closed.map(([m]) => m.slice(CLOSED.length)).join(", ")})`;
+  const methods = entries.map(([m, n]) => `${m.startsWith(CLOSED) ? `closed ${m.slice(CLOSED.length)}` : m} ${n}`);
   return `${c.references} references${methods.length ? ` (${methods.join(", ")})` : ""}`;
 }
 
@@ -95,6 +102,13 @@ export function auditText(a: ReferenceAudit | undefined): string | null {
 export function closedReferenceText(v: Verdict): string | null {
   if (!v.closed_reference_model || v.closed_reference_parity_pct == null) return null;
   return `${v.closed_reference_model} scores ${pct100(v.closed_reference_parity_pct)} on the same references`;
+}
+
+// GC27(c) when the closed model also audited the site's references: the verdict names it with no parity,
+// because its agreement with the references it kept is by construction. A note, never a comparison row.
+export function closedByConstructionText(v: Verdict): string | null {
+  if (!v.closed_reference_model || v.closed_reference_parity_pct != null) return null;
+  return `${v.closed_reference_model} is not compared: it audited these references, so it agrees with every one kept by construction`;
 }
 
 // Split a note into text and http(s) links; anything else (bare domains) stays plain text.
