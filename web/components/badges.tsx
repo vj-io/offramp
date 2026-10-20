@@ -33,13 +33,20 @@ export function LinkedText({ text }: { text: string }) {
   );
 }
 
+/** The orange "Sunset risk" chip alone, for places where the notice itself goes in a footnote. */
+export function SunsetBadge() {
+  return (
+    <span className="hl-chip sketch px-2 font-hand text-base" style={{ "--mark": "var(--hl-orange)" } as CSSProperties}>
+      Sunset risk
+    </span>
+  );
+}
+
 /** GC21: deprecation notice for the source model. Orange = warning; the words carry the meaning. */
 export function SunsetRisk({ note }: { note: string }) {
   return (
     <span className="flex flex-col items-start gap-1">
-      <span className="hl-chip sketch px-2 font-hand text-base" style={{ "--mark": "var(--hl-orange)" } as CSSProperties}>
-        Sunset risk
-      </span>
+      <SunsetBadge />
       <span className="font-hand text-base leading-snug">
         <LinkedText text={note} />
       </span>

@@ -3,13 +3,15 @@
 import type { CSSProperties } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
-import { BrandBadges, LinkedText, SunsetRisk } from "@/components/badges";
+import { BrandBadges, LinkedText, SunsetBadge, SunsetRisk } from "@/components/badges";
 import { DECISION_NOTE, Note, Stamp, Swipe, TIER_HL } from "@/components/doodle";
+import { FilePath } from "@/components/file-path";
 import { NoRecording, NoticeNote, SourceLabel } from "@/components/run-notices";
 import {
   auditText,
   closedByConstructionText,
   closedReferenceText,
+  costText,
   keepClosedStamp,
   latencyText,
   ms,
@@ -77,6 +79,7 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
   const kept = verdicts.filter((v) => v.decision === "KEEP_CLOSED");
   const review = verdicts.filter((v) => v.decision === "MANUAL_REVIEW");
   const costNotes = verdicts.filter((v) => v.cost_before_note);
+  const sunsetNotes = verdicts.filter((v) => v.sunset_risk);
   const totals = snap.totals;
   const saving =
     totals && totals.est_cost_before_per_1k > 0
@@ -222,6 +225,18 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
             </ul>
           </div>
         )}
+        {sunsetNotes.length > 0 && (
+          <div className="mt-4 max-w-4xl">
+            <h3 className="font-hand text-lg">Sunset risk notices:</h3>
+            <ul className="mt-1 flex flex-col gap-1 font-hand text-base leading-snug">
+              {sunsetNotes.map((v) => (
+                <li key={v.site_id} id={`sunset-note-${v.site_id}`}>
+                  <span className="font-mono text-xs font-bold">{v.site_id}</span> <LinkedText text={v.sunset_risk!} />
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </section>
 
       <HowMeasured summaries={snap.case_summaries} verdicts={verdicts} />
@@ -298,12 +313,19 @@ function EvidenceRow({ v, site, results, report }: { v: Verdict; site: CallSite 
       <th scope="row" className="px-2 py-3 font-mono text-sm font-bold">
         {v.site_id}
       </th>
-      <td className="px-2 py-3 font-mono text-sm whitespace-nowrap">{site?.file}</td>
+      <td className="min-w-[9rem] px-2 py-3 font-mono text-sm wrap-anywhere">{site && <FilePath path={site.file} />}</td>
       <td className="px-2 py-3 font-hand text-lg">{task ? TASK_NAME[task] : "—"}</td>
-      <td className="max-w-[15rem] px-2 py-3">
+      <td className="min-w-[10rem] px-2 py-3">
         <span className="flex flex-col items-start gap-2">
-          <span className="font-mono text-sm whitespace-nowrap">{site?.source_model ?? "—"}</span>
-          {v.sunset_risk && <SunsetRisk note={v.sunset_risk} />}
+          <span className="font-mono text-sm wrap-anywhere">{site?.source_model ?? "—"}</span>
+          {v.sunset_risk && (
+            <span className="flex flex-wrap items-center gap-x-2">
+              <SunsetBadge />
+              <a href={`#sunset-note-${v.site_id}`} className="font-hand text-base text-bluepen underline underline-offset-2">
+                note
+              </a>
+            </span>
+          )}
         </span>
       </td>
       <td className="px-2 py-3">
@@ -312,7 +334,7 @@ function EvidenceRow({ v, site, results, report }: { v: Verdict; site: CallSite 
             <span className="text-lg font-extrabold tracking-tight whitespace-nowrap">
               <Swipe mark={TIER_HL[v.tier]}>{TIER_NAME[v.tier]}</Swipe>
             </span>
-            {v.model && <span className="font-mono text-xs whitespace-nowrap text-muted">{v.model}</span>}
+            {v.model && <span className="font-mono text-xs wrap-anywhere text-muted">{v.model}</span>}
           </span>
         ) : isKept ? (
           <Stamp rotate={-2}>NOT MIGRATED</Stamp>
@@ -346,14 +368,10 @@ function EvidenceRow({ v, site, results, report }: { v: Verdict; site: CallSite 
         )}
       </td>
       <td className="px-2 py-3 font-mono text-sm whitespace-nowrap">
-        {latencyText(v.latency_delta_ms, r?.metrics.p50_ms ?? null)}
+        {v.decision === "MIGRATE" ? latencyText(v.latency_delta_ms, r?.metrics.p50_ms ?? null) : "—"}
       </td>
       <td className="px-2 py-3 font-mono text-sm whitespace-nowrap">
-        {v.cost_before_per_1k != null && v.cost_after_per_1k != null
-          ? `${usd(v.cost_before_per_1k)} → ${usd(v.cost_after_per_1k)}`
-          : v.cost_before_per_1k != null
-            ? `${usd(v.cost_before_per_1k)}, unchanged`
-            : "—"}
+        {costText(v)}
         {v.cost_before_note && (
           <a href={`#cost-note-${v.site_id}`} className="ml-1 font-hand text-base text-bluepen underline underline-offset-2">
             source

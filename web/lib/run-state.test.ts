@@ -15,6 +15,7 @@ import {
   auditText,
   closedByConstructionText,
   closedReferenceText,
+  costText,
   keepClosedStamp,
   latencyText,
   linkParts,
@@ -252,6 +253,14 @@ describe("evidence text", () => {
     expect(latencyText(-30, 380)).toBe("410 ms → 380 ms");
     expect(latencyText(null, null)).toBe("—");
     expect(latencyText(40, null)).toBe("+40 ms");
+  });
+  it("cost: only a migrated call has an after; the others keep their before and show \"—\"", () => {
+    const priced = { cost_before_per_1k: 39.51, cost_after_per_1k: 1.19 };
+    expect(costText({ ...priced, decision: "MIGRATE" })).toBe("$39.51 → $1.19");
+    expect(costText({ ...priced, decision: "MANUAL_REVIEW" })).toBe("$39.51 → —");
+    expect(costText({ ...priced, decision: "KEEP_CLOSED" })).toBe("$39.51 → —");
+    expect(costText({ cost_before_per_1k: 0.84, cost_after_per_1k: null, decision: "MIGRATE" })).toBe("$0.84, unchanged");
+    expect(costText({ cost_before_per_1k: null, cost_after_per_1k: null, decision: "MANUAL_REVIEW" })).toBe("—");
   });
   it("references and audit come from the case summary, and an empty audit is omitted", () => {
     const c = ofType("case_summary").find((e) => e.call_site_id === "cs_01")!.payload as unknown as CaseSummary;
