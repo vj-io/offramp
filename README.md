@@ -2,9 +2,9 @@
 
 Turns "we should try open models" into a merge-ready pull request: finds every closed-LLM call in a Python repo, proves which ones NVIDIA Nemotron on Nebius Token Factory can take over, and leaves the rest alone when it cannot prove parity.
 
-Built for the Nebius x NVIDIA Global AI Hackathon, track *Coding and Agentic Engineering*. Spec: [docs/PRD.md](docs/PRD.md). Build plan: [docs/plan/PLAN.md](docs/plan/PLAN.md). Feedback on Token Factory and the Nemotron models: [docs/FEEDBACK.md](docs/FEEDBACK.md). Demo video script: [docs/VIDEO.md](docs/VIDEO.md).
+Built for the Nebius x NVIDIA Global AI Hackathon, track *Coding and Agentic Engineering*. Spec: [docs/PRD.md](docs/PRD.md). Build plan: [docs/plan/PLAN.md](docs/plan/PLAN.md). Feedback on Token Factory and the Nemotron models: [docs/FEEDBACK.md](docs/FEEDBACK.md). Demo video script: [docs/VIDEO.md](docs/VIDEO.md). Devpost text: [docs/SUBMISSION.md](docs/SUBMISSION.md).
 
-<!-- demo-url: filled when the web app is deployed (Task 15) -->
+**Live demo, no login and no keys:** <https://offramp-seven.vercel.app>. The replay of the recorded run is at [/runs/demo?replay=demo](https://offramp-seven.vercel.app/runs/demo?replay=demo) and its report at [/runs/demo/report?replay=demo](https://offramp-seven.vercel.app/runs/demo/report?replay=demo). The pull request that run opened: [vj-io/offramp-demo-app#1](https://github.com/vj-io/offramp-demo-app/pull/1). Measured outcome: [Results](#results).
 
 ## Judges' path: no keys needed
 
@@ -19,7 +19,7 @@ make demo
 
 The replay plays the event log of a real run (scan, tier matrix, iterations, verdicts, PR) at 4x speed, gaps capped at 1.5 s. It runs in the browser from `web/public/replay/demo-events.json`, so it needs no backend, no Token Factory key and no network. `make test` runs the whole Python suite on recorded Token Factory responses, also without a key.
 
-Things to look at in the replay: the stage stepper, the sites x tiers heatmap, the verdict table (per call site either `MIGRATE` with the tier that passed, or `KEEP_CLOSED` with the reason), and the "Open the pull request" link on the report page.
+Things to look at in the replay: the stage stepper, the sites x tiers heatmap, the verdict on each call-site card (`MIGRATE` with the tier that passed, `KEEP_CLOSED` with the parity it reached, or manual review with the reason), and the "Open the pull request" link on the report page.
 
 ## What it does
 
@@ -28,7 +28,7 @@ Things to look at in the replay: the stage stepper, the sites x tiers heatmap, t
 3. **Tier matrix.** Every site runs against Nemotron 3.5 Lightning, then Super, then Ultra, on Nebius Token Factory. Deterministic scorers (JSON schema, label, tool name and arguments, numeric answer) come first; an Ultra judge scores free text.
 4. **Iterate.** When a cheaper tier fails on dev, an Ultra agent rewrites the adapter (prompt, schema, reasoning budget) and the tier is re-run, up to 3 iterations per tier.
 5. **Verdict.** `MIGRATE(tier)` is the cheapest tier that passes on holdout. Otherwise `KEEP_CLOSED(reason)`, with the best tier and its score.
-6. **Patch and PR.** Migrated sites are rewritten, the repo's own ruff and tests run in a network-off Docker sandbox, and a site whose tests break is downgraded to manual review. The PR carries the evidence table, failing cases, and a "What Offramp did NOT change" section.
+6. **Patch and PR.** Code rewrites each migrated call (the evaluated request as literal keyword arguments) and Nemotron edits only the tests and test fakes that pinned the old provider, so every change to application code is Offramp's own. The repo's own ruff and tests run in a network-off Docker sandbox, and a site whose tests break is downgraded to manual review. The PR carries the evidence table, failing cases, and a "What Offramp did NOT change" section.
 
 ```mermaid
 flowchart LR
@@ -72,7 +72,7 @@ All model calls go through one client, `offramp.tf.client.TFClient`: the OpenAI 
 | Judge | Ultra | Scores free text 1-5 on an absolute rubric against the evidence, batched per (site, tier, split), pairwise with position swap when a reference answer exists |
 | Iterator | Ultra | Rewrites the adapter from up to 10 failing dev cases |
 | Verdict text | Super | One-sentence reason beside the rule-based decision |
-| Patch composer | Super | Rewrites each migrated call and the tests that pin the old provider |
+| Patch composer | Super, Ultra for repairs | Edits the tests and test fakes that pin the old provider; the migrated call itself is rewritten by code, and a model edit to any non-test file is rejected |
 | PR writer | Super | Prose only; every number in the PR is rendered by code from the run artifacts |
 | Price extraction | Super | Reads source-model prices and deprecation notices out of Tavily search results |
 | Reference audit (fallback) | Ultra, thinking on | Blind re-answer of seed references, used only when asked for; see below |
@@ -85,16 +85,19 @@ Every structured call uses `temperature=0`, `response_format` `json_schema` (JSO
 - **Structured output and tool calling on every tier.** `json_schema` and function tools worked on all three in the first capability probe ([docs/plan/tf-probe.md](docs/plan/tf-probe.md)), which is what lets deterministic scorers, not a judge, decide most verdicts.
 - **A per-call reasoning switch.** `enable_thinking` turns reasoning off for structured calls and on where the Adapter or a reasoning site needs it.
 - **Recorded responses make the repo testable offline.** Live responses are cached as cassettes, so CI and `make test` replay real Token Factory output.
+- **Cheap enough to re-run while fixing.** The four live pipeline runs behind the demo cost $0.94 together by Offramp's spend counter (tokens times list price, see [Results](#results)), so we re-ran the whole pipeline live after each fix instead of rationing calls.
 
 What did not work smoothly is written up, with evidence, in [docs/FEEDBACK.md](docs/FEEDBACK.md).
 
 ### Other Nebius and partner services
 
-- **Nebius AI Cloud Serverless Jobs** are an optional home for the eval matrix (`offramp/evals/serverless_job`, image `Dockerfile.eval`), submitted with the `nebius` CLI when `NEBIUS_PROJECT_ID` is set and the CLI is installed. That path is built and tested against a fake `nebius` CLI, but it has not been run on a live AI Cloud account (the Token Factory balance cannot fund jobs, see [docs/FEEDBACK.md](docs/FEEDBACK.md)); by default the same matrix runs on an in-process worker with identical output.
-- **Tavily** looks up each source model's published price and deprecation notices at run time. The price feeds the "before" cost, shown as an estimate with its source URL and date; a deprecation notice becomes a sunset-risk badge. A price is accepted only if it is printed on the cited page next to that model's name, otherwise the run falls back to `offramp/evals/pricing.yaml` and says so.
-- **LangSmith** (when `LANGSMITH_API_KEY` is set) traces every Token Factory call under `offramp-<run_id>` and keeps each site's cases and references as a dataset, with experiments per tier and split.
+- **Nebius AI Cloud Serverless Jobs** are an optional home for the eval matrix (`offramp/evals/serverless_job`, image `Dockerfile.eval`), submitted with the `nebius` CLI when `NEBIUS_PROJECT_ID` is set and the CLI is installed. That path is built and tested against a fake `nebius` CLI, but it has not been run on a live AI Cloud account (the Token Factory balance cannot fund jobs, see [docs/FEEDBACK.md](docs/FEEDBACK.md)); by default the same matrix runs on an in-process worker with identical output. AI Cloud billing needs a payment card and a $25 top-up, and this project spends only granted credits, so no job ran on Nebius: every run, the recorded one included, ran its 18-cell matrix on the local worker.
+- **Tavily** looks up each source model's published price and deprecation notices at run time. The price feeds the "before" cost, shown as an estimate with its source URL and date; a deprecation notice becomes a sunset-risk badge. A price is accepted only if it is printed on the cited page next to that model's name, otherwise the run falls back to `offramp/evals/pricing.yaml` and says so. In the recorded run, the source-model price for 4 of the 6 sites came from the Tavily lookup and for 2 (`gpt-4o`, `o3`) from the price file, and Tavily found the `claude-sonnet-4-5` retirement notice (30 November 2026) behind the sunset-risk badge on cs_02 and cs_03.
+- **LangSmith** (when `LANGSMITH_API_KEY` is set) traces every Token Factory call under `offramp-<run_id>` and keeps each site's cases and references as a dataset, with experiments per tier and split. The recorded run's six public LangSmith links are in the evidence section of its pull request.
 - **Tendem** (by Toloka): `scripts/audit_references.py` builds human-audit tasks for flagged references and ingests the verdicts; each paid task needs explicit approval of its quoted price.
 - **Toloka** has no API on its current platform, so it is not integrated.
+- **Docker** runs the target repo's own `ruff check` and `pytest` on every patch, with the network off and 2 CPUs.
+- **Hosting.** The dashboard is on Vercel's free tier and plays the replay in the browser. The API is not hosted: `make demo` runs it locally, and live runs need your own keys.
 
 ## How parity is measured
 
@@ -109,7 +112,40 @@ Pass rules per site, tier and split, as the fraction of passing cases: JSON extr
 
 ## Results
 
-<!-- results: filled from evals/results after the live run (Task 14) -->
+<!-- Provenance: every number in this section comes from run 20261020-124700775-6cb31e: the replay events (web/public/replay/demo-events.json), the PR body (offramp/api/replay/demo-events.pr.md, also https://github.com/vj-io/offramp-demo-app/pull/1) and evals/results/*.json in vj-io/offramp-demo-app at 76a7940. Spend comes from each run's budget.json (run directories are not committed). -->
+
+The recorded run `20261020-124700775-6cb31e` (2026-10-20) pointed Offramp at [vj-io/offramp-demo-app](https://github.com/vj-io/offramp-demo-app) at commit `0271e58`: a small support-desk app with six chat call sites on OpenAI and Anthropic models, plus one embedding call that is reported and not evaluated. Offramp evaluated 121 cases with references, 40 of them in the holdout split, and opened [pull request #1](https://github.com/vj-io/offramp-demo-app/pull/1) (11 files, +258 / −60). The per-site results, verdicts and adapters are committed in the demo repo under [`evals/results/`](https://github.com/vj-io/offramp-demo-app/tree/76a7940/evals/results).
+
+**Every site reached the parity bar on a Nemotron tier, on holdout. Three were migrated and three went to manual review**, because the model's test edits for them could not be verified. Offramp writes every change to application code itself; Nemotron edits only tests and test fakes.
+
+| Site and file (demo repo) | Task | Source model | Cheapest tier that passed (holdout) | Parity vs reference (holdout cases) | Outcome |
+|---|---|---|---|---|---|
+| cs_01 `helphub/inbox/triage.py` | classification | gpt-4o-mini | Lightning, after 1 adapter iteration | 100.0% (9) | Manual review: the model's test edit did not apply (its search text was not in the demo repo's `tests/test_triage.py`) |
+| cs_02 `helphub/ops/agent_step.py` | tool call | claude-sonnet-4-5 | Super | 100.0% (5) | **Migrated** to Nemotron 3 Super |
+| cs_03 `helphub/orders/extract.py` | JSON extraction | claude-sonnet-4-5 | Super, after 1 iteration | 100.0% (3) | Manual review: the model's test edit fed an Anthropic `TextBlock` into the OpenAI fake, so the repo's tests failed |
+| cs_04 `helphub/qa/rag_answer.py` | free text | gpt-4o | Ultra, after 1 iteration | 100.0%, judge mean 5/5 (9) | **Migrated** to Nemotron 3 Ultra |
+| cs_05 `helphub/refunds/plan.py` | reasoning | o3 | Lightning | 100.0% (6) | Manual review: its patch would delete a test, which Offramp refuses |
+| cs_06 `helphub/summaries/summarize.py` | free text | claude-haiku-4-5 | Lightning, after 1 iteration | 75.0%, judge mean 4.54/5 (8) | **Migrated** to Nemotron 3.5 Lightning |
+
+- **The pass rule for free text is the judge mean** (at least 4.0, and no more than 0.3 below the references' mean). cs_06 passed on a mean of 4.54; 2 of its 8 holdout cases scored lower, and the PR lists both.
+- **Iterations.** The Ultra Iterator rewrote an adapter 16 times. cs_04 needed Ultra: 3 rewrites each on Lightning and Super did not reach the bar, and Ultra passed after 1.
+- **Holdouts are small** (3 to 9 cases per site), so one miss moves a site's parity by 11 to 33 points. The report shows n for every site.
+- **References.** cs_01 to cs_03 use seed references, audited blind by Claude Sonnet 5.5 (checked / agreed / dropped: 24 / 21 / 3, 20 / 15 / 5, 19 / 16 / 3). cs_05 uses the oracle. The free-text references for cs_04 and cs_06 were written by Claude Sonnet 5.5 via Claude Code, not by the repo's source models, whose outputs were never recorded.
+- **Cost, estimated per 1,000 calls.** Across all six sites: $49.24 → $43.86 (−11%), the report's headline, with the three manual-review sites still counted at their source-model price. Across the three migrated sites only: $6.54 → $1.15 (−82%), the figure in the PR title. "Before" is a published price times tokens measured on the Token Factory call.
+- **Latency on Nemotron, p50 over the holdout cases:** cs_02 2.7 s on Super, cs_04 3.0 s on Ultra, cs_06 3.4 s on Lightning. Latency before was not measured.
+- **Sandbox.** The three patches passed the demo repo's own ruff and pytest in Docker, alone and merged.
+
+**What the run cost.** The recorded run replayed every model call from the cache, so its own budget shows $0.00; that is not the cost of the work. The calls were made and paid for by four earlier live runs of the same pipeline. Spend is Offramp's counter: tokens times the Token Factory list prices in `offramp/evals/pricing.yaml`, on calls not served from the cache.
+
+| Run | What it did | Input / output tokens | Ultra agent calls | Spend |
+|---|---|---|---|---|
+| `20261019-220847641-43d3df` | first live run; stopped when the judge skipped a case ([FEEDBACK](docs/FEEDBACK.md) item 11); the next run reused its responses | 355,556 / 237,923 | 26 | $0.50 |
+| `20261019-222942730-2c0f0b` | the evaluation the demo uses, plus a patch stage that was later redone | 333,721 / 106,577 | 30 | $0.33 |
+| `20261020-115200254-46f068` | the patch stage with code-written call sites | 92,392 / 8,498 | 4 | $0.08 |
+| `20261020-122354830-57c50b` | one more repair for each failing site | 24,171 / 4,032 | 2 | $0.03 |
+| `20261020-124700775-6cb31e` | the recorded run: everything from the cache, then the PR | 0 / 0 | 0 | $0.00 |
+
+Total: $0.94. Not included: generating the cases and seed references (`offramp prepare`) and the recordings made while developing each agent.
 
 ## Run it with your own keys
 
@@ -179,7 +215,7 @@ offramp/
   evals/     scorers, runner, serverless job, pricing.yaml
   api/       FastAPI orchestrator and replay
 web/         Next.js dashboard
-docs/        PRD, plan, VIDEO.md, FEEDBACK.md
+docs/        PRD, plan, VIDEO.md, FEEDBACK.md, SUBMISSION.md, media/ (gallery screenshots)
 ```
 
 ## License
