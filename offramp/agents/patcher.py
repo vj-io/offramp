@@ -30,8 +30,9 @@ import string
 import textwrap
 import tokenize
 import tomllib
+import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ from pydantic import BaseModel, Field
 
 from offramp.agents.pr_writer import TIER_NAMES, is_test_path, threshold
 from offramp.agents.translate import UnresolvedCallSite, build_request
+from offramp.evals.baselines import load_cases
 from offramp.sandbox import NO_SANDBOX, CheckResult, Sandbox
 from offramp.schemas import Adapter, AdapterSpec, CallSite, EvalCase, RunConfig, Tier, Verdict
 from offramp.tf.budget import BudgetExceeded
@@ -147,6 +149,7 @@ class PatchResult(BaseModel):
     combined: list[str] = Field(default_factory=list)  # sites whose patches are in the final, checked tree
     combined_repair: list[str] = Field(default_factory=list)  # tests and fakes the combined repair changed
     combined_failure: str | None = None  # why the merged tree stayed red (then sites were dropped one by one)
+    verification: dict[str, str] = Field(default_factory=dict)  # shipped site -> how its request was checked
     warnings: list[str] = Field(default_factory=list)  # e.g. symlinks dropped from the sandbox copy
 
 
@@ -456,17 +459,17 @@ def _rewrite_call(
         return None
     call = calls[0]
     kw = {k.arg: k.value for k in call.keywords}
+    stream = kw.get("stream")  # refused whoever would write the call: the code reading it would not fit
+    if stream is not None and not (isinstance(stream, ast.Constant) and stream.value is False):
+        raise Unsupported("the call streams its reply (stream=); Offramp evaluated the non-streaming call")
+    if unknown := sorted(set(kw) - TRANSLATED_KWARGS - set(CARRIED_KWARGS) - {None}):
+        names = ", ".join(f"`{k}=`" for k in unknown)
+        raise Unsupported(f"the call passes {names}, which the evaluated request does not carry")
     messages = kw.get("messages")
     if None in kw or not isinstance(messages, ast.List):
         return None
     anthropic = not _call_name(call.func).endswith("chat.completions.create")
     receiver = call.func.value.value if anthropic else call.func.value.value.value
-    stream = kw.get("stream")
-    if stream is not None and not (isinstance(stream, ast.Constant) and stream.value is False):
-        raise Unsupported("the call streams its reply (stream=); Offramp evaluated the non-streaming call")
-    if unknown := sorted(set(kw) - TRANSLATED_KWARGS - set(CARRIED_KWARGS)):
-        names = ", ".join(f"`{k}=`" for k in unknown)
-        raise Unsupported(f"the call passes {names}, which the evaluated request does not carry")
 
     def seg(node: ast.AST) -> str:
         return ast.get_source_segment(source, node)
@@ -1170,8 +1173,155 @@ def _call_name(node: ast.expr) -> str:
     return ".".join(reversed(parts))
 
 
+def _fingerprint(node: ast.expr) -> str:
+    """A module constant's value, statically: the literal itself, else its expression."""
+    try:
+        return "value:" + repr(ast.literal_eval(node))
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return "expr:" + ast.dump(node)
+
+
+def read_values(source: str, site: CallSite) -> dict[str, str]:
+    """Every module-level constant the site's function reads, directly or through another constant (system
+    prompt, few-shot, tools, schemas, templates...): name -> its value (`_fingerprint`). The evaluated request
+    is built from these values, so they are locked once Offramp writes the call."""
+    tree = ast.parse(source)
+    assigned = {}
+    for n in tree.body:
+        targets = (
+            n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, ast.AnnAssign) else []
+        )
+        assigned |= {t.id: n.value for t in targets if isinstance(t, ast.Name) and n.value is not None}
+    scope = (_function(tree, site) if site.function else None) or tree
+    todo = {n.id for n in ast.walk(scope) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)} & set(
+        assigned
+    )
+    seen: set[str] = set()
+    while todo:
+        name = todo.pop()
+        seen.add(name)
+        todo |= {n.id for n in ast.walk(assigned[name]) if isinstance(n, ast.Name)} & set(assigned) - seen
+    return {name: _fingerprint(assigned[name]) for name in sorted(seen)}
+
+
+def changed_values(locks: dict[str, str], source: str, site: CallSite) -> list[str]:
+    now = read_values(source, site)
+    return [
+        f"`{name}` (the evaluated request reads it) changed"
+        for name, v in locks.items()
+        if now.get(name) != v
+    ]
+
+
+def source_kwargs(source: str, site: CallSite) -> set[str]:
+    """Keyword names of the site's LLM call as the code has it."""
+    calls = _calls((_function(ast.parse(source), site) if site.function else None) or ast.parse(source))
+    return {k.arg for k in calls[0].keywords if k.arg} if len(calls) == 1 else set()
+
+
+def probe_parameters(source: str, site: CallSite) -> list[str] | None:
+    """The parameters a probe must fill from a case's variables (all but the client and defaulted ones);
+    None when the function cannot be called that way (a method, *args, or not found)."""
+    fn = _function(ast.parse(source), site) if site.function else None
+    if (
+        fn is None
+        or "." in (site.function or "")
+        or fn.args.vararg
+        or fn.args.kwonlyargs
+        or fn.args.posonlyargs
+    ):
+        return None
+    args = fn.args.args
+    required = args[: len(args) - len(fn.args.defaults)]
+    return [a.arg for a in required if "client" not in a.arg]
+
+
+PROBE = r"""
+import importlib, inspect, json, sys, types
+sys.path[:0] = [".", "src"]
+JOBS, MARK = json.loads(%(jobs)r), %(mark)r
+
+
+class _Sent(Exception):
+    pass
+
+
+def _recorder(box):
+    def create(**kwargs):
+        box.append(kwargs)
+        raise _Sent()
+    return types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
+
+
+out = {}
+for job in JOBS:
+    box = []
+    try:
+        mod = importlib.import_module(job["module"])
+        holders = [mod]
+        try:
+            holders.append(importlib.import_module(job["client_module"]))
+        except ImportError:  # e.g. no openai package: the function gets the recorder as its client anyway
+            pass
+        for holder in holders:
+            if hasattr(holder, "token_factory_client"):
+                holder.token_factory_client = lambda box=box: _recorder(box)
+        fn = getattr(mod, job["function"])
+        args = {}
+        for name, param in inspect.signature(fn).parameters.items():
+            if name in job["variables"]:
+                args[name] = job["variables"][name]
+            elif "client" in name:
+                args[name] = _recorder(box)
+            elif param.default is inspect.Parameter.empty:
+                raise LookupError("no value for parameter " + name)
+        try:
+            fn(**args)
+        except _Sent:
+            pass
+        out[job["site"]] = {"request": box[0]} if box else {"error": "the function sent no request"}
+    except Exception as e:
+        out[job["site"]] = {"error": type(e).__name__ + ": " + str(e)[:300]}
+print(MARK + json.dumps(out, default=repr))
+"""
+
+
+def run_probe(box: Sandbox, jobs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Call each site's migrated function once, in the sandbox, with a recorder for its client: site ->
+    {"request": the keyword arguments it sent} or {"error": why}. One container for all the jobs."""
+    if not jobs:
+        return {}
+    mark = f"OFFRAMP-PROBE-{uuid.uuid4().hex}:"
+    code, output = box.probe(PROBE % {"jobs": json.dumps(jobs), "mark": mark})
+    line = next((ln for ln in output.splitlines() if ln.startswith(mark)), None)
+    if line is None:
+        why = f"the probe did not run (exit {code}): {output.strip()[-300:]}"
+        return {job["site"]: {"error": why} for job in jobs}
+    found = json.loads(line[len(mark) :])
+    return {job["site"]: found.get(job["site"], {"error": "no result"}) for job in jobs}
+
+
+def _request_difference(got: dict[str, Any], expected: dict[str, Any]) -> str | None:
+    """None when the captured request equals the evaluated one (key order aside), else what differs first."""
+    got, expected = (json.loads(json.dumps(x, default=repr)) for x in (got, expected))
+    for key in [*expected, *(k for k in got if k not in expected)]:
+        if got.get(key, ...) != expected.get(key, ...):
+            return (f"it sends `{key}` = {json.dumps(got.get(key))[:160]}, the evaluated request "
+                    f"{json.dumps(expected.get(key))[:160]}")  # fmt: skip
+    return None
+
+
+def _module_name(path: str) -> str:
+    return path.removeprefix("src/").removesuffix(".py").replace("/", ".").removesuffix(".__init__")
+
+
 def conformance(
-    source: str, site: CallSite, params: dict[str, Any], constants: dict[str, str], system_name: str | None
+    source: str,
+    site: CallSite,
+    params: dict[str, Any],
+    constants: dict[str, str],
+    system_name: str | None,
+    carried: frozenset[str] = frozenset(),  # transport options the source call itself passed
 ) -> list[str]:
     """Problems with the patched site file: the call must pass exactly the evaluated parameters as written-out
     keyword arguments (a schema may be a module constant holding it) plus messages, and use the prompt
@@ -1189,7 +1339,7 @@ def conformance(
     if call.args or any(k.arg is None for k in call.keywords):
         problems.append("the call takes written-out keyword arguments only: no positional arguments, no **")
     named = {k.arg: k.value for k in call.keywords if k.arg}
-    if set(named) - set(CARRIED_KWARGS) != {*params, "messages"}:
+    if set(named) - carried != {*params, "messages"}:
         problems.append(f"the call must pass exactly {', '.join([*params, 'messages'])}, nothing else")
     values = _module_values(tree)
     for key, want in params.items():
@@ -1695,6 +1845,12 @@ class _Job:
     width: int  # the target's ruff line length
     rewritten: bool  # the call already sends the request: no edit may be needed
     fixed: bool  # the site's module is final (call and reply rewritten by code): the model edits tests only
+    locks: dict[str, str] = field(default_factory=dict)  # constants the evaluated call reads -> their values
+    carried: frozenset[str] = frozenset()  # transport options the source call itself passed (timeout...)
+    others: dict[str, list[CallSite]] = field(
+        default_factory=dict
+    )  # file -> other sites whose function it holds
+    verify: Callable[[], str | None] | None = None  # the probe: why the patched call is not the evaluated one
 
 
 def _settle(box: Sandbox, repo: Path, paths: list[str], before: dict[str, str], width: int, formatted: bool):
@@ -1735,7 +1891,16 @@ def _attempt(
         for path in new:
             if is_test_path(path) and (gone := _test_names(job.editable[path]) - _test_names(new[path])):
                 problems.append(f"patch removes tests from {path}: {sorted(gone)}")
-        problems += conformance(new[job.site.file], job.site, job.params, job.constants, job.system_name)
+        problems += conformance(
+            new[job.site.file], job.site, job.params, job.constants, job.system_name, job.carried
+        )
+        problems += changed_values(job.locks, new[job.site.file], job.site)
+        for path, hosted in job.others.items():  # another site's module, edited in this site's step
+            if path not in new or new[path] == job.editable[path]:
+                continue
+            for other in hosted:
+                was = read_values(job.editable[path], other)
+                problems += [f"{p} in {path}" for p in changed_values(was, new[path], other)]
         if job.rewritten and _call_text(new[job.site.file], job.site) != _call_text(
             job.editable[job.site.file], job.site
         ):
@@ -1753,9 +1918,12 @@ def _attempt(
         write(p, new[p])
     _settle(box, repo, changed, job.before, job.width, formatted)
     result: CheckResult = box.check()
+    why = job.verify() if result.ok and job.verify else None  # run while the patch is on disk
     patched = {p: (repo / p).read_text() for p in changed}
     for p in changed:  # every site is checked against the same base
         (repo / p).write_text(job.before[p])
+    if why:
+        return f"the patched code does not send the evaluated request: {why}", {}
     if result.ok:
         return None, patched
     return f"repo checks failed on the patch ({result.mode}): {_summary(result.output)}", {}
@@ -1842,7 +2010,12 @@ def compose_patches(
     kept = [by_id[v.site_id] for v in verdicts if v.decision == "KEEP_CLOSED" and v.site_id in by_id]
     for site in sorted(kept, key=lambda s: (s.file, -s.lines[0])):  # bottom-up: line numbers stay valid
         v = next(v for v in verdicts if v.site_id == site.id)
-        before = read(site.file)
+        before = read(site.file) if site.file in tracked else None
+        if before is None:  # a link or a file outside the copy: no comment, never written through
+            warnings.append(
+                f"no keep comment for {site.id}: {site.file} is not a regular file of the repository"
+            )
+            continue
         write(site.file, _insert_comment(before, site, keep_comment(site, v, config)))
         diffs[site.id] = _diff({site.file: before}, {site.file: read(site.file)})
         site_files[site.id] = [site.file]
@@ -1854,6 +2027,63 @@ def compose_patches(
             f"({base.mode}): {_summary(base.output)}"
         )
     formatted = box.formatted()  # the repo keeps `ruff format` clean: so do the patches
+
+    qual_of: dict[str, CallSite] = {}  # MIGRATE site -> the site with its function's qualified name
+    for v in to_migrate:
+        site = by_id.get(v.site_id)
+        source = read(site.file) if site and site.file in tracked else None
+        if source is not None and (qual := site_qualname(source, site)):
+            qual_of[v.site_id] = site.model_copy(update={"function": qual})
+    carried_of: dict[str, frozenset[str]] = {}
+    locks_of: dict[str, dict[str, str]] = {}
+    rewritten_of: dict[str, bool] = {}
+    probes: dict[str, tuple[dict[str, Any], dict[str, Any], str] | None] = {}  # site -> (job, expected, case)
+    verification: dict[str, str] = {}  # site -> how its shipped request was checked
+
+    def site_cases(sid: str) -> list[EvalCase]:
+        try:
+            return sorted(load_cases(repo / "evals", sid), key=lambda c: c.id)
+        except (ValueError, OSError):  # unreadable cases: nothing to drive the function with
+            return []
+
+    def probe_job(sid: str, local: CallSite, source: str, spec: AdapterSpec, tier: Tier):
+        """(probe job, the request build_request evaluates for that case, case id), or (None, why not)."""
+        need = probe_parameters(source, local)
+        if need is None:
+            return None, "a method, or a function taking *args or keyword-only arguments"
+        case = next((c for c in site_cases(sid) if set(need) <= set(c.variables)), None)
+        if case is None:
+            return None, f"no eval case's variables name its parameters ({', '.join(need) or 'none'})"
+        try:
+            request = build_request(spec, case, tier)
+        except (ValueError, UnresolvedCallSite) as e:
+            return None, f"the case does not build a request: {e}"
+        expected = {**call_params(request), "messages": request["messages"]}
+        job = {"site": sid, "module": _module_name(local.file), "function": local.function,
+               "client_module": client_at[1], "variables": {k: case.variables[k] for k in need}}  # fmt: skip
+        return (job, expected, case.id), None
+
+    def verify(sids: list[str]) -> dict[str, str]:
+        """Run each site's migrated function in the sandbox and compare what it sends with the evaluated
+        request: site -> why not (absent when it matches, or when a rewritten call cannot be run)."""
+        jobs = {sid: probes[sid] for sid in sids if probes.get(sid)}
+        found = run_probe(box, [job for job, _, _ in jobs.values()])
+        out = {}
+        for sid, (_, expected, case_id) in jobs.items():
+            if "request" not in found[sid]:
+                if not rewritten_of[sid]:
+                    out[sid] = f"its call could not be run with case {case_id}: {found[sid]['error']}"
+                else:
+                    verification[sid] = (
+                        f"not run ({found[sid]['error']}); its call and constants checked statically"
+                    )
+                continue
+            got = {k: v for k, v in found[sid]["request"].items() if k not in carried_of[sid]}
+            if (diff := _request_difference(got, expected)) is not None:
+                out[sid] = f"for case {case_id}, {diff}"
+            else:
+                verification[sid] = f"run in the sandbox with case {case_id}: it sends the evaluated request"
+        return out
 
     versions: dict[str, dict[str, str]] = {}  # site -> its patched files, green alone
     unchecked = False  # a green-alone patch was pruned after its check
@@ -1883,14 +2113,13 @@ def compose_patches(
         if original is None:
             downgrade(v, f"patch not composed: {site.file} is not a regular file inside the repository")
             continue
-        qual = site_qualname(original, site)
-        if qual is None:
+        local = qual_of.get(site.id)  # module-local lookups use the qualified name; callers the plain one
+        if local is None:
             why = (
                 f"more than one function named `{site.function}` in {site.file}, and the site's lines do not"
             )
             downgrade(v, f"patch not composed: {why} tell which one makes the call")
             continue
-        local = site.model_copy(update={"function": qual})  # module-local lookups; callers use the plain name
         try:
             prepared, constants, system_name, rewritten, fixed = _prepare(
                 original, local, adapter.spec, params, width
@@ -1902,6 +2131,16 @@ def compose_patches(
         _settle(box, repo, [site.file], {site.file: original}, width, formatted)  # shown as it will ship
         prepared = read(site.file)
         (repo / site.file).write_text(original)
+        carried_of[site.id] = frozenset(source_kwargs(original, local) & set(CARRIED_KWARGS))
+        locks_of[site.id] = read_values(prepared, local)  # the values the evaluated call reads, as written
+        probes[site.id], unprobed = probe_job(site.id, local, original, adapter.spec, tier)
+        rewritten_of[site.id] = rewritten
+        if not rewritten and probes[site.id] is None:  # the model would write the call: it must be run
+            why = (
+                f"the call the model would write cannot be checked by running `{local.function}`: {unprobed}"
+            )
+            downgrade(v, f"patch not composed: Offramp cannot write this call itself, and {why}")
+            continue
         context = _context(repo, site, client_at[0])
         editable = {p: (prepared if p == site.file else read(p)) for p in context}
         for p in context:  # mechanical: callers hand the migrated function a Token Factory client
@@ -1935,8 +2174,15 @@ def compose_patches(
                 editable[p] = mirrored
                 done.append(f"`{p}` also fakes `token_factory_client` where it faked `{old}`")
         before = {p: read(p) for p in editable}
+        others = {
+            p: hosted
+            for p in context
+            if (hosted := [o for o in qual_of.values() if o.file == p and o.id != site.id])
+        }
         job = _Job(local, tier, adapter.spec, params, constants, system_name, editable, before,
-                   client_module=client_at[1], width=width, rewritten=rewritten, fixed=fixed)  # fmt: skip
+                   client_module=client_at[1], width=width, rewritten=rewritten, fixed=fixed,
+                   locks=locks_of[site.id], carried=carried_of[site.id], others=others,
+                   verify=lambda sid=site.id: verify([sid]).get(sid))  # fmt: skip
         failure, patched, tried = None, {}, []
         if (
             rewritten
@@ -2043,11 +2289,14 @@ def compose_patches(
         for sid in sids:
             local_, params_, constants_, system_, call_ = evaluated[sid]
             text = read(local_.file) or ""
-            problems = conformance(text, local_, params_, constants_, system_)
+            problems = conformance(text, local_, params_, constants_, system_, carried_of[sid])
+            problems += changed_values(locks_of[sid], text, local_)
             if call_ is not None and _call_text(text, local_) != call_:
                 problems.append(f"the call Offramp wrote in `{local_.function}` changed")
             if problems:
                 out[sid] = problems
+        for sid, why in verify([sid for sid in sids if sid not in out]).items():
+            out[sid] = [f"the merged code does not send the evaluated request: {why}"]
         return out
 
     def place(files: dict[str, str]) -> None:  # a tree on disk; a unified test formatted like the repo
@@ -2196,5 +2445,8 @@ def compose_patches(
         combined=combined,
         combined_repair=repaired,
         combined_failure=together_failure,
+        verification={
+            sid: verification.get(sid, "its call and constants checked statically") for sid in combined
+        },
         warnings=warnings,
     )

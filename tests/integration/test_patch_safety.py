@@ -25,6 +25,7 @@ from test_patcher import (  # noqa: E402  (shared tiny-repo fixtures)
     tiny_sites,
     tiny_verdicts,
     work_dir,
+    write_case,
 )
 
 pytestmark = pytest.mark.skipif(not docker_available(), reason="needs docker")
@@ -186,3 +187,21 @@ def test_a_patch_with_an_over_long_string_is_wrapped_and_passes_ruff():
     assert result.alone == {"cs_01": True, "cs_03": True} and result.combined == ["cs_01", "cs_03"]
     tests = result.files[TESTS]
     assert max(map(len, tests.splitlines())) <= 100 and "noqa" not in tests and long not in tests
+
+
+def test_the_probe_runs_the_migrated_function_in_docker_and_compares_its_request():
+    """The shipped call, run in the sandbox (network off) with a recorder for its client, sends exactly what
+    build_request evaluated for one of the site's own cases."""
+    src = work_dir("probe-src") / "src"
+    shutil.copytree(TINY, src, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+    write_case(src, "cs_01", {"name": "Ana"}, "You write one-line greetings.", "Greet Ana.")
+
+    work, config = work_dir("probe"), RunConfig(repo_url="x")
+    result = compose_patches(src, tiny_sites(), tiny_verdicts(), tiny_adapters(), patcher_llm(), work,
+                             config=config, build_request=BUILD)  # fmt: skip
+
+    assert result.combined == ["cs_01", "cs_03"] and result.sandbox_mode == "docker"
+    assert (
+        result.verification["cs_01"]
+        == "run in the sandbox with case cs_01:001: it sends the evaluated request"
+    )

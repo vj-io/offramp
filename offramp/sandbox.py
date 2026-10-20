@@ -94,6 +94,12 @@ class Sandbox:
                 )
         return CheckResult(True, self.mode, text[-OUTPUT_TAIL:])
 
+    def probe(self, script: str) -> tuple[int, str]:
+        """Run a Python script (sent on stdin) against the copy, under the same isolation as the checks."""
+        if self.mode == "none":
+            return 1, NO_SANDBOX
+        return self._run(["python", "-"], self._deadline(), stdin=script)
+
     def formatted(self) -> bool:
         """Whether the repo already keeps `ruff format` clean (then patched files are formatted too)."""
         return self._run(["ruff", "format", "--no-cache", "--check", "."], self._deadline())[0] == 0

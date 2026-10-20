@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -113,6 +114,11 @@ class FakeSandbox:
 
     def formatted(self) -> bool:
         return False
+
+    def probe(self, script: str) -> tuple[int, str]:  # runs the fixture repo's own code, locally
+        p = subprocess.run([sys.executable, "-"], input=script, cwd=self.repo, capture_output=True, text=True,
+                           timeout=60)  # fmt: skip
+        return p.returncode, p.stdout + p.stderr
 
     def tidy(self, paths: list[str], format_code: bool = False) -> None:
         self.fixed.append(paths)
@@ -1428,12 +1434,22 @@ def greet(client, name: str) -> str:
 """
 
 
+def write_case(repo: Path, sid: str, variables: dict, system: str, user: str) -> None:
+    """One eval case in the repo's evals/, as `offramp prepare` writes them: the probe drives the function."""
+    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    case = EvalCase(id=f"{sid}:001", site_id=sid, variables=variables, input_messages=messages,
+                    expected_kind="text", split="dev")  # fmt: skip
+    (repo / "evals" / "cases").mkdir(parents=True, exist_ok=True)
+    (repo / "evals" / "cases" / f"{sid}.jsonl").write_text(case.model_dump_json() + "\n")
+
+
 def tiny_built() -> tuple[Path, Edit]:
     """The tiny repo with greet's messages built before the call (the code cannot rewrite that call), and
     the edit a model would write for it."""
     repo = work_dir("tiny-built") / "src"
     shutil.copytree(TINY, repo)
     (repo / "tinyapp" / "greet.py").write_text(BUILT_GREET)
+    write_case(repo, "cs_01", {"name": "Ana"}, "You write one-line greetings.", "Greet Ana.")
     old = 'create(model="gpt-4o-mini", max_tokens=32, messages=messages)'
     thinking = 'extra_body={"chat_template_kwargs": {"enable_thinking": False}}'
     args = [MIGRATED, "max_tokens=32,", "temperature=0.0,", f"{thinking},", "messages=messages,"]
@@ -1768,7 +1784,12 @@ def test_a_timeout_is_carried_through_as_written():
 
     assert "        timeout=20,\n        messages=[" in out
     conformant = f"PROMPT = 'p'\nNEMOTRON_TOOLS = {REQUEST['tools']!r}\n\n\n{out}"
-    assert conformance(conformant, _site("triage"), REQUEST, {"tools": "NEMOTRON_TOOLS"}, "PROMPT") == []
+    constants = {"tools": "NEMOTRON_TOOLS"}
+    assert (
+        conformance(conformant, _site("triage"), REQUEST, constants, "PROMPT", frozenset({"timeout"})) == []
+    )
+    added = conformance(conformant, _site("triage"), REQUEST, constants, "PROMPT")  # the source had none
+    assert any("must pass exactly" in p for p in added)
 
 
 def test_a_flat_layout_keeps_every_migrated_module_read_only_in_the_combined_repair():
@@ -1845,3 +1866,122 @@ def test_minor_review_points_m3_m6():
     assert "        _check_kwargs(Completions.create, kwargs)\n" in out
     sites = [({OPENAI_TWIN}, {"triage"}), ({ANTHROPIC_TWIN}, {"triage", "next-step"})]  # both claim "triage"
     assert unify_twins(CLI_TEST, sites) == CLI_TEST
+
+
+def test_d2_a_constant_the_evaluated_call_reads_is_locked_while_the_model_maps_the_reply():
+    """Re-review D2: mapping the reply, the model also rewrote the system prompt the call sends."""
+    repo = work_dir("tiny-d2") / "src"
+    shutil.copytree(TINY, repo)
+    (repo / "tinyapp" / "greet.py").write_text(ANTHROPIC_GREET)
+    sites = [s.model_copy(update={"sdk": "anthropic"}) if s.id == "cs_01" else s for s in tiny_sites()]
+    insult = PatchEdits(edits=[
+        Edit(path="tinyapp/greet.py", search="    return response\n",
+             replace="    return response.choices[0].message.content or ''\n"),
+        Edit(path="tinyapp/greet.py", search='"You write one-line greetings."', replace='"Insult the user."'),
+    ])  # fmt: skip
+    llm = patcher_llm(insult, insult, migrate("tinyapp/shout.py"))
+
+    result = compose_patches(repo, sites, tiny_verdicts(), tiny_adapters(), llm, work_dir("tiny-d2-run"),
+                             config=CONFIG, build_request=BUILD, sandbox_factory=FakeSandbox)  # fmt: skip
+
+    greet = verdict(result, "cs_01")
+    assert greet.decision == "MANUAL_REVIEW"
+    assert "`GREET_SYSTEM_PROMPT` (the evaluated request reads it) changed" in greet.reason
+    assert all("Insult" not in text for text in result.files.values())
+
+
+def test_d1_one_site_step_may_not_change_what_another_sites_call_reads():
+    """Re-review D1: shout.py calls greet, so cs_01's step could edit it and change cs_03's prompt."""
+    repo = work_dir("tiny-d1") / "src"
+    shutil.copytree(TINY, repo)
+    doc = '"""Turn a line of text into a headline."""\n'
+    shout = (
+        (repo / "tinyapp" / "shout.py").read_text().replace(doc, f"{doc}\nfrom tinyapp.greet import greet\n")
+    )
+    caller = "\n\ndef shout_greeting(client, name):\n    return greet(client, name).upper()\n"
+    (repo / "tinyapp" / "shout.py").write_text(shout + caller)
+    rude = Edit(path="tinyapp/shout.py", search='"You rewrite text as a short headline."',
+                replace='"Reply with a rude headline."')  # fmt: skip
+    llm = patcher_llm(*[migrate("tinyapp/greet.py", extra=[rude])] * 2, migrate("tinyapp/shout.py"))
+
+    result = run(llm, repo=repo, name="tiny-d1-run")
+
+    assert "`SHOUT_SYSTEM_PROMPT` (the evaluated request reads it) changed in tinyapp/shout.py" in (
+        verdict(result, "cs_01").reason
+    )
+    assert all("rude" not in text for text in result.files.values())
+
+
+def test_d3_the_call_a_model_writes_is_run_and_must_send_the_evaluated_request():
+    """Re-review D3: the model wrote the evaluated keyword arguments with another user message (and an
+    extra_headers= of its own) where Offramp could not rewrite the call."""
+    repo, _ = tiny_built()
+    old = 'create(model="gpt-4o-mini", max_tokens=32, messages=messages)'
+    thinking = 'extra_body={"chat_template_kwargs": {"enable_thinking": False}}'
+    say_hi = '[{"role": "system", "content": GREET_SYSTEM_PROMPT}, {"role": "user", "content": "Say hi."}]'
+    args = [MIGRATED, "max_tokens=32,", "temperature=0.0,", f"{thinking},", f"messages={say_hi},"]
+    wrong = Edit(path="tinyapp/greet.py", search=old,
+                 replace="create(\n" + "".join(f"        {a}\n" for a in args) + "    )")  # fmt: skip
+    headers = Edit(path="tinyapp/greet.py", search=old, replace=wrong.replace.replace(
+        "temperature=0.0,", 'temperature=0.0,\n        extra_headers={"X-Debug": "1"},'))  # fmt: skip
+    llm = patcher_llm(PatchEdits(edits=[headers]), *[PatchEdits(edits=[wrong])] * 2)
+
+    result = run(llm, repo=repo, name="tiny-d3-run", precheck=True)
+
+    assert (
+        "the call must pass exactly" in llm.calls[1]["messages"][-1]["content"]
+    )  # extra_headers: not its own
+    reason = verdict(result, "cs_01").reason
+    assert verdict(result, "cs_01").decision == "MANUAL_REVIEW"
+    assert (
+        "the patched code does not send the evaluated request: for case cs_01:001, it sends `messages`"
+        in reason
+    )
+    assert "Say hi." in reason and "Greet Ana." in reason
+
+
+def test_a_fallback_call_nothing_can_run_goes_to_manual_review_before_any_model_call():
+    repo, _ = tiny_built()
+    shutil.rmtree(repo / "evals")  # no case to drive greet with
+
+    result = run(patcher_llm(), repo=repo, name="tiny-noprobe-run", precheck=True)
+
+    assert verdict(result, "cs_01").decision == "MANUAL_REVIEW"
+    assert "cannot be checked by running `greet`: no eval case's variables name its parameters (name)" in (
+        verdict(result, "cs_01").reason
+    )
+
+
+def test_a_rewritten_call_is_run_in_the_sandbox_and_reported():
+    repo = work_dir("tiny-probe") / "src"
+    shutil.copytree(TINY, repo)
+    write_case(repo, "cs_01", {"name": "Ana"}, "You write one-line greetings.", "Greet Ana.")
+
+    result = run(patcher_llm(), repo=repo, name="tiny-probe-run", precheck=True)
+
+    assert result.combined == ["cs_01", "cs_03"]
+    assert result.verification == {
+        "cs_01": "run in the sandbox with case cs_01:001: it sends the evaluated request",
+        "cs_03": "its call and constants checked statically",
+    }
+
+
+def test_a_keep_closed_site_in_a_symlinked_module_is_skipped_not_fatal():
+    """Re-review minor: read() refuses links, and _insert_comment(None, ...) crashed the stage."""
+    repo = work_dir("tiny-keeplink") / "src"
+    shutil.copytree(TINY, repo)
+    (repo / "tinyapp" / "motto_alias.py").symlink_to("motto.py")
+    sites = [
+        s.model_copy(update={"file": "tinyapp/motto_alias.py"}) if s.id == "cs_02" else s
+        for s in tiny_sites()
+    ]
+
+    work, box = work_dir("tiny-keeplink-run"), lambda r: FakeSandbox(r, precheck=True)
+    result = compose_patches(repo, sites, tiny_verdicts(), tiny_adapters(), patcher_llm(), work,
+                             config=CONFIG, build_request=BUILD, sandbox_factory=box)  # fmt: skip
+
+    assert (
+        "no keep comment for cs_02: tinyapp/motto_alias.py is not a regular file of the repository"
+        in result.warnings
+    )
+    assert result.combined == ["cs_01", "cs_03"]
