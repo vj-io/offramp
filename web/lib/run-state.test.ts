@@ -13,11 +13,13 @@ import {
 } from "./run-state";
 import {
   auditText,
+  closedByConstructionText,
   closedReferenceText,
   keepClosedStamp,
   latencyText,
   linkParts,
   referencesText,
+  stageLabel,
   thresholdFor,
 } from "./format";
 import { STAGE_ORDER, type CaseSummary, type RunEvent, type Verdict } from "./types";
@@ -142,6 +144,15 @@ describe("stageProgress", () => {
     expect(statuses.slice(i + 1).every((s) => s.status === "pending")).toBe(true);
   });
 
+  it("a finished run that opened no PR shows that stage skipped, not done (--no-pr)", () => {
+    const noPr = events.filter((e) => e.type !== "pr" && !(e.type === "stage" && e.payload.stage === "PR_OPENED"));
+    const statuses = stageProgress(applyEvents(initialRunState, noPr));
+    expect(statuses.find((s) => s.stage === "PR_OPENED")?.status).toBe("skipped");
+    expect(statuses.filter((s) => s.stage !== "PR_OPENED").every((s) => s.status === "done")).toBe(true);
+    expect(stageLabel("PR_OPENED", true)).toBe("PR not opened");
+    expect(stageLabel("PR_OPENED", false)).toBe("PR opened");
+  });
+
   it("an error event marks the failing stage and keeps the reason", () => {
     const upTo = events.findIndex((e) => e.type === "stage" && e.payload.stage === "BASELINED");
     const base = applyEvents(initialRunState, events.slice(0, upTo + 1));
@@ -250,11 +261,31 @@ describe("evidence text", () => {
     expect(auditText(oracle.audit)).toBeNull();
     expect(referencesText({ ...c, reference_methods: {} })).toBe("40 references");
   });
+  it("free-text sites compared against closed answers say so (GC27a)", () => {
+    const c = ofType("case_summary").find((e) => e.call_site_id === "cs_04")!.payload as unknown as CaseSummary;
+    const closed = "claude-sonnet-5.5 (via Claude Code; not the repo's source model)"; // the PR's label too
+    expect(referencesText({ ...c, references: 24, reference_methods: { [closed]: 24 } })).toBe(
+      "24 closed references (claude-sonnet-5.5 (via Claude Code; not the repo's source model))",
+    );
+    expect(referencesText({ ...c, references: 5, reference_methods: { "reference:seed": 3, [closed]: 2 } })).toBe(
+      "5 references (reference:seed 3, closed claude-sonnet-5.5 (via Claude Code; not the repo's source model) 2)",
+    );
+  });
   it("closed-reference comparison only when the verdict carries it", () => {
     expect(closedReferenceText(final.verdicts.cs_05)).toBe(
       "claude-sonnet-5.5 (via Claude Code; not the repo's source model) scores 88.0% on the same references",
     );
     expect(closedReferenceText(final.verdicts.cs_01)).toBeNull();
+  });
+  it("a closed model that audited the references is named, never shown as evidence (GC27c)", () => {
+    const model = "claude-sonnet-5.5 (via Claude Code; not the repo's source model)";
+    const circular: Verdict = { ...final.verdicts.cs_01, closed_reference_model: model, closed_reference_parity_pct: null };
+    expect(closedReferenceText(circular)).toBeNull();
+    expect(closedByConstructionText(circular)).toBe(
+      `${model} is not compared: it audited these references, so it agrees with every one kept by construction`,
+    );
+    expect(closedByConstructionText(final.verdicts.cs_05)).toBeNull(); // compared: the row shows instead
+    expect(closedByConstructionText(final.verdicts.cs_01)).toBeNull(); // no closed model at all
   });
   it("links only http(s) URLs in notes", () => {
     expect(linkParts("est. (see https://example.com/p, fetched) or openai.com/x")).toEqual([

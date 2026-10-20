@@ -21,6 +21,10 @@ export const STAGE_NAME: Record<Stage, string> = {
   FAILED: "Failed",
 };
 
+// The stepper's label: a finished run that opened no PR says so (stageProgress marks that stage "skipped").
+export const stageLabel = (stage: Stage, skipped: boolean) =>
+  skipped && stage === "PR_OPENED" ? "PR not opened" : STAGE_NAME[stage];
+
 export const DECISION_NAME: Record<Decision, string> = {
   MIGRATE: "Migrate",
   KEEP_CLOSED: "Not migrated",
@@ -80,8 +84,15 @@ export function latencyText(deltaMs: number | null | undefined, afterP50: number
 }
 
 // "How parity was measured", labelled exactly as the run reports it; absent parts are omitted.
+// reference_methods keys are the labels the PR uses too: "reference:*" methods, and anything else is a closed
+// model whose answers stand in for references (GC27a, free text).
+const isClosed = (method: string) => !method.startsWith("reference:");
+
 export function referencesText(c: CaseSummary): string {
-  const methods = Object.entries(c.reference_methods ?? {}).map(([m, n]) => `${m} ${n}`);
+  const entries = Object.entries(c.reference_methods ?? {});
+  if (entries.length > 0 && entries.every(([m]) => isClosed(m)))
+    return `${c.references} closed references (${entries.map(([m]) => m).join(", ")})`;
+  const methods = entries.map(([m, n]) => `${isClosed(m) ? `closed ${m}` : m} ${n}`);
   return `${c.references} references${methods.length ? ` (${methods.join(", ")})` : ""}`;
 }
 
@@ -95,6 +106,13 @@ export function auditText(a: ReferenceAudit | undefined): string | null {
 export function closedReferenceText(v: Verdict): string | null {
   if (!v.closed_reference_model || v.closed_reference_parity_pct == null) return null;
   return `${v.closed_reference_model} scores ${pct100(v.closed_reference_parity_pct)} on the same references`;
+}
+
+// GC27(c) when the closed model also audited the site's references: the verdict names it with no parity,
+// because its agreement with the references it kept is by construction. A note, never a comparison row.
+export function closedByConstructionText(v: Verdict): string | null {
+  if (!v.closed_reference_model || v.closed_reference_parity_pct != null) return null;
+  return `${v.closed_reference_model} is not compared: it audited these references, so it agrees with every one kept by construction`;
 }
 
 // Split a note into text and http(s) links; anything else (bare domains) stays plain text.

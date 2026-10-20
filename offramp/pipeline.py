@@ -579,24 +579,27 @@ class Pipeline:
             cases = [] if site.id in stale else baselines.load_cases(evals, site.id)
             if not cases:
                 continue
-            refs = baselines.load_references(evals, site.id)
             ids = {c.id for c in cases}
+            # what these cases are compared against: their references, else the closed model's answers (GC27a,
+            # free text). Counted by BaselineResult.model, the label the PR's reference table uses too
+            # ("reference:*" methods; anything else is a closed model). Rows of dropped cases are not counted.
+            against = {k: r for k, r in baselines.baselines_for(evals, site.id).items() if k in ids}
             a = audit.get(site.id, {})
             auditors = [x.removeprefix("blind:") for x in a.get("auditors", [])]
             summaries[site.id] = CaseSummary(
                 site_id=site.id,
                 dev=sum(c.split == "dev" for c in cases),
                 holdout=sum(c.split == "holdout" for c in cases),
-                references=sum(r.case_id in ids for r in refs.values()),
-                reference_methods=dict(Counter(r.model for r in refs.values() if r.case_id in ids)),
+                references=len(against),
+                reference_methods=dict(Counter(r.model for r in against.values())),
                 audit=ReferenceAudit(
                     **{k: a.get(k, 0) for k in ("checked", "agreed", "dropped", "human_verified")},
                     auditor=", ".join(auditors) or None,
                 ),
             ).model_dump(mode="json")
             all_cases += cases
-            compared += baselines.baselines_for(evals, site.id).values()
-            langsmith.upload_dataset(site, cases, list(refs.values()), run_id=self.log.run_id)
+            compared += against.values()
+            langsmith.upload_dataset(site, cases, list(against.values()), run_id=self.log.run_id)
         # for the PR (Task 10): per-site split counts, what the cases are compared against, and the tool
         # arguments checked for presence only (case tags free_text_arg:<name>), disclosed in the PR and report
         counts, methods, free_args = reference_summary(all_cases, compared)
@@ -730,6 +733,12 @@ class Pipeline:
                 langsmith.log_experiment(site, result.tier, result.split, rows, run_id=self.log.run_id)
             return out
 
+        closed = baselines.load_closed(evals, site.id)
+        circular = self._closed_auditors(evals, site, closed)
+        if circular:
+            self._log("info", f"{site.id}: closed reference {circular} not compared: it blind-audited these "
+                      "references and only the ones it agreed with were kept, so it agrees with them by "
+                      "construction", site.id)  # fmt: skip
         route = self.route(
             site,
             baselines.load_cases(evals, site.id),
@@ -737,17 +746,29 @@ class Pipeline:
             adapter,
             self.client,
             self.config,
-            closed=baselines.load_closed(evals, site.id),
+            closed=None if circular else closed,  # GC27c: no comparison row (nor reason clause) when circular
             schemas=schemas,
             runner=runner,
             price_lookup=self.price_lookup,
             on_event=on_event,
         )
+        verdict = route.verdict
+        if circular and route.adapter is not None:  # compared, but not with the closed model: say which one
+            verdict = verdict.model_copy(update={"closed_reference_model": circular})
         return {
-            "verdict": route.verdict.model_dump(mode="json"),
+            "verdict": verdict.model_dump(mode="json"),
             "adapter": route.adapter.model_dump(mode="json") if route.adapter else None,
             "tier_results": [r.model_dump(mode="json") for r in route.results],
         }
+
+    @staticmethod
+    def _closed_auditors(evals: Path, site: CallSite, closed: dict[str, Any]) -> str | None:
+        """The closed model, if it also blind-audited the site's references (GC18, GC27b): the references are
+        then the cases it agreed with, and its parity on them is 100% by construction, not evidence (GC27c).
+        A verdict for such a site names the model with closed_reference_parity_pct None."""
+        refs = baselines.load_references(evals, site.id).values()
+        auditors = {v.removeprefix("blind:") for r in refs for v in r.verified_by if v.startswith("blind:")}
+        return ", ".join(sorted({r.model for r in closed.values()} & auditors)) or None
 
     def _verdicts(self, chat: list[CallSite], routes: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         self._stage(Stage.VERDICTS)

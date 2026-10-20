@@ -19,6 +19,7 @@ from offramp.agents.case_gen import split_for
 from offramp.agents.scanner import ContractLabel, scan_repo
 from offramp.evals import baselines
 from offramp.evals.errors import ProviderError
+from offramp.evals.route import SiteRoute
 from offramp.evals.serverless_job.matrix import Matrix, MatrixResults
 from offramp.schemas import (
     Adapter,
@@ -55,7 +56,8 @@ def embed(text: str) -> list[float]:
     return client.embeddings.create(model="text-embedding-3-small", input=text).data[0].embedding
 """
 CONTRACT = Contract(task_type="classification", output="label", labels=["billing", "bug", "other"])
-AUDITOR = "blind:claude-sonnet-5.5 (via Claude Code; not the repo's source model)"
+CLOSED = baselines.CLAUDE_CODE_REFERENCE  # GC27: the only closed model this build records
+AUDITOR = f"blind:{CLOSED}"
 STAGES_DONE = ["QUEUED", "CLONED", "SCANNED", "BASELINED", "EVALUATING", "ITERATING", "VERDICTS", "PATCHED"]
 
 
@@ -71,16 +73,26 @@ def git(repo: Path, *args: str) -> str:
     return out.stdout
 
 
-def make_repo(tmp_path: Path, *, prepared: bool = True, function: str = "triage") -> Path:
+def make_repo(
+    tmp_path: Path,
+    *,
+    prepared: bool = True,
+    function: str = "triage",
+    references: bool = True,
+    closed: bool = False,
+    auditor: str = AUDITOR,
+    contract: Contract = CONTRACT,
+) -> Path:
     """A git repo with one chat call (cs_01) and one embedding call; `prepared` adds evals/ the way
-    `offramp prepare` leaves it (sites.json, cases, references, audit.json, manifest)."""
+    `offramp prepare` leaves it (sites.json, cases, references blind-audited by `auditor`, audit.json,
+    manifest). `closed` adds GC27 closed-model answers for every case plus one dropped case (cs_01:099)."""
     repo = tmp_path / "tiny"
     (repo / "app").mkdir(parents=True)
     (repo / "app" / "triage.py").write_text(APP)
     if prepared:
         evals = repo / "evals"
         site = scan_repo(repo).sites[0]
-        baselines.save_sites(evals, [site.model_copy(update={"contract": CONTRACT, "function": function})])
+        baselines.save_sites(evals, [site.model_copy(update={"contract": contract, "function": function})])
         now = datetime.now(UTC)
         cases, refs = [], []
         for i in range(20):
@@ -104,12 +116,20 @@ def make_repo(tmp_path: Path, *, prepared: bool = True, function: str = "triage"
                     case_id=case_id,
                     model="reference:seed",
                     output=ModelOutput(text="billing"),
-                    verified_by=[AUDITOR],
+                    verified_by=[auditor],
                     recorded_at=now,
                 )
             )
         baselines.save_cases(evals, "cs_01", cases)
-        baselines.save_references(evals, "cs_01", refs)
+        if references:
+            baselines.save_references(evals, "cs_01", refs)
+        if closed:
+            rows = [
+                r.model_copy(update={"source": "closed_model", "model": CLOSED, "verified_by": []})
+                for r in refs
+            ]
+            dropped = rows[0].model_copy(update={"case_id": "cs_01:099"})  # its case was dropped by the audit
+            baselines.save_closed(evals, "cs_01", [*rows, dropped])
         (evals / "audit.json").write_text(
             '{"cs_01": {"checked": 20, "agreed": 20, "dropped": 0, "human_verified": 0, "unchecked": 0, '
             f'"auditors": ["{AUDITOR}"]}}}}\n'
@@ -579,3 +599,118 @@ def test_the_run_budget_survives_a_resume(tmp_path):
     assert resumed.execute() == Stage.DONE
     totals = pipeline.snapshot(again.run_id, again.events).totals
     assert (totals.tokens_in, totals.tokens_out, totals.tf_spend_usd) == (1200, 80, 0.25)
+
+
+def run_full(tmp_path, repo):
+    n_dev, n_holdout = split_counts(repo)
+    log, _ = start(tmp_path, repo)
+    stub = Recorder()
+    llm = llm_for_full_run(n_dev, n_holdout)
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr).execute()
+        == Stage.DONE
+    )
+    return log, stub
+
+
+def test_closed_answers_that_are_the_references_are_counted_and_named(tmp_path):
+    """GC27a: a site without reference rows (the demo's free-text sites; here a classification site, since
+    baselines_for does not depend on the task) is compared against the closed model's answers, so its case
+    summary counts them under the closed model's label; the dropped case's answer is not one of them."""
+    log, stub = run_full(tmp_path, make_repo(tmp_path, references=False, closed=True))
+    summary = next(e.payload for e in log.events if e.type == "case_summary")
+    assert summary["references"] == 20
+    assert summary["reference_methods"] == {CLOSED: 20}  # the label the PR's reference table uses too
+    assert stub.prs[0]["cases"]["references"] == {
+        "cs_01": {CLOSED: 20}
+    }  # what the PR lists, without cs_01:099
+    (verdict,) = [e.payload for e in log.events if e.type == "verdict"]
+    assert verdict["decision"] == "MIGRATE" and verdict["closed_reference_parity_pct"] is None
+
+
+def test_no_closed_comparison_against_references_the_closed_model_audited(tmp_path):
+    """GC27c is circular when the closed model also blind-audited the references: only its agreeing answers
+    were kept, so it scores 100% by construction. The verdict names it with no parity and no clause."""
+    log, _ = run_full(tmp_path, make_repo(tmp_path, closed=True))
+    summary = next(e.payload for e in log.events if e.type == "case_summary")
+    assert summary["reference_methods"] == {"reference:seed": 20}  # every case has its own reference
+    (verdict,) = [e.payload for e in log.events if e.type == "verdict"]
+    assert verdict["closed_reference_model"] == CLOSED and verdict["closed_reference_parity_pct"] is None
+    assert "closed reference" not in verdict["reason"]
+    notes = [e.payload["message"] for e in log.events if e.type == "log" and e.call_site_id == "cs_01"]
+    assert any("not compared" in m and "by construction" in m for m in notes)
+
+
+def test_a_closed_model_that_did_not_audit_the_references_is_compared(tmp_path):
+    other = "blind:nvidia/Nemotron-3-Ultra-550b-a55b"
+    log, _ = run_full(tmp_path, make_repo(tmp_path, closed=True, auditor=other))
+    (verdict,) = [e.payload for e in log.events if e.type == "verdict"]
+    assert verdict["closed_reference_model"] == CLOSED and verdict["closed_reference_parity_pct"] == 100.0
+    assert f"closed reference {CLOSED} 100.0% on the same references" in verdict["reason"]
+
+
+# ---- the PR body the real PR writer renders from this data (pr_writer itself is Task 10's)
+
+FREE_TEXT = Contract(task_type="free_text", output="text")
+
+
+def pr_body(tmp_path: Path, repo: Path, llm: FakeLLM, route=None) -> str:
+    """Run the pipeline with the real PR writer (no GitHub: open_pr=False) and return the body it rendered."""
+    log, _ = start(tmp_path, repo, open_pr=False, max_iterations=0)
+    stub = Recorder()
+    llm.add("pr_writer", {"summary": "", "sites": []})
+    run = pipeline.Pipeline(
+        log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, **({"route": route} if route else {})
+    )
+    assert run.execute() == Stage.DONE
+    return pipeline.report(log.dir, log.run_id, log.events)["pr_body_markdown"]
+
+
+def keep_closed_llm(repo: Path) -> FakeLLM:
+    """Every tier answers the wrong label: KEEP_CLOSED, whose reason the PR prints in full."""
+    n_dev, n_holdout = split_counts(repo)
+    return FakeLLM(
+        {
+            "scanner": [ContractLabel(contract=CONTRACT, confidence=0.9)],
+            "adapter": [{"reasoning": "off", "output_mode": "text"}],
+            "eval_target": ["bug"] * (3 * n_dev + n_holdout),  # dev on 3 tiers (no iterations), holdout once
+            "verdict": [{"reason": "The triage call picks a different queue than the references."}],
+        }
+    )
+
+
+@pytest.mark.parametrize("auditor", [AUDITOR, "blind:nvidia/Nemotron-3-Ultra-550b-a55b"])
+def test_the_pr_body_lists_only_the_rows_compared_and_no_circular_closed_row(tmp_path, auditor):
+    repo = make_repo(tmp_path, closed=True, auditor=auditor)  # closed answers incl. dropped case cs_01:099
+    body = pr_body(tmp_path, repo, keep_closed_llm(repo))
+
+    assert "stays on gpt-4o-mini: " in body  # a kept site: the PR prints its whole reason
+    assert "| cs_01 | reference:seed × 20 |" in body  # what the cases were compared against, nothing else
+    assert f"{CLOSED} ×" not in body and "Reference outputs for" not in body  # not the dropped case's answer
+    clause = f"closed reference {CLOSED} 100.0% on the same references"
+    if auditor == AUDITOR:  # the closed model kept only the references it agreed with: no comparison row
+        assert "closed reference" not in body
+    else:
+        assert clause in body
+
+
+def test_the_pr_body_names_the_closed_references_of_a_free_text_site(tmp_path):
+    repo = make_repo(tmp_path, references=False, closed=True, contract=FREE_TEXT)
+
+    def route(site, cases, references, adapter, client, config, **kw):  # judging free text is Task 8's
+        verdict = Verdict(
+            site_id=site.id, decision="MIGRATE", tier="lightning", parity_pct=100.0, reason="ok"
+        )
+        return SiteRoute(verdict, adapter, [tier_result(site.id, Tier.LIGHTNING, "holdout")])
+
+    llm = FakeLLM(
+        {
+            "scanner": [ContractLabel(contract=FREE_TEXT, confidence=0.9)],
+            "adapter": [{"reasoning": "off", "output_mode": "text"}],
+        }
+    )
+    body = pr_body(tmp_path, repo, llm, route=route)
+
+    assert f"Reference outputs for cs_01 were produced by `{CLOSED}`." in body
+    assert f"| cs_01 | {CLOSED} × 20 |" in body  # 20 cases, not the dropped case's 21st answer
+    assert "where references hold text (cs_01)" in body  # so the pairwise rule applies (GC20, GC27a)

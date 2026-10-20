@@ -236,7 +236,9 @@ class Verdict(BaseModel):
     sunset_risk: str | None = None  # deprecation notice for the source model found via Tavily, with URL
     # GC27(c): e.g. "claude-sonnet-5.5 (via Claude Code; not the repo's source model)"
     closed_reference_model: str | None = None
-    closed_reference_parity_pct: float | None = None  # that model's holdout parity on the same references
+    # that model's holdout parity on the same references. Model named, parity None: that model blind-audited
+    # these references (only those it agreed with were kept), so a comparison would be circular; none is made
+    closed_reference_parity_pct: float | None = None
     reason: str
 
 

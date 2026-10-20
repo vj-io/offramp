@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { STAGE_NAME } from "@/lib/format";
+import { stageLabel } from "@/lib/format";
 import type { StageStatus } from "@/lib/run-state";
 import type { Stage } from "@/lib/types";
 import { checkPath, circlePath, crossPath, Ink, InkIcon } from "./doodle";
@@ -11,6 +11,7 @@ const STATUS_TEXT: Record<StageStatus, string> = {
   current: "current stage",
   pending: "not started",
   failed: "failed here",
+  skipped: "skipped",
 };
 
 export function StageStepper({
@@ -41,7 +42,7 @@ export function StageStepper({
               {i > 0 && (
                 <span
                   aria-hidden="true"
-                  className={`mt-4 h-0 w-4 border-t-2 sm:w-6 ${status === "pending" ? "border-dashed border-muted" : "border-ink"}`}
+                  className={`mt-4 h-0 w-4 border-t-2 sm:w-6 ${status === "pending" || status === "skipped" ? "border-dashed border-muted" : "border-ink"}`}
                 />
               )}
               <span className="flex w-[4.75rem] flex-col items-center gap-1 text-center">
@@ -51,14 +52,16 @@ export function StageStepper({
                   ) : status === "failed" ? (
                     <InkIcon d={crossPath(stage)} className="h-6 w-6 text-redpen" />
                   ) : (
-                    <span className={status === "pending" ? "text-muted" : ""}>{i + 1}</span>
+                    <span className={status === "pending" || status === "skipped" ? "text-muted" : ""}>
+                      {status === "skipped" ? "–" : i + 1}
+                    </span>
                   )}
                   {status === "current" && <Ink d={circlePath(stage)} className="inset-0" width={2.5} />}
                 </span>
                 <span
-                  className={`font-hand text-base leading-tight ${status === "pending" ? "text-muted" : ""} ${status === "failed" ? "text-redpen" : ""}`}
+                  className={`font-hand text-base leading-tight ${status === "pending" || status === "skipped" ? "text-muted" : ""} ${status === "failed" ? "text-redpen" : ""}`}
                 >
-                  {STAGE_NAME[stage]}
+                  {stageLabel(stage, status === "skipped")}
                   <span className="sr-only">, {STATUS_TEXT[status]}</span>
                 </span>
               </span>

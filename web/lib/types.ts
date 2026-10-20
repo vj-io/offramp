@@ -163,7 +163,8 @@ export interface Verdict {
   cost_after_per_1k: number | null;
   sunset_risk?: string | null; // deprecation notice for the source model, with URL
   closed_reference_model?: string | null; // GC27(c), e.g. "claude-sonnet-5.5 (via Claude Code; …)"
-  closed_reference_parity_pct?: number | null; // that model's holdout parity on the same references
+  // that model's holdout parity on the same references; null with a model set: it audited them (no comparison)
+  closed_reference_parity_pct?: number | null;
   reason: string;
 }
 
@@ -216,7 +217,7 @@ export interface CaseSummary {
   dev: number;
   holdout: number;
   references: number;
-  reference_methods: Record<string, number>; // {"reference:seed": 20, ...}
+  reference_methods: Record<string, number>; // {"reference:seed": 20, ...}; closed answers under the model: {"claude-…": 24}
   audit: ReferenceAudit;
 }
 
