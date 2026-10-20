@@ -620,7 +620,7 @@ class Seed:
     giveaways: list[str] = field(default_factory=list)  # expected values never written as "Label: value"
     verbatim: list[str] = field(default_factory=list)  # identifiers never written in what the person says
     undetermined: list[str] = field(default_factory=list)  # values of free enums no input may dictate
-    present: list[tuple[str, Any]] = field(default_factory=list)  # (detector kind, seeded non-null value)
+    present: list[tuple[str, Any, str]] = field(default_factory=list)  # (detector kind, seeded value, field)
     absent: list[tuple[str, str, str | None]] = field(
         default_factory=list
     )  # null fields: (name, kind, id regex)
@@ -1054,9 +1054,8 @@ def _absent_kind(key: str, prop: dict[str, Any]) -> tuple[str, str | None] | Non
     kind = _string_kind(key, prop)
     if kind == "example":
         return "id", _shape_pattern(_EXAMPLE.search(prop.get("description", ""))[1])
-    if kind == "name":  # a person (customer, first/last/full name, plain "name"), not a product or a shop
-        words = set(re.findall(r"[a-z]+", f"{key} {prop.get('description', '')}".lower()))
-        return None if words & _NON_PERSON_WORDS else ("name", None)
+    if kind == "name":  # a person (customer, first/last/full name, plain "name"), not product_name, shop_name
+        return None if set(re.findall(r"[a-z]+", key.lower())) & _NON_PERSON_WORDS else ("name", None)
     return (kind, None) if kind in ("email", "date", "currency") else None
 
 
@@ -1075,9 +1074,13 @@ def json_seed(record: dict[str, Any], schema: dict[str, Any]) -> Seed:
             absent.append((key, *found))
     present = []
     for key, value in record.items():
+        if value is None or isinstance(value, dict | list | bool):
+            continue
         found = _absent_kind(key, _flat(schema.get("properties", {}).get(key, {}), schema))
-        if found and value is not None and not isinstance(value, dict | list):
-            present.append((found[0], value))
+        if found:
+            present.append((found[0], value, key))
+        elif isinstance(value, int | float):  # a seeded discount or refund: its number is not a null total
+            present.append(("amount", value, key))
     return Seed(
         ModelOutput(text=text), shown, stated=_json_stated(record, schema), present=present, absent=absent
     )
@@ -1212,6 +1215,16 @@ _EMAIL = re.compile(
 )
 _AMOUNT_WORDS = ("amount", "total", "price", "cost", "sum", "paid", "fee", "charge")
 _NON_PERSON_WORDS = {
+    "team",
+    "event",
+    "venue",
+    "room",
+    "device",
+    "course",
+    "book",
+    "song",
+    "game",
+    "account",
     "product",
     "products",
     "company",
@@ -1331,15 +1344,13 @@ _NULL_CURRENCY_WORDS = (
     }
 )
 _NEAR_NUMBER_WORDS = {"kr", "rs", "rs.", "zł", "元", "원"}
-# ISO 4217 codes; the ones that are also common words or units (ALL, TOP, CUP, PEN, MAD, KGS, PHP...) only
-# count where CURRENCY_ALIASES / _OTHER_CURRENCY_CODES name them.
-_ISO_CODES = set(
-    "AED AFN AMD ANG AOA ARS AUD AWG AZN BBD BDT BGN BHD BIF BMD BND BRL BSD BTN BWP BYN BZD CAD CDF CHF CLP "
-    "CNY COP CRC CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GHS GIP GMD GNF GTQ GYD HKD HNL HTG HUF "
-    "IDR ILS INR IQD IRR ISK JMD JOD JPY KES KHR KMF KPW KRW KWD KYD KZT LBP LKR LRD LSL LYD MDL MGA MKD MMK "
-    "MNT MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PGK PKR PLN PYG QAR RON RSD RUB RWF SAR "
-    "SBD SCR SDG SEK SGD SHP SLE SRD SSP STN SYP SZL THB TJS TMT TND TTD TWD TZS UAH UGX USD UYU UZS VES VND "
-    "VUV WST XAF XCD XOF XPF YER ZAR ZMW ZWL".split()
+_ISO_CODES = set(  # ISO 4217, minus ALL / TOP / CUP (words) and KGS (kilograms)
+    "AED AFN AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN BWP BYN BZD CAD CDF "
+    "CHF CLP CNY COP CRC CUC CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF GTQ GYD "
+    "HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL "
+    "LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP "
+    "PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN SYP SZL THB TJS TMT TND "
+    "TRY TTD TWD TZS UAH UGX USD UYU UZS VES VND VUV WST XAF XCD XOF XPF YER ZAR ZMW ZWL".split()
 )
 _NUM = r"\d[\d.,']*\d|\d"
 
@@ -1373,19 +1384,69 @@ _DATE_FORMS = [
         r"(?<![\d.,])\d{1,2}[./]\d{1,2}[./]\d{2,4}(?!\d)",
         r"\d{4}\s*年\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?",
         r"\d{1,2}\s*月\s*\d{1,2}\s*日",
-        rf"(?<!\d)\d{{1,2}}(?:st|nd|rd|th)?\s+of\s+(?:{_MONTH_WORDS})(?![^\W\d_])",
-        rf"(?<!\d)\d{{1,2}}(?:st|nd|rd|th)?\.?\s+(?:de\s+)?(?:{_MONTH_WORDS})(?![^\W\d_])",
-        rf"(?<![^\W\d_])(?:{_MONTH_WORDS})\.?\s+\d{{1,2}}(?!\d)",
+        rf"(?<!\d)\d{{1,2}}(?:st|nd|rd|th)?\s+of\s+(?:{_MONTH_WORDS})(?![^\W\d_])(?:,?\s+\d{{4}})?",
+        rf"(?<!\d)\d{{1,2}}(?:st|nd|rd|th)?\.?\s+(?:de\s+)?(?:{_MONTH_WORDS})(?![^\W\d_])"
+        r"(?:,?\s+(?:de\s+)?\d{4})?",
+        rf"(?<![^\W\d_])(?:{_MONTH_WORDS})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?!\d)(?:,?\s+\d{{4}})?",
     )
 ]
 
 # ---- names: where a sender is named, and what is not a name
-_SIGNOFF = re.compile(
-    r"^(?:thanks|thank you|many thanks|thx|regards|best|best regards|kind regards|warm regards|cheers|"
-    r"sincerely|yours|gracias|muchas gracias|saludos|un saludo|atentamente|danke|vielen dank|grüße|gruß|"
-    r"viele grüße|liebe grüße|mit freundlichen grüßen|lg|merci|cordialement|bien à vous|obrigad[oa]|"
-    r"cumprimentos|grazie|cordiali saluti|saluti|よろしく[^\n]*|ありがとう[^\n]*|宜しく[^\n]*)"
-    r"(?![^\W\d_])[\s,.!。、]*(?P<rest>.*)$",
+_SIGNOFFS = [
+    "thanks",
+    "thank you",
+    "many thanks",
+    "thanks a lot",
+    "thank you very much",
+    "thanks and regards",
+    "thx",
+    "regards",
+    "best",
+    "best regards",
+    "best wishes",
+    "kind regards",
+    "warm regards",
+    "warmest regards",
+    "all the best",
+    "with thanks",
+    "cheers",
+    "sincerely",
+    "yours",
+    "yours sincerely",
+    "sincerely yours",
+    "yours faithfully",
+    "gracias",
+    "muchas gracias",
+    "saludos",
+    "saludos cordiales",
+    "un saludo",
+    "atentamente",
+    "danke",
+    "danke schön",
+    "vielen dank",
+    "grüße",
+    "gruß",
+    "viele grüße",
+    "liebe grüße",
+    "beste grüße",
+    "mit freundlichen grüßen",
+    "lg",
+    "merci",
+    "cordialement",
+    "bien cordialement",
+    "bien à vous",
+    "obrigado",
+    "obrigada",
+    "cumprimentos",
+    "grazie",
+    "grazie mille",
+    "cordiali saluti",
+    "saluti",
+]
+_SIGNOFF = re.compile(  # longest first: "Best regards" is one sign-off, not "Best" + a name "regards"
+    r"^(?:"
+    + "|".join(re.escape(x) for x in sorted(_SIGNOFFS, key=len, reverse=True))
+    + r"|よろしく[^\n]*|ありがとう[^\n]*|宜しく[^\n]*)(?![^\W\d_])[\s,.!。、]*(?P<rest>.*)$",
     re.IGNORECASE,
 )
 _GREETING = re.compile(
@@ -1650,11 +1711,12 @@ def _name_like(text: str, brands: set[str]) -> bool:
     return True
 
 
-def _person_names(text: str, brands: set[str]) -> list[str]:
+def _person_names(text: str, brands: set[str], sources: frozenset[str] | None = None) -> list[str]:
     """Where an input names a person: a From display name, a greeting ("Hi Priya,", "> Dear Mr. Tanaka"), a
     label line ("Name: Priya Nair"), a signature (after a sign-off, or a short last line), "Priya here", a
-    self-introduction ("I'm Priya"), a CJK name with an honorific ("田中様")."""
-    found = []
+    self-introduction ("I'm Priya"), a CJK name with an honorific ("田中様"). `sources` limits the positions
+    (from, greeting, label, signoff, last, here, intro, honorific)."""
+    found: list[tuple[str, str]] = []
     lines = [line.strip().lstrip(">").strip() for line in text.splitlines()]
     lines = [line for line in lines if line]
     brands = brands | {
@@ -1670,23 +1732,24 @@ def _person_names(text: str, brands: set[str]) -> list[str]:
             value = line.split(":", 1)[-1].split("：", 1)[-1].strip()
             display = value.split("<")[0] if "<" in value else ("" if "@" in value else value)
             if display and _name_like(display, brands):
-                found.append(display.strip())
+                found.append(("from", display.strip()))
             continue
-        for pattern in (_GREETING, _LABEL):
+        for source, pattern in (("greeting", _GREETING), ("label", _LABEL)):
             match = pattern.match(line)
             name = _leading_name(match["rest"]) if match else ""
             if name and _name_like(name, brands):
-                found.append(name)
+                found.append((source, name))
     for i, line in enumerate(lines):
         signoff = _SIGNOFF.match(line)
         if not signoff:
             continue
         rest = signoff["rest"].strip()
         if rest and _name_like(rest, brands):
-            found.append(rest)
-        elif not rest and i + 1 < len(lines) and not _DEVICE.match(lines[i + 1]):
-            if len(lines[i + 1]) <= 40 and _name_like(lines[i + 1], brands):
-                found.append(lines[i + 1])
+            found.append(("signoff", rest))
+        elif _continues(rest) and i + 1 < len(lines) and not _DEVICE.match(lines[i + 1]):
+            nxt = lines[i + 1]  # "Thanks so much,\nPriya"; never a sign-off line itself ("...\nSincerely,")
+            if len(nxt) <= 40 and not _SIGNOFF.match(nxt) and _name_like(nxt, brands):
+                found.append(("signoff", nxt))
     last = lines[-1] if lines else ""
     if (
         len(last) <= 30
@@ -1696,11 +1759,50 @@ def _person_names(text: str, brands: set[str]) -> list[str]:
         and not _header_key(last)
         and _name_like(last, brands)
     ):
-        found.append(last)
-    found += [m[1] for m in _HERE.finditer(text) if _name_like(m[1], brands)]
-    found += [m[1] for m in _INTRODUCTION.finditer(text) if m[1][0].isupper() and _name_like(m[1], brands)]
-    found += [m[1] for m in _HONORIFIC.finditer(text) if not any(c in m[1] for c in _CLOSERS)]
-    return found
+        found.append(("last", last))
+    found += [("here", m[1]) for m in _HERE.finditer(text) if _name_like(m[1], brands)]
+    found += [
+        ("intro", m[1])
+        for m in _INTRODUCTION.finditer(text)
+        if m[1][0].isupper() and _name_like(m[1], brands)
+    ]
+    found += [("honorific", m[1]) for m in _HONORIFIC.finditer(text) if not any(c in m[1] for c in _CLOSERS)]
+    return [name for source, name in found if sources is None or source in sources]
+
+
+def _continues(rest: str) -> bool:
+    """Whether what follows a sign-off word still belongs to the sign-off ("", "so much,", "a lot!"), rather
+    than being a sentence ("for your prompt attention to this matter.")."""
+    rest = rest.strip()
+    return not rest or (len(rest.split()) <= 3 and not re.search(rf"[A-Z]|{_CJK}|\.$", rest))
+
+
+_SENDER_SOURCES = frozenset(
+    {"from", "signoff", "label", "here", "intro"}
+)  # not greetings: they address others
+_REPLY_MARKER = re.compile(
+    r"^\s*(?:-{2,}\s*(?:original message|ursprüngliche nachricht|mensaje original|message d'origine|"
+    r"messaggio originale|forwarded message|weitergeleitete nachricht)\s*-{2,}|on .+ wrote:|am .+ schrieb.*:|"
+    r"el .+ escribió:|le .+ a écrit\s*:|il .+ ha scritto:)\s*$",
+    re.IGNORECASE | re.M,
+)
+
+
+def _own_text(text: str) -> str:
+    """What the person wrote: without quoted lines ("> ...") and without a quoted or forwarded thread below a
+    reply marker ("-----Original Message-----", "On ... wrote:") or below a second From header."""
+    lines = [line for line in text.splitlines() if not line.lstrip().startswith(">")]
+    headers, _ = _header_block("\n".join(lines))
+    for i, line in enumerate(lines):
+        if _REPLY_MARKER.match(line) or (i >= len(headers) and _header_key(line) in ("from", "de", "von")):
+            return "\n".join(lines[:i])
+    return "\n".join(lines)
+
+
+def _name_words(name: str) -> set[str]:
+    """A name's words without titles and initials: "Dr. Priya R. Nair" -> {"priya", "nair"}."""
+    words = {w.casefold().strip(".'’") for w in re.findall(r"[^\W\d_][\w'’.-]*", name)}
+    return {w for w in words if len(w) > 1 and w not in _TITLES} or {"".join(re.findall(_CJK, name))} - {""}
 
 
 def _leading_name(rest: str) -> str:
@@ -1769,7 +1871,16 @@ def _null_found(
         matches = [m[0] for m in re.finditer(pattern, text, re.IGNORECASE)]
     else:
         matches = []
-    same_kind = [v for k, v in present if k == kind]  # an email handle never excuses a signed first name
+    same_kind = [v for k, v, _ in present if k == kind]  # an email handle never excuses a signed first name
+    if kind == "name":  # "Dr. Priya R. Nair" and "Nair, Priya" are the seeded "Priya Nair" ...
+        return next(  # ... but seeded first + last names never excuse a null full name: one value at a time
+            (
+                m
+                for m in matches
+                if not any(_name_words(m) and _name_words(m) <= _name_words(str(v)) for v in same_kind)
+            ),
+            None,
+        )
     return next((m for m in matches if not any(_same_value(kind, m, v) for v in same_kind)), None)
 
 
@@ -1819,18 +1930,22 @@ def record_problem(
     problems += [
         f"states a value no input should decide ({v!r})" for v in seed.undetermined if _given_away(written, v)
     ]
-    seeded_names = [v for k, v in seed.present if k == "name"]
+    seeded_names = [(v, key) for k, v, key in seed.present if k == "name"]
     brands = _brands(site) if seed.absent or seeded_names else set()
     for name, kind, pattern in seed.absent:
         found = _null_found(kind, pattern, everything, seed.present, brands)
         if found:
             problems.append(f"states {name} although it is null ({found!r})")
-    unquoted = "\n".join(line for line in everything.splitlines() if not line.lstrip().startswith(">"))
-    others = [
-        n for n in _person_names(unquoted, brands) if not any(_same_value("name", n, v) for v in seeded_names)
-    ]
-    if seeded_names and others:  # cs_03:015: "my name is Chloé Dubois" ... signed "Miguel Garcia"
-        problems.append(f"names another person ({others[0]!r}) besides the seeded name")
+    if seeded_names:  # cs_03:015: "my name is Chloé Dubois" ... signed "Miguel Garcia"
+        seeded_words = set().union(*(_name_words(str(v)) for v, _ in seeded_names))
+        others = [
+            n
+            for n in _person_names(_own_text(everything), brands, _SENDER_SOURCES)
+            if _name_words(n) and not _name_words(n) <= seeded_words  # every word from the seeded names
+        ]
+        if others:
+            fields = ", ".join(key for _, key in seeded_names)
+            problems.append(f"names another person ({others[0]!r}) besides the seeded {fields}")
     return "; ".join(problems) or None
 
 

@@ -1674,9 +1674,12 @@ def real_problem(reference: dict, email: str) -> str | None:
 
 
 @pytest.mark.parametrize("row", REAL["dropped_before_7b"], ids=lambda r: r["id"])
-def test_every_record_the_audit_dropped_before_7b_is_rejected(row):
-    # Replays the 12 real cs_03 records the blind audit dropped before Task 7b (seed vs written email).
-    assert real_problem(json.loads(row["reference"]), row["email"]) is not None
+def test_every_record_the_audit_dropped_before_7b_is_rejected_for_its_reason(row):
+    # Replays the 12 real cs_03 records the blind audit dropped before Task 7b (seed vs written email): every
+    # field the auditor disagreed on must be named in the rejection, not just "rejected".
+    problem = real_problem(json.loads(row["reference"]), row["email"]) or ""
+
+    assert all(field in problem for field in row["audit_wrong_fields"]), (row["audit_wrong_fields"], problem)
 
 
 @pytest.mark.parametrize("row", REAL["kept_after_7b"], ids=lambda r: r["id"])
@@ -1706,6 +1709,9 @@ def test_a_signed_first_name_is_not_excused_by_the_seeded_email_handle(case_id, 
         ("product_name", "Name of the product the customer ordered", False),
         ("shop_name", "Shop name", False),
         ("company_name", "Company name", False),
+        ("team_name", "Team name", False),
+        ("customer_name", "Full name of the customer as shown on the shop order", True),
+        ("buyer_name", "Name of the customer who bought the item", True),
     ],
 )
 def test_every_person_name_field_gets_the_name_detector(key, desc, person):
@@ -1786,3 +1792,157 @@ def test_a_second_person_beside_a_seeded_name_is_a_conflict_but_a_quoted_agent_i
 
     assert "another person ('Miguel Garcia')" in email_problem(record, body + "\n\nthx\nMiguel Garcia")
     assert email_problem(record, body + "\n\nThanks,\nChloé\n\n> Kind regards,\n> Tom") is None
+
+
+# ---------------------------------------------------------------- Task 7b re-review round 2
+
+SPLIT = {
+    "type": "object",
+    "properties": {
+        "first_name": _opt("First name"),
+        "last_name": _opt("Last name"),
+        "order_id": _opt("Order id such as HH-48213"),
+        "issue": {"type": "string", "enum": ["damaged", "other"]},
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "From: Priya Nair <p@example.com>\n\nOrder HH-48213 broke.",
+        "Order HH-48213 broke.\n\nThanks,\nPriya Nair",
+        "Order HH-48213 broke.\n\nBest regards,\nNair, Priya",
+    ],
+)
+def test_a_name_split_across_seeded_fields_is_the_seeded_person(text):
+    record = {"first_name": "Priya", "last_name": "Nair", "order_id": "HH-48213", "issue": "damaged"}
+
+    assert email_problem(record, text, SPLIT) is None
+
+
+def test_a_null_last_name_still_flags_a_signed_full_name():
+    record = {"first_name": "Priya", "last_name": None, "order_id": "HH-48213", "issue": "damaged"}
+
+    assert "last_name" in email_problem(record, "Order HH-48213 broke.\n\nThanks,\nPriya Nair", SPLIT)
+    assert email_problem(record, "Order HH-48213 broke.\n\nThanks,\nDr. Priya", SPLIT) is None
+
+
+def test_seeded_first_and_last_names_never_excuse_a_null_full_name():
+    schema = {**SPLIT, "properties": {**SPLIT["properties"], "full_name": _opt("Full name")}}
+    record = {
+        "first_name": "Priya",
+        "last_name": "Nair",
+        "full_name": None,
+        "order_id": "HH-48213",
+        "issue": "damaged",
+    }
+
+    assert "full_name" in email_problem(record, "Order HH-48213 broke.\n\nThanks,\nPriya Nair", schema)
+
+
+SEEDED_NAME = {k: None for k in FULL} | {"issue": "other", "customer_name": "Priya Nair"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Order broke.\n\nThanks,\nPriya R. Nair",
+        "Order broke.\n\nRegards,\nDr. Priya Nair",
+        "From: Nair, Priya\n\nOrder broke.",
+        "Order broke.\n\nBest regards,\nPriya Nair\nMarketing Manager",
+        "Order broke.\n\nThanks,\nPriya Nair\nNair Textiles",
+        "Order broke.\n\nThanks,\nPriya Nair\n\n-----Original Message-----\n"
+        "From: Tom Becker <tom@helphub.example>\nSent: Monday\n\n"
+        "Hello, we shipped it.\n\nBest regards,\nTom Becker",
+        "Hi Sarah,\nmy order broke.\n\nThanks,\nPriya Nair",
+    ],
+)
+def test_renderings_titles_threads_and_greetings_are_no_second_person(text):
+    assert "another person" not in (email_problem(SEEDED_NAME, text) or "")
+
+
+def test_a_second_sender_is_still_a_conflict():
+    problem = email_problem(SEEDED_NAME, "My name is Priya Nair.\n\nthx\nMiguel Garcia") or ""
+
+    assert "another person ('Miguel Garcia') besides the seeded customer_name" in problem
+    assert "another person ('Priya Sharma')" in (
+        email_problem(SEEDED_NAME, "Order broke.\n\nThanks,\nPriya Sharma") or ""
+    )
+
+
+def test_a_seeded_discount_excuses_its_own_number_for_a_null_total():
+    schema = {
+        "type": "object",
+        "properties": {
+            "discount": {"anyOf": [{"type": "number"}, {"type": "null"}], "description": "Discount granted"},
+            "total_amount": _opt("Order total", "number"),
+            "issue": {"type": "string", "enum": ["other"]},
+        },
+    }
+    record = {"discount": 5.37, "total_amount": None, "issue": "other"}
+
+    assert "total_amount" not in (email_problem(record, "I got a discount of 5,37 EUR.", schema) or "")
+    assert "total_amount" in email_problem(record, "A discount of 5,37 EUR on 40,00 EUR.", schema)
+
+
+@pytest.mark.parametrize(
+    "text, flagged",
+    [
+        ("I paid TRY 500.", True),
+        ("I paid PHP 450.", True),
+        ("I paid MAD 300.", True),
+        ("I paid PEN 20.", True),
+        ("ALL 3 ITEMS ARRIVED BROKEN.", False),
+        ("Our TOP 10 list.", False),
+        ("It weighed 5 KGS.", False),
+    ],
+)
+def test_iso_codes_that_look_like_words_still_count_next_to_a_number(text, flagged):
+    problem = email_problem({k: None for k in FULL} | {"issue": "other"}, text) or ""
+
+    assert ("currency" in problem) is flagged, problem
+
+
+@pytest.mark.parametrize(
+    "signoff",
+    [
+        "Best regards,",
+        "Best Regards,",
+        "Best Wishes,",
+        "Thanks a lot,",
+        "Thank You Very Much,",
+        "Yours Sincerely,",
+        "All the best,",
+        "Danke schön,",
+        "Saludos Cordiales,",
+        "Thanks so much,",
+    ],
+)
+def test_a_longer_signoff_still_exposes_the_signature_on_the_next_line(signoff):
+    text = f"Order broke.\n\n{signoff}\nKwame Osei\nkwame35@example.es"
+
+    assert "customer_name although it is null ('Kwame Osei')" in (email_problem(NAME_NULL, text) or "")
+
+
+def test_a_sentence_after_thank_you_is_no_signoff():
+    text = "Order broke.\nThank you for your prompt attention to this matter.\nSincerely,\nPriya Nair"
+
+    assert "another person" not in (email_problem(SEEDED_NAME, text) or "")
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "delivered 12 March 2024",
+        "delivered Mar 12, 2024",
+        "delivered 12. März 2024",
+        "delivered the 12th of March 2024",
+    ],
+)
+def test_the_same_day_in_another_year_is_another_date(written):
+    record = {k: None for k in SIBLINGS["properties"]} | {"order_date": "2025-03-12"}
+
+    problem = email_problem(record, f"Ordered 2025-03-12, {written}.", SIBLINGS) or ""
+
+    assert "delivery_date" in problem
