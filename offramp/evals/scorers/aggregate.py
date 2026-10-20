@@ -43,6 +43,25 @@ def _at_least(value: float, bar: float) -> bool:
     return value >= bar or math.isclose(value, bar, rel_tol=0.0, abs_tol=_EPS)
 
 
+def wilson_lower(passed: int, n: int, z: float = 1.96) -> float:
+    """Wilson score 95% lower bound of a pass rate of `passed` out of `n` cases (0..1): how low the true
+    rate could plausibly be. 9/9 passing is >= 0.700, 3/3 only >= 0.438. ValueError on n < 1."""
+    if n < 1 or not 0 <= passed <= n:
+        raise ValueError(f"no pass rate for {passed} of {n} cases")
+    p, z2 = passed / n, z * z
+    centre = p + z2 / (2 * n)
+    spread = z * math.sqrt(p * (1 - p) / n + z2 / (4 * n * n))
+    return max(0.0, (centre - spread) / (1 + z2 / n))
+
+
+def lower_pct(case_scores: Sequence[CaseScore]) -> float | None:
+    """wilson_lower of the share of passing cases, in percent rounded down to 0.1 so it never overstates the
+    bound; None for no cases."""
+    if not case_scores:
+        return None
+    return math.floor(1000 * wilson_lower(sum(c.passed for c in case_scores), len(case_scores)) + 1e-9) / 10
+
+
 def site_pass(
     task_type: TaskType,
     case_scores: Sequence[CaseScore],

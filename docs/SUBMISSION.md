@@ -57,7 +57,7 @@ A dashboard shows all of it live: stage stepper, call-site cards, a parity-by-ti
 - An end-to-end run on our demo repo that ends in a real pull request: 6 call sites, 121 cases, 3 migrations, each with evidence, and 3 honest "a human should look at this" verdicts instead of patches we could not verify.
 - Offramp writes every change to application code itself; Nemotron edits only tests and test fakes, and the PR lists the test files each model edit touched, for the reviewer. The three shipped patches passed the target repo's own ruff and pytest, alone and merged.
 - Every number on screen and in the PR is rendered from run artifacts. Costs are labelled as estimates with their price source and date, and latency before migration is shown as not measured.
-- The four live pipeline runs behind the demo cost $0.94 together on Token Factory, by our spend counter at list prices (unverified, because the price page is login-gated) and excluding case generation. One full live pipeline cost $0.83; each re-run after a fix cost $0.03 to $0.08, because the response cache served every unchanged call.
+- The four live pipeline runs behind the demo cost $0.94 together on Token Factory, by our spend counter at Token Factory's prices (as its model API, `GET /v1/models?verbose=true`, lists them) and excluding case generation. One full live pipeline cost $0.83; each re-run after a fix cost $0.03 to $0.08, because the response cache served every unchanged call.
 - Judges can watch the whole recorded run at <https://offramp-seven.vercel.app> with no login and no keys, or run `make demo` locally.
 
 ## What we learned

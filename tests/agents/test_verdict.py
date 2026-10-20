@@ -6,13 +6,14 @@ FakeLLM and then cassettes recorded live from Token Factory. Routing: stub runne
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import httpx
 import openai
 import pytest
 
+from offramp.agents.pr_writer import PRContext, render_pr
 from offramp.agents.translate import UnresolvedCallSite
 from offramp.agents.verdict import (
     VERDICT_MAX_TOKENS,
@@ -38,6 +39,7 @@ from offramp.schemas import (
     Contract,
     EvalCase,
     ModelOutput,
+    PriceEvidence,
     PromptTemplate,
     RunConfig,
     Tier,
@@ -346,6 +348,34 @@ def test_keep_closed_when_dev_failed_even_if_holdout_passed():
         "dev parity vs reference 90.0% < 95% (holdout 100.0%) on Super after 3 adapter iterations; "
         f"{COST_KEEP}."
     )
+    assert v.failed_gate == "dev"
+
+
+@pytest.mark.parametrize(
+    "holdout,gate",
+    [
+        (result(SITE, Tier.SUPER, "holdout", scores([True] * 7 + [False] * 3)), "threshold"),
+        (
+            result(FREE_TEXT, Tier.SUPER, "holdout", [CaseScore(case_id="h", passed=False, score=3.5)]),
+            "judge_mean",
+        ),
+        (
+            result(
+                FREE_TEXT,
+                Tier.SUPER,
+                "holdout",
+                [CaseScore(case_id=f"h{i}", passed=i > 0, score=[2.5, 5, 5, 5][i]) for i in range(4)],
+            ),
+            "case_floor",
+        ),
+        (result(SITE, Tier.SUPER, "holdout", scores([True] * 10)), None),  # migrated: nothing missed
+    ],
+)
+def test_the_verdict_records_the_gate_its_holdout_missed(holdout, gate):
+    site = FREE_TEXT if holdout.site_id == FREE_TEXT.id else SITE
+    passing = [CaseScore(case_id="d", passed=True, score=5.0 if site is FREE_TEXT else 1.0)]
+    v = keep(site, Tier.SUPER, holdout, dev=result(site, Tier.SUPER, "dev", passing))
+    assert v.failed_gate == gate
 
 
 def test_json_extraction_fails_on_validity_with_parity_above_threshold():
@@ -450,6 +480,25 @@ def test_migrate_free_text_parity_is_the_share_of_passing_cases():
         "Super: judge mean 4.42 ≥ 4.0 (parity vs reference 75.0%) on holdout after 0 adapter iterations; "
         f"{COST_MIGRATE}."
     )
+    # n, the mean and the floor case, and how sure 3 of 4 passing is
+    assert (v.holdout_cases, v.holdout_passed, v.parity_lower_pct) == (4, 3, 30.0)  # Wilson 3/4: 0.3006
+    assert (v.judge_mean, v.judge_min) == (4.42, 3.67)
+
+
+def test_parity_carries_its_case_count_and_wilson_lower_bound():
+    v = decide(SITE, evidence(), reason_llm(GOOD), RunConfig(repo_url="x"), price_lookup=price)
+    assert (v.holdout_cases, v.holdout_passed) == (30, 29)
+    assert v.parity_lower_pct == 83.3  # Wilson 95% of 29/30 = 0.8333..., rounded down to 0.1
+    assert v.judge_mean is None and v.judge_min is None  # not free text
+    perfect = result(SITE, Tier.LIGHTNING, "holdout", scores([True] * 3))
+    assert keep(SITE, Tier.LIGHTNING, perfect).parity_lower_pct == 43.8  # 100% of 3 is only >= 43.8%
+
+
+def test_a_failing_free_text_runs_judge_scores_are_rounded_down():
+    rows = [CaseScore(case_id=f"cs_06:{i:03d}", passed=True, score=4.0) for i in range(249)]
+    rows.append(CaseScore(case_id="cs_06:999", passed=False, score=2.999))
+    v = keep(FREE_TEXT, Tier.ULTRA, result(FREE_TEXT, Tier.ULTRA, "holdout", rows))
+    assert (v.judge_mean, v.judge_min) == (3.99, 2.99)
 
 
 def test_the_clause_carries_the_closed_reference_row_and_an_unestimated_cost():
@@ -546,7 +595,7 @@ def test_sunset_risk_comes_from_the_lookups_deprecation_notice():
     def lookup(model):
         return price(model).model_copy(
             update={
-                "deprecation": "FIXTURE: retires 2026-11-30",
+                "deprecation": "FIXTURE: gpt-4o-mini retires on 2026-11-30",
                 "deprecation_url": "https://example.com/dep",
             }
         )
@@ -554,7 +603,23 @@ def test_sunset_risk_comes_from_the_lookups_deprecation_notice():
     v = decide(
         SITE, evidence(), reason_llm(BudgetExceeded("x")), RunConfig(repo_url="x"), price_lookup=lookup
     )
-    assert v.sunset_risk == "FIXTURE: retires 2026-11-30 (https://example.com/dep)"
+    assert v.sunset_risk == "FIXTURE: gpt-4o-mini retires on 2026-11-30 (https://example.com/dep)"
+    assert v.retires_on == date(2026, 11, 30)  # read from the notice, never written in by hand
+
+
+def test_the_lookups_evidence_travels_on_the_verdict():
+    def lookup(model):
+        return price(model).model_copy(update={"query": "gpt-4o-mini pricing", "price_quote": "| $0.15 |"})
+
+    v = decide(SITE, evidence(), reason_llm(GOOD), RunConfig(repo_url="x"), price_lookup=lookup)
+    assert v.price_evidence == PriceEvidence(
+        method="search", query="gpt-4o-mini pricing", url=OPENAI_PRICING, quote="| $0.15 |", date="2026-10-19"
+    )
+    assert v.retires_on is None
+    offline = decide(
+        SITE, evidence(), reason_llm(GOOD), RunConfig(repo_url="x"), price_lookup=pricing_yaml_price
+    )
+    assert offline.price_evidence.method == "yaml fallback" and offline.price_evidence.query is None
 
 
 def test_the_offline_lookup_reads_pricing_yaml_and_says_so():
@@ -693,11 +758,12 @@ class Runner:
             ), []
         selected = [c for c in cases if c.split == split]
         k = round(outcome * len(selected))
+        judged = site.contract.task_type == "free_text"  # judge scores: 5 for a passing case, 2 otherwise
         rows = [
             CaseScore(
                 case_id=c.id,
                 passed=i < k,
-                score=float(i < k),
+                score=(5.0 if i < k else 2.0) if judged else float(i < k),
                 error_category=None if i < k else "wrong_label",
             )
             for i, c in enumerate(selected)
@@ -831,6 +897,24 @@ def test_all_tiers_failing_keeps_closed_with_the_best_dev_tier_measured_on_holdo
     assert out.adapter.version == 0 and len(it.calls) == 9
 
 
+def test_a_free_text_site_whose_holdout_passed_but_dev_never_did_is_kept_for_dev_and_says_so():
+    """Review T19 N2, through route.py's "no tier qualified" path: the best dev adapter is measured on
+    holdout, holdout passes, the site stays closed, and the PR row states that cause and no other."""
+    table = {(L, "dev"): 0.5, (S, "dev"): 0.5, (U, "dev"): 0.5, (L, "holdout"): 1.0}
+    out, runner, _ = route(table, site=FREE_TEXT)
+    v = out.verdict
+    assert runner.calls[-1] == (L, "holdout", 0)
+    assert (v.decision, v.best_tier, v.parity_pct, v.failed_gate) == ("KEEP_CLOSED", L, 100.0, "dev")
+    assert v.reason.startswith("dev judge mean 3.44 < 4.0")  # 12 of 25 dev cases at 5, 13 at 2
+    ctx = PRContext(run_id="r", repo="o/r", config=RunConfig(repo_url="x"), sites=[FREE_TEXT], verdicts=[v])
+    row = next(ln for ln in render_pr(ctx).body.splitlines() if ln.startswith("| cs_06 "))
+    assert (
+        f"| 100.0% ({HOLD_N}/{HOLD_N}, ≥" in row
+        and "judge mean 5/5, lowest case 5/5; holdout passed, dev did not |" in row
+    )
+    assert "references' judge mean" not in row and "< " not in row
+
+
 def test_keep_closed_counts_the_iterations_and_changes_of_the_best_adapter_only():
     llm = FakeLLM({VERDICT_ROLE: [{"reason": "Ticket routing stays on the current model."}]})
     table = {(L, "dev"): 0.5, (S, "dev"): 0.6, (S, "dev", 2): 0.8, (U, "dev"): 0.5, (S, "holdout"): 0.6}
@@ -895,6 +979,7 @@ def test_a_budget_stop_keeps_the_site_closed_with_the_budget_reason():
     )
     assert runner.calls == [(L, "dev", 0), (L, "dev", 1)]  # nothing after the stop
     assert out.verdict.parity_pct is None and out.adapter is None
+    assert out.verdict.failed_gate == "budget"
 
 
 def test_a_budget_stop_on_the_final_holdout_run_keeps_the_site_closed():

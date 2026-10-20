@@ -604,6 +604,28 @@ def test_site_pass_counts_passed_flags_not_scores():
     assert site_pass("classification", scores) == (False, 0.0)
 
 
+@pytest.mark.parametrize(
+    "passed,n,lower",
+    [  # Wilson 95% lower bounds as published (Newcombe 1998: 81/263 -> 0.2553; 5/10 -> 0.2366)
+        (9, 9, 0.7008),
+        (3, 3, 0.4385),
+        (5, 5, 0.5655),
+        (6, 8, 0.4093),
+        (5, 10, 0.2366),
+        (81, 263, 0.2553),
+        (0, 10, 0.0),
+    ],
+)
+def test_wilson_lower_bound_matches_known_values(passed, n, lower):
+    assert aggregate.wilson_lower(passed, n) == pytest.approx(lower, abs=5e-5)
+
+
+@pytest.mark.parametrize("passed,n", [(0, 0), (4, 3), (-1, 3)])
+def test_wilson_lower_bound_needs_a_pass_rate(passed, n):
+    with pytest.raises(ValueError):
+        aggregate.wilson_lower(passed, n)
+
+
 def test_site_pass_accepts_a_run_config():
     cfg = RunConfig(repo_url="https://github.com/x/y", threshold=0.90, reasoning_threshold=0.95)
     eighteen = _scores(18, ["wrong"] * 2)

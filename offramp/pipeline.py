@@ -56,7 +56,9 @@ from offramp.evals.serverless_job.matrix import Matrix, MatrixResults, absorb_us
 from offramp.integrations import langsmith
 from offramp.integrations.tavily import lookup_source_model
 from offramp.schemas import (
+    TIER_ORDER,
     Adapter,
+    AfterPrice,
     CallSite,
     CaseSummary,
     ReferenceAudit,
@@ -65,10 +67,12 @@ from offramp.schemas import (
     RunTotals,
     ScanResult,
     Stage,
+    Tier,
     TierResult,
     Verdict,
 )
 from offramp.tf import LLM, Budget, BudgetExceeded, CacheMiss, TFClient
+from offramp.tf import prices as tf_prices
 
 TERMINAL = ("done", "error")
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
@@ -425,6 +429,7 @@ class Pipeline:
         *,
         cache_dir: str | Path | None = None,
         price_lookup: Callable[[str], Any] | None = None,
+        after_prices: Callable[[list[Tier]], dict[Tier, AfterPrice]] | None = None,
         eval_matrix: Callable[[Matrix], MatrixResults] | None = None,
         route: Callable[..., Any] | None = None,
         patch: Callable[..., Any] | None = None,
@@ -442,6 +447,8 @@ class Pipeline:
         self._restore_budget()
         self.cache_dir = cache_dir
         self.price_lookup = price_lookup or default_price_lookup(config, client)
+        # the migrated tiers' Token Factory prices: the model API (cached per day), never called cache-only
+        self.after_prices = after_prices or (lambda tiers: tf_prices.after_prices(tiers, live=config.live))
         self.eval_matrix = eval_matrix or self._run_matrix_job
         self.route, self.patch, self.pr = (
             route or route_site,
@@ -657,7 +664,9 @@ class Pipeline:
             try:
                 adapters[site.id] = adapt(site, self.client, schemas.get(site.id) or None)
             except BudgetExceeded as e:
-                stopped[site.id] = Verdict(site_id=site.id, decision="KEEP_CLOSED", reason=f"budget: {e}")
+                stopped[site.id] = Verdict(
+                    site_id=site.id, decision="KEEP_CLOSED", reason=f"budget: {e}", failed_gate="budget"
+                )
         return {
             "adapters": {k: a.model_dump(mode="json") for k, a in adapters.items()},
             "stopped": {k: v.model_dump(mode="json") for k, v in stopped.items()},
@@ -789,11 +798,17 @@ class Pipeline:
         return ", ".join(sorted({r.model for r in closed.values()} & auditors)) or None
 
     def _verdicts(self, chat: list[CallSite], routes: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        """Each site's verdict, a MIGRATE one with its tier's Token Factory price and where it was read."""
         self._stage(Stage.VERDICTS)
-        verdicts = [routes[s.id]["verdict"] for s in chat]
+        verdicts, out = [routes[s.id]["verdict"] for s in chat], []
+        tiers = {Tier(v["tier"]) for v in verdicts if v["decision"] == "MIGRATE"}
+        after = self.after_prices([t for t in TIER_ORDER if t in tiers]) if tiers else {}
         for v in verdicts:
+            if v["decision"] == "MIGRATE":
+                v = v | {"after_price": after[Tier(v["tier"])].model_dump(mode="json")}
             self.log.emit("verdict", v, call_site_id=v["site_id"])
-        return verdicts
+            out.append(v)
+        return out
 
     def _patch(
         self,

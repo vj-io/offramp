@@ -12,7 +12,7 @@ Evidence paths are all in this repo. Recorded responses and tests replay offline
 | 4 | Lightning with `tool_choice="required"` loops | every tool-call site | send `"auto"` on Lightning |
 | 5 | `reasoning_effort="low"` does very different things per tier | reasoning budget | not used |
 | 6 | Model ids are inconsistent and discovered by trial | config | verified once with `GET /v1/models` |
-| 7 | The price page is login-gated | cost estimates | prices marked unverified |
+| 7 | The price page is login-gated | cost estimates | prices read from `GET /v1/models?verbose=true` |
 | 8 | Super escapes code badly inside JSON | patch writing, fixture mapping | plain-text edit blocks, decode escapes |
 | 9 | Ultra followed an instruction inside the input | blind reference audit | audit disagreements are dropped |
 | 10 | Super invented a schema reference in a free-form JSON field | call-site labelling | schema comes from the code |
@@ -78,10 +78,10 @@ The catalogue spells the three models we use three different ways: `nvidia/Nemot
 
 ### 7. The Token Factory price page is login-gated
 
-`nebius.com/token-factory/prices` redirects to a login-gated organisation page, so a script, a judge or a reader without an account cannot confirm the list prices. We could corroborate only Super's price, through third-party aggregators; the Ultra and Lightning prices came from the project PRD (`docs/PRD.md`, section 1) and are marked `unverified-list-price` in our price file until they can be checked.
+`nebius.com/token-factory/prices` redirects to a login-gated organisation page, so a script, a judge or a reader without an account cannot read the price list there. The model API does carry the prices: `GET /v1/models?verbose=true` returns a `pricing` object per model, with `prompt` and `completion` in USD per token. On 2026-10-21 it listed exactly the three Nemotron prices our price file held ($0.06 / $0.24, $0.30 / $0.90 and $1 / $3 per 1M tokens). Offramp now reads it at run time, once a day (`offramp/tf/prices.py`), and labels the prices "Token Factory model API, <date>", with `offramp/evals/pricing.yaml` as the labelled fallback.
 
-- Ask: a public, machine-readable price list (a page or a `prices` field on `/v1/models`).
-- Evidence: `offramp/evals/pricing.yaml` (entries for the three tiers and their notes).
+- Ask: document the `pricing` field of `/v1/models?verbose=true` (units, and whether it is the price a key is billed at), or make the price page public.
+- Evidence: `offramp/tf/prices.py`, `tests/unit/test_tf_prices.py`, `offramp/evals/pricing.yaml` (the three tier entries, sourced to the API).
 
 ## What worked well on Token Factory
 

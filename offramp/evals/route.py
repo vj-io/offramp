@@ -180,7 +180,7 @@ def _route(site, cases, references, adapter, client, config, closed, iterate, ru
         return SiteRoute(verdict(tier, i, dev, holdout, holdout_calls), history[tier][i], results)
     except (_BudgetStop, BudgetExceeded) as e:
         reason = str(e) if isinstance(e, _BudgetStop) else f"budget: {e}"
-        return SiteRoute(stopped(site, "KEEP_CLOSED", reason), None, results)
+        return SiteRoute(stopped(site, "KEEP_CLOSED", reason, "budget"), None, results)
     except (MissingReference, UnresolvedCallSite) as e:
         return SiteRoute(stopped(site, "MANUAL_REVIEW", f"cannot evaluate: {e}"), None, results)
 

@@ -6,7 +6,7 @@ after an intended template change with UPDATE_SNAPSHOTS=1 and review the diff.
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -85,7 +85,7 @@ def test_keep_closed_row_shows_parity_below_threshold_and_no_savings():
 
     row = next(line for line in body.splitlines() if line.startswith("| cs_05 "))
     assert "**NOT MIGRATED**" in row
-    assert "71.4% < 90%" in row
+    assert "71.4% (5/7, ≥35%) < 90%" in row
     assert row.endswith("| — | — |")
 
 
@@ -152,9 +152,176 @@ def test_without_closed_references_no_closed_model_is_named():
 def test_price_sources_dates_and_langsmith_links_are_listed():
     body = render_pr(ctx()).body.split("## How parity was measured")[1]
 
-    assert "https://nebius.com/token-factory/prices" in body and "2026-10-19" in body
+    assert (
+        "- After: Nemotron 3 Super `nvidia/nemotron-3-super-120b-a12b` $0.30 / $0.90 "
+        "(Token Factory model API, 2026-10-21)"
+    ) in body
+    assert "unverified" not in body
     assert "developers.openai.com/api/docs/pricing" in body  # cost_before_note
     assert "https://smith.langchain.com/public/fixture-project/r" in body
+
+
+def test_an_after_price_not_read_in_the_run_is_pricing_yamls_and_says_so():
+    c = ctx()
+    c.verdicts = [v.model_copy(update={"after_price": None}) for v in c.verdicts]
+    body = render_pr(c).body
+    assert (
+        "- After: Nemotron 3.5 Lightning `nvidia/Nemotron-3_5-Lightning` $0.06 / $0.24 (pricing.yaml as of "
+        "2026-10-21; not read from the Token Factory model API in this run)"
+    ) in body
+
+
+def test_each_before_price_shows_how_it_was_found_and_the_quote():
+    body = render_pr(ctx()).body
+    line = next(ln for ln in body.splitlines() if ln.startswith("- Before, cs_02:"))
+    assert line.endswith(". Price by Tavily search; the page prints `Input $3 / MTok Output $15 / MTok`.")
+    line = next(ln for ln in body.splitlines() if ln.startswith("- Before, cs_04:"))
+    assert line.endswith(". Price by pricing.yaml fallback.")
+    line = next(ln for ln in body.splitlines() if ln.startswith("- Before, cs_01:"))
+    assert "Price by" not in line  # a verdict recorded without evidence says nothing it does not know
+
+
+def test_a_price_tavily_extract_confirmed_says_so():
+    c = ctx()
+    v = verdict(c, "cs_02")
+    v.price_evidence = v.price_evidence.model_copy(update={"method": "extract (confirms table)"})
+    line = next(ln for ln in render_pr(c).body.splitlines() if ln.startswith("- Before, cs_02:"))
+    quote = "`Input $3 / MTok Output $15 / MTok`"
+    assert line.endswith(f". Price by Tavily Extract, confirming pricing.yaml; the page prints {quote}.")
+
+
+def test_a_long_quote_is_cut_and_backticks_cannot_break_out_of_it():
+    c = ctx()
+    v = verdict(c, "cs_02")
+    long = "Input `$3` " + "x " * 200
+    v.price_evidence = v.price_evidence.model_copy(update={"quote": long})
+    line = next(ln for ln in render_pr(c).body.splitlines() if ln.startswith("- Before, cs_02:"))
+    assert "the page prints `Input '$3' x x" in line and line.endswith("…`.") and line.count("`") == 2
+
+
+def evidence_table(body: str) -> str:
+    return body.split("## Evidence")[1].split("## What changed")[0]
+
+
+def test_sites_whose_source_model_retires_lead_the_summary_and_the_evidence_table():
+    body = render_pr(ctx(), PROSE).body
+    summary = body.split("## Evidence")[0]
+    assert summary.startswith("## Summary\n\n**Claude Sonnet 4.5 retires on 30 Nov 2026: cs_02, cs_03.**\n\n")
+    rows = [ln.split(" | ")[0] for ln in evidence_table(body).splitlines() if ln.startswith("| cs_")]
+    assert rows == ["| cs_02", "| cs_03", "| cs_01", "| cs_04", "| cs_05", "| cs_06"]
+    assert "| claude-sonnet-4-5 (retires 30 Nov 2026) |" in body
+
+
+def test_the_soonest_retirement_comes_first_and_no_date_means_no_lead():
+    c = ctx()
+    verdict(c, "cs_06").retires_on = date(2026, 11, 1)
+    body = render_pr(c).body
+    assert (
+        "**claude-haiku-4-5 retires on 1 Nov 2026: cs_06.**\n**Claude Sonnet 4.5 retires on 30 Nov 2026"
+        in body
+    )
+    rows = [ln.split(" | ")[0] for ln in evidence_table(body).splitlines() if ln.startswith("| cs_")]
+    assert rows[:3] == ["| cs_06", "| cs_02", "| cs_03"]
+    c.verdicts = [v.model_copy(update={"retires_on": None}) for v in c.verdicts]
+    assert "retires on" not in render_pr(c).body.split("## Evidence")[0]
+
+
+def kept_free_text_row(**judge) -> str:
+    """cs_06 as a kept free-text site: 6 of 8 holdout cases passing, with the given judge scores."""
+    c = ctx()
+    kept = dict(decision="KEEP_CLOSED", tier=None, model=None, best_tier="lightning", parity_pct=75.0,
+                holdout_cases=8, holdout_passed=6, parity_lower_pct=40.9)  # fmt: skip
+    c.verdicts = [v.model_copy(update=kept | judge) if v.site_id == "cs_06" else v for v in c.verdicts]
+    return next(ln for ln in render_pr(c).body.splitlines() if ln.startswith("| cs_06 "))
+
+
+def test_a_kept_free_text_site_is_compared_with_the_judges_bars_not_a_share():
+    """Review T19 M4 and N2: each judge figure against its own bar, and only the gate the verdict records."""
+    row = kept_free_text_row(judge_mean=3.95, judge_min=2.66, failed_gate="judge_mean")
+    assert "| 75.0% (6/8, ≥40%), judge mean 3.95/5 < 4.0, lowest case 2.66/5 < 3.0 |" in row
+    assert "95%" not in row
+    row = kept_free_text_row(judge_mean=4.2, judge_min=2.66, failed_gate="case_floor")
+    assert "| 75.0% (6/8, ≥40%), judge mean 4.2/5, lowest case 2.66/5 < 3.0 |" in row
+    row = kept_free_text_row(judge_mean=4.2, judge_min=3.5, failed_gate="reference_margin")
+    assert "lowest case 3.5/5, more than 0.3 below the references' judge mean |" in row
+
+
+@pytest.mark.parametrize(
+    "gate,cell",
+    [
+        ("dev", "75.0% (6/8, ≥40%), judge mean 4.5/5, lowest case 4/5; holdout passed, dev did not"),
+        (None, "75.0% (6/8, ≥40%), judge mean 4.5/5, lowest case 4/5"),  # recorded before the gate: no cause
+    ],
+)
+def test_a_kept_free_text_row_never_states_a_cause_the_verdict_does_not_record(gate, cell):
+    row = kept_free_text_row(judge_mean=4.5, judge_min=4.0, failed_gate=gate)
+    assert f"| {cell} |" in row and "references' judge mean" not in row
+
+
+@pytest.mark.parametrize(
+    "site_id,gate,cell",
+    [
+        ("cs_05", "threshold", "71.4% (5/7, ≥35%) < 90%"),
+        ("cs_05", "dev", "71.4% (5/7, ≥35%); holdout passed, dev did not"),
+        ("cs_03", "schema", "96.4% (8/8 pass, ≥67%), not every output schema-valid"),
+        ("cs_03", "pass_share", "96.4% (8/8 pass, ≥67%), too few cases pass whole"),
+    ],
+)
+def test_a_kept_row_says_the_bar_its_verdict_missed(site_id, gate, cell):
+    c = ctx()
+    kept = {"decision": "KEEP_CLOSED", "tier": None, "model": None, "failed_gate": gate}
+    c.verdicts = [v.model_copy(update=kept) if v.site_id == site_id else v for v in c.verdicts]
+    row = next(ln for ln in render_pr(c).body.splitlines() if ln.startswith(f"| {site_id} "))
+    assert f"| **NOT MIGRATED** | {cell} |" in row
+
+
+def test_a_budget_stopped_site_says_so_and_claims_no_parity():
+    """Review T19 R2-m3: not "below 95%"."""
+    c = ctx()
+    stop = {
+        "decision": "KEEP_CLOSED",
+        "tier": None,
+        "model": None,
+        "parity_pct": None,
+        "failed_gate": "budget",
+    }
+    c.verdicts = [v.model_copy(update=stop) if v.site_id == "cs_01" else v for v in c.verdicts]
+    row = next(ln for ln in render_pr(c).body.splitlines() if ln.startswith("| cs_01 "))
+    assert "| **NOT MIGRATED** | not measured: the run's budget stopped it |" in row and "95%" not in row
+
+
+@pytest.mark.parametrize("site_id", ["cs_05", "cs_06"])
+def test_a_kept_verdict_recorded_without_its_gate_states_figures_and_no_comparison(site_id):
+    """Review T19 R2-m3: a verdict from before failed_gate (a legacy "dev never passed" row read "100.0% <
+    95%")."""
+    c = ctx()
+    legacy = {"decision": "KEEP_CLOSED", "tier": None, "model": None, "failed_gate": None}
+    c.verdicts = [v.model_copy(update=legacy) if v.site_id == site_id else v for v in c.verdicts]
+    row = next(ln for ln in render_pr(c).body.splitlines() if ln.startswith(f"| {site_id} "))
+    cell = row.split(" | ")[5]
+    assert "<" not in cell and "below" not in cell and "dev" not in cell and "%" in cell
+
+
+def test_a_retirement_date_already_past_says_retired():
+    body = render_pr(ctx(today=date(2026, 12, 1))).body
+    assert "**Claude Sonnet 4.5 retired on 30 Nov 2026: cs_02, cs_03.**" in body
+    assert "| claude-sonnet-4-5 (retired 30 Nov 2026) |" in body
+
+
+def test_the_bracket_sentence_says_what_json_extraction_counts():
+    body = render_pr(ctx()).body
+    assert "for JSON extraction, whose figure is the mean field match, the cases that pass whole" in body
+    assert "with 95% confidence" in body
+
+
+def test_parity_shows_its_case_count_and_wilson_bound_and_free_text_its_floor():
+    body = render_pr(ctx()).body
+    assert "| 97.1% (34/35, ≥85%) (after 1 adapter iteration) |" in body
+    assert "| 100.0% (6/6, ≥60%), judge mean 4.3/5, lowest case 3.67/5 (after 1 adapter iteration) |" in body
+    assert "Wilson 95% lower bound" in body and "costs cents on Nemotron 3.5 Lightning" in body
+    c = ctx()
+    c.verdicts = [v.model_copy(update={"holdout_cases": None, "judge_mean": None}) for v in c.verdicts]
+    assert "| 97.1% (after 1 adapter iteration) |" in render_pr(c).body  # recorded before the bounds
 
 
 def test_prose_without_a_note_falls_back_to_recorded_text():

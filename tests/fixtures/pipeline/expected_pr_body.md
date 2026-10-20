@@ -6,12 +6,12 @@ Offramp evaluated 6 LLM call sites against references (69 cases, 24 in the holdo
 
 | Site | File | Task | Before | After | Parity vs reference (holdout) | p50 latency (after) | $/1k calls before (est.) → after |
 |---|---|---|---|---|---|---|---|
-| cs_01 | `helphub/inbox/triage.py` | classification | gpt-4o-mini | **NOT MIGRATED** | 85.7% < 95% | — | — |
-| cs_02 | `helphub/ops/agent_step.py` | tool_call | claude-sonnet-4-5 | **NOT MIGRATED** | 50.0% < 95% | — | — |
-| cs_03 | `helphub/orders/extract.py` | json_extraction | claude-sonnet-4-5 | **NOT MIGRATED** | 71.4% < 95% | — | — |
-| cs_04 | `helphub/qa/rag_answer.py` | free_text | gpt-4o | Nemotron 3.5 Lightning (`nvidia/Nemotron-3_5-Lightning`) | 100.0%, judge mean 5/5 | 1.0 s | $2.04 (est.) → $0.049 |
-| cs_05 | `helphub/refunds/plan.py` | reasoning | o3 | **MANUAL REVIEW** | 100.0% | — | — |
-| cs_06 | `helphub/summaries/summarize.py` | free_text | claude-haiku-4-5 | Nemotron 3.5 Lightning (`nvidia/Nemotron-3_5-Lightning`) | 100.0%, judge mean 5/5 | 2.6 s | $0.84 (est.) → $0.045 |
+| cs_01 | `helphub/inbox/triage.py` | classification | gpt-4o-mini | **NOT MIGRATED** | 85.7% (6/7, ≥48%) < 95% | — | — |
+| cs_02 | `helphub/ops/agent_step.py` | tool_call | claude-sonnet-4-5 | **NOT MIGRATED** | 50.0% (1/2, ≥9%) < 95% | — | — |
+| cs_03 | `helphub/orders/extract.py` | json_extraction | claude-sonnet-4-5 | **NOT MIGRATED** | 71.4% (0/2 pass, ≥0%) < 95% | — | — |
+| cs_04 | `helphub/qa/rag_answer.py` | free_text | gpt-4o | Nemotron 3.5 Lightning (`nvidia/Nemotron-3_5-Lightning`) | 100.0% (5/5, ≥56%), judge mean 5/5, lowest case 5/5 | 1.0 s | $2.04 (est.) → $0.049 |
+| cs_05 | `helphub/refunds/plan.py` | reasoning | o3 | **MANUAL REVIEW** | 100.0% (4/4, ≥51%) | — | — |
+| cs_06 | `helphub/summaries/summarize.py` | free_text | claude-haiku-4-5 | Nemotron 3.5 Lightning (`nvidia/Nemotron-3_5-Lightning`) | 100.0% (4/4, ≥51%), judge mean 5/5, lowest case 5/5 | 2.6 s | $0.84 (est.) → $0.045 |
 
 ## What changed
 
@@ -42,7 +42,7 @@ Offramp evaluated 6 LLM call sites against references (69 cases, 24 in the holdo
 
 The source models' own outputs were never recorded; parity is agreement with references.
 
-Each site's cases are split once into dev (adapter iteration) and holdout (verdict only). Pass bar: 95% agreement with the references (90% for reasoning); free text: judge mean of at least 4.0 on a 1–5 rubric, no holdout case below 3.0.
+Each site's cases are split once into dev (adapter iteration) and holdout (verdict only). Pass bar: 95% agreement with the references (90% for reasoning); free text: judge mean of at least 4.0 on a 1–5 rubric, no holdout case below 3.0. In brackets after a parity figure: holdout cases passing / evaluated (for JSON extraction, whose figure is the mean field match, the cases that pass whole), and the Wilson 95% lower bound of that pass rate; with few holdout cases, even 100% only shows, with 95% confidence, that the rate is above that bound. More holdout cases narrow it, and evaluating them costs cents on Nemotron 3.5 Lightning.
 - cs_02: free-text arguments escalate_to_human.priority, escalate_to_human.reason checked for presence, not wording.
 
 | Site | References | Cases (dev / holdout) | Reference audit (checked / agreed / dropped / human-verified, by) |
@@ -55,9 +55,9 @@ Each site's cases are split once into dev (adapter iteration) and holdout (verdi
 | cs_06 | — | 8 / 4 | 0 / 0 / 0 / 0 |
 
 Prices (USD per 1M input / output tokens):
-- After: Nemotron 3.5 Lightning `nvidia/Nemotron-3_5-Lightning` $0.06 / $0.24 (https://nebius.com/token-factory/prices, as of 2026-10-19, unverified list price)
-- Before, cs_04: est.: gpt-4o $2.50/$10.00 per 1M (developers.openai.com/api/docs/pricing, pricing.yaml as of 2026-10-19; fallback: offline run, Tavily not asked) x tokens measured on the Token Factory call (mean of 5 lightning holdout calls)
-- Before, cs_06: est.: claude-haiku-4-5 $1.00/$5.00 per 1M (platform.claude.com/docs/en/about-claude/pricing, pricing.yaml as of 2026-10-19; fallback: offline run, Tavily not asked) x tokens measured on the Token Factory call (mean of 4 lightning holdout calls)
+- After: Nemotron 3.5 Lightning `nvidia/Nemotron-3_5-Lightning` $0.06 / $0.24 (pricing.yaml as of 2026-10-21; the Token Factory model API is not read in tests)
+- Before, cs_04: est.: gpt-4o $2.50/$10.00 per 1M (developers.openai.com/api/docs/pricing, pricing.yaml as of 2026-10-19; fallback: offline run, Tavily not asked) x tokens measured on the Token Factory call (mean of 5 lightning holdout calls). Price by pricing.yaml fallback.
+- Before, cs_06: est.: claude-haiku-4-5 $1.00/$5.00 per 1M (platform.claude.com/docs/en/about-claude/pricing, pricing.yaml as of 2026-10-19; fallback: offline run, Tavily not asked) x tokens measured on the Token Factory call (mean of 4 lightning holdout calls). Price by pricing.yaml fallback.
 
 <details><summary>Failing cases: cs_01 (Nemotron 3.5 Lightning, adapter v1, holdout split)</summary>
 

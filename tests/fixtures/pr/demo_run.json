@@ -307,7 +307,17 @@
         "cost_before_per_1k": 0.047,
         "cost_after_per_1k": 0.019,
         "cost_before_note": "est.: gpt-4o-mini $0.15/$0.60 per 1M (developers.openai.com/api/docs/pricing, pricing.yaml as of 2026-10-19) x tokens measured on the Token Factory call",
-        "reason": "Lightning matches the reference queue on 97.1% of holdout tickets."
+        "reason": "Lightning matches the reference queue on 97.1% of holdout tickets.",
+        "holdout_cases": 35,
+        "holdout_passed": 34,
+        "parity_lower_pct": 85.4,
+        "after_price": {
+          "model": "nvidia/Nemotron-3_5-Lightning",
+          "input_usd_per_m": 0.06,
+          "output_usd_per_m": 0.24,
+          "via": "token_factory_api",
+          "source": "Token Factory model API, 2026-10-21"
+        }
       },
       {
         "site_id": "cs_02",
@@ -318,9 +328,27 @@
         "iterations": 0,
         "cost_before_per_1k": 3.0,
         "cost_after_per_1k": 0.26,
-        "cost_before_note": "est.: claude-sonnet-4-5 $3.00/$15.00 per 1M (platform.claude.com/docs/en/about-claude/pricing, pricing.yaml as of 2026-10-19) x tokens measured on the Token Factory call",
-        "sunset_risk": "claude-sonnet-4-5 is listed as deprecated on platform.claude.com/docs/en/about-claude/pricing",
-        "reason": "Super picks the reference tool with matching arguments on 96.0% of holdout steps."
+        "cost_before_note": "est.: claude-sonnet-4-5 $3.00/$15.00 per 1M (platform.claude.com/docs/en/models/sonnet-4-5, fetched via Tavily 2026-10-19) x tokens measured on the Token Factory call",
+        "sunset_risk": "Claude Sonnet 4.5 is deprecated: it is still functional but no longer recommended, and retires on November 30, 2026. (https://platform.claude.com/docs/en/models/sonnet-4-5)",
+        "reason": "Super picks the reference tool with matching arguments on 96.0% of holdout steps.",
+        "holdout_cases": 25,
+        "holdout_passed": 24,
+        "parity_lower_pct": 80.4,
+        "retires_on": "2026-11-30",
+        "price_evidence": {
+          "method": "search",
+          "query": "claude-sonnet-4-5 (claude sonnet 4.5) API pricing",
+          "url": "https://platform.claude.com/docs/en/models/sonnet-4-5",
+          "quote": "Input $3 / MTok Output $15 / MTok",
+          "date": "2026-10-19"
+        },
+        "after_price": {
+          "model": "nvidia/nemotron-3-super-120b-a12b",
+          "input_usd_per_m": 0.3,
+          "output_usd_per_m": 0.9,
+          "via": "token_factory_api",
+          "source": "Token Factory model API, 2026-10-21"
+        }
       },
       {
         "site_id": "cs_03",
@@ -332,8 +360,19 @@
         "cost_before_per_1k": 4.5,
         "cost_after_per_1k": 0.38,
         "cost_before_note": "est.: claude-sonnet-4-5 $3.00/$15.00 per 1M (platform.claude.com/docs/en/about-claude/pricing, pricing.yaml as of 2026-10-19) x tokens measured on the Token Factory call",
-        "sunset_risk": "claude-sonnet-4-5 is listed as deprecated on platform.claude.com/docs/en/about-claude/pricing",
-        "reason": "Every holdout reply is schema-valid and 96.4% match the reference fields."
+        "sunset_risk": "Claude Sonnet 4.5 is deprecated: it is still functional but no longer recommended, and retires on November 30, 2026. (https://platform.claude.com/docs/en/models/sonnet-4-5)",
+        "reason": "Every holdout reply is schema-valid and 96.4% match the reference fields.",
+        "holdout_cases": 8,
+        "holdout_passed": 8,
+        "parity_lower_pct": 67.5,
+        "retires_on": "2026-11-30",
+        "after_price": {
+          "model": "nvidia/nemotron-3-super-120b-a12b",
+          "input_usd_per_m": 0.3,
+          "output_usd_per_m": 0.9,
+          "via": "token_factory_api",
+          "source": "Token Factory model API, 2026-10-21"
+        }
       },
       {
         "site_id": "cs_04",
@@ -345,7 +384,26 @@
         "cost_before_per_1k": 4.5,
         "cost_after_per_1k": 0.5,
         "cost_before_note": "est.: gpt-4o $2.50/$10.00 per 1M (developers.openai.com/api/docs/pricing, pricing.yaml as of 2026-10-19) x tokens measured on the Token Factory call",
-        "reason": "Judge mean 4.4 on holdout answers, above the 4.0 bar and within 0.3 of the reference."
+        "reason": "Judge mean 4.4 on holdout answers, above the 4.0 bar and within 0.3 of the reference.",
+        "holdout_cases": 6,
+        "holdout_passed": 6,
+        "parity_lower_pct": 60.9,
+        "judge_mean": 4.4,
+        "judge_min": 3.5,
+        "price_evidence": {
+          "method": "yaml fallback",
+          "query": "gpt-4o (gpt 4o) API pricing",
+          "url": "https://developers.openai.com/api/docs/pricing",
+          "quote": null,
+          "date": "2026-10-19"
+        },
+        "after_price": {
+          "model": "nvidia/nemotron-3-super-120b-a12b",
+          "input_usd_per_m": 0.3,
+          "output_usd_per_m": 0.9,
+          "via": "token_factory_api",
+          "source": "Token Factory model API, 2026-10-21"
+        }
       },
       {
         "site_id": "cs_05",
@@ -356,7 +414,11 @@
         "iterations": 3,
         "cost_before_per_1k": 34.0,
         "cost_before_note": "est.: o3 $2.00/$8.00 per 1M (developers.openai.com/api/docs/pricing, pricing.yaml as of 2026-10-19) x tokens measured on the Token Factory call",
-        "reason": "parity vs reference 71.4% < 90%: multi-step proration with tiered seats still drifts by cents after 3 adapter iterations on Ultra."
+        "reason": "parity vs reference 71.4% < 90%: multi-step proration with tiered seats still drifts by cents after 3 adapter iterations on Ultra.",
+        "holdout_cases": 7,
+        "holdout_passed": 5,
+        "parity_lower_pct": 35.8,
+        "failed_gate": "threshold"
       },
       {
         "site_id": "cs_06",
@@ -368,7 +430,19 @@
         "cost_before_per_1k": 1.4,
         "cost_after_per_1k": 0.077,
         "cost_before_note": "est.: claude-haiku-4-5 $1.00/$5.00 per 1M (platform.claude.com/docs/en/about-claude/pricing, pricing.yaml as of 2026-10-19) x tokens measured on the Token Factory call",
-        "reason": "Judge mean 4.3 on holdout handoff notes, above the 4.0 bar."
+        "reason": "Judge mean 4.3 on holdout handoff notes, above the 4.0 bar.",
+        "holdout_cases": 6,
+        "holdout_passed": 6,
+        "parity_lower_pct": 60.9,
+        "judge_mean": 4.3,
+        "judge_min": 3.67,
+        "after_price": {
+          "model": "nvidia/Nemotron-3_5-Lightning",
+          "input_usd_per_m": 0.06,
+          "output_usd_per_m": 0.24,
+          "via": "token_factory_api",
+          "source": "Token Factory model API, 2026-10-21"
+        }
       }
     ],
     "tier_results": [
@@ -887,6 +961,7 @@
         "escalate_to_human.reason"
       ]
     },
-    "client_path": "helphub/offramp_client.py"
+    "client_path": "helphub/offramp_client.py",
+    "today": "2026-10-21"
   }
 }

@@ -1,19 +1,21 @@
 """Tavily source-model lookup (PRD §6.10, GC21) against httpx.MockTransport and FakeLLM: no network, no key.
 
 The pages in SYNTHETIC_* are made-up test fixtures (they only look like vendor pages). The recorded real
-responses live in tests/fixtures/tavily/ (Tavily, one search per model) and tests/fixtures/tavily/cassettes/
-(Nemotron Super's extraction replies) and are replayed further down.
+responses live in tests/fixtures/tavily/ (Tavily, one search per model), tests/fixtures/tavily/extract/ (the
+Tavily Extract that follows a rejected search price) and tests/fixtures/tavily/cassettes/ (Nemotron Super's
+extraction replies) and are replayed further down.
 
-Re-record (spends one basic Tavily search per deleted <model>.json, plus a few cents of Super tokens):
-delete the files to refresh, then `pytest tests/unit/test_tavily.py --live -k record` with NEBIUS_API_KEY and
-TAVILY_API_KEY set. Changing the search query, the Super prompt or the schema invalidates the cassettes
-(delete tests/fixtures/tavily/cassettes/ and re-run: the search fixtures are replayed, not re-fetched).
+Re-record (spends one basic Tavily search per deleted <model>.json, one advanced extract per missing
+extract/<model>.json whose search price is rejected, plus a few cents of Super tokens): delete the files to
+refresh, then `pytest tests/unit/test_tavily.py --live -k record` with NEBIUS_API_KEY and TAVILY_API_KEY set.
+Changing the search query, the Super prompt or the schema invalidates the cassettes (delete
+tests/fixtures/tavily/cassettes/ and re-run: the search fixtures are replayed, not re-fetched).
 """
 
 import json
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import httpx
@@ -23,10 +25,11 @@ import pytest
 from offramp import pricing
 from offramp.integrations import keys, tavily
 from offramp.integrations.tavily import PricingExtraction, SourceModelInfo, TavilyError, lookup_source_model
-from offramp.schemas import Tier
+from offramp.schemas import PriceEvidence, Tier
 from offramp.tf import BudgetExceeded, CacheMiss, FakeLLM, TFClient
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "tavily"
+EXTRACTS = FIXTURES / "extract"  # the recorded Tavily Extract responses, by model
 CASSETTES = FIXTURES / "cassettes"  # the real Super extraction replies, replayed by TFClient(live=False)
 MODELS = ["gpt-4o-mini", "gpt-4o", "o3", "claude-sonnet-4-5", "claude-haiku-4-5"]
 LIVE_TAVILY_KEY = os.environ.get("TAVILY_API_KEY")  # read before hermetic_env replaces it
@@ -52,18 +55,28 @@ def hermetic_env(monkeypatch, tmp_path):
 
 class Tavily:
     """Scripted Tavily: each reply is a response body (dict), an HTTP status (int), (status, body text) or an
-    exception to raise. Records every request (JSON body + bearer token)."""
+    exception to raise. Records every search request (JSON body + bearer token). Extract requests are answered
+    from `extract` (default: Tavily's answer when it could read none of the pages) and recorded apart."""
 
-    def __init__(self, *replies):
+    def __init__(self, *replies, extract=()):
         self.replies = list(replies)
+        self.extract_replies = list(extract)
         self.requests: list[dict] = []
         self.tokens: list[str] = []
+        self.extracts: list[dict] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == "https://api.tavily.com/search" and request.method == "POST"
-        self.requests.append(json.loads(request.content))
-        self.tokens.append(request.headers["authorization"].removeprefix("Bearer "))
-        reply = self.replies.pop(0)
+        assert request.method == "POST"
+        if str(request.url) == tavily.EXTRACT_URL:
+            self.extracts.append(json.loads(request.content))
+            reply = (
+                self.extract_replies.pop(0) if self.extract_replies else {"results": [], "failed_results": []}
+            )
+        else:
+            assert str(request.url) == "https://api.tavily.com/search"
+            self.requests.append(json.loads(request.content))
+            self.tokens.append(request.headers["authorization"].removeprefix("Bearer "))
+            reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
         if isinstance(reply, tuple):
@@ -139,12 +152,18 @@ def test_a_verified_extraction_becomes_the_source_model_info(tmp_path):
         output_usd_per_m=0.60,
         price_source_url=MINI_URL,
         fetched_at=NOW,
+        query=tavily._search_payload("gpt-4o-mini")["query"],
+        price_quote="Input: $0.15 / 1M tokens Output: $0.60",
     )
     assert info.via == "tavily" and info.note is None and info.sunset_risk() is None
     assert info.cost_before_note() == (
         "est.: gpt-4o-mini $0.15/$0.60 per 1M (developers.openai.com/api/docs/models/gpt-4o-mini, "
         "fetched via Tavily 2026-10-19) x tokens measured on the Token Factory call"
     )
+    assert info.evidence() == PriceEvidence(
+        method="search", query=info.query, url=MINI_URL, quote=info.price_quote, date="2026-10-19"
+    )
+    assert server.extracts == []  # a verified search price needs no Tavily Extract
 
 
 def test_extraction_is_a_super_call_with_thinking_off_and_the_pages_in_the_user_message(tmp_path):
@@ -621,24 +640,386 @@ def test_a_rejected_fallback_is_not_retried(tmp_path, monkeypatch):
     assert info.via == "pricing.yaml" and server.tokens == ["tvly-primary", "tvly-fallback"]
 
 
+# ------------------------------------------------------------------ Tavily Extract after a rejected price
+
+GPT_4O_PAGE = "https://developers.openai.com/api/docs/models/gpt-4o"
+OPENAI_PRICES = "https://developers.openai.com/api/docs/pricing"
+# made-up pages in the vendors' shapes: the model page's labelled amounts; a price-list row with cached input
+MODEL_PAGE_TEXT = "# GPT-4o\nText tokens\nPer 1M tokens\nInput\n$2.50\nCached input\n$1.25\nOutput\n$10.00\n"
+PRICE_LIST_TEXT = "| Model | Input | Cached input | Output |\n| gpt-4o | $2.50 | $1.25 | $10.00 |\n"
+
+
+def extracted(*pages):
+    return {"results": [{"url": u, "raw_content": c} for u, c in pages], "failed_results": []}
+
+
+def gpt_4o(tmp_path, *extract, extraction=None):
+    """A search whose only page prints no price for gpt-4o (Super cites it anyway), then Tavily Extract."""
+    server = Tavily(body((GPT_4O_PAGE, "GPT-4o is our versatile flagship model.")), extract=extract)
+    ext = extraction or PricingExtraction(
+        input_usd_per_m=2.5, output_usd_per_m=10.0, price_source_url=GPT_4O_PAGE
+    )
+    info, llm = lookup(tmp_path, server, ext, model="gpt-4o")
+    return info, server, llm
+
+
+def test_an_extracted_page_printing_the_checked_in_price_confirms_it(tmp_path):
+    info, server, llm = gpt_4o(
+        tmp_path, extracted((GPT_4O_PAGE, MODEL_PAGE_TEXT), (OPENAI_PRICES, PRICE_LIST_TEXT))
+    )
+    (request,) = server.extracts
+    assert request == {
+        "urls": [GPT_4O_PAGE, OPENAI_PRICES],
+        "extract_depth": "advanced",
+        "format": "markdown",
+    }
+    assert len(llm.calls) == 1  # no model reads the extracted text: the verifier does
+    assert (info.via, info.input_usd_per_m, info.output_usd_per_m) == ("tavily extract", 2.5, 10.0)
+    assert info.price_source_url == GPT_4O_PAGE and info.note is None
+    assert info.price_quote == "Input $2.50 Cached input $1.25 Output $10.00"
+    assert info.evidence() == PriceEvidence(
+        method="extract (confirms table)",
+        query=tavily._search_payload("gpt-4o")["query"],
+        url=GPT_4O_PAGE,
+        quote=info.price_quote,
+        date="2026-10-19",
+    )
+    assert "confirmed via Tavily Extract 2026-10-19, as in pricing.yaml" in info.cost_before_note()
+
+
+N_TABLE = "| | {a} | GPT-4o |\n| Input | {ai}{u} | $2.50{u} |\n| Output | {ao}{u} | $10.00{u} |"
+STACKED = "GPT-4o mini{sep}GPT-4o\nInput\n$0.15{u}\n$2.50{u}\nOutput\n$0.60{u}\n$10.00{u}"
+# Every comparison layout from the T19 reviews (N1 tables, N3 unit tables, N4 stacked cards) as gpt-4o's own
+# page, and the price, if any, that the verifier reads off it: never shipped, only reported.
+REVIEW_LAYOUTS = [
+    (N_TABLE.format(a="GPT-4o mini", ai="$0.15", ao="$0.60", u=""), None),  # N1
+    (N_TABLE.format(a="GPT-4.1", ai="$2.00", ao="$8.00", u=""), None),  # N1, the other column order
+    (N_TABLE.format(a="GPT-4o mini", ai="$0.15", ao="$0.60", u=" / 1M tokens"), None),  # N3
+    (N_TABLE.format(a="GPT-4o mini", ai="$0.15", ao="$0.60", u=" / MTok"), None),  # N3
+    (STACKED.format(sep="\n", u=""), "$0.15/$0.60"),  # N4: one value per line
+    (STACKED.format(sep="   ", u=""), "$0.15/$0.60"),  # N4: both names on one line
+    ("| | GPT-4o mini | GPT-4o |\n| Input | $0.15\n$2.50 |\n| Output | $0.60\n$10.00 |", "$0.15/$0.60"),  # N4
+    (STACKED.format(sep="\n", u=" / 1M tokens"), "$0.15/$0.60"),  # N4, stacked with units
+]
+
+
+@pytest.mark.parametrize("page,shown", REVIEW_LAYOUTS)
+def test_no_comparison_layout_ships_any_price_but_the_checked_in_one(tmp_path, page, shown):
+    """Reviews T19 N1-N4, end to end: Tavily Extract only ever confirms pricing.yaml's price."""
+    info, server, _ = gpt_4o(tmp_path, extracted((GPT_4O_PAGE, page), (OPENAI_PRICES, PRICE_LIST_TEXT)))
+    assert len(server.extracts) == 1
+    assert (info.via, info.input_usd_per_m, info.output_usd_per_m) == ("pricing.yaml", 2.5, 10.0)
+    assert info.evidence().method == "yaml fallback" and info.price_quote is None
+    if shown is None:  # the verifier read no price: nothing to report
+        assert "nor do the vendor's own pages read through Tavily Extract" in info.note
+    else:
+        disagreement = f"Tavily page {GPT_4O_PAGE} shows {shown}; checked-in table $2.50/$10.00; not used"
+        assert disagreement in info.note and disagreement in info.evidence().note
+        assert disagreement in info.cost_before_note()  # what the verdict and the PR's Prices section carry
+
+
+def test_a_vendor_price_change_is_reported_not_adopted(tmp_path):
+    """A single-model page whose output price differs from pricing.yaml's: each price is compared."""
+    page = MODEL_PAGE_TEXT.replace("$10.00", "$12.00")
+    info, _, _ = gpt_4o(tmp_path, extracted((GPT_4O_PAGE, page)))
+    assert (info.via, info.input_usd_per_m, info.output_usd_per_m) == ("pricing.yaml", 2.5, 10.0)
+    assert info.note == (
+        "fallback: Tavily price not used (the cited page prints no unambiguous price for exactly this model; "
+        f"Tavily page {GPT_4O_PAGE} shows $2.50/$12.00; checked-in table $2.50/$10.00; not used)"
+    )
+    assert info.evidence().note == info.note
+    assert len(list((tmp_path / "cache").glob("*.json"))) == 1  # judged: cached like any fallback
+
+
+def test_a_model_without_a_checked_in_price_does_not_use_tavily_extract(tmp_path):
+    """Extract can only confirm pricing.yaml: with no entry there it is not asked, and the unknown-price path
+    applies (KeyError naming both failures)."""
+    server = Tavily(body(("https://developers.openai.com/api/docs/models/gpt-9", "GPT-9 is new.")))
+    ext = PricingExtraction(
+        input_usd_per_m=1.0, output_usd_per_m=2.0, price_source_url="https://developers.openai.com/x"
+    )
+    with pytest.raises(KeyError, match="gpt-9.*Tavily: Tavily price not used"):
+        lookup(tmp_path, server, ext, model="gpt-9")
+    assert server.extracts == []
+
+
+VERIFIED_PAGES = Path(__file__).parents[1] / "fixtures" / "tavily_verified_pages.json"
+
+
+def test_every_recorded_page_gives_exactly_what_it_gave_before_t19():
+    """All 100 recorded result pages through _price_quote: the same price and quote on the ones that verified,
+    nothing on the rest (tests/fixtures/tavily_verified_pages.json, written from 1b06922)."""
+    expected = json.loads(VERIFIED_PAGES.read_text())["verified"]
+    pages = 0
+    for model in MODELS:
+        results = json.loads((FIXTURES / f"{model}.json").read_text())["response"]["results"]
+        got = [
+            {"result": i, "url": r["url"].strip(), "price": list(hit[0]), "quote": hit[1]}
+            for i, r in enumerate(results)
+            if (hit := tavily._price_quote(model, r["url"].strip(), r["content"]))
+        ]
+        assert got == expected[model], model
+        pages += len(results)
+    assert pages == 100
+
+
+RECORDED_VERIFIED = {  # pages of each recording that verify, and the one price they verify (unchanged by T19)
+    "gpt-4o-mini": (3, {(0.15, 0.6)}),
+    "gpt-4o": (0, set()),
+    "o3": (0, set()),
+    "claude-sonnet-4-5": (2, {(3.0, 15.0)}),
+    "claude-haiku-4-5": (12, {(1.0, 5.0)}),
+}
+
+
+@pytest.mark.parametrize("model", MODELS)
+def test_the_recorded_pages_verify_exactly_as_before(model):
+    results = json.loads((FIXTURES / f"{model}.json").read_text())["response"]["results"]
+    printed = [tavily._page_price(model, r["url"].strip(), r["content"]) for r in results]
+    assert (sum(p is not None for p in printed), {p for p in printed if p}) == RECORDED_VERIFIED[model]
+
+
+def test_extract_pages_are_the_vendors_model_page_and_price_list():
+    assert tavily._extract_urls("claude-sonnet-4-5-20250929") == [
+        "https://platform.claude.com/docs/en/models/sonnet-4-5",
+        "https://platform.claude.com/docs/en/about-claude/pricing",
+    ]
+    assert tavily._extract_urls("o3") == [
+        "https://developers.openai.com/api/docs/models/o3",
+        "https://developers.openai.com/api/docs/pricing",
+    ]
+    assert tavily._extract_urls("some-other-vendor-model") == []
+    for model in ("claude-haiku-4-5", "gpt-4o"):
+        assert all(tavily._allowed(u, tavily._vendor_domains(model)) for u in tavily._extract_urls(model))
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        [],  # Tavily read none of the pages
+        [(OPENAI_PRICES, PRICE_LIST_TEXT)],  # a row with three amounts: ambiguous, not taken
+        [
+            (GPT_4O_PAGE, MODEL_PAGE_TEXT.replace("$2.50", "$5.00")),
+            (OPENAI_PRICES, "| gpt-4o | $2.50 / $10.00 |"),
+        ],
+        [("https://evil.example/models/gpt-4o", MODEL_PAGE_TEXT)],  # off the allow-list
+        [("https://developers.openai.com/api/docs/models/gpt-4o-mini", MODEL_PAGE_TEXT)],  # a sibling's page
+        # an allow-listed page Tavily returned that was not asked for (a redirect, say) does not count
+        [("https://developers.openai.com/api/docs/models/gpt-4o-2024-08-06", MODEL_PAGE_TEXT)],
+        [(GPT_4O_PAGE, 42)],  # raw_content that is not text
+    ],
+)
+def test_extracted_pages_that_print_no_single_price_fall_back_and_are_cached(tmp_path, pages):
+    info, server, _ = gpt_4o(tmp_path, extracted(*pages))
+    assert info.via == "pricing.yaml" and len(server.extracts) == 1
+    assert info.note == (
+        "fallback: Tavily price not used (the cited page prints no unambiguous price for exactly this model; "
+        "nor do the vendor's own pages read through Tavily Extract)"
+    )
+    assert info.evidence().method == "yaml fallback" and info.evidence().query == info.query
+    assert len(list((tmp_path / "cache").glob("*.json"))) == 1  # judged: no second extract today
+
+
+@pytest.mark.parametrize("answer", [{"results": "not a list"}, {"results": ["not an object"]}, ["a list"]])
+def test_an_extract_answer_of_the_wrong_shape_falls_back_and_is_not_cached(tmp_path, answer):
+    info, server, _ = gpt_4o(tmp_path, answer)
+    assert info.via == "pricing.yaml" and "the Tavily extract failed (unexpected response shape)" in info.note
+    assert not list((tmp_path / "cache").glob("*.json"))
+
+
+@pytest.mark.parametrize("answer", [{"results": {"url": MINI_URL}}, ["a list"]])
+def test_a_search_answer_of_the_wrong_shape_falls_back(tmp_path, answer):
+    info, llm = lookup(tmp_path, Tavily(answer), mini())
+    assert info.via == "pricing.yaml" and "unexpected response shape" in info.note and llm.calls == []
+
+
+def test_an_unwritable_cache_costs_a_lookup_not_the_run(tmp_path, monkeypatch):
+    def unwritable(path, info):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(tavily, "_write_cache", unwritable)
+    info, _ = lookup(tmp_path, Tavily(body((MINI_URL, SYNTHETIC_MINI))), mini())
+    assert info.via == "tavily"
+
+
+def test_a_failed_extract_falls_back_and_is_not_cached(tmp_path):
+    info, server, _ = gpt_4o(tmp_path, 500, 500, 500)
+    assert info.via == "pricing.yaml" and "the Tavily extract failed (HTTP 500)" in info.note
+    assert len(server.extracts) == 3 and not list((tmp_path / "cache").glob("*.json"))
+
+
+def test_no_extract_when_the_search_failed_or_super_was_unavailable(tmp_path):
+    down = Tavily(500, 500, 500)
+    lookup(tmp_path / "a", down, mini())
+    assert down.extracts == []
+    server = Tavily(body((MINI_URL, SYNTHETIC_MINI)))
+    lookup(tmp_path / "b", server, None, llm=FakeLLM({tavily.ROLE: [BudgetExceeded("cap")]}))
+    assert server.extracts == []
+
+
+def test_no_extract_for_a_vendor_without_official_pages_on_file(tmp_path):
+    server = Tavily(body(("https://openai.com/x", "nothing")))
+    ext = PricingExtraction(
+        input_usd_per_m=1.0, output_usd_per_m=2.0, price_source_url="https://openai.com/x"
+    )
+    with pytest.raises(KeyError):  # no price anywhere, pricing.yaml included
+        lookup(tmp_path, server, ext, model="acme-1")
+    assert server.extracts == []
+
+
+# ------------------------------------------------------------------ English pages first
+
+HAIKU_ZH = "https://platform.claude.com/docs/zh-CN/models/haiku-4-5/overview"
+
+
+@pytest.mark.parametrize(
+    "url,localised",
+    [
+        (HAIKU_ZH, True),
+        ("https://platform.claude.com/docs/ru/models/haiku-4-5/overview", True),
+        ("https://openai.com/uk-UA/index/introducing-o3-and-o4-mini", True),
+        ("https://openai.com/ca-ES/index/gpt-4o-mini-advancing-cost-efficient-intelligence", True),
+        ("https://platform.claude.com/docs/en/models/haiku-4-5/overview", False),
+        ("https://help.openai.com/en/articles/7102672-how-can-i-access-gpt-4o", False),
+        ("https://developers.openai.com/api/docs/models/o3-pro", False),
+        ("https://developers.openai.com/api/docs/libraries/js-sdk", False),
+    ],
+)
+def test_translated_vendor_pages_are_told_by_their_locale_segment(url, localised):
+    assert tavily._localised(url) is localised
+
+
+def test_a_citation_of_a_translated_page_moves_to_an_english_page_printing_the_same_price(tmp_path):
+    """The recorded haiku search holds zh-CN, ru, id and it copies of the model page: run 3 cited zh-CN."""
+    recorded = json.loads((FIXTURES / "claude-haiku-4-5.json").read_text())["response"]
+    ext = PricingExtraction(input_usd_per_m=1.0, output_usd_per_m=5.0, price_source_url=HAIKU_ZH)
+    info, _ = lookup(tmp_path, Tavily(recorded), ext, model="claude-haiku-4-5")
+    assert info.via == "tavily" and (info.input_usd_per_m, info.output_usd_per_m) == (1.0, 5.0)
+    assert info.price_source_url == "https://docs.claude.com/docs/en/models/haiku-4-5/overview"
+    page = next(r["content"] for r in recorded["results"] if r["url"].strip() == info.price_source_url)
+    assert tavily._flat(info.price_quote) in tavily._flat(page)
+
+
+def test_a_notice_cited_on_a_translated_page_moves_to_an_english_page_with_the_same_quote(tmp_path):
+    zh_dep = "https://docs.claude.com/zh-CN/docs/about-claude/model-deprecations"
+    server = Tavily(
+        body(
+            ("https://docs.claude.com/pricing", "| claude-sonnet-4-5 | $3 / $15 |"),
+            (zh_dep, SYNTHETIC_DEPRECATION),
+            (
+                DEP["deprecation_url"],
+                SYNTHETIC_DEPRECATION + " ",
+            ),  # the English twin (its text differs by a space)
+        )
+    )
+    ext = PricingExtraction(**SONNET_PRICE, **(DEP | {"deprecation_url": zh_dep}))
+    info, _ = lookup(tmp_path, server, ext, model="claude-sonnet-4-5")
+    assert info.deprecation == DEP["deprecation_quote"] and info.deprecation_url == DEP["deprecation_url"]
+
+
+def test_a_translated_page_without_an_english_twin_stays_cited(tmp_path):
+    zh = "https://platform.claude.com/docs/zh-CN/models/sonnet-4-5"
+    server = Tavily(body((zh, "Claude Sonnet 4.5 Input $3 Output $15"), (CLAUDE_URL, "no prices here")))
+    info, _ = lookup(tmp_path, server, PricingExtraction(**(SONNET_PRICE | {"price_source_url": zh})),
+                     model="claude-sonnet-4-5")  # fmt: skip
+    assert info.via == "tavily" and info.price_source_url == zh
+
+
+# ------------------------------------------------------------------ retirement dates for sunset urgency
+
+
+SONNET = "claude-sonnet-4-5"
+
+
+@pytest.mark.parametrize(
+    "notice,model,retires",
+    [
+        (
+            "Claude Sonnet 4.5 is deprecated: it is still functional but no longer recommended, "
+            "and retires on November 30, 2026.",
+            SONNET,
+            date(2026, 11, 30),
+        ),
+        (
+            DEP["deprecation_quote"],
+            SONNET,
+            date(2027, 4, 1),
+        ),  # the deprecation date before "Retired" is not it
+        ("gpt-x shutdown date: Nov. 3rd, 2026", "gpt-x", date(2026, 11, 3)),
+        ("gpt-x will be retired on 15 January 2027", "gpt-x", date(2027, 1, 15)),
+        ("o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API.", "o3", None),
+        ("claude-x was deprecated on 2026-10-01", "claude-x", None),  # deprecated, no retirement date given
+        ("claude-x retires soon", "claude-x", None),
+        # review I1: another model's retirement date in the same verified quote is never this model's
+        (
+            "claude-3-opus retired on January 5, 2026. Claude Sonnet 4.5 is deprecated and retires on "
+            "November 30, 2026.",
+            SONNET,
+            date(2026, 11, 30),
+        ),
+        (
+            "Claude Opus 4 retires on 2026-06-15; Claude Sonnet 4.5 is deprecated and retires on 2026-11-30.",
+            SONNET,
+            date(2026, 11, 30),
+        ),
+        ("Claude Sonnet 4.5 is deprecated. Claude Opus 4 retires on 2026-06-15.", SONNET, None),
+        ("Claude Sonnet 4.5 is deprecated; Claude Opus 4 retires on 2026-06-15.", SONNET, None),
+        ("Claude Sonnet 4.5 is deprecated, as Claude Opus 4, which retires on June 15, 2026.", SONNET, None),
+        ("claude-3-opus retired on January 5, 2026.", SONNET, None),  # not about this model at all
+        # review T19 R1-m1: the date the retirement takes effect, not the date it was announced
+        (
+            "Claude Sonnet 4.5 retirement was announced on August 1, 2026 and takes effect on "
+            "November 30, 2026.",
+            SONNET,
+            date(2026, 11, 30),
+        ),
+        ("Claude Sonnet 4.5 retirement was announced on August 1, 2026.", SONNET, None),
+        # review T19 R2-m1: a deprecation taking effect is not the retirement
+        (
+            "Claude Sonnet 4.5 is deprecated, effective August 1, 2026, and retires on November 30, 2026.",
+            SONNET,
+            date(2026, 11, 30),
+        ),
+        ("Claude Sonnet 4.5 is deprecated, effective August 1, 2026.", SONNET, None),
+    ],
+)
+def test_the_retirement_date_is_the_one_the_notice_gives_this_model(notice, model, retires):
+    assert tavily.retirement_date(notice, model) == retires
+
+
+def test_sunset_urgency_comes_from_the_verified_notice_and_its_spelling_of_the_name(tmp_path):
+    info, _ = lookup(
+        tmp_path, Tavily(sonnet_body()), PricingExtraction(**SONNET_PRICE, **DEP), model="claude-sonnet-4-5"
+    )
+    assert info.retires_on() == date(2027, 4, 1)
+    assert tavily.spelled("claude-sonnet-4-5", "Claude Sonnet 4.5 retires on November 30, 2026.") == (
+        "Claude Sonnet 4.5"
+    )
+    assert tavily.spelled("anthropic/claude-sonnet-4-5", "no name here") == "anthropic/claude-sonnet-4-5"
+
+
 # ------------------------------------------------------------------ recorded real responses (replayed)
 
 
 class Recorded(httpx.BaseTransport):
-    """Replays tests/fixtures/tavily/<model>.json. With `record` (--live) it forwards to the real Tavily
-    instead and saves the exchange: one basic search per model, never repeated while the fixture exists."""
+    """Replays tests/fixtures/tavily/<model>.json (the search) and extract/<model>.json (the Tavily Extract
+    that follows a rejected search price). With `record` (--live) a missing fixture is fetched from the real
+    Tavily instead and saved: one basic search and at most one extract per model, never repeated while the
+    fixture exists. An extract not recorded yet replays as Tavily's answer when it reads none of the pages."""
 
     def __init__(self, model: str, record: bool = False):
-        self.path, self.record, self.sent = FIXTURES / f"{model}.json", record, []
+        self.model, self.record, self.sent = model, record, []
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         sent = json.loads(request.content)
         self.sent.append(sent)
-        if self.record and not self.path.exists():
+        extract = str(request.url) == tavily.EXTRACT_URL
+        path = (EXTRACTS if extract else FIXTURES) / f"{self.model}.json"
+        if self.record and not path.exists():
             real = httpx.HTTPTransport().handle_request(request)
             real.read()
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
                 json.dumps(
                     {
                         "recorded_at": datetime.now(UTC).isoformat(),
@@ -651,9 +1032,12 @@ class Recorded(httpx.BaseTransport):
                 + "\n"
             )
             return real
-        fixture = json.loads(self.path.read_text())
+        if extract and not path.exists():
+            failed = [{"url": u, "error": "not recorded yet"} for u in sent["urls"]]
+            return httpx.Response(200, json={"results": [], "failed_results": failed})
+        fixture = json.loads(path.read_text())
         assert sent == fixture["request"], (
-            f"the search request changed: re-record {self.path.name} with --live"
+            f"the {'extract' if extract else 'search'} request changed: re-record {path.name} with --live"
         )
         return httpx.Response(fixture["status"], json=fixture["response"])
 
@@ -687,6 +1071,8 @@ def test_recorded_search_gives_a_verified_price_that_matches_the_vendors_publish
         model
     )  # = pricing.yaml, read by hand
     assert tavily._allowed(info.price_source_url, tavily._vendor_domains(model))
+    page = next(r["content"] for r in recorded_results(model) if r["url"] == info.price_source_url)
+    assert info.price_quote and tavily._flat(info.price_quote) in tavily._flat(page)
     assert (
         info.cost_before_note().startswith(f"est.: {model} ")
         and "fetched via Tavily 2026-10-19" in info.cost_before_note()
@@ -701,6 +1087,7 @@ def test_recorded_sonnet_search_found_the_vendors_deprecation_notice(tmp_path):
     )
     assert info.deprecation_url == "https://platform.claude.com/docs/en/models/sonnet-4-5"
     assert info.sunset_risk() == f"{info.deprecation} ({info.deprecation_url})"
+    assert info.retires_on() == date(2026, 11, 30)
 
 
 @pytest.mark.parametrize("model", ["gpt-4o-mini", "claude-haiku-4-5"])
@@ -709,16 +1096,23 @@ def test_recorded_searches_with_no_notice_have_no_sunset_risk(model, tmp_path):
 
 
 @pytest.mark.parametrize("model", FELL_BACK)
-def test_recorded_searches_where_super_answered_from_memory_are_rejected_and_fall_back(model, tmp_path):
+def test_recorded_searches_where_super_answered_from_memory_are_rejected(model, tmp_path):
+    """The search's price is rejected, so Tavily Extract reads the vendor's own pages: its recording verifies
+    the published price, or (no page printing one, or no recording yet) pricing.yaml is used and says so."""
     info = replay(model, tmp_path)
-    assert info.via == "pricing.yaml" and info.note.startswith("fallback: Tavily price not used (")
+    assert info.via in ("tavily extract", "pricing.yaml")
     assert (info.input_usd_per_m, info.output_usd_per_m) == pricing.price(model)
-    assert "pricing.yaml as of 2026-10-19" in info.cost_before_note()
+    if info.via == "tavily extract":
+        assert info.price_source_url in tavily._extract_urls(model) and info.price_quote
+        assert info.evidence().method == "extract (confirms table)"
+    else:
+        assert info.note.startswith("fallback: Tavily price not used (") and "Tavily Extract" in info.note
+        assert "pricing.yaml as of 2026-10-19" in info.cost_before_note()
 
 
-def test_recorded_o3_search_still_found_its_deprecation_notice_while_the_price_fell_back(tmp_path):
+def test_recorded_o3_search_still_found_its_deprecation_notice_while_the_price_was_rejected(tmp_path):
     info = replay("o3", tmp_path)
-    assert info.via == "pricing.yaml"
+    assert info.via != "tavily"
     assert (
         info.deprecation == "o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API."
     )
@@ -730,14 +1124,19 @@ def test_recorded_requests_are_what_the_code_sends_today():
         assert json.loads((FIXTURES / f"{model}.json").read_text())["request"] == tavily._search_payload(
             model
         )
+    for path in EXTRACTS.glob("*.json"):
+        assert json.loads(path.read_text())["request"] == tavily._extract_payload(path.stem)
 
 
 def test_fixtures_hold_no_api_key_and_are_marked_as_recordings():
-    for path in [*FIXTURES.glob("*.json"), *CASSETTES.glob("*.json")]:
+    for path in [*FIXTURES.glob("*.json"), *EXTRACTS.glob("*.json"), *CASSETTES.glob("*.json")]:
         text = path.read_text()
         assert "tvly-" not in text and "Bearer" not in text and "api_key" not in text.lower(), path.name
     assert {p.stem for p in FIXTURES.glob("*.json")} == set(MODELS)
-    assert all("recorded_at" in json.loads(p.read_text()) for p in FIXTURES.glob("*.json"))
+    assert all(
+        "recorded_at" in json.loads(p.read_text())
+        for p in [*FIXTURES.glob("*.json"), *EXTRACTS.glob("*.json")]
+    )
 
 
 # ------------------------------------------------------------------ the recorded pages as regression fixtures
@@ -951,20 +1350,86 @@ def test_a_models_own_row_still_parses_next_to_other_rows_and_joins(page):
 GPT_4O_PAGE = "https://developers.openai.com/api/docs/models/gpt-4o"
 
 
+TOGGLE = "GPT-4o\nBatch API price\n\nInput\n\n$2.50\n\nCached input\n\n$1.25\n\nOutput\n\n$10.00"
+CARD = "\n\nPrice\n\n$2.50•$10\n\nInput•Output"  # the price card, as on the recorded gpt-4o-mini page
+
+
 @pytest.mark.parametrize(
     "page,expected",
     [
         ("GPT-4o\nBatch input\n$1.25\nBatch output\n$5.00\nInput\n$2.50\nOutput\n$10.00", (2.5, 10.0)),
         ("GPT-4o\nCached input $1.25 Input $2.50 Output $10.00", (2.5, 10.0)),
-        (
-            "GPT-4o\nBatch API price\n\nInput\n\n$2.50\n\nCached input\n\n$1.25\n\nOutput\n\n$10.00",
-            (2.5, 10.0),
-        ),
+        # OpenAI's "Batch API price" toggle sits right before the standard price, and the text cannot tell it
+        # from a batch heading (review T19 M2): the amounts count only when the price card prints them again
+        (TOGGLE + CARD, (2.5, 10.0)),
+        (TOGGLE, None),
+        ("GPT-4o\nBatch API price\nInput $1.25\nOutput $5.00", None),  # review T19 M2 probe: the batch price
+        ("GPT-4o\nBatch API price\nInput $1.25\nOutput $5.00" + CARD, None),  # the card is another price
+        ("GPT-4o\nBatch pricing\nInput $1.25\nOutput $5", None),
         ("GPT-4o\nBatch Input: $1.25\nBatch Output: $5.00", None),  # only batch prices on the page
         ("GPT-4o\nBatch API input $1.25 Output $10.00", None),  # a batch input is not the input price
     ],
 )
 def test_batch_and_cached_amounts_are_not_the_standard_price(page, expected):
+    assert priced(page, "gpt-4o", GPT_4O_PAGE) == expected
+
+
+@pytest.mark.parametrize(
+    "page,expected",
+    [
+        # review T19 M2 probe: a compared model's price before the page's own never counts
+        (
+            "GPT-4o\nCompare with GPT-4.1: Input $2.00 Output $8.00\nText tokens\nInput $2.50\nOutput $10.00",
+            None,
+        ),
+        (
+            "GPT-4o\nCompare with GPT-4.1: Input $2.00 Output $8.00\nGPT-4o pricing\nInput $2.50\n"
+            "Output $10.00",
+            (2.5, 10.0),
+        ),
+        ("GPT-4o\nGPT-4o mini\nInput $0.15\nOutput $0.60", None),  # a sibling's block on this page
+        (
+            "Pricing\nInput $2.50\nOutput $10.00\nQuick comparison\nGPT-4.1\n$2.00\nGPT-4o is our flagship",
+            (2.5, 10.0),
+        ),  # starts mid-page
+        # a replacement the page points to on its own line does not end the stretch; one with a price does
+        (
+            "# GPT-4o Deprecated\nMigrate to GPT-4.1\nContext window 128K\nInput $2.50\nOutput $10.00",
+            (2.5, 10.0),
+        ),
+        ("# GPT-4o Deprecated\nMigrate to GPT-4.1: Input $2.00 Output $8.00", None),
+        # review T19 N1: a table with a column per model, this model's only in the header: no column is picked
+        ("| | GPT-4o mini | GPT-4o |\n| Input | $0.15 | $2.50 |\n| Output | $0.60 | $10.00 |", None),
+        ("| | GPT-4.1 | GPT-4o |\n| Input | $2.00 | $2.50 |\n| Output | $8.00 | $10.00 |", None),
+        ("GPT-4o\nInput $2.50 $2.00\nOutput $10.00 $8.00", None),  # the same columns, unpiped
+        ("GPT-4o\nInput $2.50 Cached input $1.25 Output $10.00", (2.5, 10.0)),  # a label after each amount
+        # review T19 N3: the same tables with a unit after each amount, as both vendors print them
+        (
+            "| | GPT-4o mini | GPT-4o |\n| Input | $0.15 / 1M tokens | $2.50 / 1M tokens |\n"
+            "| Output | $0.60 / 1M tokens | $10.00 / 1M tokens |",
+            None,
+        ),
+        (
+            "| | GPT-4o mini | GPT-4o |\n| Input | $0.15 / MTok | $2.50 / MTok |\n"
+            "| Output | $0.60 / MTok | $10.00 / MTok |",
+            None,
+        ),
+        # single-model layouts still verify: a label word before every next amount, or the line ends first
+        ("GPT-4o\nInput: $2.50 / 1M tokens Output: $10.00 / 1M tokens Cached input: $1.25", (2.5, 10.0)),
+        ("GPT-4o\nInput pricing\n:   $2.50/ MTok\n\nOutput pricing\n:   $10/ MTok", (2.5, 10.0)),
+        (
+            "GPT-4o\nInput\n\n$2.50\n\nCached input\n\n$1.25\n\nOutput\n\n$10.00\n\nGPT-4.1\n$2.00",
+            (2.5, 10.0),
+        ),
+        # review T19 R2-m2: a batch heading on the line above the pair does not confirm it either
+        ("GPT-4o\nBatch API price\nInput $1.25\nOutput $5.00\nBatch\n$1.25 / $5.00", None),
+        ("GPT-4o\nBatch API price\nInput $1.25\nOutput $5.00\nCached\n\n$1.25•$5.00", None),
+        # review T19 R1-m3: a batch-labelled pair does not confirm a pair after a bare batch heading
+        ("GPT-4o\nBatch API price\nInput $1.25\nOutput $5.00\nBatch: $1.25 / $5.00", None),
+        ("GPT-4o\nBatch API price\nInput $1.25\nOutput $5.00\nCached batch $1.25•$5.00", None),
+    ],
+)
+def test_on_its_own_page_only_a_price_bound_to_this_model_counts(page, expected):
     assert priced(page, "gpt-4o", GPT_4O_PAGE) == expected
 
 

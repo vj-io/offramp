@@ -6,7 +6,7 @@ import from here; nobody redefines these shapes locally.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -218,6 +218,10 @@ class TierResult(BaseModel):
     metrics: TierMetrics
     failing_case_ids: list[str] = Field(default_factory=list)
     case_scores: list[CaseScore] = Field(default_factory=list)
+    # how many cases the run scored (failing_case_ids failed) and the Wilson 95% lower bound (0..100) of the
+    # share that passed: what the grid shows next to each score. None in results recorded before Task 19
+    cases: int | None = None
+    parity_lower_pct: float | None = None
 
 
 PatchFailureKind = Literal[
@@ -251,6 +255,37 @@ class PatchFailure(BaseModel):
     tests: list[str] = Field(default_factory=list)  # deletes_tests: "path::name"
 
 
+class PriceEvidence(BaseModel):
+    """Where the source model's price behind cost_before came from: the report's Tavily evidence panel."""
+
+    # Tavily Search; Tavily Extract printing pricing.yaml's own price (it never replaces it); pricing.yaml
+    method: Literal["search", "extract (confirms table)", "yaml fallback"]
+    query: str | None = None  # the Tavily search query; None when Tavily was not asked
+    url: str  # the page the price was read from (pricing.yaml's own source on a fallback)
+    quote: str | None = None  # that page's text printing the price, checked on the page; None on fallback
+    date: str  # YYYY-MM-DD: the day Tavily returned the page, or pricing.yaml's as_of
+    note: str | None = None  # on a fallback, why ("Tavily page <url> shows $X/$Y; checked-in table $A/$B")
+
+
+class AfterPrice(BaseModel):
+    """A Nemotron tier's price on Token Factory (USD per 1M tokens) and where it was read."""
+
+    model: str
+    input_usd_per_m: float
+    output_usd_per_m: float
+    via: Literal["token_factory_api", "pricing.yaml"]
+    source: str  # "Token Factory model API, 2026-10-21" or "pricing.yaml as of 2026-10-21; <why>"
+
+
+# Why a KEEP_CLOSED verdict keeps the site: "budget" when the run's budget stopped it before a measurement;
+# "dev" when dev never passed (holdout may have); else the bar its holdout missed: the parity threshold, every
+# output schema-valid, enough JSON cases passing whole, the judge mean of 4.0, no holdout case below 3.0, or a
+# judge mean within 0.3 of the references'.
+Gate = Literal[
+    "budget", "dev", "threshold", "schema", "pass_share", "judge_mean", "case_floor", "reference_margin"
+]
+
+
 class Verdict(BaseModel):
     site_id: str
     decision: Decision
@@ -275,6 +310,18 @@ class Verdict(BaseModel):
     # QA: shown in the PR and the report, never excluded from the evaluation)
     weak_references: dict[str, float] = Field(default_factory=dict)
     patch_failure: PatchFailure | None = None  # MANUAL_REVIEW from the patch stage: why, structured
+    # the holdout cases behind parity_pct: how many, how many passed, and the Wilson 95% lower bound (0..100)
+    # of that pass rate, which says how sure the figure is ("100.0% (3/3, ≥43%)")
+    holdout_cases: int | None = None
+    holdout_passed: int | None = None
+    parity_lower_pct: float | None = None
+    # free text: the judge's mean and lowest holdout case score (1..5), rounded down when the run failed
+    judge_mean: float | None = None
+    judge_min: float | None = None
+    retires_on: date | None = None  # the source model's retirement date, from the notice in sunset_risk
+    price_evidence: PriceEvidence | None = None  # where cost_before's source-model price came from
+    after_price: AfterPrice | None = None  # MIGRATE: the tier's Token Factory price and where it was read
+    failed_gate: Gate | None = None  # KEEP_CLOSED: why (None when passing, or recorded before Task 19)
     reason: str
 
 

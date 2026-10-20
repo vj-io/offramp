@@ -9,7 +9,10 @@ tier tried and its holdout parity. Every number is measured (Global Constraint 9
 - cost_after_per_1k: the holdout run's measured $/1k calls. cost_before_per_1k: the source model's published
   price (Task 17's Tavily lookup, which falls back to pricing.yaml and says why) x the mean tokens of the same
   Token Factory calls; cost_before_note is Task 17's "est." note plus how many calls were averaged;
-- latency_delta_ms: None, the source model's latency was never measured.
+- latency_delta_ms: None, the source model's latency was never measured;
+- holdout_cases / holdout_passed / parity_lower_pct: the holdout run's case count, passing cases and the
+  Wilson 95% lower bound of that pass rate; free text adds judge_mean and judge_min (its lowest case score);
+- price_evidence and retires_on: the source-model lookup's evidence and the retirement date of its notice.
 Verdict.reason = Super's qualitative sentence, then a code-built clause that carries every number (parity,
 threshold, tier, iterations, cost before (est.) and after, the closed-reference row). Super gets no numbers
 and may write none: a sentence with a digit or a number word, or none at all (the call failed), leaves the
@@ -37,6 +40,7 @@ from offramp.evals.scorers.aggregate import (
     WEAK_REFERENCE,
     Thresholds,
     _at_least,
+    lower_pct,
     site_pass,
 )
 from offramp.integrations.tavily import SourceModelInfo, _from_yaml, lookup_source_model
@@ -47,6 +51,7 @@ from offramp.schemas import (
     CandidateResult,
     Decision,
     EvalCase,
+    Gate,
     RunConfig,
     TaskType,
     Tier,
@@ -106,9 +111,9 @@ def pricing_yaml_price(model: str) -> SourceModelInfo:
     return _from_yaml(model, datetime.now(UTC), "offline run, Tavily not asked", None)
 
 
-def stopped(site: CallSite, decision: Decision, reason: str) -> Verdict:
-    """A verdict without a measured comparison: budget stops (KEEP_CLOSED) and MANUAL_REVIEW."""
-    return Verdict(site_id=site.id, decision=decision, reason=reason)
+def stopped(site: CallSite, decision: Decision, reason: str, gate: Gate | None = None) -> Verdict:
+    """A verdict without a measured comparison: budget stops (KEEP_CLOSED, gate "budget"), MANUAL_REVIEW."""
+    return Verdict(site_id=site.id, decision=decision, reason=reason, failed_gate=gate)
 
 
 def closed_reference_parity(
@@ -152,42 +157,48 @@ def _floor(x: float, places: int) -> float:
     return math.floor(x * 10**places + 1e-6) / 10**places
 
 
-def _phrase(result: TierResult, task_type: TaskType, thresholds: Thresholds | RunConfig) -> str:
-    """One run's measured outcome, in the words of the reason ("parity vs reference 71.0% < 90%")."""
+def _phrase(
+    result: TierResult, task_type: TaskType, thresholds: Thresholds | RunConfig
+) -> tuple[str, Gate | None]:
+    """One run's measured outcome, in the words of the reason ("parity vs reference 71.0% < 90%"), and the
+    gate it failed (Verdict.failed_gate; None when it passed). Each branch is the site rule's own
+    condition."""
     pct = parity_pct(result, task_type)
     if task_type == "free_text":
         mean = result.score if result.passed else _floor(result.score, 2)
         parity = f"(parity vs reference {pct:.1f}%)"
         if result.passed:
-            return f"judge mean {mean:.2f} ≥ {JUDGE_FLOOR:.1f} {parity}"
+            return f"judge mean {mean:.2f} ≥ {JUDGE_FLOOR:.1f} {parity}", None
         if not _at_least(result.score, JUDGE_FLOOR):
-            return f"judge mean {mean:.2f} < {JUDGE_FLOOR:.1f} {parity}"
+            return f"judge mean {mean:.2f} < {JUDGE_FLOOR:.1f} {parity}", "judge_mean"
         low = min(result.case_scores, key=lambda c: c.score, default=None)
         if result.split == "holdout" and low is not None and not _at_least(low.score, JUDGE_CASE_FLOOR):
             low_text = f"scored {low.score:.2f} < {JUDGE_CASE_FLOOR:.1f}"
             if low.error_category == CANDIDATE_ERROR:  # scored 1.0 by the runner, never judged
                 low_text = "had no answer (its call failed)"
             head = f"judge mean {mean:.2f} ≥ {JUDGE_FLOOR:.1f}, but holdout case {low.case_id}"
-            return f"{head} {low_text} {parity}"
-        return f"judge mean {mean:.2f} more than {JUDGE_MARGIN:g} below the references' judge mean {parity}"
+            return f"{head} {low_text} {parity}", "case_floor"
+        text = f"judge mean {mean:.2f} more than {JUDGE_MARGIN:g} below the references' judge mean {parity}"
+        return text, "reference_margin"
     bar = thresholds.reasoning_threshold if task_type == "reasoning" else thresholds.threshold
     head, t = f"parity vs reference {pct:.1f}%", f"{round(bar * 100, 4):g}%"
     if result.passed:
-        return f"{head} ≥ {t}"
+        return f"{head} ≥ {t}", None
     if not _at_least(result.score, bar):
-        return f"{head} < {t}"
+        return f"{head} < {t}", "threshold"
     rows = result.case_scores  # json_extraction failing with mean field match at or above the bar
     invalid = sum(c.error_category in _NOT_VALID for c in rows)
     if invalid:
-        return f"{head} but {invalid}/{len(rows)} outputs not schema-valid (100% required)"
+        return f"{head} but {invalid}/{len(rows)} outputs not schema-valid (100% required)", "schema"
     passing = _floor(100 * sum(c.passed for c in rows) / len(rows), 1)
-    return f"{head} but only {passing:.1f}% of cases pass (< {t})"
+    return f"{head} but only {passing:.1f}% of cases pass (< {t})", "pass_share"
 
 
 def _cost_before(
     model: str | None, evidence: Evidence, lookup: PriceLookup
-) -> tuple[float | None, str, str | None]:
-    """(cost_before_per_1k, cost_before_note, sunset_risk), GC21: Task 17's note, plus the calls averaged."""
+) -> tuple[float | None, str, SourceModelInfo | None]:
+    """(cost_before_per_1k, cost_before_note, the price lookup's answer), GC21: Task 17's note, plus the
+    calls averaged."""
     if model is None:
         return None, "source model unknown: cost before not estimated", None
     try:
@@ -196,12 +207,17 @@ def _cost_before(
         return None, f"no published price found for {model}: cost before not estimated", None
     ok = [c for c in evidence.calls if c.output is not None]  # a failed call reports no usage
     if not ok:
-        return None, "no Token Factory call returned output: cost before not estimated", info.sunset_risk()
+        return None, "no Token Factory call returned output: cost before not estimated", info
     mean_in = math.fsum(c.input_tokens for c in ok) / len(ok)
     mean_out = math.fsum(c.output_tokens for c in ok) / len(ok)
     cost = 1000 * (mean_in * info.input_usd_per_m + mean_out * info.output_usd_per_m) / 1_000_000
     note = f"{info.cost_before_note()} (mean of {len(ok)} {evidence.tier.value} holdout calls)"
-    return cost, note, info.sunset_risk()
+    return cost, note, info
+
+
+def _judge(result: TierResult, x: float) -> float:
+    """A judge score as the verdict states it: two decimals, rounded down when the run failed."""
+    return round(x, 2) if result.passed else _floor(x, 2)
 
 
 def _money(x: float) -> str:
@@ -283,12 +299,15 @@ def decide(
     migrate = dev.passed and holdout.passed
     name = tier.value.capitalize()
     if migrate:
-        result = _phrase(holdout, task, thresholds)
+        result, gate = _phrase(holdout, task, thresholds)
     elif holdout.passed:  # dev never passed: the holdout pass is not a qualification
-        result = f"dev {_phrase(dev, task, thresholds)} (holdout {parity_pct(holdout, task):.1f}%)"
+        result, gate = (
+            f"dev {_phrase(dev, task, thresholds)[0]} (holdout {parity_pct(holdout, task):.1f}%)",
+            "dev",
+        )
     else:
-        result = _phrase(holdout, task, thresholds)
-    cost_before, note, sunset = _cost_before(site.source_model, evidence, price_lookup or lookup_source_model)
+        result, gate = _phrase(holdout, task, thresholds)
+    cost_before, note, info = _cost_before(site.source_model, evidence, price_lookup or lookup_source_model)
     cost_after = holdout.metrics.cost_per_1k_calls_usd if migrate else None
     facts = {  # qualitative only: Super has no number to misattribute
         "call_site": {"file": site.file, "function": site.function, "task_type": task},
@@ -306,6 +325,7 @@ def decide(
     }
     clause = _clause(migrate, name, result, n, cost_before, cost_after, closed_parity)
     sentence = _sentence(llm, facts)
+    rows, free_text = holdout.case_scores, task == "free_text"
     return Verdict(
         site_id=site.id,
         decision="MIGRATE" if migrate else "KEEP_CLOSED",
@@ -319,7 +339,7 @@ def decide(
         cost_before_per_1k=cost_before,
         cost_before_note=note,
         cost_after_per_1k=cost_after,
-        sunset_risk=sunset,
+        sunset_risk=info.sunset_risk() if info else None,
         closed_reference_model=closed_parity[0] if closed_parity else None,
         closed_reference_parity_pct=closed_parity[1] if closed_parity else None,
         weak_references={
@@ -327,5 +347,13 @@ def decide(
             for c in holdout.case_scores
             if c.reference_score is not None and c.reference_score < WEAK_REFERENCE
         },
+        holdout_cases=len(rows) or None,
+        holdout_passed=sum(c.passed for c in rows) if rows else None,
+        parity_lower_pct=lower_pct(rows),
+        judge_mean=_judge(holdout, holdout.score) if free_text else None,
+        judge_min=_judge(holdout, min(c.score for c in rows)) if free_text and rows else None,
+        retires_on=info.retires_on() if info else None,
+        price_evidence=info.evidence() if info else None,
+        failed_gate=gate,
         reason=f"{sentence} {clause}" if sentence else clause,
     )

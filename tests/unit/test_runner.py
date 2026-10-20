@@ -198,6 +198,10 @@ def test_scores_every_case_including_failed_calls():
     assert result.case_scores[3].error_category == CANDIDATE_ERROR
     assert result.case_scores[3].detail.startswith("candidate call failed: APITimeoutError")
     assert (result.score, result.passed) == (0.5, False)
+    # what the grid shows next to the score: n, and the Wilson 95% lower bound of 2/4 (0.150), rounded down
+    assert (result.cases, result.parity_lower_pct) == (4, 15.0)
+    shown = result.model_dump(mode="json", exclude={"case_scores"})  # the tier_result event's payload
+    assert TierResult.model_validate(shown).cases == 4
     assert (result.site_id, result.tier, result.split, result.adapter_version) == (
         "cs_01",
         Tier.LIGHTNING,

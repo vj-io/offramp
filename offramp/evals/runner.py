@@ -33,7 +33,13 @@ from offramp.evals.errors import (
     provider_error,
 )
 from offramp.evals.scorers import score_case
-from offramp.evals.scorers.aggregate import CANDIDATE_ERROR, DEFAULT_THRESHOLDS, Thresholds, site_pass
+from offramp.evals.scorers.aggregate import (
+    CANDIDATE_ERROR,
+    DEFAULT_THRESHOLDS,
+    Thresholds,
+    lower_pct,
+    site_pass,
+)
 from offramp.schemas import (
     Adapter,
     AdapterSpec,
@@ -148,6 +154,8 @@ def run_tier(
         metrics=_metrics(results),
         failing_case_ids=[s.case_id for s in scores if not s.passed],
         case_scores=scores,
+        cases=len(scores),
+        parity_lower_pct=lower_pct(scores),
     )
     return (result, results) if return_candidates else result
 
