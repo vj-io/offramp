@@ -647,6 +647,38 @@ def test_secrets_never_reach_events_the_event_file_or_sqlite(tmp_path, monkeypat
     assert "https://***@github.com/acme/tiny" in stored and "for key ***" in stored
 
 
+def test_secrets_never_leave_in_the_pr_body_or_the_report(tmp_path, monkeypatch):
+    """Verdict reasons carry sandbox output tails into the PR body: it is scrubbed before GitHub gets it, and
+    pr.json and the report with it."""
+    monkeypatch.setenv("SOME_SERVICE_TOKEN", "not-a-real-secret-value")
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo)
+    opened = {}
+
+    def leaky_patch(repo, sites, verdicts, adapters, llm, work_dir, *, config):
+        why = "repo checks failed: env SOME_SERVICE_TOKEN=not-a-real-secret-value"
+        down = [v.model_copy(update={"decision": "MANUAL_REVIEW", "reason": why}) for v in verdicts]
+        return FakePatch(files={"app/triage.py": "# patched\n"}, verdicts=down, adapters=adapters)
+
+    def open_pr(repo, *, run_id, files, title, body, **kw):
+        opened.update(title=title, body=body)
+        return "https://github.com/acme/tiny/pull/9"
+
+    monkeypatch.setattr(pipeline.github, "open_pr", open_pr)
+    llm = llm_for_full_run(*split_counts(repo)).add("pr_writer", {"summary": "", "sites": []})
+    stage = pipeline.Pipeline(log, llm, eval_matrix=Recorder().eval_matrix, patch=leaky_patch).execute()
+
+    assert stage == Stage.DONE and "SOME_SERVICE_TOKEN=***" in opened["body"]
+    left = [opened["body"], (log.dir / "pr.json").read_text(), (log.dir / "report.json").read_text()]
+    left.append(pipeline.json.dumps(pipeline.report(log.dir, log.run_id, log.events)))
+    assert not [text for text in left if "not-a-real-secret-value" in text]
+    # a pr.json written before bodies were scrubbed: the report scrubs it on the way out
+    (log.dir / "pr.json").write_text(
+        pipeline.json.dumps({"body": "SOME_SERVICE_TOKEN=not-a-real-secret-value"})
+    )
+    assert pipeline.report(log.dir, log.run_id, log.events)["pr_body_markdown"] == "SOME_SERVICE_TOKEN=***"
+
+
 def test_the_run_budget_survives_a_resume(tmp_path):
     """GC8 caps are per run, not per attempt: a resumed run starts from what it had already spent."""
     repo = make_repo(tmp_path)

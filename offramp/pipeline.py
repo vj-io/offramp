@@ -373,14 +373,13 @@ def snapshot(run_id: str, events: Iterable[RunEvent]) -> RunSnapshot:
 
 
 def report(directory: Path, run_id: str, events: Iterable[RunEvent]) -> dict[str, Any]:
-    """GET /api/runs/{id}/report and report.json: snapshot, PR body, free-text tool-argument exemptions."""
-    pr = directory / "pr.json"
-    cases = directory / "cases.json"
-    return {
-        "snapshot": snapshot(run_id, events).model_dump(mode="json"),
-        "pr_body_markdown": json.loads(pr.read_text())["body"] if pr.exists() else None,
-        "free_text_arg_exemptions": json.loads(cases.read_text())["free_text_args"] if cases.exists() else {},
-    }
+    """GET /api/runs/{id}/report and report.json: snapshot, PR body, free-text tool-argument exemptions;
+    scrubbed like the events."""
+    pr, cases = directory / "pr.json", directory / "cases.json"
+    body = json.loads(pr.read_text())["body"] if pr.exists() else None
+    free = json.loads(cases.read_text())["free_text_args"] if cases.exists() else {}
+    snap = snapshot(run_id, events).model_dump(mode="json")
+    return scrub({"snapshot": snap, "pr_body_markdown": body, "free_text_arg_exemptions": free})
 
 
 # ---------------------------------------------------------------- the run
@@ -913,9 +912,9 @@ def write_and_open_pr(
         combined_repair=patch.get("combined_repair", []),
     )
     draft = write_pr(ctx, client)
-    files, title, body = patch["files"], draft.title, draft.body
+    files, title, body = patch["files"], scrub(draft.title), scrub(draft.body)  # reasons carry sandbox output
     url = github.open_pr(repo, run_id=run_id, files=files, title=title, body=body) if open_pr else None
-    return {"title": draft.title, "body": draft.body, "url": url}
+    return {"title": title, "body": body, "url": url}
 
 
 def default_price_lookup(config: RunConfig, client: LLM) -> Callable[[str], Any]:
