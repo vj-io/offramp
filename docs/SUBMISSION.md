@@ -94,7 +94,7 @@ Python, FastAPI, Pydantic, SQLModel, OpenAI Python SDK, Nebius Token Factory, NV
 
 ## Gallery images
 
-1500x1000 PNGs in `docs/media/`, taken with Playwright from the deployed dashboard on 2026-10-20. For `04`, the page column was widened so the whole table shows without its sideways scroll; the content is unchanged. In `03` the evidence table is cut at the right edge, as the page shows it at this width.
+1500x1000 PNGs in `docs/media/`, taken with Playwright from the deployed dashboard on 2026-10-20.
 
 `05` is the real PR body rendered as markdown on a plain page, with no site chrome; the line above the title and the caption under it are ours, not part of the PR.
 
@@ -103,7 +103,7 @@ Python, FastAPI, Pydantic, SQLModel, OpenAI Python SDK, Nebius Token Factory, NV
 | `01-replay-mid-run.png` | Mid-run: the RAG answerer has failed on Lightning after three adapter rewrites, and Nemotron 3 Ultra is rewriting its adapter for Super. |
 | `02-replay-done.png` | Done: the parity-by-tier grid with the chosen tier circled for each migrated call site. |
 | `03-report-summary.png` | The report: 3 of 6 calls move to Nemotron; estimated cost across all six sites $49.24 → $43.86 per 1,000 calls (−11%). |
-| `04-report-evidence.png` | The evidence table: before and after model, parity vs reference on holdout, p50 latency on Nemotron, estimated cost per 1,000 calls. |
+| `04-report-evidence.png` | The evidence table: before and after model, parity vs reference on holdout, p50 latency on Nemotron and estimated cost per 1,000 calls. The three manual-review rows show "—" for their after values, because those sites were not migrated. |
 | `05-pr-body.png` | The pull request Offramp opened, shown as its markdown body; its −82% covers the three migrated sites only. |
 | `06-call-site-card.png` | One call site up close: the RAG answerer fails on Lightning and Super after three adapter rewrites each, then passes on Ultra. |
 
