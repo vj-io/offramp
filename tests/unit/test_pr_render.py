@@ -274,4 +274,12 @@ def test_the_merged_check_a_combined_repair_and_a_dropped_site_are_reported():
         "this repo's checks together, after one combined repair by Nemotron 3 Ultra to `tests/test_cli.py`; "
         "cs_03 dropped, see below." in body
     )
-    assert "; 1 needs manual review." in body  # and "2 need manual review" for more than one
+    assert "; 1 needs manual review." in body
+    c.verdicts = [
+        v.model_copy(update={"decision": "MANUAL_REVIEW"}) if v.site_id == "cs_04" else v for v in c.verdicts
+    ]
+    c.combined = ["cs_02"]
+    plural = render_pr(c, PROSE).body
+    assert "; 2 need manual review." in plural and "cs_02 pass this repo's checks together" in plural
+    c.combined = ["cs_04", "cs_03", "cs_02"]  # in site order, not sorted: still all of them (M5)
+    assert "(cs_02, cs_03, cs_04) were then checked merged: all pass" in render_pr(c, PROSE).body

@@ -77,6 +77,7 @@ AUTO_IMPORTS = {
     "OpenAI": "from openai import OpenAI",
     "json": "import json",
     "ChatCompletion": "from openai.types.chat import ChatCompletion",
+    "Completions": "from openai.resources.chat.completions import Completions",
 }
 # pytest's built-in fixtures: a patched test may use one without requesting it; added like an import.
 PYTEST_FIXTURES = ("monkeypatch", "capsys", "capfd", "caplog", "tmp_path", "tmp_path_factory")
@@ -118,6 +119,18 @@ def edits_text(patch: PatchEdits) -> str:
         for e in patch.edits
     ]
     return "\n\n".join([*blocks, f"NOTES: {patch.notes}"])
+
+
+class Unsupported(ValueError):
+    """The call has a shape the rewrite cannot carry exactly (a streamed reply, a keyword argument the
+    evaluated request does not send, a system prompt that is not provably text): manual review."""
+
+
+# keyword arguments of the source call: the translation turns these into the evaluated request; transport
+# options are carried through as written; anything else makes the site a manual review
+TRANSLATED_KWARGS = {"model", "messages", "system", "tools", "tool_choice", "response_format", "max_tokens",
+                     "max_completion_tokens", "temperature", "reasoning_effort", "stream"}  # fmt: skip
+CARRIED_KWARGS = ("timeout", "extra_headers")
 
 
 class PatchResult(BaseModel):
@@ -434,8 +447,9 @@ def _rewrite_call(
     an Anthropic `messages.create` (its `system=` becomes the first message). None when the call is not a
     single call with a literal `messages=[...]` list: the model then writes it."""
     tree = ast.parse(source)
-    scope = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
-                  and n.name == site.function), tree)  # fmt: skip
+    scope = _function(tree, site) if site.function else tree
+    if scope is None:
+        return None
     kinds = ("chat.completions.create", "messages.create")
     calls = [c for c in ast.walk(scope) if isinstance(c, ast.Call) and _call_name(c.func).endswith(kinds)]
     if len(calls) != 1 or calls[0].args:
@@ -447,9 +461,28 @@ def _rewrite_call(
         return None
     anthropic = not _call_name(call.func).endswith("chat.completions.create")
     receiver = call.func.value.value if anthropic else call.func.value.value.value
+    stream = kw.get("stream")
+    if stream is not None and not (isinstance(stream, ast.Constant) and stream.value is False):
+        raise Unsupported("the call streams its reply (stream=); Offramp evaluated the non-streaming call")
+    if unknown := sorted(set(kw) - TRANSLATED_KWARGS - set(CARRIED_KWARGS)):
+        names = ", ".join(f"`{k}=`" for k in unknown)
+        raise Unsupported(f"the call passes {names}, which the evaluated request does not carry")
 
     def seg(node: ast.AST) -> str:
         return ast.get_source_segment(source, node)
+
+    def system_text(node: ast.expr) -> str:  # what translate.system_message sent: a string, or blocks joined
+        text = isinstance(node, ast.JoinedStr) or (
+            isinstance(node, ast.Constant) and isinstance(node.value, str)
+        )
+        if text or (isinstance(node, ast.Name) and node.id in _module_strings(tree)):
+            return seg(node)
+        blocks = isinstance(node, ast.List | ast.Tuple) or (
+            isinstance(node, ast.Name) and isinstance(_module_values(tree).get(node.id), list | tuple)
+        )
+        if blocks:
+            return f'"\\n".join(b["text"] for b in {seg(node)} if b.get("type") == "text")'
+        raise Unsupported("its Anthropic `system=` is not provably a string or a list of text blocks")
 
     items = list(messages.elts)
     head = []
@@ -459,7 +492,7 @@ def _rewrite_call(
     elif system_name:
         head.append(f'{{"role": "system", "content": {system_name}}}')
     elif anthropic and "system" in kw:
-        head.append(f'{{"role": "system", "content": {seg(kw["system"])}}}')
+        head.append(f'{{"role": "system", "content": {system_text(kw["system"])}}}')
     if "few_shot" in constants:
         head.append(f"*{constants['few_shot']}")
     body = [seg(e) for e in items]
@@ -487,6 +520,7 @@ def _rewrite_call(
         f"{i1}{k}={constants.get(k) or py_literal(v, len(i1), width, len(i1) + len(k) + 1)},\n"
         for k, v in params.items()
     )
+    args += "".join(f"{i1}{k}={seg(kw[k])},\n" for k in CARRIED_KWARGS if k in kw)  # as the code wrote them
     text = f"{seg(receiver)}.chat.completions.create(\n{args}{i1}messages=[\n{entries}{i1}],\n{indent})"
     rewritten = source[:start] + text + source[end:]
     try:
@@ -501,9 +535,39 @@ def _calls(fn: ast.AST) -> list[ast.Call]:
     return [c for c in ast.walk(fn) if isinstance(c, ast.Call) and _call_name(c.func).endswith(kinds)]
 
 
+def _defs(tree: ast.AST, prefix: str = "") -> list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]:
+    """(qualified name, node) of every function and method, e.g. ("AnthropicBackend.complete", ...)."""
+    out = []
+    for child in ast.iter_child_nodes(tree):
+        if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            name = f"{prefix}{child.name}"
+            out += [(name, child)] if not isinstance(child, ast.ClassDef) else []
+            out += _defs(child, f"{name}.")
+        else:
+            out += _defs(child, prefix)
+    return out
+
+
 def _function(tree: ast.Module, site: CallSite) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
-    return next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
-                 and n.name == site.function), None)  # fmt: skip
+    """The site's function: by qualified name ("Cls.method"), or by plain name when only one def has it."""
+    hits = [n for q, n in _defs(tree) if q == site.function or q.rsplit(".", 1)[-1] == site.function]
+    exact = [n for q, n in _defs(tree) if q == site.function]
+    return exact[0] if len(exact) == 1 else (hits[0] if len(hits) == 1 else None)
+
+
+def site_qualname(source: str, site: CallSite) -> str | None:
+    """The qualified name of the site's function, told apart by the site's line range when several functions
+    or methods share the scanner's plain name; None when that still leaves more than one."""
+    if not site.function:
+        return site.function
+    hits = [(q, n) for q, n in _defs(ast.parse(source)) if q.rsplit(".", 1)[-1] == site.function]
+    if len(hits) <= 1:
+        return hits[0][0] if hits else site.function
+    holding = [(q, n) for q, n in hits if n.lineno <= site.lines[0] <= n.end_lineno]
+    if not holding:
+        return None
+    q = min(holding, key=lambda h: h[1].end_lineno - h[1].lineno)[0]  # the innermost
+    return q if [name for name, _ in hits].count(q) == 1 else None
 
 
 def _is_content(node: ast.AST, reply: str) -> bool:  # `<reply>.content`
@@ -608,11 +672,9 @@ def _map_reply(source: str, site: CallSite) -> str | None:
 
 def _top_node(tree: ast.Module, site: CallSite) -> ast.stmt:
     """The top-level statement holding the site: by function name (lines shift as files are edited)."""
-    for n in tree.body:
-        if any(
-            isinstance(f, ast.FunctionDef | ast.AsyncFunctionDef) and f.name == site.function
-            for f in ast.walk(n)
-        ):
+    fn = _function(tree, site) if site.function else None
+    for n in tree.body if fn else []:
+        if any(f is fn for f in ast.walk(n)):
             return n
     return next((n for n in tree.body if n.lineno <= site.lines[0] <= n.end_lineno), tree.body[-1])
 
@@ -654,8 +716,11 @@ def _apply(edits: list[Edit], files: dict[str, str], locked: frozenset[str] = fr
         if e.path in locked:
             return [f"{e.path} is migrated by Offramp and read-only: edit only the tests and fakes"]
         near = _near(files[e.path], e.search) if n == 0 and e.search not in shown[e.path] else None
-        if near:  # a slip in copying a long block: it still names one place
-            files[e.path] = files[e.path][: near[0]] + e.replace + files[e.path][near[1] :]
+        # a slip in copying a long block still names one place; only the model's intended changes (its SEARCH
+        # to its REPLACE) land there, never its mis-copied lines over the file's real ones
+        merged = near and merge_onto(e.search, files[e.path][near[0] : near[1]], e.replace)
+        if merged is not None and near:
+            files[e.path] = files[e.path][: near[0]] + merged + files[e.path][near[1] :]
             continue
         if n != 1:
             hint = (
@@ -927,6 +992,11 @@ def unify_twins(source: str, sites: list[tuple[set[str], set[str]]]) -> str:
         arg = next((a for a, vs in values.items() if all(vs & h for h in handles_of.values())), None)
         if len(twin_of) < 2 or arg is None:
             continue
+        picked = [values[arg] & h for h in handles_of.values()]
+        if sum(map(len, picked)) != len(
+            set().union(*picked)
+        ):  # a case two fakes claim: not for code to settle
+            continue
         order = sorted(twin_of, key=lambda f: twin_of[f].lineno)  # the first set fake becomes the default
         rows = []
         for fake in order[1:]:
@@ -1038,11 +1108,7 @@ def convert_fakes(source: str, client: str) -> str:
             if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
                 continue  # its docstring
             text = "".join(lines[stmt.lineno - 1 : stmt.end_lineno])
-            if re.search(r"\bMessages\b", text):
-                if "Completions" not in bound:
-                    continue
-                text = re.sub(r"\bMessages\b", "Completions", text)
-            steps.append(text)
+            steps.append(re.sub(r"\bMessages\b", "Completions", text))  # Completions imported when missing
         expr = ast.get_source_segment(source, content)
         inserts.append(
             (
@@ -1064,23 +1130,25 @@ def convert_fakes(source: str, client: str) -> str:
     return add_imports("".join(lines), client)
 
 
-def _signature(source: str, function: str | None) -> str | None:
-    """The parameter names of `function` in `source` (None when it is not found)."""
-    for n in ast.walk(ast.parse(source)):
-        if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) and n.name == function:
-            a = n.args
-            return ", ".join(x.arg for x in [*a.posonlyargs, *a.args, *a.kwonlyargs])
-    return None
+def _signature(source: str, site: CallSite) -> str | None:
+    """The parameter names of the site's function in `source` (None when it is not found)."""
+    n = _function(ast.parse(source), site) if site.function else None
+    return (
+        None
+        if n is None
+        else ", ".join(x.arg for x in [*n.args.posonlyargs, *n.args.args, *n.args.kwonlyargs])
+    )
+
+
+def _drift_text(off: dict[str, list[str]]) -> str:
+    return "; ".join(f"{sid}: {', '.join(problems)}" for sid, problems in off.items())
 
 
 def _test_bodies_changed(before: str, after: str) -> set[str]:
     """Names of the test functions whose code differs between two versions of a module."""
 
-    def tests(source: str) -> dict[str, str]:
-        fns = [
-            n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
-        ]
-        return {n.name: ast.dump(n) for n in fns if n.name.startswith("test")}
+    def tests(source: str) -> dict[str, str]:  # by qualified name: same-named methods of two classes differ
+        return {q: ast.dump(n) for q, n in _defs(ast.parse(source)) if n.name.startswith("test")}
 
     old, new = tests(before), tests(after)
     return {name for name in old.keys() & new.keys() if old[name] != new[name]}
@@ -1109,14 +1177,7 @@ def conformance(
     keyword arguments (a schema may be a module constant holding it) plus messages, and use the prompt
     constants."""
     tree = ast.parse(source)
-    scope = next(
-        (
-            n
-            for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) and n.name == site.function
-        ),
-        tree,
-    )
+    scope = (_function(tree, site) if site.function else None) or tree
     where = f"`{site.function}`" if scope is not tree else site.file
     calls = [n for n in ast.walk(scope) if isinstance(n, ast.Call)]
     tf = [c for c in calls if _call_name(c.func).endswith("chat.completions.create")]
@@ -1128,7 +1189,7 @@ def conformance(
     if call.args or any(k.arg is None for k in call.keywords):
         problems.append("the call takes written-out keyword arguments only: no positional arguments, no **")
     named = {k.arg: k.value for k in call.keywords if k.arg}
-    if set(named) != {*params, "messages"}:
+    if set(named) - set(CARRIED_KWARGS) != {*params, "messages"}:
         problems.append(f"the call must pass exactly {', '.join([*params, 'messages'])}, nothing else")
     values = _module_values(tree)
     for key, want in params.items():
@@ -1163,6 +1224,7 @@ def _context(repo: Path, site: CallSite, client_path: str) -> list[str]:
         for p in repo.rglob("*.py")
         if not SKIP_PARTS & set(p.relative_to(repo).parts[:-1])
         and p.relative_to(repo).as_posix() != client_path
+        and not p.is_symlink()  # never edited through a link
     )
     text = {f: (repo / f).read_text() for f in files}
     own = Path(site.file)
@@ -1368,8 +1430,9 @@ TOGETHER_REPAIRS = 2  # Ultra calls at most for the merged tree, each shown the 
 
 
 def _failing_tests(output: str) -> set[tuple[str, str]]:
-    """(file, test function) of each FAILED / ERROR line in pytest output, parameters dropped."""
-    return set(re.findall(r"^(?:FAILED|ERROR) ([^\s:]+)::(?:\w+::)?(\w+)", output, re.M))
+    """(file, test's qualified name, e.g. "TestX.test_y") of each FAILED / ERROR line, parameters dropped."""
+    found = re.findall(r"^(?:FAILED|ERROR) ([^\s:]+)::(?:(\w+)::)?(\w+)", output, re.M)
+    return {(f, f"{cls}.{name}" if cls else name) for f, cls, name in found}
 
 
 def _together_prompt(
@@ -1673,8 +1736,12 @@ def _attempt(
             if is_test_path(path) and (gone := _test_names(job.editable[path]) - _test_names(new[path])):
                 problems.append(f"patch removes tests from {path}: {sorted(gone)}")
         problems += conformance(new[job.site.file], job.site, job.params, job.constants, job.system_name)
-        if (was := _signature(job.editable[job.site.file], job.site.function)) != (
-            now := _signature(new[job.site.file], job.site.function)
+        if job.rewritten and _call_text(new[job.site.file], job.site) != _call_text(
+            job.editable[job.site.file], job.site
+        ):
+            problems.append(f"the call Offramp wrote in `{job.site.function}` must stay exactly as it is")
+        if (was := _signature(job.editable[job.site.file], job.site)) != (
+            now := _signature(new[job.site.file], job.site)
         ):
             problems.append(
                 f"the signature of `{job.site.function}` changed ({was} -> {now}): keep every parameter"
@@ -1712,14 +1779,29 @@ def compose_patches(
     width = line_length(repo)
     originals: dict[str, str | None] = {}
 
+    root = repo.resolve()
+
+    def inside(p: str) -> bool:  # a relative path to a regular file (or a new one) inside the copy
+        f = repo / p
+        return not Path(p).is_absolute() and not f.is_symlink() and f.resolve().is_relative_to(root)
+
     def read(p: str) -> str | None:
+        if not inside(p):
+            warnings.append(f"ignored a path outside the repository copy or a symlink: {p}")
+            return None
         f = repo / p
         return f.read_text() if f.is_file() else None
 
     def write(p: str, text: str) -> None:
+        if not inside(p):
+            warnings.append(f"refused to write a path outside the repository copy or a symlink: {p}")
+            return
         originals.setdefault(p, read(p))
         (repo / p).parent.mkdir(parents=True, exist_ok=True)
         (repo / p).write_text(text)
+
+    tracked = {f.relative_to(repo).as_posix() for f in repo.rglob("*.py")  # the target's own files, as copied
+               if f.is_file() and not f.is_symlink() and f.resolve().is_relative_to(root)}  # fmt: skip
 
     by_id = {s.id: s for s in sites}
     adapters = {k: a.model_copy(deep=True) for k, a in adapters.items()}
@@ -1776,6 +1858,9 @@ def compose_patches(
     versions: dict[str, dict[str, str]] = {}  # site -> its patched files, green alone
     unchecked = False  # a green-alone patch was pruned after its check
     reach: dict[str, set[str]] = {}  # site -> what its tests name to reach the migrated function
+    raw: dict[str, dict[str, str]] = {}  # site -> its patched files as checked alone, before pruning
+    befores: dict[str, dict[str, str]] = {}  # site -> its files before its patch
+    evaluated: dict[str, tuple] = {}  # site -> (site, params, constants, system name, the call Offramp wrote)
     site_twins: dict[str, dict[str, set[str]]] = {}  # site -> test file -> the fake lines mirror_fakes added
     alone: dict[str, bool] = {}
     for v in to_migrate:
@@ -1794,10 +1879,25 @@ def compose_patches(
             why = "evaluated as json_object plus a validation repair retry, which a patch cannot reproduce"
             downgrade(v, f"patch not composed: the adapter was {why}")
             continue
-        original = read(site.file)
-        prepared, constants, system_name, rewritten, fixed = _prepare(
-            original, site, adapter.spec, params, width
-        )
+        original = read(site.file) if site.file in tracked else None
+        if original is None:
+            downgrade(v, f"patch not composed: {site.file} is not a regular file inside the repository")
+            continue
+        qual = site_qualname(original, site)
+        if qual is None:
+            why = (
+                f"more than one function named `{site.function}` in {site.file}, and the site's lines do not"
+            )
+            downgrade(v, f"patch not composed: {why} tell which one makes the call")
+            continue
+        local = site.model_copy(update={"function": qual})  # module-local lookups; callers use the plain name
+        try:
+            prepared, constants, system_name, rewritten, fixed = _prepare(
+                original, local, adapter.spec, params, width
+            )
+        except Unsupported as e:
+            downgrade(v, f"patch not composed: {e}")
+            continue
         (repo / site.file).write_text(add_imports(prepared, client_at[1]))
         _settle(box, repo, [site.file], {site.file: original}, width, formatted)  # shown as it will ship
         prepared = read(site.file)
@@ -1835,7 +1935,7 @@ def compose_patches(
                 editable[p] = mirrored
                 done.append(f"`{p}` also fakes `token_factory_client` where it faked `{old}`")
         before = {p: read(p) for p in editable}
-        job = _Job(site, tier, adapter.spec, params, constants, system_name, editable, before,
+        job = _Job(local, tier, adapter.spec, params, constants, system_name, editable, before,
                    client_module=client_at[1], width=width, rewritten=rewritten, fixed=fixed)  # fmt: skip
         failure, patched, tried = None, {}, []
         if (
@@ -1844,8 +1944,8 @@ def compose_patches(
             failure, patched = _attempt(job, [], repo, box, formatted, write)
             tried.append([])
         checked, applied = failure, []  # what the last try said; the edits of the last try that was checked
-        calls = (_call_text(read(site.file), site), _call_text(prepared, site))
-        prompt = _prompt(site, tier, params, constants, system_name, editable, client, client_at, width,
+        calls = (_call_text(read(site.file), local), _call_text(prepared, local))
+        prompt = _prompt(local, tier, params, constants, system_name, editable, client, client_at, width,
                          calls, fixed, done, failure)  # fmt: skip
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
         for attempt in range(1 + REPAIRS if failure or not rewritten else 0):
@@ -1890,6 +1990,7 @@ def compose_patches(
             downgrade(v, failure)
             continue
         alone[v.site_id] = True
+        unpruned = dict(patched)  # the version the check passed: the fallback if pruning breaks it
         for p in set(patched) & set(twins):  # a twin in a test that never reaches the function is noise
             pruned = prune_twins(patched[p], twins[p], handles)
             if pruned != patched[p]:
@@ -1897,9 +1998,16 @@ def compose_patches(
                 if pruned == job.before[p]:
                     del patched[p]
         versions[v.site_id] = patched
+        raw[v.site_id] = unpruned
         site_twins[v.site_id] = twins
-        diffs[v.site_id] = adapters[v.site_id].patch = _diff(job.before, patched)
-        site_files[v.site_id] = sorted(patched)
+        befores[v.site_id] = job.before
+        evaluated[v.site_id] = (
+            local,
+            params,
+            constants,
+            system_name,
+            _call_text(prepared, local) if rewritten else None,
+        )
 
     # all green-alone patches together, in site order (disk is at the base again)
     base_files = {p: read(p) for files_ in versions.values() for p in files_}
@@ -1928,6 +2036,20 @@ def compose_patches(
                 unified.add(path)
         return merged, taken
 
+    def drift(
+        sids: list[str],
+    ) -> dict[str, list[str]]:  # the backstop: every evaluated call, as it is on disk
+        out = {}
+        for sid in sids:
+            local_, params_, constants_, system_, call_ = evaluated[sid]
+            text = read(local_.file) or ""
+            problems = conformance(text, local_, params_, constants_, system_)
+            if call_ is not None and _call_text(text, local_) != call_:
+                problems.append(f"the call Offramp wrote in `{local_.function}` changed")
+            if problems:
+                out[sid] = problems
+        return out
+
     def place(files: dict[str, str]) -> None:  # a tree on disk; a unified test formatted like the repo
         for path, text in files.items():
             write(path, text)
@@ -1938,13 +2060,25 @@ def compose_patches(
         """Up to TOGETHER_REPAIRS Ultra calls editing the failing tests and the fakes they import, the merged
         tree shown: (files changed, None) once it is green, else ([], why not). Disk is back at `merged`
         when it fails."""
-        failing = _failing_tests(output)
-        editable = {f for f, _ in failing if is_test_path(f) and read(f) is not None}
-        for t in list(editable):  # the test helpers (fakes) they import from their own directory
-            for node in ast.walk(ast.parse(read(t))):
-                if isinstance(node, ast.ImportFrom) and node.module and not node.level:
-                    helper = (Path(t).parent / f"{node.module.split('.')[0]}.py").as_posix()
-                    editable |= {helper} if read(helper) is not None else set()
+        failing = _failing_tests(output)  # the target repo's output: every path in it is untrusted
+        modules = {s.file for s in sites}  # call-site modules stay read-only in every layout, flat included
+
+        def fake_or_test(path: str) -> bool:
+            return path in tracked and is_test_path(path) and path not in modules
+
+        editable = {f for f, _ in failing if fake_or_test(f)}
+        warnings.extend(f"combined repair: ignored {f} from the check output: not a tracked test or fake file"
+                        for f in sorted({f for f, _ in failing} - editable))  # fmt: skip
+        for t in sorted(editable):  # the test helpers (fakes) they import from their own directory
+            try:
+                imports = [n for n in ast.walk(ast.parse(read(t) or "")) if isinstance(n, ast.ImportFrom)]
+            except SyntaxError:
+                continue
+            for node in (n for n in imports if n.module and not n.level):
+                helper = (Path(t).parent / f"{node.module.split('.')[0]}.py").as_posix()
+                editable |= {helper} if fake_or_test(helper) else set()
+        if not editable:  # nothing it may change (a ruff-only or collection failure): no call
+            return [], f"{failure} (no failing test or fake the combined repair may edit)"
         shown = {p: read(p) for p in [*merged, *sorted(editable - set(merged))]}
         locked = frozenset(set(shown) - editable)
         prompt = _together_prompt([by_id[sid] for sid in combined], reach, failure, shown, editable, width)
@@ -1969,9 +2103,10 @@ def compose_patches(
                 problems = _apply(edits, new, locked)
                 gone = {p: _test_names(shown[p]) - _test_names(new[p]) for p in new if is_test_path(p)}
                 problems += [f"patch removes tests from {p}: {sorted(g)}" for p, g in gone.items() if g]
-                allowed = {n for _, n in failing}
                 for p in sorted(editable) if not problems else []:
-                    for name in sorted(_test_bodies_changed(shown[p], new[p]) - allowed):
+                    for name in sorted(
+                        n for n in _test_bodies_changed(shown[p], new[p]) if (p, n) not in failing
+                    ):
                         problems.append(f"only the failing tests may change: {p}::{name} did")
                 if problems:
                     failure = f"patch rejected (patch rules): {'; '.join(problems)}"
@@ -1981,8 +2116,10 @@ def compose_patches(
                         write(p, add_fixtures(add_imports(new[p], client_at[1])))
                     _settle(box, repo, changed, shown, width, formatted)
                     result = box.check()
-                    if result.ok:
+                    if result.ok and not (off := drift(combined)):
                         return changed, None
+                    if result.ok:  # backstop: the merged tree may not change an evaluated call
+                        result = CheckResult(ok=False, mode=result.mode, output=_drift_text(off))
                     failure = checked = (
                         f"repo checks failed on the merged patches ({result.mode}): {_summary(result.output)}"
                     )
@@ -1997,34 +2134,48 @@ def compose_patches(
     place(merged)
     repaired: list[str] = []
     together_failure = None
-    if (len(combined) > 1 or unchecked) and not (together := box.check()).ok:
-        why = f"repo checks failed on the merged patches ({together.mode}): {_summary(together.output)}"
-        if len(combined) > 1:
-            repaired, together_failure = repair_together(merged, why, together.output)
-        else:
-            together_failure = why
+    together = None
+    if len(combined) > 1 or unchecked:
+        together = box.check()
+        if off := drift(combined):  # never repaired: only code may change an evaluated call
+            together_failure = f"the merged tree changes an evaluated call: {_drift_text(off)}"
+        elif not together.ok:
+            why = f"repo checks failed on the merged patches ({together.mode}): {_summary(together.output)}"
+            if len(combined) > 1:
+                repaired, together_failure = repair_together(merged, why, together.output)
+            else:
+                together_failure = why
     if together_failure:
         for path in merged:  # one at a time: keep each site that the others can live with
             write(path, base_files[path])
         kept: list[str] = []
         for sid in combined:
-            trial, _ = merge([*kept, sid])  # a superset of the kept sites' files
-            place(trial)
-            result = box.check()
-            if result.ok:
-                kept.append(sid)
-                continue
-            current, _ = merge(kept)
-            place({path: current.get(path, base_files[path]) for path in trial})
-            others = ", ".join(kept) or "the base"
-            why = _summary(result.output or together.output)
-            alongside = f"not together with {others}" if kept else "not after Offramp pruned its unused fakes"
-            downgrade(by_verdict[sid], f"green alone, but {alongside} ({result.mode}): {why}")
+            for version in [versions[sid], *([raw[sid]] if raw[sid] != versions[sid] else [])]:
+                versions[sid] = version  # pruned first; as checked alone if pruning broke it
+                trial, _ = merge([*kept, sid])  # a superset of the kept sites' files
+                place(trial)
+                result, off = box.check(), drift([*kept, sid])
+                if result.ok and not off:
+                    kept.append(sid)
+                    break
+                current, _ = merge(kept)
+                place({path: current.get(path, base_files[path]) for path in trial})
+            else:
+                others = ", ".join(kept) or "the base"
+                alongside = f"not together with {others}" if kept else "not on the merged tree"
+                output = result.output or (together.output if together else "")
+                why = (
+                    f": its evaluated call changed: {_drift_text(off)}"
+                    if off
+                    else f" ({result.mode}): {_summary(output)}"
+                )
+                downgrade(by_verdict[sid], f"green alone, but {alongside}{why}")
         combined = kept
+    for sid in combined:  # what ships: each site's own change against the base
+        diffs[sid] = adapters[sid].patch = _diff(befores[sid], versions[sid])
+        site_files[sid] = sorted(versions[sid])
     for sid in versions:
         if sid not in combined:
-            diffs.pop(sid, None)
-            site_files.pop(sid, None)
             adapters[sid].patch = None
     migrated = len(combined)
 

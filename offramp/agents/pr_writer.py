@@ -306,7 +306,7 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
     green = sorted(sid for sid, ok in ctx.alone.items() if ok)
     if len(green) > 1:
         together = (
-            "all pass this repo's checks together" if ctx.combined == green
+            "all pass this repo's checks together" if set(ctx.combined) == set(green)
             else f"{', '.join(ctx.combined) or 'none of them'} pass this repo's checks together"
         )  # fmt: skip
         if ctx.combined_repair:
