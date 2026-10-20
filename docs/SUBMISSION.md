@@ -110,5 +110,3 @@ Python, FastAPI, Pydantic, SQLModel, OpenAI Python SDK, Nebius Token Factory, NV
 ## Did this project exist before the hackathon?
 
 No. Offramp was created during the submission period: the first commit in `vj-io/offramp` is `13f3098` on 2026-10-19, and the demo app `vj-io/offramp-demo-app` was also first committed on 2026-10-19.
-
-<!-- Before submitting (not for pasting): make vj-io/offramp and vj-io/offramp-demo-app public (both are private as of 2026-10-20) and check the MIT licence shows in each repo's About section; add the YouTube link of the video; pick the city and team representative (D12). -->
