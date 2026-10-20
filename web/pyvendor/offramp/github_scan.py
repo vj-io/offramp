@@ -147,10 +147,10 @@ def scan_github(url: str, time_limit: float = TIME_LIMIT_S) -> dict[str, Any]:
         files, commit, skipped = extract_python(data, Path(tmp), deadline)
         try:
             result = scan_repo(tmp, deadline=deadline)
+            result.warnings[:0] = skipped
+            out = table(result, deadline)
         except TimeoutError:
             raise ScanError(504, "timeout", "Scanning the repository took too long.") from None
-    result.warnings[:0] = skipped
-    out = table(result)
     rows, warnings = out["rows"], out["warnings"]
     return (
         {

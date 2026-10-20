@@ -154,3 +154,25 @@ def test_non_text_system_parameter_does_not_break_the_shape(tmp_path):
     )
     [row] = scan_table.table(scan_repo(tmp_path))["rows"]
     assert (row["shape"], row["shape_guessed"]) == ("unknown", False)
+
+
+def test_the_shape_guess_reads_only_the_start_of_a_long_prompt(tmp_path):
+    late_json = "Answer the customer. " * 250 + "Reply in JSON."  # "JSON" after 5,250 characters
+    (tmp_path / "app.py").write_text(
+        f"from openai import OpenAI\n\nclient = OpenAI()\nP = {late_json!r}\n\n\ndef ask(t):\n"
+        '    msgs = [{"role": "user", "content": P + t}]\n'
+        '    return client.chat.completions.create(model="gpt-4o", messages=msgs)\n'
+    )
+    [row] = scan_table.table(scan_repo(tmp_path))["rows"]
+    assert (row["shape"], row["shape_guessed"]) == ("free text", True)  # the first 4 KB ask for no JSON
+
+
+def test_table_checks_the_deadline(tmp_path):
+    import time
+
+    import pytest
+
+    (tmp_path / "app.py").write_text(APP)
+    result = scan_repo(tmp_path)
+    with pytest.raises(TimeoutError):
+        scan_table.table(result, deadline=time.monotonic() - 1)

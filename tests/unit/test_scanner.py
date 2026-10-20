@@ -1,7 +1,7 @@
 import sys
-import time
 import tracemalloc
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -609,48 +609,80 @@ def test_invalid_escape_sequences_in_target_code_print_no_warning(tmp_path, recw
 CLIENT = "from openai import OpenAI\nclient = OpenAI()\n"
 
 
-def _scan_timed(tmp_path):
-    start = time.monotonic()
+def _scan_counted(tmp_path, monkeypatch):
+    """The scan, the peak of traced Python allocations and the number of resolve() calls: measures that do not
+    depend on how fast the machine is."""
+    from offramp.agents import scanner
+
+    calls = 0
+    real = scanner._Module.resolve
+
+    def resolve(self, *args):
+        nonlocal calls
+        calls += 1
+        return real(self, *args)
+
+    monkeypatch.setattr(scanner._Module, "resolve", resolve)
     tracemalloc.start()
     try:
-        scan = scan_repo(tmp_path, deadline=start + 20)
+        scan = scan_repo(tmp_path)
         peak = tracemalloc.get_traced_memory()[1]
     finally:
         tracemalloc.stop()
-    return scan, time.monotonic() - start, peak
+    return scan, peak, calls
 
 
-def test_a_doubling_name_chain_resolves_in_linear_time(tmp_path):
+def test_a_doubling_name_chain_resolves_in_linear_time(tmp_path, monkeypatch):
     ints = "\n".join(["a0 = 1", *(f"a{i} = a{i - 1} + a{i - 1}" for i in range(1, 31))])
     strs = "\n".join(['s0 = "ab"', *(f"s{i} = s{i - 1} + s{i - 1}" for i in range(1, 31))])
     call = 'client.chat.completions.create(model=a30, messages=[{"role": "user", "content": s30}])\n'
     (tmp_path / "chain.py").write_text(f"{ints}\n{strs}\n{CLIENT}{call}")
-    scan, took, peak = _scan_timed(tmp_path)
+    scan, peak, calls = _scan_counted(tmp_path, monkeypatch)
     [site] = scan.sites
-    assert took < 2 and peak < 50e6
+    assert calls < 1_000 and peak < 50e6  # without the memo: about 2**31 calls
     assert site.source_model is None  # an int, not a model id
     # 2**31 characters: over the cap, so unknown
     assert site.template is None and "NEEDS_RUNTIME_CAPTURE" in site.flags
 
 
-def test_a_format_spec_wider_than_the_cap_is_never_evaluated(tmp_path):
+def test_a_format_spec_wider_than_the_cap_is_never_evaluated(tmp_path, monkeypatch):
     call = (
         'def ask(q):\n    return client.chat.completions.create(model=f"{1:>400000000}",\n'
         '        messages=[{"role": "user", "content": f"{q:>400000000}"}])\n'
     )
     (tmp_path / "wide.py").write_text(CLIENT + call)
-    scan, took, peak = _scan_timed(tmp_path)
+    scan, peak, _ = _scan_counted(tmp_path, monkeypatch)
     [site] = scan.sites
-    assert took < 2 and peak < 50e6
+    assert peak < 50e6  # formatting it would allocate 400 MB
     assert site.source_model is None and site.template is None  # neither formatted nor kept as a format spec
 
 
-def test_a_file_over_1_mb_is_skipped_with_the_reason(tmp_path):
+def test_a_file_over_1_mb_is_skipped_with_the_reason(tmp_path, monkeypatch):
+    import ast
+
+    parsed, real = [], ast.parse
+
+    def parse(source, *args, **kwargs):
+        parsed.append(len(source))
+        return real(source, *args, **kwargs)
+
+    monkeypatch.setattr(ast, "parse", parse)
     (tmp_path / "dense.py").write_text("x = 1\n" * 500_000)  # 3 MB of statements
     (tmp_path / "ok.py").write_text(OPENAI_FILE)
-    scan, took, _ = _scan_timed(tmp_path)
-    assert took < 2 and [s.file for s in scan.sites] == ["ok.py"]
+    scan = scan_repo(tmp_path)
+    assert [s.file for s in scan.sites] == ["ok.py"] and parsed == [len(OPENAI_FILE)]  # never parsed
     assert scan.warnings == ["skipped dense.py: over 1 MB (3000000 bytes)"]
+
+
+def test_the_scan_stops_collecting_at_the_site_cap(tmp_path, monkeypatch):
+    from offramp.agents import scanner
+
+    monkeypatch.setattr(scanner, "MAX_SITES", 3)
+    for name in ("a.py", "b.py", "c.py"):  # two sites each
+        (tmp_path / name).write_text(OPENAI_FILE + CALL)
+    scan = scan_repo(tmp_path)
+    assert [s.file for s in scan.sites] == ["a.py", "a.py", "b.py"]
+    assert scan.warnings == ["truncated at 3 call sites: the rest of the repository was not scanned"]
 
 
 def test_a_file_the_parser_cannot_hold_is_skipped_not_fatal(tmp_path):
@@ -677,10 +709,10 @@ def test_any_error_analysing_one_file_skips_that_file(tmp_path, monkeypatch):
 
     real = scanner._Module.sites
 
-    def sites(self, file):
+    def sites(self, file, *args):
         if file == "bad.py":
             raise TypeError("a scanner bug")
-        return real(self, file)
+        return real(self, file, *args)
 
     monkeypatch.setattr(scanner._Module, "sites", sites)
     (tmp_path / "bad.py").write_text(OPENAI_FILE)
@@ -694,7 +726,27 @@ def test_the_deadline_is_checked_inside_one_file(tmp_path, monkeypatch):
     from offramp.agents import scanner
 
     clock = iter([0.0, *[100.0] * 10_000])  # the between-files check passes, the next check is past it
-    monkeypatch.setattr(scanner.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(scanner, "time", SimpleNamespace(monotonic=lambda: next(clock)))
     (tmp_path / "m.py").write_text(OPENAI_FILE)
     with pytest.raises(TimeoutError):
         scan_repo(tmp_path, deadline=50.0)
+
+
+@pytest.mark.parametrize("where", ["parse", "analysis"])
+def test_running_out_of_memory_stops_the_scan_instead_of_skipping_a_file(tmp_path, monkeypatch, where):
+    # The parser's own MemoryError carries a message ("Parser stack overflowed ..."): that file is skipped.
+    # An empty MemoryError is the process out of memory (RLIMIT_AS in /api/scan's child): the caller decides.
+    import ast
+
+    from offramp.agents import scanner
+
+    def out_of_memory(*args, **kwargs):
+        raise MemoryError
+
+    if where == "parse":
+        monkeypatch.setattr(ast, "parse", out_of_memory)
+    else:
+        monkeypatch.setattr(scanner._Module, "sites", out_of_memory)
+    (tmp_path / "ok.py").write_text(OPENAI_FILE)
+    with pytest.raises(MemoryError):
+        scan_repo(tmp_path)

@@ -70,6 +70,7 @@ KINDS = ["literal", "variable", "fstring"]  # prompt_source of renderable prompt
 PARAM = object()  # _lookup result for an unassigned function parameter
 # Bounds for untrusted repos (/api/scan): past them a file is skipped, or a value becomes unknown (EXPR).
 MAX_FILE_BYTES = 1_000_000
+MAX_SITES = 2000  # per scan: each site keeps its rendered prompt, so the whole scan stops here
 MAX_SIZE = 100_000  # characters of a resolved string; characters plus items of a resolved list, tuple or dict
 MAX_INT_BITS = 10_000  # str() of an int over 4,300 digits raises ValueError
 SPEC_NUMBER = re.compile(r"\d+")  # widths and precisions in a format spec
@@ -91,6 +92,8 @@ def scan_repo(path: str | Path, deadline: float | None = None) -> ScanResult:
     for file in _py_files(root):
         if deadline is not None and time.monotonic() > deadline:
             raise TimeoutError(f"scan of {path} passed its deadline")
+        if len(found) > MAX_SITES:
+            break
         rel = file.relative_to(root).as_posix()
         if not file.resolve().is_relative_to(root.resolve()):  # its code would go out as a site's context
             warnings.append(f"skipped {rel}: a symlink to outside the repository")
@@ -108,18 +111,23 @@ def scan_repo(path: str | Path, deadline: float | None = None) -> ScanResult:
             with catch_warnings():  # the target's invalid escapes ("\s") are not ours to report
                 simplefilter("ignore", SyntaxWarning)
                 tree = ast.parse(source)  # bytes, so a BOM or a coding cookie is honoured
-        except (SyntaxError, ValueError, RecursionError, MemoryError) as exc:  # MemoryError: parser stack
+        except (SyntaxError, ValueError, RecursionError, MemoryError) as exc:
+            if isinstance(exc, MemoryError) and not exc.args:
+                raise  # out of memory, not the parser's "stack overflowed" limit: the caller's bound decides
             version = f"{sys.version_info.major}.{sys.version_info.minor}"  # this interpreter's grammar
             warnings.append(f"skipped {rel}: not parseable as Python {version} ({type(exc).__name__})")
             continue
         try:
-            found += _Module(tree, deadline).sites(rel)
-        except TimeoutError:
+            found += _Module(tree, deadline).sites(rel, MAX_SITES + 1 - len(found))
+        except (TimeoutError, MemoryError):
             raise
         except RecursionError:
             warnings.append(f"skipped {rel}: nested too deeply to analyse (RecursionError)")
         except Exception as exc:  # one file never stops the scan, whatever it holds
             warnings.append(f"skipped {rel}: could not be analysed ({type(exc).__name__})")
+    if len(found) > MAX_SITES:
+        found = found[:MAX_SITES]
+        warnings.append(f"truncated at {MAX_SITES:,} call sites: the rest of the repository was not scanned")
     for warning in warnings:
         log.warning("scanner: %s", warning)
     found.sort(key=lambda s: (s.file, s.lines))
@@ -132,15 +140,16 @@ def scan_repo(path: str | Path, deadline: float | None = None) -> ScanResult:
 
 
 def _py_files(root: Path) -> Iterator[Path]:
+    """In sorted order, so a scan cut at MAX_SITES keeps the same sites on every filesystem."""
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [
+        dirnames[:] = sorted(
             d
             for d in dirnames
             if not (
                 d.startswith(".") or d in SKIP_DIRS or os.path.exists(os.path.join(dirpath, d, "pyvenv.cfg"))
             )
-        ]
-        yield from (Path(dirpath, f) for f in filenames if f.endswith(".py"))
+        )
+        yield from (Path(dirpath, f) for f in sorted(filenames) if f.endswith(".py"))
 
 
 def _walk(
@@ -420,12 +429,17 @@ class _Module:
                 return hit
         return None
 
-    def sites(self, file: str) -> list[CallSite]:
-        return [
-            self._site(file, node, fn, *hit)
-            for node, fn, _, cls in self.nodes
-            if isinstance(node, ast.Call) and not self._tick() and (hit := self._match(node, fn, cls))
-        ]
+    def sites(self, file: str, limit: int | None = None) -> list[CallSite]:
+        """The file's call sites in source order, at most `limit` of them."""
+        out: list[CallSite] = []
+        for node, fn, _, cls in self.nodes:
+            if limit is not None and len(out) >= limit:
+                break
+            if isinstance(node, ast.Call):
+                self._tick()
+                if hit := self._match(node, fn, cls):
+                    out.append(self._site(file, node, fn, *hit))
+        return out
 
     def _tick(self) -> None:
         if self.deadline is not None and time.monotonic() > self.deadline:

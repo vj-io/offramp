@@ -107,7 +107,7 @@ What did not work smoothly is written up, with evidence, in [docs/FEEDBACK.md](d
 - **Tendem** (by Toloka): `scripts/audit_references.py` builds human-audit tasks for flagged references and ingests the verdicts; each paid task needs explicit approval of its quoted price.
 - **Toloka** has no API on its current platform, so it is not integrated.
 - **Docker** runs the target repo's own `ruff check` and `pytest` on every patch, and the Pydantic models and oracles Offramp reads from it, with the network off and 2 CPUs (see [Security model](#security-model)).
-- **Hosting.** The dashboard is on Vercel's free tier and plays the replay in the browser. The same project serves `POST /api/scan`, a Python function that downloads a public repo's tarball and runs the static scanner on it (`web/api/scan.py`; it imports a copy of the scanner modules that `make vendor-scan` writes to `web/pyvendor`, and a test fails if the copy drifts from `offramp/`). The API is not hosted: `make demo` runs it locally, and live runs need your own keys.
+- **Hosting.** The dashboard is on Vercel's free tier and plays the replay in the browser. The same project serves `POST /api/scan`, a Python function that downloads a public repo's tarball and runs the static scanner on it (`web/api/scan.py`; it imports a copy of the scanner modules that `make vendor-scan` writes to `web/pyvendor`, and a test fails if the copy drifts from `offramp/`). Each scan runs in a forked child that may add at most 1 GiB of address space (`RLIMIT_AS`) and is killed after 21.5 s; a repo that hits either gets a 413 pointing to the CLI. The API is not hosted: `make demo` runs it locally, and live runs need your own keys.
 
 ## How parity is measured
 

@@ -8,6 +8,7 @@ marked as guessed. A full run labels every site with a model and measures parity
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from offramp.agents.scanner import EXPR
@@ -15,6 +16,7 @@ from offramp.pricing import entry, load_pricing
 from offramp.schemas import TIER_ORDER, CallSite, ScanResult
 
 RATIO_LABEL = "list-price ratio, not measured parity"
+PROMPT_READ = 4096  # characters of a prompt the shape guess reads
 JSON_ASK = re.compile(r"\bjson\b", re.IGNORECASE)
 CLASSIFY_ASK = re.compile(
     r"\b(classif(y|ies|ication)|categori[sz]e|exactly one of|one of the following)\b", re.IGNORECASE
@@ -46,7 +48,7 @@ def _shape(site: CallSite) -> tuple[str, bool]:
         return "JSON", False
     t = site.template
     parts = [t.system, t.user] if t else [p.get("system"), p.get("instructions")]
-    text = "\n".join(x for x in parts if isinstance(x, str) and x != EXPR)  # not system blocks (a list)
+    text = "\n".join(x for x in parts if isinstance(x, str) and x != EXPR)[:PROMPT_READ]  # not system blocks
     if not text:
         return "unknown", False
     if JSON_ASK.search(text):
@@ -76,11 +78,14 @@ def _ratio(
     }, None
 
 
-def table(result: ScanResult) -> dict[str, Any]:
-    """The table as JSON: what `/api/scan` returns and what `render` prints."""
+def table(result: ScanResult, deadline: float | None = None) -> dict[str, Any]:
+    """The table as JSON: what `/api/scan` returns and what `render` prints. Raises TimeoutError once
+    time.monotonic() passes `deadline`."""
     refs = references()
     rows = []
     for s in result.sites:
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError("the table passed its deadline")
         shape, guessed = _shape(s)
         stream = s.params.get("stream")
         ratio, note = _ratio(s, refs)
