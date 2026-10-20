@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 import pytest
@@ -348,7 +349,9 @@ def test_walk_skips_tests_hidden_venv_and_unparseable(tmp_path):
         (tmp_path / rel).write_text(text)
     scan = scan_repo(tmp_path)
     assert [s.file for s in scan.sites] == ["app/main.py"]
-    assert scan.warnings == ["skipped app/broken.py: not parseable as Python 3.12 (SyntaxError)"]
+    # the running interpreter's grammar decides (a 3.14-only `except A, B:` fails on 3.13), so it is named
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    assert scan.warnings == [f"skipped app/broken.py: not parseable as Python {version} (SyntaxError)"]
 
 
 def test_a_py_symlink_that_leaves_the_repo_is_not_read(tmp_path):

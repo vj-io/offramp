@@ -13,6 +13,7 @@ import operator
 import os
 import re
 import string
+import sys
 import time
 from collections import Counter
 from collections.abc import Iterator
@@ -99,7 +100,8 @@ def scan_repo(path: str | Path, deadline: float | None = None) -> ScanResult:
                 simplefilter("ignore", SyntaxWarning)
                 tree = ast.parse(source)  # bytes, so a BOM or a coding cookie is honoured
         except (SyntaxError, ValueError, RecursionError) as exc:
-            warnings.append(f"skipped {rel}: not parseable as Python 3.12 ({type(exc).__name__})")
+            version = f"{sys.version_info.major}.{sys.version_info.minor}"  # this interpreter's grammar
+            warnings.append(f"skipped {rel}: not parseable as Python {version} ({type(exc).__name__})")
             continue
         try:
             found += _Module(tree).sites(rel)
