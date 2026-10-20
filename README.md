@@ -14,6 +14,8 @@ uvx --from git+https://github.com/vj-io/offramp offramp scan .
 
 Both list every OpenAI, Anthropic, LiteLLM and LangChain call site with its call shape and the list-price ratio of its model to Nemotron 3.5 Lightning. They read the code and never import or run it, and make no model call. Only a full run, with your own Token Factory key, measures parity.
 
+The same scan over the 30 most-starred public Python repos that import `openai` or `anthropic` ([ecosystem scan](docs/evidence/ecosystem-scan.md), 2026-10-21) found 184 call sites in 24 of them. Of the 166 chat calls, 17% have a tool-call, JSON or classification shape that Offramp scores deterministically, 72% build their prompt at runtime (a full run labels those), and 16% stream (flagged for manual review). 33 of the 50 chat calls that name their model use one its provider has retired or scheduled for shutdown.
+
 ## Judges' path: no keys needed
 
 Prerequisites: Python 3.12+ with [uv](https://docs.astral.sh/uv/), Node 20.9+ with [pnpm](https://pnpm.io/), `make`, `curl`.
