@@ -12,7 +12,8 @@ Inputs (committed, except the demo checkout):
 - tests/fixtures/cassettes/pipeline/: every Token Factory response the run used, recorded by
   test_record_demo_run (`uv run --env-file .env pytest --live -m live -k record_demo_run`, about $0.50 of
   Token Factory credit), which also writes the PR body snapshot tests/fixtures/pipeline/expected_pr_body.md.
-Prices come from pricing.yaml: no Tavily in tests. No LangSmith, no GitHub (open_pr=False), no Serverless Job.
+Prices come from pricing.yaml: no Tavily and no Token Factory model API in tests. No LangSmith, no GitHub
+(open_pr=False), no Serverless Job.
 """
 
 import json
@@ -28,6 +29,7 @@ from offramp.agents.verdict import pricing_yaml_price
 from offramp.sandbox import docker_available
 from offramp.schemas import RunConfig, Stage
 from offramp.tf import Budget, TFClient
+from offramp.tf.prices import from_yaml
 
 ROOT = Path(__file__).parents[2]
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -76,6 +78,10 @@ UNSET = (  # nothing in a test run may reach these services, whatever the develo
 )
 
 
+def pricing_yaml_after(tiers):
+    return {t: from_yaml(t, "the Token Factory model API is not read in tests") for t in tiers}
+
+
 def demo_checkout() -> Path | None:
     env = os.environ.get("OFFRAMP_DEMO_REPO_DIR")
     candidates = [Path(env)] if env else [p / "offramp-demo-app" for p in ROOT.parents]
@@ -111,7 +117,9 @@ def run_demo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, live: bool) -> pip
     config = RunConfig(repo_url=str(repo), open_pr=False, live=live)
     log = pipeline.new_run(config, tmp_path / "runs", run_id=RUN_ID)
     client = TFClient(cache_dir=CASSETTES, live=live, budget=Budget())
-    stage = pipeline.Pipeline(log, client, cache_dir=CASSETTES, price_lookup=pricing_yaml_price).execute()
+    stage = pipeline.Pipeline(
+        log, client, cache_dir=CASSETTES, price_lookup=pricing_yaml_price, after_prices=pricing_yaml_after
+    ).execute()
     assert stage == Stage.DONE, log.events[-1].payload
     return log
 

@@ -36,6 +36,7 @@ from offramp.schemas import (
     Verdict,
 )
 from offramp.tf import BudgetExceeded, FakeLLM
+from offramp.tf import prices as tf_prices
 
 APP = """from openai import OpenAI
 
@@ -300,6 +301,49 @@ def test_full_run_streams_every_stage_and_persists_every_artifact(tmp_path):
         assert [v.decision for v in s.exec(select(db.Verdict))] == ["MIGRATE"]
         assert s.exec(select(db.TierResult)).first() is not None
     assert git(repo, "status", "--porcelain") == ""  # a local checkout is read, never written
+
+
+def test_a_migrated_verdict_carries_its_tiers_token_factory_price(tmp_path, monkeypatch):
+    """Cache-only: never the model API; the newest cached read when there is one, else pricing.yaml."""
+    monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path / "data"))
+    cached = tmp_path / "data" / "tf-prices" / "2026-10-21.json"
+    cached.parent.mkdir(parents=True)
+    cached.write_text(pipeline.json.dumps({"prices": {"nvidia/Nemotron-3_5-Lightning": [0.06, 0.24]}}))
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo)
+    llm, stub = llm_for_full_run(*split_counts(repo)), Recorder()
+
+    stage = pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr).execute()
+
+    assert stage == Stage.DONE
+    (verdict,) = [e.payload for e in log.events if e.type == "verdict"]
+    assert verdict["after_price"] == {
+        "model": "nvidia/Nemotron-3_5-Lightning",
+        "input_usd_per_m": 0.06,
+        "output_usd_per_m": 0.24,
+        "via": "token_factory_api",
+        "source": "Token Factory model API, 2026-10-21 (cached; cache-only run)",
+    }
+    saved = pipeline.json.loads((log.dir / "verdicts.json").read_text())
+    assert saved[0]["after_price"] == verdict["after_price"]  # a resumed run keeps it
+
+
+def test_only_the_migrated_tiers_are_priced(tmp_path):
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo)
+    llm, stub, asked = llm_for_full_run(*split_counts(repo)), Recorder(), []
+
+    def after_prices(tiers):
+        asked.append(tiers)
+        return {t: tf_prices.from_yaml(t, "test") for t in tiers}
+
+    pipeline.Pipeline(
+        log, llm, after_prices=after_prices, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr
+    ).execute()
+
+    assert asked == [[Tier.LIGHTNING]]
+    (verdict,) = [e.payload for e in log.events if e.type == "verdict"]
+    assert verdict["after_price"]["source"] == "pricing.yaml as of 2026-10-21; test"
 
 
 def pr_url(log: pipeline.RunLog) -> str:

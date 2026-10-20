@@ -6,7 +6,7 @@ FakeLLM and then cassettes recorded live from Token Factory. Routing: stub runne
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import httpx
@@ -38,6 +38,7 @@ from offramp.schemas import (
     Contract,
     EvalCase,
     ModelOutput,
+    PriceEvidence,
     PromptTemplate,
     RunConfig,
     Tier,
@@ -450,6 +451,25 @@ def test_migrate_free_text_parity_is_the_share_of_passing_cases():
         "Super: judge mean 4.42 ≥ 4.0 (parity vs reference 75.0%) on holdout after 0 adapter iterations; "
         f"{COST_MIGRATE}."
     )
+    # n, the mean and the floor case, and how sure 3 of 4 passing is
+    assert (v.holdout_cases, v.holdout_passed, v.parity_lower_pct) == (4, 3, 30.0)  # Wilson 3/4: 0.3006
+    assert (v.judge_mean, v.judge_min) == (4.42, 3.67)
+
+
+def test_parity_carries_its_case_count_and_wilson_lower_bound():
+    v = decide(SITE, evidence(), reason_llm(GOOD), RunConfig(repo_url="x"), price_lookup=price)
+    assert (v.holdout_cases, v.holdout_passed) == (30, 29)
+    assert v.parity_lower_pct == 83.3  # Wilson 95% of 29/30 = 0.8333..., rounded down to 0.1
+    assert v.judge_mean is None and v.judge_min is None  # not free text
+    perfect = result(SITE, Tier.LIGHTNING, "holdout", scores([True] * 3))
+    assert keep(SITE, Tier.LIGHTNING, perfect).parity_lower_pct == 43.8  # 100% of 3 is only >= 43.8%
+
+
+def test_a_failing_free_text_runs_judge_scores_are_rounded_down():
+    rows = [CaseScore(case_id=f"cs_06:{i:03d}", passed=True, score=4.0) for i in range(249)]
+    rows.append(CaseScore(case_id="cs_06:999", passed=False, score=2.999))
+    v = keep(FREE_TEXT, Tier.ULTRA, result(FREE_TEXT, Tier.ULTRA, "holdout", rows))
+    assert (v.judge_mean, v.judge_min) == (3.99, 2.99)
 
 
 def test_the_clause_carries_the_closed_reference_row_and_an_unestimated_cost():
@@ -555,6 +575,22 @@ def test_sunset_risk_comes_from_the_lookups_deprecation_notice():
         SITE, evidence(), reason_llm(BudgetExceeded("x")), RunConfig(repo_url="x"), price_lookup=lookup
     )
     assert v.sunset_risk == "FIXTURE: retires 2026-11-30 (https://example.com/dep)"
+    assert v.retires_on == date(2026, 11, 30)  # read from the notice, never written in by hand
+
+
+def test_the_lookups_evidence_travels_on_the_verdict():
+    def lookup(model):
+        return price(model).model_copy(update={"query": "gpt-4o-mini pricing", "price_quote": "| $0.15 |"})
+
+    v = decide(SITE, evidence(), reason_llm(GOOD), RunConfig(repo_url="x"), price_lookup=lookup)
+    assert v.price_evidence == PriceEvidence(
+        method="search", query="gpt-4o-mini pricing", url=OPENAI_PRICING, quote="| $0.15 |", date="2026-10-19"
+    )
+    assert v.retires_on is None
+    offline = decide(
+        SITE, evidence(), reason_llm(GOOD), RunConfig(repo_url="x"), price_lookup=pricing_yaml_price
+    )
+    assert offline.price_evidence.method == "yaml fallback" and offline.price_evidence.query is None
 
 
 def test_the_offline_lookup_reads_pricing_yaml_and_says_so():

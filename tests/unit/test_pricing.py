@@ -53,11 +53,12 @@ def test_every_entry_is_timestamped_sourced_and_says_how_trustworthy_the_price_i
             assert e.get("note"), f"{model}: an unverified price must say where it came from"
 
 
-def test_token_factory_prices_are_marked_unverified_until_read_from_the_nebius_page():
+def test_token_factory_prices_are_the_model_apis_as_read_on_their_date():
     table = load_pricing()
     tf = {m: e for m, e in table.items() if "tier" in e}
     assert {e["tier"] for e in tf.values()} == {"lightning", "super", "ultra"}
-    assert {e["price_status"] for e in tf.values()} == {"unverified-list-price"}
+    assert {e["price_status"] for e in tf.values()} == {"published"}
+    assert {e["source"] for e in tf.values()} == {"https://api.tokenfactory.nebius.com/v1/models?verbose=true"}
     assert all(e["price_status"] == "published" for m, e in table.items() if m not in tf)
 
 

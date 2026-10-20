@@ -6,7 +6,7 @@ after an intended template change with UPDATE_SNAPSHOTS=1 and review the diff.
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -85,7 +85,7 @@ def test_keep_closed_row_shows_parity_below_threshold_and_no_savings():
 
     row = next(line for line in body.splitlines() if line.startswith("| cs_05 "))
     assert "**NOT MIGRATED**" in row
-    assert "71.4% < 90%" in row
+    assert "71.4% (5/7, ≥35%) < 90%" in row
     assert row.endswith("| — | — |")
 
 
@@ -152,9 +152,79 @@ def test_without_closed_references_no_closed_model_is_named():
 def test_price_sources_dates_and_langsmith_links_are_listed():
     body = render_pr(ctx()).body.split("## How parity was measured")[1]
 
-    assert "https://nebius.com/token-factory/prices" in body and "2026-10-19" in body
+    assert (
+        "- After: Nemotron 3 Super `nvidia/nemotron-3-super-120b-a12b` $0.30 / $0.90 "
+        "(Token Factory model API, 2026-10-21)"
+    ) in body
+    assert "unverified" not in body
     assert "developers.openai.com/api/docs/pricing" in body  # cost_before_note
     assert "https://smith.langchain.com/public/fixture-project/r" in body
+
+
+def test_an_after_price_not_read_in_the_run_is_pricing_yamls_and_says_so():
+    c = ctx()
+    c.verdicts = [v.model_copy(update={"after_price": None}) for v in c.verdicts]
+    body = render_pr(c).body
+    assert (
+        "- After: Nemotron 3.5 Lightning `nvidia/Nemotron-3_5-Lightning` $0.06 / $0.24 (pricing.yaml as of "
+        "2026-10-21; not read from the Token Factory model API in this run)"
+    ) in body
+
+
+def test_each_before_price_shows_how_it_was_found_and_the_quote():
+    body = render_pr(ctx()).body
+    line = next(ln for ln in body.splitlines() if ln.startswith("- Before, cs_02:"))
+    assert line.endswith(". Price by Tavily search; the page prints `Input $3 / MTok Output $15 / MTok`.")
+    line = next(ln for ln in body.splitlines() if ln.startswith("- Before, cs_04:"))
+    assert line.endswith(". Price by pricing.yaml fallback.")
+    line = next(ln for ln in body.splitlines() if ln.startswith("- Before, cs_01:"))
+    assert "Price by" not in line  # a verdict recorded without evidence says nothing it does not know
+
+
+def test_a_long_quote_is_cut_and_backticks_cannot_break_out_of_it():
+    c = ctx()
+    v = verdict(c, "cs_02")
+    long = "Input `$3` " + "x " * 200
+    v.price_evidence = v.price_evidence.model_copy(update={"quote": long})
+    line = next(ln for ln in render_pr(c).body.splitlines() if ln.startswith("- Before, cs_02:"))
+    assert "the page prints `Input '$3' x x" in line and line.endswith("…`.") and line.count("`") == 2
+
+
+def evidence_table(body: str) -> str:
+    return body.split("## Evidence")[1].split("## What changed")[0]
+
+
+def test_sites_whose_source_model_retires_lead_the_summary_and_the_evidence_table():
+    body = render_pr(ctx(), PROSE).body
+    summary = body.split("## Evidence")[0]
+    assert summary.startswith("## Summary\n\n**Claude Sonnet 4.5 retires on 30 Nov 2026: cs_02, cs_03.**\n\n")
+    rows = [ln.split(" | ")[0] for ln in evidence_table(body).splitlines() if ln.startswith("| cs_")]
+    assert rows == ["| cs_02", "| cs_03", "| cs_01", "| cs_04", "| cs_05", "| cs_06"]
+    assert "| claude-sonnet-4-5 (retires 30 Nov 2026) |" in body
+
+
+def test_the_soonest_retirement_comes_first_and_no_date_means_no_lead():
+    c = ctx()
+    verdict(c, "cs_06").retires_on = date(2026, 11, 1)
+    body = render_pr(c).body
+    assert (
+        "**claude-haiku-4-5 retires on 1 Nov 2026: cs_06.**\n**Claude Sonnet 4.5 retires on 30 Nov 2026"
+        in body
+    )
+    rows = [ln.split(" | ")[0] for ln in evidence_table(body).splitlines() if ln.startswith("| cs_")]
+    assert rows[:3] == ["| cs_06", "| cs_02", "| cs_03"]
+    c.verdicts = [v.model_copy(update={"retires_on": None}) for v in c.verdicts]
+    assert "retires on" not in render_pr(c).body.split("## Evidence")[0]
+
+
+def test_parity_shows_its_case_count_and_wilson_bound_and_free_text_its_floor():
+    body = render_pr(ctx()).body
+    assert "| 97.1% (34/35, ≥85%) (after 1 adapter iteration) |" in body
+    assert "| 100.0% (6/6, ≥60%), judge mean 4.3/5, lowest case 3.67/5 (after 1 adapter iteration) |" in body
+    assert "Wilson 95% lower bound" in body and "costs cents on Nemotron 3.5 Lightning" in body
+    c = ctx()
+    c.verdicts = [v.model_copy(update={"holdout_cases": None, "judge_mean": None}) for v in c.verdicts]
+    assert "| 97.1% (after 1 adapter iteration) |" in render_pr(c).body  # recorded before the bounds
 
 
 def test_prose_without_a_note_falls_back_to_recorded_text():

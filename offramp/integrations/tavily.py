@@ -1,9 +1,13 @@
-"""Source-model price + deprecation lookup through Tavily Search (PRD §6.10, Global Constraint 21).
+"""Source-model price + deprecation lookup through Tavily Search and Extract (PRD §6.10, GC21).
 
 There are no closed-model keys, so "cost before" is an estimate built from the price the source model's vendor
 publishes. At runtime one Tavily search (restricted to the vendor's own pricing / deprecation pages) fetches
 those pages, Nemotron Super extracts the numbers, and every number must appear in the page it is cited to or
-the extraction is rejected. Whatever cannot be verified falls back to pricing.yaml, and says so.
+the extraction is rejected; a translated page's citation moves to an English page printing the same price.
+When the search gives no verified price, one Tavily Extract of the vendor's own model page and price list
+follows and the same verifier reads the price out of that text. Whatever cannot be verified falls back to
+pricing.yaml, and says so. Every outcome carries its evidence: the query, the cited url, the page's text that
+prints the price, the method and the date (SourceModelInfo.evidence()).
 """
 
 import logging
@@ -11,7 +15,7 @@ import os
 import re
 import tempfile
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -22,13 +26,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from offramp import pricing
 from offramp.integrations import keys
-from offramp.schemas import Tier
+from offramp.schemas import PriceEvidence, Tier
 from offramp.tf.budget import BudgetExceeded
 from offramp.tf.client import LLM, CacheMiss, TFClient
 
 log = logging.getLogger(__name__)
 
 SEARCH_URL = "https://api.tavily.com/search"
+EXTRACT_URL = "https://api.tavily.com/extract"
 ROLE = "pricing_extract"  # the Token Factory role of the extraction call (Super, thinking off)
 MAX_TOKENS = 700
 MAX_RESULTS = 20  # same one credit as 5: the vendor docs return many near-duplicate pages, so ask for plenty
@@ -47,6 +52,18 @@ ANTHROPIC_DOMAINS = [
     "platform.claude.com",
 ]
 EXCLUDED_DOMAINS = ["community.openai.com"]
+# Tavily Extract's pages per vendor, on its allow-listed domains: the model's own page, whose labelled input /
+# output prices the verifier reads, and the vendor's price list. One Extract call takes both (billed per 5).
+EXTRACT_PAGES = {
+    "openai": (
+        "https://developers.openai.com/api/docs/models/{name}",
+        "https://developers.openai.com/api/docs/pricing",
+    ),
+    "anthropic": (
+        "https://platform.claude.com/docs/en/models/{name}",
+        "https://platform.claude.com/docs/en/about-claude/pricing",
+    ),
+}
 
 
 class TavilyError(Exception):
@@ -63,22 +80,40 @@ class SourceModelInfo(BaseModel):
     fetched_at: datetime  # when Tavily returned the page; the pricing.yaml `as_of` date on a fallback
     deprecation: str | None = None  # the vendor page's own words (verbatim quote) on this model's retirement
     deprecation_url: str | None = None
-    via: Literal["tavily", "pricing.yaml"] = "tavily"
+    via: Literal["tavily", "tavily extract", "pricing.yaml"] = "tavily"  # Tavily Search, Tavily Extract
     note: str | None = None  # why the pricing.yaml fallback was used
+    query: str | None = None  # the Tavily search query; None when Tavily was not asked
+    price_quote: str | None = None  # the cited page's text that prints the price (verified there)
 
     def cost_before_note(self) -> str:
         """Verdict.cost_before_note: the estimate, labelled as one, with its price source and date."""
         prices = f"{_usd(self.input_usd_per_m)}/{_usd(self.output_usd_per_m)} per 1M"
         where = self.price_source_url.split("://", 1)[-1]
         day = f"{self.fetched_at:%Y-%m-%d}"
-        source = (
-            f"fetched via Tavily {day}" if self.via == "tavily" else f"pricing.yaml as of {day}; {self.note}"
-        )
+        source = {
+            "tavily": f"fetched via Tavily {day}",
+            "tavily extract": f"fetched via Tavily Extract {day}",
+        }.get(self.via, f"pricing.yaml as of {day}; {self.note}")
         return f"est.: {self.model} {prices} ({where}, {source}) x tokens measured on the Token Factory call"
 
     def sunset_risk(self) -> str | None:
         """Verdict.sunset_risk: the deprecation notice with its URL, or None when no notice was found."""
         return f"{self.deprecation} ({self.deprecation_url})" if self.deprecation else None
+
+    def retires_on(self) -> date | None:
+        """Verdict.retires_on: the retirement date the verified deprecation notice gives, if it gives one."""
+        return retirement_date(self.deprecation) if self.deprecation else None
+
+    def evidence(self) -> PriceEvidence:
+        """Verdict.price_evidence: what the Tavily evidence panel and the PR's Prices section show."""
+        method = {"tavily": "search", "tavily extract": "extract"}.get(self.via, "yaml fallback")
+        return PriceEvidence(
+            method=method,
+            query=self.query,
+            url=self.price_source_url,
+            quote=self.price_quote,
+            date=f"{self.fetched_at:%Y-%m-%d}",
+        )
 
 
 class PricingExtraction(BaseModel):
@@ -128,13 +163,32 @@ def _usd(value: float) -> str:
     return f"${value:.2f}" if round(value, 2) == value else f"${value:g}"
 
 
-def _vendor_domains(model: str) -> list[str]:
+def _vendor(model: str) -> str | None:
     name = model.lower()
     if name.startswith("claude"):
-        return ANTHROPIC_DOMAINS
+        return "anthropic"
     if re.match(r"(gpt|o\d|chatgpt)", name):
-        return OPENAI_DOMAINS
-    return OPENAI_DOMAINS + ANTHROPIC_DOMAINS
+        return "openai"
+    return None
+
+
+def _vendor_domains(model: str) -> list[str]:
+    domains = {"anthropic": ANTHROPIC_DOMAINS, "openai": OPENAI_DOMAINS}
+    return domains.get(_vendor(model), OPENAI_DOMAINS + ANTHROPIC_DOMAINS)
+
+
+def _extract_urls(model: str) -> list[str]:
+    """The vendor's own model page and price list for Tavily Extract; none for an unknown vendor."""
+    pages = EXTRACT_PAGES.get(_vendor(model))
+    if pages is None:
+        return []
+    name = re.sub(rf"({_SNAPSHOT})$", "", model).removeprefix("claude-")  # .../models/sonnet-4-5
+    return [pages[0].format(name=name), pages[1]]
+
+
+def _extract_payload(model: str) -> dict:
+    # advanced: Tavily's extraction depth that keeps tables; still one call, billed per 5 urls
+    return {"urls": _extract_urls(model), "extract_depth": "advanced", "format": "markdown"}
 
 
 def _pretty(model: str) -> str:  # claude-sonnet-4-5 -> "claude sonnet 4.5": how the vendors' tables spell it
@@ -164,16 +218,17 @@ def _allowed(url: str, domains: list[str]) -> bool:
     return _under(host, domains) and not _under(host, EXCLUDED_DOMAINS)
 
 
-def _post(http: httpx.Client, payload: dict) -> dict:
-    """POST /search. A rejected / out-of-credit primary key moves the process to TAVILY_API_KEY_FALLBACK
-    and retries once (Global Constraint 28); 429 rate limits, 5xx and transport errors back off, same key."""
+def _post(http: httpx.Client, payload: dict, url: str = SEARCH_URL) -> dict:
+    """POST /search (or /extract). A rejected / out-of-credit primary key moves the process to
+    TAVILY_API_KEY_FALLBACK and retries once (Global Constraint 28); 429 rate limits, 5xx and transport errors
+    back off, same key."""
     error = "no attempt made"
     for attempt in range(MAX_ATTEMPTS):
         key = keys.current("tavily", os.environ.get("TAVILY_API_KEY"))
         if not key:
             raise TavilyError("TAVILY_API_KEY is not set")
         try:
-            resp = http.post(SEARCH_URL, json=payload, headers={"Authorization": f"Bearer {key}"})
+            resp = http.post(url, json=payload, headers={"Authorization": f"Bearer {key}"})
         except httpx.TransportError as e:
             error = type(e).__name__
         else:
@@ -265,12 +320,14 @@ def _number(text: str) -> float:
     return float(text.replace(",", ""))
 
 
-def _input_then_output(text: str) -> tuple[float, float] | None:
-    """The first two standard (not batch, cached) labelled amounts in `text`, only if input then output."""
-    labelled = [(m.group(2).lower(), _number(m.group(3))) for m in _LABELLED.finditer(text) if not m.group(1)]
-    if len(labelled) >= 2 and labelled[0][0] == "input" and labelled[1][0] == "output":
-        return labelled[0][1], labelled[1][1]
-    return None
+def _input_then_output(text: str) -> tuple[tuple[float, float], str] | None:
+    """The first two standard (not batch, cached) labelled amounts in `text`, only if input then output, and
+    the text from the one label to the other amount."""
+    labelled = [m for m in _LABELLED.finditer(text) if not m.group(1)][:2]
+    if [m.group(2).lower() for m in labelled] != ["input", "output"]:
+        return None
+    first, second = labelled
+    return (_number(first.group(3)), _number(second.group(3))), text[first.start() : second.end()]
 
 
 def _is_model_page(url: str, model: str) -> bool:
@@ -313,22 +370,54 @@ def _row_prices(row: str, model: str) -> tuple[float, float] | None:
         priced.append(cell)
     tail = " | ".join(priced)
     found = _input_then_output(tail)
-    if not found and len(re.findall(_AMOUNT, tail)) == 2 and (pair := _PAIR.search(tail)):
-        found = _number(pair.group(1)), _number(pair.group(2))
-    return found
+    if found:
+        return found[0]
+    if len(re.findall(_AMOUNT, tail)) == 2 and (pair := _PAIR.search(tail)):
+        return _number(pair.group(1)), _number(pair.group(2))
+    return None
 
 
-def _page_price(model: str, url: str, page: str) -> tuple[float, float] | None:
-    """(input, output) USD per 1M that `page` prints for exactly this model, None when it prints none or is
-    ambiguous. Either the vendor's own model page (the first standard labelled input then output amounts), or
-    the model's own table row (the price cells right behind its name: labelled input then output, or one
-    "$in / $out" pair); prose, other rows, other models' pages and replacement columns never count."""
+def _price_quote(model: str, url: str, page: str) -> tuple[tuple[float, float], str] | None:
+    """(input, output) USD per 1M that `page` prints for exactly this model, and the text printing it; None
+    when it prints none or is ambiguous. Either the vendor's own model page (the first standard labelled input
+    then output amounts), or the model's own table row (the price cells right behind its name: labelled input
+    then output, or one "$in / $out" pair); prose, other rows, other models' pages and replacement columns
+    never count."""
     if _is_model_page(url, model) and _mentions(page, model):
         found = _input_then_output(page)
         if found:
-            return found
-    rows = {found for row in _ROW_END.split(page) if (found := _row_prices(row, model))}
-    return rows.pop() if len(rows) == 1 else None
+            return found[0], " ".join(found[1].split())
+    rows: dict[tuple[float, float], str] = {}
+    for row in _ROW_END.split(page):
+        if found := _row_prices(row, model):
+            rows.setdefault(found, " ".join(row.split()))
+    return next(iter(rows.items())) if len(rows) == 1 else None
+
+
+def _page_price(model: str, url: str, page: str) -> tuple[float, float] | None:
+    found = _price_quote(model, url, page)
+    return found[0] if found else None
+
+
+# A translated copy of a vendor page: a locale segment in its path ("/docs/zh-CN/", "/uk-UA/index/").
+# ponytail: a fixed list of bare language codes; add one when a vendor serves another.
+_LOCALE = re.compile(
+    r"/(?!en-)(?:[a-z]{2}-(?:[A-Za-z]{2}|\d{3}|[A-Z][a-z]{3}(?:-[A-Z]{2})?)|"
+    r"ar|de|es|fr|hi|id|it|ja|ko|nl|pl|pt|ru|th|tr|uk|vi|zh)(?=/)"
+)
+
+
+def _localised(url: str) -> bool:
+    return bool(_LOCALE.search(urlparse(url).path + "/"))
+
+
+def _english(model: str, url: str, price: tuple[float, float], results: list[dict]) -> str:
+    """`url`, or when it is a translated page, the first English result printing the same price for this
+    model: the citation a reader can check. A translation with no English twin stays cited."""
+    if not _localised(url):
+        return url
+    twins = (r["url"] for r in results if not _localised(r["url"]))
+    return next((u for u in twins if _page_price(model, u, _page(results, u) or "") == price), url)
 
 
 def _verified_price(model: str, ext: PricingExtraction, results: list[dict]) -> str | None:
@@ -395,6 +484,32 @@ def _is_subject_of_notice(quote: str, model: str) -> bool:
     return False
 
 
+_RETIRE_WORD = re.compile(r"retir|shut\s?down|sunset|end[- ]of[- ]life", re.I)
+_DATE = re.compile(
+    r"\d{4}-\d{2}-\d{2}|[A-Z][a-z]{2,8}\.? \d{1,2}(?:st|nd|rd|th)?,? \d{4}|\d{1,2} [A-Z][a-z]{2,8}\.? \d{4}"
+)
+
+
+def retirement_date(notice: str) -> date | None:
+    """The first date after the notice's retirement word ("retires on November 30, 2026", "Retired
+    2027-04-01"); a deprecation date before that word is not one. None when the notice gives no such date."""
+    word = _RETIRE_WORD.search(notice)
+    for m in _DATE.finditer(notice, word.end()) if word else ():
+        text = re.sub(r"(?<=\d)(?:st|nd|rd|th)|[.,]", "", m.group())
+        for fmt in ("%Y-%m-%d", "%B %d %Y", "%b %d %Y", "%d %B %Y", "%d %b %Y"):
+            try:
+                return datetime.strptime(text, fmt).date()
+            except ValueError:
+                continue
+    return None
+
+
+def spelled(model: str, text: str) -> str:
+    """The model's name as `text` spells it ("Claude Sonnet 4.5" for claude-sonnet-4-5), else the id."""
+    found = _mentions(text, model.rsplit("/", 1)[-1])
+    return found[0].group() if found else model
+
+
 def _verified_deprecation(model: str, ext: PricingExtraction, results: list[dict]) -> bool:
     """The quote is on the cited page word for word and says this model is going away."""
     page = _page(results, ext.deprecation_url)
@@ -441,7 +556,9 @@ def _why(error: Exception) -> str:
     return "Super was unavailable"
 
 
-def _from_yaml(model: str, now: datetime, why: str, dep: PricingExtraction | None) -> SourceModelInfo:
+def _from_yaml(
+    model: str, now: datetime, why: str, dep: PricingExtraction | None, query: str | None = None
+) -> SourceModelInfo:
     try:
         entry = pricing.entry(model)
     except KeyError as e:
@@ -456,7 +573,51 @@ def _from_yaml(model: str, now: datetime, why: str, dep: PricingExtraction | Non
         deprecation_url=dep.deprecation_url if dep else None,
         via="pricing.yaml",
         note=f"fallback: {why}",
+        query=query,
     )
+
+
+def _extract_price(http: httpx.Client, model: str) -> tuple[tuple[float, float], str, str] | None:
+    """One Tavily Extract of the vendor's own pages; (price, url, quote) when the verifier reads one price for
+    exactly this model out of their text, None when they print none or disagree. Raises TavilyError."""
+    body = _post(http, _extract_payload(model), EXTRACT_URL)
+    found = []
+    for r in body.get("results", []):
+        url, text = (r.get("url") or "").strip(), r.get("raw_content") or ""
+        if _allowed(url, _vendor_domains(model)) and (hit := _price_quote(model, url, text)):
+            found.append((hit[0], url, hit[1]))
+    return found[0] if len({price for price, _, _ in found}) == 1 else None
+
+
+def _search(
+    http: httpx.Client, model: str, payload: dict, llm: LLM | None
+) -> tuple[PricingExtraction | None, list[dict], str | None, bool]:
+    """The search and Super's reading of it: (extraction, results, why the price is rejected or None,
+    settled). Not settled when the search or Super was unavailable: nothing was judged."""
+    ext, results = None, []
+    try:
+        body = _post(http, payload)
+        log.debug("tavily answer for %s (not used): %s", model, body.get("answer"))
+        seen = set()
+        for r in body.get("results", []):  # vendor docs serve one page under many URLs: show each text once
+            text = r.get("content") or ""
+            if _allowed(r.get("url", ""), _vendor_domains(model)) and text not in seen:
+                seen.add(text)
+                results.append({"url": r["url"].strip(), "content": text})  # real urls carry trailing spaces
+        reply = (llm or TFClient()).chat(
+            role=ROLE,
+            tier=Tier.SUPER,
+            messages=_extraction_messages(model, results),
+            max_tokens=MAX_TOKENS,
+            response_model=PricingExtraction,
+            reasoning="off",
+        )
+    except (TavilyError, openai.OpenAIError, CacheMiss, BudgetExceeded, RuntimeError) as e:
+        log.warning("tavily: %s lookup failed: %s", model, type(e).__name__)
+        return ext, results, _why(e), False
+    ext = reply.parsed
+    problem = "the extraction was not valid JSON" if ext is None else _verified_price(model, ext, results)
+    return ext, results, problem, True
 
 
 def lookup_source_model(
@@ -471,11 +632,13 @@ def lookup_source_model(
 
     One Tavily search (official vendor domains only), then Nemotron Super (`llm`, default a TFClient) reads
     the numbers out of the returned pages; they are used only if the page they are cited to prints exactly
-    them for this model (its own model page or table row).
-    Anything that cannot be verified falls back to pricing.yaml with a short reason in `note`, which
+    them for this model (its own model page or table row). A translated page's citation moves to an English
+    result printing the same price. When Super's numbers are rejected, one Tavily Extract of the vendor's
+    model page and price list follows, and the same verifier reads the price out of that text (no model in
+    between). Anything that cannot be verified falls back to pricing.yaml with a short reason in `note`, which
     cost_before_note() shows; KeyError if pricing.yaml has no such model either. The outcome, verified or
-    rejected, is cached on disk per (model, UTC day) so a rejected lookup does not spend Tavily credits again;
-    a lookup that could not be judged (no key, Tavily or Super unavailable) is not cached.
+    rejected, is cached on disk per (model, UTC day), so a model costs at most one search and one extract a
+    day; a lookup that could not be judged (no key, Tavily or Super unavailable) is not cached.
     """
     now = now or datetime.now(UTC)
     model = model_id.rsplit("/", 1)[-1]
@@ -483,50 +646,56 @@ def lookup_source_model(
     if (cached := _read_cache(path)) is not None:
         return cached
 
-    ext, results, problem = None, [], "no extraction"
-    settled = True  # False when the lookup could not be judged (search or Super unavailable): do not cache
+    payload = _search_payload(model)
+    extracted = None
     own_http = http is None
     http = http or httpx.Client(timeout=TIMEOUT_S)
     try:
-        body = _post(http, _search_payload(model))
-        log.debug("tavily answer for %s (not used): %s", model, body.get("answer"))
-        results, seen = [], set()
-        for r in body.get("results", []):  # vendor docs serve one page under many URLs: show each text once
-            text = r.get("content") or ""
-            if _allowed(r.get("url", ""), _vendor_domains(model)) and text not in seen:
-                seen.add(text)
-                results.append({"url": r["url"].strip(), "content": text})  # real urls carry trailing spaces
-        reply = (llm or TFClient()).chat(
-            role=ROLE,
-            tier=Tier.SUPER,
-            messages=_extraction_messages(model, results),
-            max_tokens=MAX_TOKENS,
-            response_model=PricingExtraction,
-            reasoning="off",
-        )
-        ext = reply.parsed
-        problem = "the extraction was not valid JSON" if ext is None else _verified_price(model, ext, results)
-    except (TavilyError, openai.OpenAIError, CacheMiss, BudgetExceeded, RuntimeError) as e:
-        problem, settled = _why(e), False
-        log.warning("tavily: %s lookup failed: %s", model, type(e).__name__)
+        ext, results, problem, settled = _search(http, model, payload, llm)
+        if problem is not None and settled and _extract_urls(model):
+            try:
+                extracted = _extract_price(http, model)
+            except TavilyError as e:
+                settled = False
+                problem += f"; the Tavily extract failed ({e})"
+            if extracted is None and settled:
+                problem += "; nor do the vendor's own pages read through Tavily Extract"
     finally:
         if own_http:
             http.close()
 
     dep = ext if ext is not None and _verified_deprecation(model, ext, results) else None
+    found = dict(
+        model=model,
+        fetched_at=now,
+        deprecation=dep.deprecation_quote if dep else None,
+        deprecation_url=dep.deprecation_url if dep else None,
+        query=payload["query"],
+    )
     if problem is None:
+        price = (ext.input_usd_per_m, ext.output_usd_per_m)
+        url = _english(model, ext.price_source_url.strip(), price, results)
+        quote = _price_quote(model, url, _page(results, url))[1]
         info = SourceModelInfo(
-            model=model,
-            input_usd_per_m=ext.input_usd_per_m,
-            output_usd_per_m=ext.output_usd_per_m,
-            price_source_url=ext.price_source_url.strip(),
-            fetched_at=now,
-            deprecation=dep.deprecation_quote if dep else None,
-            deprecation_url=dep.deprecation_url if dep else None,
+            **found,
+            input_usd_per_m=price[0],
+            output_usd_per_m=price[1],
+            price_source_url=url,
+            price_quote=quote,
+        )
+    elif extracted is not None:
+        (p_in, p_out), url, quote = extracted
+        info = SourceModelInfo(
+            **found,
+            input_usd_per_m=p_in,
+            output_usd_per_m=p_out,
+            price_source_url=url,
+            price_quote=quote,
+            via="tavily extract",
         )
     else:
         log.warning("tavily: %s price from pricing.yaml (%s)", model, problem)
-        info = _from_yaml(model, now, f"Tavily price not used ({problem})", dep)
+        info = _from_yaml(model, now, f"Tavily price not used ({problem})", dep, query=payload["query"])
     if settled:  # a rejected lookup is cached too: asking Tavily again today would return the same pages
         _write_cache(path, info)
     return info

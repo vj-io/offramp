@@ -1,22 +1,26 @@
 """PR Writer (PRD §6.9, template §8, Amendment A).
 
 The title, evidence table, every number and the <details> blocks are rendered deterministically from the run's
-Verdict / TierResult / reference inputs (`render_pr`). Nemotron 3 Super (role `pr_writer`) writes prose only
-(`write_pr`): a short summary and a note per kept site. Prose that contains a number is discarded, so a number
-in the PR can only come from a measurement. A migrated site's line and a manual-review site's reason are built
-by code: the measurements, and the patch stage's failure as one plain sentence with the raw failure folded.
+Verdict / TierResult / reference inputs (`render_pr`): each parity figure with its holdout pass count and
+Wilson 95% lower bound, the sites whose source model retires first, each price with its source. Nemotron 3
+Super (role `pr_writer`) writes prose only (`write_pr`): a short summary and a note per kept site. Prose that
+contains a number is discarded, so a number in the PR can only come from a measurement. A migrated site's line
+and a manual-review site's reason are built by code: the measurements, and the patch stage's failure as one
+plain sentence with the raw failure folded.
 """
 
 import json
+import math
 import re
 from collections import Counter
+from datetime import date
 
 import openai
 from pydantic import BaseModel, Field
 
 from offramp.evals.errors import ProviderError
 from offramp.evals.scorers.aggregate import JUDGE_CASE_FLOOR, JUDGE_FLOOR, JUDGE_MARGIN, WEAK_REFERENCE
-from offramp.pricing import entry
+from offramp.integrations.tavily import spelled
 from offramp.schemas import (
     TIER_ORDER,
     Adapter,
@@ -31,6 +35,7 @@ from offramp.schemas import (
 )
 from offramp.tf.budget import BudgetExceeded
 from offramp.tf.client import LLM, CacheMiss
+from offramp.tf.prices import from_yaml
 from offramp.tf.tiers import get_tier
 
 FREE_TEXT_TAG = "free_text_arg:"  # offramp.evals.scorers.tool_call
@@ -40,6 +45,17 @@ MAX_FAILING_SHOWN = 10
 SOURCE_OUTPUTS_NOT_RECORDED = (
     "The source models' own outputs were never recorded; parity is agreement with references."
 )
+BOUNDS = (
+    "In brackets after a parity figure: holdout cases passing / evaluated, and the Wilson 95% lower bound of "
+    "that pass rate; with few holdout cases, even 100% only shows the rate is above that bound. More holdout "
+    "cases narrow it, and evaluating them costs cents on Nemotron 3.5 Lightning."
+)
+PRICE_METHODS = {
+    "search": "Tavily search",
+    "extract": "Tavily Extract",
+    "yaml fallback": "pricing.yaml fallback",
+}
+QUOTE_CHARS = 200
 TIER_NAMES = {
     Tier.LIGHTNING: "Nemotron 3.5 Lightning",
     Tier.SUPER: "Nemotron 3 Super",
@@ -166,28 +182,67 @@ def _iterations(n: int) -> str:
     return f" (after {n} adapter iteration{'s' if n != 1 else ''})" if n else ""
 
 
+def _parity(v: Verdict, site: CallSite | None) -> str:
+    """The parity figure, its holdout pass count and Wilson 95% lower bound ("100.0% (9/9, ≥70%)"); free text
+    adds the judge's mean and lowest case. JSON extraction's figure is a field match, so its count says
+    "pass"."""
+    text = _pct(v.parity_pct)
+    if v.holdout_cases and v.parity_lower_pct is not None:
+        what = " pass" if _task(site) == "json_extraction" else ""
+        text += f" ({v.holdout_passed}/{v.holdout_cases}{what}, ≥{math.floor(v.parity_lower_pct)}%)"
+    if v.judge_mean is not None:
+        text += f", judge mean {v.judge_mean:g}/5"
+        text += f", lowest case {v.judge_min:g}/5" if v.judge_min is not None else ""
+    return text
+
+
+def _urgency(v: Verdict) -> tuple:
+    """Sites whose source model retires come first, the soonest first."""
+    return (v.retires_on is None, v.retires_on or date.max, v.site_id)
+
+
+def _retiring(verdicts: list[Verdict], sites: dict[str, CallSite]) -> list[str]:
+    """The summary's lead: "Claude Sonnet 4.5 retires on 30 Nov 2026: cs_02, cs_03.", one line per date and
+    model, the model named as its vendor's notice spells it; the dates come from the notices."""
+    retiring: dict[tuple[date, str], list[str]] = {}
+    for v in verdicts:
+        if v.retires_on:
+            model = sites[v.site_id].source_model if v.site_id in sites else None
+            name = spelled(model, v.sunset_risk or "") if model else "The source model"
+            retiring.setdefault((v.retires_on, name), []).append(v.site_id)
+    return [
+        f"**{name} retires on {day.day} {day:%b %Y}: {', '.join(sids)}.**"
+        for (day, name), sids in sorted(retiring.items())
+    ]
+
+
+def _quoted(text: str) -> str:
+    """A page's text as an inline code span, at most QUOTE_CHARS long."""
+    text = " ".join(text.replace("`", "'").split())
+    return f"`{text[:QUOTE_CHARS]}…`" if len(text) > QUOTE_CHARS else f"`{text}`"
+
+
 def _row(ctx: PRContext, v: Verdict, site: CallSite | None) -> str:
     before = (site.source_model if site else None) or "—"
-    if v.sunset_risk:
+    if v.retires_on:
+        before += f" (retires {v.retires_on.day} {v.retires_on:%b %Y})"
+    elif v.sunset_risk:
         before += " (sunset risk)"
     file = f"`{site.file}`" if site else "—"
     if v.decision == "MIGRATE":
         tr = _result(ctx, v)
         model = v.model or get_tier(v.tier).model_id
-        parity = _pct(v.parity_pct)
-        if _task(site) == "free_text" and tr is not None:
-            parity += f", judge mean {round(tr.score, 2):g}/5"
-        parity += _iterations(v.iterations)
+        parity = _parity(v, site) + _iterations(v.iterations)
         p50 = _ms(tr.metrics.p50_ms) if tr is not None and tr.split == "holdout" else "—"
         cost_before = f"{_usd(v.cost_before_per_1k)} (est.)" if v.cost_before_per_1k is not None else "—"
         cost_after = _usd(v.cost_after_per_1k) if v.cost_after_per_1k is not None else "—"
         cells = [TIER_NAMES[Tier(v.tier)] + f" (`{model}`)", parity, p50, f"{cost_before} → {cost_after}"]
     elif v.decision == "KEEP_CLOSED":
         bar = f"{threshold(site, ctx.config) * 100:g}%"
-        parity = f"{_pct(v.parity_pct)} < {bar}" if v.parity_pct is not None else f"below {bar}"
+        parity = f"{_parity(v, site)} < {bar}" if v.parity_pct is not None else f"below {bar}"
         cells = ["**NOT MIGRATED**", parity, "—", "—"]
     else:
-        cells = ["**MANUAL REVIEW**", _pct(v.parity_pct), "—", "—"]
+        cells = ["**MANUAL REVIEW**", _parity(v, site), "—", "—"]
     return "| " + " | ".join(_cell(c) for c in [v.site_id, file, _task(site), before, *cells]) + " |"
 
 
@@ -332,6 +387,8 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         return " ".join(out)
 
     out = ["## Summary", ""]
+    if lead := _retiring(verdicts, sites):
+        out += [*lead, ""]
     if prose.summary:
         out += [prose.summary, ""]
     counts = ctx.case_counts.values()
@@ -354,7 +411,7 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         "| Site | File | Task | Before | After | Parity vs reference (holdout) | p50 latency (after) "
         "| $/1k calls before (est.) → after |",
         "|---|---|---|---|---|---|---|---|",
-        *(_row(ctx, v, sites.get(v.site_id)) for v in verdicts),
+        *(_row(ctx, v, sites.get(v.site_id)) for v in sorted(verdicts, key=_urgency)),
         "",
         "## What changed",
         "",
@@ -459,7 +516,8 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         "Each site's cases are split once into dev (adapter iteration) and holdout (verdict only). Pass bar: "
         f"{ctx.config.threshold * 100:g}% agreement with the references "
         f"({ctx.config.reasoning_threshold * 100:g}% for reasoning); free text: judge mean of at least "
-        f"{JUDGE_FLOOR:.1f} on a 1–5 rubric, no holdout case below {JUDGE_CASE_FLOOR:.1f}{pairwise}.",
+        f"{JUDGE_FLOOR:.1f} on a 1–5 rubric, no holdout case below {JUDGE_CASE_FLOOR:.1f}{pairwise}. "
+        + BOUNDS,
         *(
             f"- {sid}: free-text argument{'s' if len(args) > 1 else ''} {', '.join(args)} checked for "
             "presence, not wording."
@@ -489,19 +547,17 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
 
     out += ["", "Prices (USD per 1M input / output tokens):"]
     for tier in TIER_ORDER:
-        if any(v.tier == tier for v in migrated):
-            info = get_tier(tier)
-            e = entry(info.model_id)
-            status = (
-                ""
-                if e.get("price_status", "published") == "published"
-                else f", {e['price_status'].replace('-', ' ')}"
-            )
-            out.append(
-                f"- After: {TIER_NAMES[tier]} `{info.model_id}` ${info.input_usd_per_m:.2f} / "
-                f"${info.output_usd_per_m:.2f} ({e['source']}, as of {e['as_of']}{status})"
-            )
-    out += [f"- Before, {v.site_id}: {v.cost_before_note}" for v in migrated if v.cost_before_note]
+        if v := next((v for v in migrated if v.tier == tier), None):
+            p = v.after_price or from_yaml(tier, "not read from the Token Factory model API in this run")
+            price = f"${p.input_usd_per_m:.2f} / ${p.output_usd_per_m:.2f}"
+            out.append(f"- After: {TIER_NAMES[tier]} `{p.model}` {price} ({p.source})")
+    for v in migrated:
+        if v.cost_before_note:
+            line = f"- Before, {v.site_id}: {v.cost_before_note}"
+            if e := v.price_evidence:
+                quote = f"; the page prints {_quoted(e.quote)}" if e.quote else ""
+                line += f". Price by {PRICE_METHODS[e.method]}{quote}."
+            out.append(line)
     sunset = [v for v in verdicts if v.sunset_risk]
     if sunset:
         out += ["", "Sunset risk (source-model deprecation notices):"]
