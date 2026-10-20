@@ -199,6 +199,29 @@ def _parity(v: Verdict, site: CallSite | None, failed: bool = False) -> str:
     return text
 
 
+_MISSED = {  # Verdict.failed_gate -> what the kept row says after its figures
+    "dev": "; holdout passed, dev did not",
+    "schema": ", not every output schema-valid",
+    "pass_share": ", too few cases pass whole",
+    "reference_margin": f", more than {JUDGE_MARGIN:g} below the references' judge mean",
+}
+
+
+def _kept(v: Verdict, site: CallSite | None, bar: str) -> str:
+    """A kept site's parity cell, saying only the bar the verdict records as missed (failed_gate): free text's
+    judge figures are compared with their own bars, never with a share. A verdict recorded without the gate
+    states its figures, and the share's bar when it is not free text."""
+    if v.parity_pct is None:
+        return f"below {bar}"
+    free_text = _task(site) == "free_text"
+    text = _parity(v, site, failed=free_text and v.failed_gate in ("judge_mean", "case_floor"))
+    if v.failed_gate in _MISSED:
+        return text + _MISSED[v.failed_gate]
+    if v.failed_gate == "threshold" or (v.failed_gate is None and not free_text):
+        return f"{text} < {bar}"
+    return text
+
+
 def _urgency(v: Verdict) -> tuple:
     """Sites whose source model retires come first, the soonest first."""
     return (v.retires_on is None, v.retires_on or date.max, v.site_id)
@@ -245,13 +268,7 @@ def _row(ctx: PRContext, v: Verdict, site: CallSite | None) -> str:
         cost_after = _usd(v.cost_after_per_1k) if v.cost_after_per_1k is not None else "—"
         cells = [TIER_NAMES[Tier(v.tier)] + f" (`{model}`)", parity, p50, f"{cost_before} → {cost_after}"]
     elif v.decision == "KEEP_CLOSED":
-        bar = f"{threshold(site, ctx.config) * 100:g}%"
-        parity = f"{_parity(v, site)} < {bar}" if v.parity_pct is not None else f"below {bar}"
-        if _task(site) == "free_text" and v.judge_mean is not None:  # its bars are the judge's, not a share
-            parity = _parity(v, site, failed=True)
-            if "<" not in parity:
-                parity += f", more than {JUDGE_MARGIN:g} below the references' judge mean"
-        cells = ["**NOT MIGRATED**", parity, "—", "—"]
+        cells = ["**NOT MIGRATED**", _kept(v, site, f"{threshold(site, ctx.config) * 100:g}%"), "—", "—"]
     else:
         cells = ["**MANUAL REVIEW**", _parity(v, site), "—", "—"]
     return "| " + " | ".join(_cell(c) for c in [v.site_id, file, _task(site), before, *cells]) + " |"

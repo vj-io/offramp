@@ -275,6 +275,12 @@ class AfterPrice(BaseModel):
     source: str  # "Token Factory model API, 2026-10-21" or "pricing.yaml as of 2026-10-21; <why>"
 
 
+# The bar a KEEP_CLOSED verdict's runs missed: "dev" when dev never passed (holdout may have); else the
+# holdout's: below the parity threshold, outputs not all schema-valid, too few JSON cases passing whole, the
+# judge mean below 4.0, a holdout case below 3.0, or the judge mean too far below the references'.
+Gate = Literal["dev", "threshold", "schema", "pass_share", "judge_mean", "case_floor", "reference_margin"]
+
+
 class Verdict(BaseModel):
     site_id: str
     decision: Decision
@@ -310,6 +316,7 @@ class Verdict(BaseModel):
     retires_on: date | None = None  # the source model's retirement date, from the notice in sunset_risk
     price_evidence: PriceEvidence | None = None  # where cost_before's source-model price came from
     after_price: AfterPrice | None = None  # MIGRATE: the tier's Token Factory price and where it was read
+    failed_gate: Gate | None = None  # KEEP_CLOSED: the bar its runs missed (None when measured as passing)
     reason: str
 
 

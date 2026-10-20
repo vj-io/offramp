@@ -13,6 +13,7 @@ import httpx
 import openai
 import pytest
 
+from offramp.agents.pr_writer import PRContext, render_pr
 from offramp.agents.translate import UnresolvedCallSite
 from offramp.agents.verdict import (
     VERDICT_MAX_TOKENS,
@@ -347,6 +348,34 @@ def test_keep_closed_when_dev_failed_even_if_holdout_passed():
         "dev parity vs reference 90.0% < 95% (holdout 100.0%) on Super after 3 adapter iterations; "
         f"{COST_KEEP}."
     )
+    assert v.failed_gate == "dev"
+
+
+@pytest.mark.parametrize(
+    "holdout,gate",
+    [
+        (result(SITE, Tier.SUPER, "holdout", scores([True] * 7 + [False] * 3)), "threshold"),
+        (
+            result(FREE_TEXT, Tier.SUPER, "holdout", [CaseScore(case_id="h", passed=False, score=3.5)]),
+            "judge_mean",
+        ),
+        (
+            result(
+                FREE_TEXT,
+                Tier.SUPER,
+                "holdout",
+                [CaseScore(case_id=f"h{i}", passed=i > 0, score=[2.5, 5, 5, 5][i]) for i in range(4)],
+            ),
+            "case_floor",
+        ),
+        (result(SITE, Tier.SUPER, "holdout", scores([True] * 10)), None),  # migrated: nothing missed
+    ],
+)
+def test_the_verdict_records_the_gate_its_holdout_missed(holdout, gate):
+    site = FREE_TEXT if holdout.site_id == FREE_TEXT.id else SITE
+    passing = [CaseScore(case_id="d", passed=True, score=5.0 if site is FREE_TEXT else 1.0)]
+    v = keep(site, Tier.SUPER, holdout, dev=result(site, Tier.SUPER, "dev", passing))
+    assert v.failed_gate == gate
 
 
 def test_json_extraction_fails_on_validity_with_parity_above_threshold():
@@ -729,11 +758,12 @@ class Runner:
             ), []
         selected = [c for c in cases if c.split == split]
         k = round(outcome * len(selected))
+        judged = site.contract.task_type == "free_text"  # judge scores: 5 for a passing case, 2 otherwise
         rows = [
             CaseScore(
                 case_id=c.id,
                 passed=i < k,
-                score=float(i < k),
+                score=(5.0 if i < k else 2.0) if judged else float(i < k),
                 error_category=None if i < k else "wrong_label",
             )
             for i, c in enumerate(selected)
@@ -865,6 +895,24 @@ def test_all_tiers_failing_keeps_closed_with_the_best_dev_tier_measured_on_holdo
     assert (DEV_N, HOLD_N) == (25, 15) and v.parity_pct == 73.3  # 11/15 = 73.33...
     assert v.reason.startswith("parity vs reference 73.3% < 95% on Super after 0 adapter iterations;")
     assert out.adapter.version == 0 and len(it.calls) == 9
+
+
+def test_a_free_text_site_whose_holdout_passed_but_dev_never_did_is_kept_for_dev_and_says_so():
+    """Review T19 N2, through route.py's "no tier qualified" path: the best dev adapter is measured on
+    holdout, holdout passes, the site stays closed, and the PR row states that cause and no other."""
+    table = {(L, "dev"): 0.5, (S, "dev"): 0.5, (U, "dev"): 0.5, (L, "holdout"): 1.0}
+    out, runner, _ = route(table, site=FREE_TEXT)
+    v = out.verdict
+    assert runner.calls[-1] == (L, "holdout", 0)
+    assert (v.decision, v.best_tier, v.parity_pct, v.failed_gate) == ("KEEP_CLOSED", L, 100.0, "dev")
+    assert v.reason.startswith("dev judge mean 3.44 < 4.0")  # 12 of 25 dev cases at 5, 13 at 2
+    ctx = PRContext(run_id="r", repo="o/r", config=RunConfig(repo_url="x"), sites=[FREE_TEXT], verdicts=[v])
+    row = next(ln for ln in render_pr(ctx).body.splitlines() if ln.startswith("| cs_06 "))
+    assert (
+        f"| 100.0% ({HOLD_N}/{HOLD_N}, ≥" in row
+        and "judge mean 5/5, lowest case 5/5; holdout passed, dev did not |" in row
+    )
+    assert "references' judge mean" not in row and "< " not in row
 
 
 def test_keep_closed_counts_the_iterations_and_changes_of_the_best_adapter_only():

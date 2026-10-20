@@ -227,14 +227,43 @@ def kept_free_text_row(**judge) -> str:
 
 
 def test_a_kept_free_text_site_is_compared_with_the_judges_bars_not_a_share():
-    """Review T19 M4: not "lowest case 2.66/5 < 95%"."""
-    row = kept_free_text_row(judge_mean=3.95, judge_min=2.66)
+    """Review T19 M4 and N2: each judge figure against its own bar, and only the gate the verdict records."""
+    row = kept_free_text_row(judge_mean=3.95, judge_min=2.66, failed_gate="judge_mean")
     assert "| 75.0% (6/8, ≥40%), judge mean 3.95/5 < 4.0, lowest case 2.66/5 < 3.0 |" in row
     assert "95%" not in row
-    row = kept_free_text_row(judge_mean=4.2, judge_min=2.66)
+    row = kept_free_text_row(judge_mean=4.2, judge_min=2.66, failed_gate="case_floor")
     assert "| 75.0% (6/8, ≥40%), judge mean 4.2/5, lowest case 2.66/5 < 3.0 |" in row
-    row = kept_free_text_row(judge_mean=4.2, judge_min=3.5)
+    row = kept_free_text_row(judge_mean=4.2, judge_min=3.5, failed_gate="reference_margin")
     assert "lowest case 3.5/5, more than 0.3 below the references' judge mean |" in row
+
+
+@pytest.mark.parametrize(
+    "gate,cell",
+    [
+        ("dev", "75.0% (6/8, ≥40%), judge mean 4.5/5, lowest case 4/5; holdout passed, dev did not"),
+        (None, "75.0% (6/8, ≥40%), judge mean 4.5/5, lowest case 4/5"),  # recorded before the gate: no cause
+    ],
+)
+def test_a_kept_free_text_row_never_states_a_cause_the_verdict_does_not_record(gate, cell):
+    row = kept_free_text_row(judge_mean=4.5, judge_min=4.0, failed_gate=gate)
+    assert f"| {cell} |" in row and "references' judge mean" not in row
+
+
+@pytest.mark.parametrize(
+    "site_id,gate,cell",
+    [
+        ("cs_05", "threshold", "71.4% (5/7, ≥35%) < 90%"),
+        ("cs_05", "dev", "71.4% (5/7, ≥35%); holdout passed, dev did not"),
+        ("cs_03", "schema", "96.4% (8/8 pass, ≥67%), not every output schema-valid"),
+        ("cs_03", "pass_share", "96.4% (8/8 pass, ≥67%), too few cases pass whole"),
+    ],
+)
+def test_a_kept_row_says_the_bar_its_verdict_missed(site_id, gate, cell):
+    c = ctx()
+    kept = {"decision": "KEEP_CLOSED", "tier": None, "model": None, "failed_gate": gate}
+    c.verdicts = [v.model_copy(update=kept) if v.site_id == site_id else v for v in c.verdicts]
+    row = next(ln for ln in render_pr(c).body.splitlines() if ln.startswith(f"| {site_id} "))
+    assert f"| **NOT MIGRATED** | {cell} |" in row
 
 
 def test_a_retirement_date_already_past_says_retired():

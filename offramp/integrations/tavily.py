@@ -381,22 +381,40 @@ def _row_prices(row: str, model: str) -> tuple[float, float] | None:
 # amounts after it are the batch price or the standard one (OpenAI's model pages print the toggle label right
 # before the standard price).
 _BARE_BATCH = re.compile(r"\bbatch\b(?!\s+(?:api\s+)?(?:input|output))", re.I)
+# A second bare amount right after a labelled one, before any word: a table with a column per model.
+_ANOTHER_AMOUNT = re.compile(r"[^A-Za-z$]*\$")
+_PRICE_KIND = re.compile(r"batch|cached", re.I)
+
+
+def _card_prices(text: str) -> list[tuple[float, float]]:
+    """The "$in / $out" and "$in•$out" pairs in `text` whose line says nothing of batch or cached prices."""
+    pairs = []
+    for p in _PAIR.finditer(text):
+        if not _PRICE_KIND.search(text, text.rfind("\n", 0, p.start()) + 1, p.start()):
+            pairs.append((_number(p.group(1)), _number(p.group(2))))
+    return pairs
 
 
 def _own_page_price(model: str, page: str) -> tuple[tuple[float, float], str] | None:
     """On the model's own page: the first standard labelled input then output amounts inside a stretch about
     this model (from the page's start or a mention of it to the next other model's name, _about_end), so a
-    compared model's price never counts. After a bare batch heading or toggle the pair counts only if a
-    stretch about this model prints it again as "$in / $out" or "$in•$out" (the page's price card)."""
+    compared model's price never counts. A labelled amount followed by another bare amount is a table with a
+    column per model ("| Input | $0.15 | $2.50 |"): no column is ever picked, the page gives None. After a
+    bare batch heading or toggle the pair counts only if a stretch about this model prints it again, outside a
+    batch or cached line, as "$in / $out" or "$in•$out" (the page's price card)."""
     starts = [0] + [m.start() for m in _mentions(page, model)]
     stretches = [page[s : _about_end(page, s, model, pointers=True)] for s in starts]
     for text in stretches:
         found = _input_then_output(text)
-        if found and _BARE_BATCH.search(text, 0, text.index(found[1])):
-            again = [(_number(p.group(1)), _number(p.group(2))) for t in stretches for p in _PAIR.finditer(t)]
-            found = found if found[0] in again else None
-        if found:
-            return found
+        if not found:
+            continue
+        labels = [m for m in _LABELLED.finditer(text) if not m.group(1)][:2]  # the two found[1] spans
+        if any(_ANOTHER_AMOUNT.match(text, m.end()) for m in labels):
+            return None
+        if _BARE_BATCH.search(text, 0, text.index(found[1])):
+            if found[0] not in [pair for t in stretches for pair in _card_prices(t)]:
+                continue
+        return found
     return None
 
 
@@ -534,7 +552,13 @@ def _about_end(text: str, start: int, model: str, pointers: bool = False) -> int
     return len(text)
 
 
-_RETIRE_WORD = re.compile(r"retir|shut\s?down|sunset|end[- ]of[- ]life", re.I)
+# What a date in a notice is the date of: the last cue word before it. Only a retirement, a shutdown or the
+# change taking effect counts; an announcement or a deprecation date does not.
+_DATE_CUE = re.compile(
+    r"(?P<effective>retir|shut\s?down|sunset|end[- ]of[- ]life|takes? effect|effective|removed)|"
+    r"(?P<announced>announc|notif|deprecat|publish)",
+    re.I,
+)
 _DATE = re.compile(
     r"\d{4}-\d{2}-\d{2}|[A-Z][a-z]{2,8}\.? \d{1,2}(?:st|nd|rd|th)?,? \d{4}|\d{1,2} [A-Z][a-z]{2,8}\.? \d{4}"
 )
@@ -545,11 +569,12 @@ _CLAUSE_END = re.compile(r"\n|\|\.|\[\.\.\.\]|;|(?<![\d.])(?<!\b[A-Z][a-z]{2})\.
 
 
 def retirement_date(notice: str, model: str) -> date | None:
-    """The retirement date `notice` gives for exactly this model: from the notice word its accepted mention
-    governs (_subject_notice), the first retirement word and then the first date, before the clause ends or
-    another model's name ("is deprecated and retires on November 30, 2026"; "| Deprecated | 2026-10-01 |
-    Retired 2027-04-01 |" gives 2027-04-01). None when that clause gives none: another model's date never
-    counts."""
+    """The retirement date `notice` gives for exactly this model: in the clause its accepted mention governs
+    (_subject_notice; from the notice word to the clause's end or another model's name), the first date whose
+    last cue word is a retirement, a shutdown or the change taking effect ("is deprecated and retires on
+    November 30, 2026"; "| Deprecated | 2026-10-01 | Retired 2027-04-01 |" gives 2027-04-01; "announced on
+    August 1 ... takes effect on November 30" gives November 30). None when that clause gives none: another
+    model's date, and an announcement or deprecation date, never count."""
     found = _subject_notice(notice, model)
     if found is None:
         return None
@@ -558,8 +583,11 @@ def retirement_date(notice: str, model: str) -> date | None:
     clause = notice[
         word.start() : min(end.start() if end else len(notice), _about_end(notice, mention.end(), model))
     ]
-    retire = _RETIRE_WORD.search(clause)
-    for m in _DATE.finditer(clause, retire.end()) if retire else ():
+    since = 0
+    for m in _DATE.finditer(clause):
+        cues, since = list(_DATE_CUE.finditer(clause, since, m.start())), m.end()
+        if not cues or not cues[-1].group("effective"):
+            continue
         text = re.sub(r"(?<=\d)(?:st|nd|rd|th)|[.,]", "", m.group())
         for fmt in ("%Y-%m-%d", "%B %d %Y", "%b %d %Y", "%d %B %Y", "%d %b %Y"):
             try:

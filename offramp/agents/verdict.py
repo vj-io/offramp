@@ -51,6 +51,7 @@ from offramp.schemas import (
     CandidateResult,
     Decision,
     EvalCase,
+    Gate,
     RunConfig,
     TaskType,
     Tier,
@@ -156,36 +157,41 @@ def _floor(x: float, places: int) -> float:
     return math.floor(x * 10**places + 1e-6) / 10**places
 
 
-def _phrase(result: TierResult, task_type: TaskType, thresholds: Thresholds | RunConfig) -> str:
-    """One run's measured outcome, in the words of the reason ("parity vs reference 71.0% < 90%")."""
+def _phrase(
+    result: TierResult, task_type: TaskType, thresholds: Thresholds | RunConfig
+) -> tuple[str, Gate | None]:
+    """One run's measured outcome, in the words of the reason ("parity vs reference 71.0% < 90%"), and the
+    gate it failed (Verdict.failed_gate; None when it passed). Each branch is the site rule's own
+    condition."""
     pct = parity_pct(result, task_type)
     if task_type == "free_text":
         mean = result.score if result.passed else _floor(result.score, 2)
         parity = f"(parity vs reference {pct:.1f}%)"
         if result.passed:
-            return f"judge mean {mean:.2f} ≥ {JUDGE_FLOOR:.1f} {parity}"
+            return f"judge mean {mean:.2f} ≥ {JUDGE_FLOOR:.1f} {parity}", None
         if not _at_least(result.score, JUDGE_FLOOR):
-            return f"judge mean {mean:.2f} < {JUDGE_FLOOR:.1f} {parity}"
+            return f"judge mean {mean:.2f} < {JUDGE_FLOOR:.1f} {parity}", "judge_mean"
         low = min(result.case_scores, key=lambda c: c.score, default=None)
         if result.split == "holdout" and low is not None and not _at_least(low.score, JUDGE_CASE_FLOOR):
             low_text = f"scored {low.score:.2f} < {JUDGE_CASE_FLOOR:.1f}"
             if low.error_category == CANDIDATE_ERROR:  # scored 1.0 by the runner, never judged
                 low_text = "had no answer (its call failed)"
             head = f"judge mean {mean:.2f} ≥ {JUDGE_FLOOR:.1f}, but holdout case {low.case_id}"
-            return f"{head} {low_text} {parity}"
-        return f"judge mean {mean:.2f} more than {JUDGE_MARGIN:g} below the references' judge mean {parity}"
+            return f"{head} {low_text} {parity}", "case_floor"
+        text = f"judge mean {mean:.2f} more than {JUDGE_MARGIN:g} below the references' judge mean {parity}"
+        return text, "reference_margin"
     bar = thresholds.reasoning_threshold if task_type == "reasoning" else thresholds.threshold
     head, t = f"parity vs reference {pct:.1f}%", f"{round(bar * 100, 4):g}%"
     if result.passed:
-        return f"{head} ≥ {t}"
+        return f"{head} ≥ {t}", None
     if not _at_least(result.score, bar):
-        return f"{head} < {t}"
+        return f"{head} < {t}", "threshold"
     rows = result.case_scores  # json_extraction failing with mean field match at or above the bar
     invalid = sum(c.error_category in _NOT_VALID for c in rows)
     if invalid:
-        return f"{head} but {invalid}/{len(rows)} outputs not schema-valid (100% required)"
+        return f"{head} but {invalid}/{len(rows)} outputs not schema-valid (100% required)", "schema"
     passing = _floor(100 * sum(c.passed for c in rows) / len(rows), 1)
-    return f"{head} but only {passing:.1f}% of cases pass (< {t})"
+    return f"{head} but only {passing:.1f}% of cases pass (< {t})", "pass_share"
 
 
 def _cost_before(
@@ -293,11 +299,14 @@ def decide(
     migrate = dev.passed and holdout.passed
     name = tier.value.capitalize()
     if migrate:
-        result = _phrase(holdout, task, thresholds)
+        result, gate = _phrase(holdout, task, thresholds)
     elif holdout.passed:  # dev never passed: the holdout pass is not a qualification
-        result = f"dev {_phrase(dev, task, thresholds)} (holdout {parity_pct(holdout, task):.1f}%)"
+        result, gate = (
+            f"dev {_phrase(dev, task, thresholds)[0]} (holdout {parity_pct(holdout, task):.1f}%)",
+            "dev",
+        )
     else:
-        result = _phrase(holdout, task, thresholds)
+        result, gate = _phrase(holdout, task, thresholds)
     cost_before, note, info = _cost_before(site.source_model, evidence, price_lookup or lookup_source_model)
     cost_after = holdout.metrics.cost_per_1k_calls_usd if migrate else None
     facts = {  # qualitative only: Super has no number to misattribute
@@ -345,5 +354,6 @@ def decide(
         judge_min=_judge(holdout, min(c.score for c in rows)) if free_text and rows else None,
         retires_on=info.retires_on() if info else None,
         price_evidence=info.evidence() if info else None,
+        failed_gate=gate,
         reason=f"{sentence} {clause}" if sentence else clause,
     )

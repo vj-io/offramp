@@ -687,6 +687,31 @@ def test_a_rejected_search_price_is_read_from_the_vendors_own_pages_through_tavi
     assert "fetched via Tavily Extract 2026-10-19" in info.cost_before_note()
 
 
+def test_a_comparison_table_on_the_model_page_never_ships_another_models_price(tmp_path):
+    """Review T19 N1, end to end: a model page whose only gpt-4o mention is a column header."""
+    table = "| | GPT-4o mini | GPT-4o |\n| Input | $0.15 | $2.50 |\n| Output | $0.60 | $10.00 |"
+    info, server, _ = gpt_4o(tmp_path, extracted((GPT_4O_PAGE, table), (OPENAI_PRICES, PRICE_LIST_TEXT)))
+    assert len(server.extracts) == 1
+    assert (info.via, info.input_usd_per_m, info.output_usd_per_m) == ("pricing.yaml", 2.5, 10.0)
+    assert "nor do the vendor's own pages read through Tavily Extract" in info.note
+
+
+RECORDED_VERIFIED = {  # pages of each recording that verify, and the one price they verify (unchanged by T19)
+    "gpt-4o-mini": (3, {(0.15, 0.6)}),
+    "gpt-4o": (0, set()),
+    "o3": (0, set()),
+    "claude-sonnet-4-5": (2, {(3.0, 15.0)}),
+    "claude-haiku-4-5": (12, {(1.0, 5.0)}),
+}
+
+
+@pytest.mark.parametrize("model", MODELS)
+def test_the_recorded_pages_verify_exactly_as_before(model):
+    results = json.loads((FIXTURES / f"{model}.json").read_text())["response"]["results"]
+    printed = [tavily._page_price(model, r["url"].strip(), r["content"]) for r in results]
+    assert (sum(p is not None for p in printed), {p for p in printed if p}) == RECORDED_VERIFIED[model]
+
+
 def test_extract_pages_are_the_vendors_model_page_and_price_list():
     assert tavily._extract_urls("claude-sonnet-4-5-20250929") == [
         "https://platform.claude.com/docs/en/models/sonnet-4-5",
@@ -874,6 +899,14 @@ SONNET = "claude-sonnet-4-5"
         ("Claude Sonnet 4.5 is deprecated; Claude Opus 4 retires on 2026-06-15.", SONNET, None),
         ("Claude Sonnet 4.5 is deprecated, as Claude Opus 4, which retires on June 15, 2026.", SONNET, None),
         ("claude-3-opus retired on January 5, 2026.", SONNET, None),  # not about this model at all
+        # review T19 R1-m1: the date the retirement takes effect, not the date it was announced
+        (
+            "Claude Sonnet 4.5 retirement was announced on August 1, 2026 and takes effect on "
+            "November 30, 2026.",
+            SONNET,
+            date(2026, 11, 30),
+        ),
+        ("Claude Sonnet 4.5 retirement was announced on August 1, 2026.", SONNET, None),
     ],
 )
 def test_the_retirement_date_is_the_one_the_notice_gives_this_model(notice, model, retires):
@@ -1291,6 +1324,14 @@ def test_batch_and_cached_amounts_are_not_the_standard_price(page, expected):
             (2.5, 10.0),
         ),
         ("# GPT-4o Deprecated\nMigrate to GPT-4.1: Input $2.00 Output $8.00", None),
+        # review T19 N1: a table with a column per model, this model's only in the header: no column is picked
+        ("| | GPT-4o mini | GPT-4o |\n| Input | $0.15 | $2.50 |\n| Output | $0.60 | $10.00 |", None),
+        ("| | GPT-4.1 | GPT-4o |\n| Input | $2.00 | $2.50 |\n| Output | $8.00 | $10.00 |", None),
+        ("GPT-4o\nInput $2.50 $2.00\nOutput $10.00 $8.00", None),  # the same columns, unpiped
+        ("GPT-4o\nInput $2.50 Cached input $1.25 Output $10.00", (2.5, 10.0)),  # a label after each amount
+        # review T19 R1-m3: a batch-labelled pair does not confirm a pair after a bare batch heading
+        ("GPT-4o\nBatch API price\nInput $1.25\nOutput $5.00\nBatch: $1.25 / $5.00", None),
+        ("GPT-4o\nBatch API price\nInput $1.25\nOutput $5.00\nCached batch $1.25•$5.00", None),
     ],
 )
 def test_on_its_own_page_only_a_price_bound_to_this_model_counts(page, expected):
