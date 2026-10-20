@@ -712,6 +712,9 @@ def test_extract_pages_are_the_vendors_model_page_and_price_list():
         ],
         [("https://evil.example/models/gpt-4o", MODEL_PAGE_TEXT)],  # off the allow-list
         [("https://developers.openai.com/api/docs/models/gpt-4o-mini", MODEL_PAGE_TEXT)],  # a sibling's page
+        # an allow-listed page Tavily returned that was not asked for (a redirect, say) does not count
+        [("https://developers.openai.com/api/docs/models/gpt-4o-2024-08-06", MODEL_PAGE_TEXT)],
+        [(GPT_4O_PAGE, 42)],  # raw_content that is not text
     ],
 )
 def test_extracted_pages_that_print_no_single_price_fall_back_and_are_cached(tmp_path, pages):
@@ -723,6 +726,28 @@ def test_extracted_pages_that_print_no_single_price_fall_back_and_are_cached(tmp
     )
     assert info.evidence().method == "yaml fallback" and info.evidence().query == info.query
     assert len(list((tmp_path / "cache").glob("*.json"))) == 1  # judged: no second extract today
+
+
+@pytest.mark.parametrize("answer", [{"results": "not a list"}, {"results": ["not an object"]}, ["a list"]])
+def test_an_extract_answer_of_the_wrong_shape_falls_back_and_is_not_cached(tmp_path, answer):
+    info, server, _ = gpt_4o(tmp_path, answer)
+    assert info.via == "pricing.yaml" and "the Tavily extract failed (unexpected response shape)" in info.note
+    assert not list((tmp_path / "cache").glob("*.json"))
+
+
+@pytest.mark.parametrize("answer", [{"results": {"url": MINI_URL}}, ["a list"]])
+def test_a_search_answer_of_the_wrong_shape_falls_back(tmp_path, answer):
+    info, llm = lookup(tmp_path, Tavily(answer), mini())
+    assert info.via == "pricing.yaml" and "unexpected response shape" in info.note and llm.calls == []
+
+
+def test_an_unwritable_cache_costs_a_lookup_not_the_run(tmp_path, monkeypatch):
+    def unwritable(path, info):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(tavily, "_write_cache", unwritable)
+    info, _ = lookup(tmp_path, Tavily(body((MINI_URL, SYNTHETIC_MINI))), mini())
+    assert info.via == "tavily"
 
 
 def test_a_failed_extract_falls_back_and_is_not_cached(tmp_path):
@@ -783,6 +808,23 @@ def test_a_citation_of_a_translated_page_moves_to_an_english_page_printing_the_s
     assert tavily._flat(info.price_quote) in tavily._flat(page)
 
 
+def test_a_notice_cited_on_a_translated_page_moves_to_an_english_page_with_the_same_quote(tmp_path):
+    zh_dep = "https://docs.claude.com/zh-CN/docs/about-claude/model-deprecations"
+    server = Tavily(
+        body(
+            ("https://docs.claude.com/pricing", "| claude-sonnet-4-5 | $3 / $15 |"),
+            (zh_dep, SYNTHETIC_DEPRECATION),
+            (
+                DEP["deprecation_url"],
+                SYNTHETIC_DEPRECATION + " ",
+            ),  # the English twin (its text differs by a space)
+        )
+    )
+    ext = PricingExtraction(**SONNET_PRICE, **(DEP | {"deprecation_url": zh_dep}))
+    info, _ = lookup(tmp_path, server, ext, model="claude-sonnet-4-5")
+    assert info.deprecation == DEP["deprecation_quote"] and info.deprecation_url == DEP["deprecation_url"]
+
+
 def test_a_translated_page_without_an_english_twin_stays_cited(tmp_path):
     zh = "https://platform.claude.com/docs/zh-CN/models/sonnet-4-5"
     server = Tavily(body((zh, "Claude Sonnet 4.5 Input $3 Output $15"), (CLAUDE_URL, "no prices here")))
@@ -794,24 +836,48 @@ def test_a_translated_page_without_an_english_twin_stays_cited(tmp_path):
 # ------------------------------------------------------------------ retirement dates for sunset urgency
 
 
+SONNET = "claude-sonnet-4-5"
+
+
 @pytest.mark.parametrize(
-    "notice,retires",
+    "notice,model,retires",
     [
         (
             "Claude Sonnet 4.5 is deprecated: it is still functional but no longer recommended, "
             "and retires on November 30, 2026.",
+            SONNET,
             date(2026, 11, 30),
         ),
-        (DEP["deprecation_quote"], date(2027, 4, 1)),  # the deprecation date before "Retired" is not it
-        ("gpt-x shutdown date: Nov. 3rd, 2026", date(2026, 11, 3)),
-        ("gpt-x will be retired on 15 January 2027", date(2027, 1, 15)),
-        ("o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API.", None),
-        ("claude-x was deprecated on 2026-10-01", None),  # deprecated, no retirement date given
-        ("claude-x retires soon", None),
+        (
+            DEP["deprecation_quote"],
+            SONNET,
+            date(2027, 4, 1),
+        ),  # the deprecation date before "Retired" is not it
+        ("gpt-x shutdown date: Nov. 3rd, 2026", "gpt-x", date(2026, 11, 3)),
+        ("gpt-x will be retired on 15 January 2027", "gpt-x", date(2027, 1, 15)),
+        ("o3 and o4-mini are no longer available in ChatGPT and are deprecated in the API.", "o3", None),
+        ("claude-x was deprecated on 2026-10-01", "claude-x", None),  # deprecated, no retirement date given
+        ("claude-x retires soon", "claude-x", None),
+        # review I1: another model's retirement date in the same verified quote is never this model's
+        (
+            "claude-3-opus retired on January 5, 2026. Claude Sonnet 4.5 is deprecated and retires on "
+            "November 30, 2026.",
+            SONNET,
+            date(2026, 11, 30),
+        ),
+        (
+            "Claude Opus 4 retires on 2026-06-15; Claude Sonnet 4.5 is deprecated and retires on 2026-11-30.",
+            SONNET,
+            date(2026, 11, 30),
+        ),
+        ("Claude Sonnet 4.5 is deprecated. Claude Opus 4 retires on 2026-06-15.", SONNET, None),
+        ("Claude Sonnet 4.5 is deprecated; Claude Opus 4 retires on 2026-06-15.", SONNET, None),
+        ("Claude Sonnet 4.5 is deprecated, as Claude Opus 4, which retires on June 15, 2026.", SONNET, None),
+        ("claude-3-opus retired on January 5, 2026.", SONNET, None),  # not about this model at all
     ],
 )
-def test_the_retirement_date_is_the_first_date_after_the_retirement_word(notice, retires):
-    assert tavily.retirement_date(notice) == retires
+def test_the_retirement_date_is_the_one_the_notice_gives_this_model(notice, model, retires):
+    assert tavily.retirement_date(notice, model) == retires
 
 
 def test_sunset_urgency_comes_from_the_verified_notice_and_its_spelling_of_the_name(tmp_path):
@@ -1177,20 +1243,57 @@ def test_a_models_own_row_still_parses_next_to_other_rows_and_joins(page):
 GPT_4O_PAGE = "https://developers.openai.com/api/docs/models/gpt-4o"
 
 
+TOGGLE = "GPT-4o\nBatch API price\n\nInput\n\n$2.50\n\nCached input\n\n$1.25\n\nOutput\n\n$10.00"
+CARD = "\n\nPrice\n\n$2.50•$10\n\nInput•Output"  # the price card, as on the recorded gpt-4o-mini page
+
+
 @pytest.mark.parametrize(
     "page,expected",
     [
         ("GPT-4o\nBatch input\n$1.25\nBatch output\n$5.00\nInput\n$2.50\nOutput\n$10.00", (2.5, 10.0)),
         ("GPT-4o\nCached input $1.25 Input $2.50 Output $10.00", (2.5, 10.0)),
-        (
-            "GPT-4o\nBatch API price\n\nInput\n\n$2.50\n\nCached input\n\n$1.25\n\nOutput\n\n$10.00",
-            (2.5, 10.0),
-        ),
+        # OpenAI's "Batch API price" toggle sits right before the standard price, and the text cannot tell it
+        # from a batch heading (review T19 M2): the amounts count only when the price card prints them again
+        (TOGGLE + CARD, (2.5, 10.0)),
+        (TOGGLE, None),
+        ("GPT-4o\nBatch API price\nInput $1.25\nOutput $5.00", None),  # review T19 M2 probe: the batch price
+        ("GPT-4o\nBatch API price\nInput $1.25\nOutput $5.00" + CARD, None),  # the card is another price
+        ("GPT-4o\nBatch pricing\nInput $1.25\nOutput $5", None),
         ("GPT-4o\nBatch Input: $1.25\nBatch Output: $5.00", None),  # only batch prices on the page
         ("GPT-4o\nBatch API input $1.25 Output $10.00", None),  # a batch input is not the input price
     ],
 )
 def test_batch_and_cached_amounts_are_not_the_standard_price(page, expected):
+    assert priced(page, "gpt-4o", GPT_4O_PAGE) == expected
+
+
+@pytest.mark.parametrize(
+    "page,expected",
+    [
+        # review T19 M2 probe: a compared model's price before the page's own never counts
+        (
+            "GPT-4o\nCompare with GPT-4.1: Input $2.00 Output $8.00\nText tokens\nInput $2.50\nOutput $10.00",
+            None,
+        ),
+        (
+            "GPT-4o\nCompare with GPT-4.1: Input $2.00 Output $8.00\nGPT-4o pricing\nInput $2.50\n"
+            "Output $10.00",
+            (2.5, 10.0),
+        ),
+        ("GPT-4o\nGPT-4o mini\nInput $0.15\nOutput $0.60", None),  # a sibling's block on this page
+        (
+            "Pricing\nInput $2.50\nOutput $10.00\nQuick comparison\nGPT-4.1\n$2.00\nGPT-4o is our flagship",
+            (2.5, 10.0),
+        ),  # starts mid-page
+        # a replacement the page points to on its own line does not end the stretch; one with a price does
+        (
+            "# GPT-4o Deprecated\nMigrate to GPT-4.1\nContext window 128K\nInput $2.50\nOutput $10.00",
+            (2.5, 10.0),
+        ),
+        ("# GPT-4o Deprecated\nMigrate to GPT-4.1: Input $2.00 Output $8.00", None),
+    ],
+)
+def test_on_its_own_page_only_a_price_bound_to_this_model_counts(page, expected):
     assert priced(page, "gpt-4o", GPT_4O_PAGE) == expected
 
 

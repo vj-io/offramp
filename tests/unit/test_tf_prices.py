@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from offramp.integrations import keys
-from offramp.schemas import Tier
+from offramp.schemas import RunEvent, Stage, Tier, Verdict
 from offramp.tf import prices
 
 NOW = datetime(2026, 10, 21, 9, 0, tzinfo=UTC)
@@ -149,3 +149,40 @@ def test_an_api_price_that_differs_from_pricing_yaml_is_shown_with_the_one_the_c
     assert got.source == (
         "Token Factory model API, 2026-10-21; this run's cost figures use pricing.yaml's $0.06 / $0.24"
     )
+
+
+@pytest.mark.parametrize("bad", ["NaN", "inf", "-3e-07", "1e300", 0])
+def test_an_implausible_api_price_is_never_shown_and_the_run_record_survives(tmp_path, bad):
+    """Review T19 I2: a NaN, infinite, negative, zero or absurd price falls back to pricing.yaml and says
+    why, and the verdict carrying it survives the JSON event log and re-validation (NaN would not)."""
+    listing = json.loads(json.dumps(LISTING))
+    listing["data"][1]["pricing"] = {"prompt": bad, "completion": "9e-07"}
+    got = read(tmp_path, API(listing))
+    assert got[Tier.LIGHTNING].via == "token_factory_api"  # the others are unaffected
+    sup = got[Tier.SUPER]
+    assert (sup.via, sup.input_usd_per_m, sup.output_usd_per_m) == ("pricing.yaml", 0.30, 0.90)
+    assert sup.source == (
+        "pricing.yaml as of 2026-10-21; the Token Factory model API lists no plausible price for "
+        "nvidia/nemotron-3-super-120b-a12b"
+    )
+    assert read(tmp_path, API()) == got  # the cached read says the same, with no second call
+    verdict = Verdict(site_id="cs_02", decision="MIGRATE", reason="r", after_price=sup)
+    event = RunEvent(
+        run_id="r", seq=0, stage=Stage.VERDICTS, type="verdict", payload=verdict.model_dump(mode="json")
+    )
+    assert Verdict.model_validate(RunEvent.model_validate_json(event.model_dump_json()).payload) == verdict
+
+
+def test_an_unwritable_cache_costs_a_read_next_time_not_the_run(tmp_path, monkeypatch):
+    def unwritable(path, prices, now):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(prices, "_write", unwritable)
+    assert read(tmp_path, API(LISTING))[Tier.SUPER].via == "token_factory_api"
+
+
+def test_cache_only_skips_an_unreadable_newest_read(tmp_path):
+    read(tmp_path, API(LISTING), now=datetime(2026, 10, 20, tzinfo=UTC))
+    (tmp_path / "2026-10-21.json").write_text("{partial")
+    got = read(tmp_path, API(), live=False)
+    assert got[Tier.SUPER].source == "Token Factory model API, 2026-10-20 (cached; cache-only run)"

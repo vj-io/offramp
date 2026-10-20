@@ -566,7 +566,7 @@ def test_sunset_risk_comes_from_the_lookups_deprecation_notice():
     def lookup(model):
         return price(model).model_copy(
             update={
-                "deprecation": "FIXTURE: retires 2026-11-30",
+                "deprecation": "FIXTURE: gpt-4o-mini retires on 2026-11-30",
                 "deprecation_url": "https://example.com/dep",
             }
         )
@@ -574,7 +574,7 @@ def test_sunset_risk_comes_from_the_lookups_deprecation_notice():
     v = decide(
         SITE, evidence(), reason_llm(BudgetExceeded("x")), RunConfig(repo_url="x"), price_lookup=lookup
     )
-    assert v.sunset_risk == "FIXTURE: retires 2026-11-30 (https://example.com/dep)"
+    assert v.sunset_risk == "FIXTURE: gpt-4o-mini retires on 2026-11-30 (https://example.com/dep)"
     assert v.retires_on == date(2026, 11, 30)  # read from the notice, never written in by hand
 
 

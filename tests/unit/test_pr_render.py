@@ -217,6 +217,38 @@ def test_the_soonest_retirement_comes_first_and_no_date_means_no_lead():
     assert "retires on" not in render_pr(c).body.split("## Evidence")[0]
 
 
+def kept_free_text_row(**judge) -> str:
+    """cs_06 as a kept free-text site: 6 of 8 holdout cases passing, with the given judge scores."""
+    c = ctx()
+    kept = dict(decision="KEEP_CLOSED", tier=None, model=None, best_tier="lightning", parity_pct=75.0,
+                holdout_cases=8, holdout_passed=6, parity_lower_pct=40.9)  # fmt: skip
+    c.verdicts = [v.model_copy(update=kept | judge) if v.site_id == "cs_06" else v for v in c.verdicts]
+    return next(ln for ln in render_pr(c).body.splitlines() if ln.startswith("| cs_06 "))
+
+
+def test_a_kept_free_text_site_is_compared_with_the_judges_bars_not_a_share():
+    """Review T19 M4: not "lowest case 2.66/5 < 95%"."""
+    row = kept_free_text_row(judge_mean=3.95, judge_min=2.66)
+    assert "| 75.0% (6/8, ≥40%), judge mean 3.95/5 < 4.0, lowest case 2.66/5 < 3.0 |" in row
+    assert "95%" not in row
+    row = kept_free_text_row(judge_mean=4.2, judge_min=2.66)
+    assert "| 75.0% (6/8, ≥40%), judge mean 4.2/5, lowest case 2.66/5 < 3.0 |" in row
+    row = kept_free_text_row(judge_mean=4.2, judge_min=3.5)
+    assert "lowest case 3.5/5, more than 0.3 below the references' judge mean |" in row
+
+
+def test_a_retirement_date_already_past_says_retired():
+    body = render_pr(ctx(today=date(2026, 12, 1))).body
+    assert "**Claude Sonnet 4.5 retired on 30 Nov 2026: cs_02, cs_03.**" in body
+    assert "| claude-sonnet-4-5 (retired 30 Nov 2026) |" in body
+
+
+def test_the_bracket_sentence_says_what_json_extraction_counts():
+    body = render_pr(ctx()).body
+    assert "for JSON extraction, whose figure is the mean field match, the cases that pass whole" in body
+    assert "with 95% confidence" in body
+
+
 def test_parity_shows_its_case_count_and_wilson_bound_and_free_text_its_floor():
     body = render_pr(ctx()).body
     assert "| 97.1% (34/35, ≥85%) (after 1 adapter iteration) |" in body

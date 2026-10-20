@@ -102,7 +102,7 @@ class SourceModelInfo(BaseModel):
 
     def retires_on(self) -> date | None:
         """Verdict.retires_on: the retirement date the verified deprecation notice gives, if it gives one."""
-        return retirement_date(self.deprecation) if self.deprecation else None
+        return retirement_date(self.deprecation, self.model) if self.deprecation else None
 
     def evidence(self) -> PriceEvidence:
         """Verdict.price_evidence: what the Tavily evidence panel and the PR's Prices section show."""
@@ -377,16 +377,36 @@ def _row_prices(row: str, model: str) -> tuple[float, float] | None:
     return None
 
 
+# A batch heading or toggle that labels no amount itself ("Batch API price"): the text cannot tell whether the
+# amounts after it are the batch price or the standard one (OpenAI's model pages print the toggle label right
+# before the standard price).
+_BARE_BATCH = re.compile(r"\bbatch\b(?!\s+(?:api\s+)?(?:input|output))", re.I)
+
+
+def _own_page_price(model: str, page: str) -> tuple[tuple[float, float], str] | None:
+    """On the model's own page: the first standard labelled input then output amounts inside a stretch about
+    this model (from the page's start or a mention of it to the next other model's name, _about_end), so a
+    compared model's price never counts. After a bare batch heading or toggle the pair counts only if a
+    stretch about this model prints it again as "$in / $out" or "$in•$out" (the page's price card)."""
+    starts = [0] + [m.start() for m in _mentions(page, model)]
+    stretches = [page[s : _about_end(page, s, model, pointers=True)] for s in starts]
+    for text in stretches:
+        found = _input_then_output(text)
+        if found and _BARE_BATCH.search(text, 0, text.index(found[1])):
+            again = [(_number(p.group(1)), _number(p.group(2))) for t in stretches for p in _PAIR.finditer(t)]
+            found = found if found[0] in again else None
+        if found:
+            return found
+    return None
+
+
 def _price_quote(model: str, url: str, page: str) -> tuple[tuple[float, float], str] | None:
     """(input, output) USD per 1M that `page` prints for exactly this model, and the text printing it; None
-    when it prints none or is ambiguous. Either the vendor's own model page (the first standard labelled input
-    then output amounts), or the model's own table row (the price cells right behind its name: labelled input
-    then output, or one "$in / $out" pair); prose, other rows, other models' pages and replacement columns
-    never count."""
-    if _is_model_page(url, model) and _mentions(page, model):
-        found = _input_then_output(page)
-        if found:
-            return found[0], " ".join(found[1].split())
+    when it prints none or is ambiguous. Either the vendor's own model page (_own_page_price), or the model's
+    own table row (the price cells right behind its name: labelled input then output, or one "$in / $out"
+    pair); prose, other rows, other models' pages and replacement columns never count."""
+    if _is_model_page(url, model) and _mentions(page, model) and (found := _own_page_price(model, page)):
+        return found[0], " ".join(found[1].split())
     rows: dict[tuple[float, float], str] = {}
     for row in _ROW_END.split(page):
         if found := _row_prices(row, model):
@@ -418,6 +438,14 @@ def _english(model: str, url: str, price: tuple[float, float], results: list[dic
         return url
     twins = (r["url"] for r in results if not _localised(r["url"]))
     return next((u for u in twins if _page_price(model, u, _page(results, u) or "") == price), url)
+
+
+def _english_notice(url: str, quote: str, results: list[dict]) -> str:
+    """The notice's `url`, or for a translated page the first English result carrying the same quote."""
+    if not _localised(url):
+        return url
+    twins = (r for r in results if not _localised(r["url"]))
+    return next((r["url"] for r in twins if _flat(quote) in _flat(r["content"])), url)
 
 
 def _verified_price(model: str, ext: PricingExtraction, results: list[dict]) -> str | None:
@@ -466,9 +494,14 @@ _TARGET_BEFORE = re.compile(
 
 
 def _is_subject_of_notice(quote: str, model: str) -> bool:
-    """The model is what the notice says is deprecated or retired: its name comes first, then the retirement
-    word in the same sentence or row ("o3 and o4-mini are ... deprecated", "| claude-x | Deprecated |"), not
-    as a recommended replacement or migration target, not behind another model's name, not in a negation."""
+    return _subject_notice(quote, model) is not None
+
+
+def _subject_notice(quote: str, model: str) -> tuple[re.Match, re.Match] | None:
+    """(this model's mention, its notice word) when the model is what the notice says is deprecated or
+    retired: its name comes first, then the retirement word in the same sentence or row ("o3 and o4-mini are
+    ... deprecated", "| claude-x | Deprecated |"), not as a recommended replacement or migration target, not
+    behind another model's name, not in a negation."""
     for mention in _mentions(quote, model):
         notice = _NOTICE.search(quote, mention.end())
         if not notice or notice.start() - mention.end() > _MAX_SUBJECT_GAP:
@@ -480,8 +513,25 @@ def _is_subject_of_notice(quote: str, model: str) -> bool:
         if _OTHER_MODEL.search(between) and not _LIST_GLUE.fullmatch(_OTHER_MODEL.sub("", between)):
             continue
         if not _DELAYED.search(quote[notice.end() : notice.end() + 30]):
-            return True
-    return False
+            return mention, notice
+    return None
+
+
+def _about_end(text: str, start: int, model: str, pointers: bool = False) -> int:
+    """Where the stretch of `text` from `start` about exactly this model ends: at the next other model's name.
+    With `pointers`, a replacement the page points to on a line without a price ("Migrate to Claude Sonnet
+    5.5") does not end it. The anchor shared by a model page's price and a notice's retirement date."""
+    mine = [m.span() for m in _mentions(text, model)]
+    for other in _OTHER_MODEL.finditer(text, start):
+        if any(s < other.end() and other.start() < e for s, e in mine):
+            continue  # a spelling of this model ("GPT-4o" inside "GPT-4o Mini" for gpt-4o-mini)
+        if pointers and _TARGET_BEFORE.search(text[max(0, other.start() - 40) : other.start()]):
+            line_end = text.find("\n", other.end())
+            line = text[text.rfind("\n", 0, other.start()) + 1 : line_end if line_end >= 0 else len(text)]
+            if "$" not in line:
+                continue
+        return other.start()
+    return len(text)
 
 
 _RETIRE_WORD = re.compile(r"retir|shut\s?down|sunset|end[- ]of[- ]life", re.I)
@@ -490,11 +540,26 @@ _DATE = re.compile(
 )
 
 
-def retirement_date(notice: str) -> date | None:
-    """The first date after the notice's retirement word ("retires on November 30, 2026", "Retired
-    2027-04-01"); a deprecation date before that word is not one. None when the notice gives no such date."""
-    word = _RETIRE_WORD.search(notice)
-    for m in _DATE.finditer(notice, word.end()) if word else ():
+# Where a retirement clause ends: a sentence, row, chunk or clause boundary ("Nov. 3" is not one).
+_CLAUSE_END = re.compile(r"\n|\|\.|\[\.\.\.\]|;|(?<![\d.])(?<!\b[A-Z][a-z]{2})\.(?:\s|$)")
+
+
+def retirement_date(notice: str, model: str) -> date | None:
+    """The retirement date `notice` gives for exactly this model: from the notice word its accepted mention
+    governs (_subject_notice), the first retirement word and then the first date, before the clause ends or
+    another model's name ("is deprecated and retires on November 30, 2026"; "| Deprecated | 2026-10-01 |
+    Retired 2027-04-01 |" gives 2027-04-01). None when that clause gives none: another model's date never
+    counts."""
+    found = _subject_notice(notice, model)
+    if found is None:
+        return None
+    mention, word = found
+    end = _CLAUSE_END.search(notice, word.start())
+    clause = notice[
+        word.start() : min(end.start() if end else len(notice), _about_end(notice, mention.end(), model))
+    ]
+    retire = _RETIRE_WORD.search(clause)
+    for m in _DATE.finditer(clause, retire.end()) if retire else ():
         text = re.sub(r"(?<=\d)(?:st|nd|rd|th)|[.,]", "", m.group())
         for fmt in ("%Y-%m-%d", "%B %d %Y", "%b %d %Y", "%d %B %Y", "%d %b %Y"):
             try:
@@ -577,15 +642,25 @@ def _from_yaml(
     )
 
 
+def _rows(body: object) -> list[dict]:
+    """The `results` of a Tavily answer; TavilyError when they are not a list of objects."""
+    rows = body.get("results", []) if isinstance(body, dict) else None
+    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+        raise TavilyError("unexpected response shape")
+    return rows
+
+
 def _extract_price(http: httpx.Client, model: str) -> tuple[tuple[float, float], str, str] | None:
     """One Tavily Extract of the vendor's own pages; (price, url, quote) when the verifier reads one price for
     exactly this model out of their text, None when they print none or disagree. Raises TavilyError."""
-    body = _post(http, _extract_payload(model), EXTRACT_URL)
+    payload = _extract_payload(model)
+    asked = {u.rstrip("/") for u in payload["urls"]}  # only the pages asked for, wherever else Tavily went
     found = []
-    for r in body.get("results", []):
-        url, text = (r.get("url") or "").strip(), r.get("raw_content") or ""
-        if _allowed(url, _vendor_domains(model)) and (hit := _price_quote(model, url, text)):
-            found.append((hit[0], url, hit[1]))
+    for r in _rows(_post(http, payload, EXTRACT_URL)):
+        url, text = r.get("url"), r.get("raw_content")
+        if isinstance(url, str) and isinstance(text, str) and url.strip().rstrip("/") in asked:
+            if hit := _price_quote(model, url.strip(), text):
+                found.append((hit[0], url.strip(), hit[1]))
     return found[0] if len({price for price, _, _ in found}) == 1 else None
 
 
@@ -597,11 +672,14 @@ def _search(
     ext, results = None, []
     try:
         body = _post(http, payload)
+        rows = _rows(body)  # TavilyError unless a list of objects, so `body` is a dict below
         log.debug("tavily answer for %s (not used): %s", model, body.get("answer"))
         seen = set()
-        for r in body.get("results", []):  # vendor docs serve one page under many URLs: show each text once
-            text = r.get("content") or ""
-            if _allowed(r.get("url", ""), _vendor_domains(model)) and text not in seen:
+        for r in rows:  # vendor docs serve one page under many URLs: show each text once
+            text, url = r.get("content") or "", r.get("url")
+            if not (isinstance(text, str) and isinstance(url, str)):
+                continue
+            if _allowed(url, _vendor_domains(model)) and text not in seen:
                 seen.add(text)
                 results.append({"url": r["url"].strip(), "content": text})  # real urls carry trailing spaces
         reply = (llm or TFClient()).chat(
@@ -637,8 +715,9 @@ def lookup_source_model(
     model page and price list follows, and the same verifier reads the price out of that text (no model in
     between). Anything that cannot be verified falls back to pricing.yaml with a short reason in `note`, which
     cost_before_note() shows; KeyError if pricing.yaml has no such model either. The outcome, verified or
-    rejected, is cached on disk per (model, UTC day), so a model costs at most one search and one extract a
-    day; a lookup that could not be judged (no key, Tavily or Super unavailable) is not cached.
+    rejected, is cached on disk per (model, UTC day), so a judged model costs one search and at most one
+    extract a day. A lookup that could not be judged (no key; Tavily, Super or the extract unavailable) is not
+    cached, so the next lookup repeats the search too.
     """
     now = now or datetime.now(UTC)
     model = model_id.rsplit("/", 1)[-1]
@@ -669,7 +748,7 @@ def lookup_source_model(
         model=model,
         fetched_at=now,
         deprecation=dep.deprecation_quote if dep else None,
-        deprecation_url=dep.deprecation_url if dep else None,
+        deprecation_url=_english_notice(dep.deprecation_url, dep.deprecation_quote, results) if dep else None,
         query=payload["query"],
     )
     if problem is None:
@@ -697,5 +776,8 @@ def lookup_source_model(
         log.warning("tavily: %s price from pricing.yaml (%s)", model, problem)
         info = _from_yaml(model, now, f"Tavily price not used ({problem})", dep, query=payload["query"])
     if settled:  # a rejected lookup is cached too: asking Tavily again today would return the same pages
-        _write_cache(path, info)
+        try:
+            _write_cache(path, info)
+        except OSError as e:  # an unwritable data dir costs a lookup next time, never the run
+            log.warning("tavily: cache not written: %s", type(e).__name__)
     return info

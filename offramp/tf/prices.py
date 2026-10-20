@@ -9,6 +9,7 @@ differs is shown with pricing.yaml's next to it.
 
 import json
 import logging
+import math
 import os
 import tempfile
 from collections.abc import Iterable
@@ -33,8 +34,16 @@ def _dir(cache_dir: str | Path | None) -> Path:
     return Path(cache_dir or Path(os.environ.get("OFFRAMP_DATA_DIR", "./var")) / "tf-prices")
 
 
-def _fetch(http: httpx.Client) -> dict[str, list[float]]:
-    """model id -> [input, output] USD per 1M tokens, for every model the API prices."""
+def _per_m(per_token: object) -> float | None:
+    """USD per token -> USD per 1M tokens; None unless finite and 0 < x < 1000 (a NaN, infinite, negative or
+    absurd price is never shown, and NaN would not survive the run's JSON event log)."""
+    x = round(float(per_token) * 1e6, 6)
+    return x if math.isfinite(x) and 0 < x < 1000 else None
+
+
+def _fetch(http: httpx.Client) -> dict[str, list[float] | None]:
+    """model id -> [input, output] USD per 1M tokens for every model the API prices; None for a model whose
+    price is not plausible."""
     key = keys.current("nebius", os.environ.get("NEBIUS_API_KEY"))
     if not key:
         raise RuntimeError("NEBIUS_API_KEY is not set")
@@ -45,7 +54,8 @@ def _fetch(http: httpx.Client) -> dict[str, list[float]]:
     for m in resp.json()["data"]:
         p = m.get("pricing") or {}
         if p.get("prompt") is not None and p.get("completion") is not None:
-            per_m[m["id"]] = [round(float(p["prompt"]) * 1e6, 6), round(float(p["completion"]) * 1e6, 6)]
+            pair = [_per_m(p["prompt"]), _per_m(p["completion"])]
+            per_m[m["id"]] = None if None in pair else pair
     return per_m
 
 
@@ -88,10 +98,14 @@ def from_yaml(tier: Tier, why: str) -> AfterPrice:
     )
 
 
-def _price(tier: Tier, listed: dict[str, list[float]] | None, label: str, why: str | None) -> AfterPrice:
+def _price(
+    tier: Tier, listed: dict[str, list[float] | None] | None, label: str, why: str | None
+) -> AfterPrice:
     info = get_tier(tier)  # the model id (an OFFRAMP_MODEL_* override included) and pricing.yaml's price
     if not listed or info.model_id not in listed:
         return from_yaml(tier, why or f"{info.model_id} is not priced by the {SOURCE}")
+    if listed[info.model_id] is None:
+        return from_yaml(tier, f"the {SOURCE} lists no plausible price for {info.model_id}")
     api, yaml = tuple(listed[info.model_id]), (info.input_usd_per_m, info.output_usd_per_m)
     if api != yaml:
         label += f"; this run's cost figures use pricing.yaml's ${yaml[0]:g} / ${yaml[1]:g}"
@@ -125,16 +139,20 @@ def after_prices(
             http = http or httpx.Client(timeout=TIMEOUT_S)
             try:
                 listed = _fetch(http)
-                _write(path, listed, now)
             except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError, AttributeError) as e:
                 why = f"the {SOURCE} failed ({_why(e)})"
                 log.warning("token factory prices: %s", why)
             finally:
                 if own:
                     http.close()
-    else:
-        cached = sorted(base.glob("????-??-??.json"))  # newest last
-        listed = _read(cached[-1]) if cached else None
-        label = f"{SOURCE}, {cached[-1].stem} (cached; cache-only run)" if listed else ""
-        why = None if listed else f"cache-only run with no cached {SOURCE} read"
+            try:
+                if listed is not None:
+                    _write(path, listed, now)
+            except OSError as e:  # an unwritable data dir costs a read next time, never the run
+                log.warning("token factory prices: cache not written: %s", type(e).__name__)
+    else:  # the newest cached read that is readable
+        cached = ((p, _read(p)) for p in sorted(base.glob("????-??-??.json"), reverse=True))
+        day, listed = next(((p.stem, prices) for p, prices in cached if prices is not None), (None, None))
+        label = f"{SOURCE}, {day} (cached; cache-only run)"
+        why = None if listed is not None else f"cache-only run with no cached {SOURCE} read"
     return {Tier(t): _price(Tier(t), listed, label, why) for t in tiers}

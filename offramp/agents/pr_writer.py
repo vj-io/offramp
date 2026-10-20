@@ -13,7 +13,7 @@ import json
 import math
 import re
 from collections import Counter
-from datetime import date
+from datetime import UTC, date, datetime
 
 import openai
 from pydantic import BaseModel, Field
@@ -46,9 +46,10 @@ SOURCE_OUTPUTS_NOT_RECORDED = (
     "The source models' own outputs were never recorded; parity is agreement with references."
 )
 BOUNDS = (
-    "In brackets after a parity figure: holdout cases passing / evaluated, and the Wilson 95% lower bound of "
-    "that pass rate; with few holdout cases, even 100% only shows the rate is above that bound. More holdout "
-    "cases narrow it, and evaluating them costs cents on Nemotron 3.5 Lightning."
+    "In brackets after a parity figure: holdout cases passing / evaluated (for JSON extraction, whose figure "
+    "is the mean field match, the cases that pass whole), and the Wilson 95% lower bound of that pass rate; "
+    "with few holdout cases, even 100% only shows, with 95% confidence, that the rate is above that bound. "
+    "More holdout cases narrow it, and evaluating them costs cents on Nemotron 3.5 Lightning."
 )
 PRICE_METHODS = {
     "search": "Tavily search",
@@ -104,6 +105,7 @@ class PRContext(BaseModel):
     alone: dict[str, bool] = Field(default_factory=dict)  # PatchResult.alone: site -> green on its own
     combined: list[str] = Field(default_factory=list)  # PatchResult.combined: sites in the checked tree
     combined_repair: list[str] = Field(default_factory=list)  # PatchResult.combined_repair: files it changed
+    today: date = Field(default_factory=lambda: datetime.now(UTC).date())  # "retires" or "retired" on a date
 
 
 def is_test_path(path: str) -> bool:
@@ -182,17 +184,18 @@ def _iterations(n: int) -> str:
     return f" (after {n} adapter iteration{'s' if n != 1 else ''})" if n else ""
 
 
-def _parity(v: Verdict, site: CallSite | None) -> str:
+def _parity(v: Verdict, site: CallSite | None, failed: bool = False) -> str:
     """The parity figure, its holdout pass count and Wilson 95% lower bound ("100.0% (9/9, ≥70%)"); free text
-    adds the judge's mean and lowest case. JSON extraction's figure is a field match, so its count says
-    "pass"."""
+    adds the judge's mean and lowest case, each against its own bar when the site `failed`. JSON extraction's
+    figure is a field match, so its count says "pass"."""
     text = _pct(v.parity_pct)
     if v.holdout_cases and v.parity_lower_pct is not None:
         what = " pass" if _task(site) == "json_extraction" else ""
         text += f" ({v.holdout_passed}/{v.holdout_cases}{what}, ≥{math.floor(v.parity_lower_pct)}%)"
-    if v.judge_mean is not None:
-        text += f", judge mean {v.judge_mean:g}/5"
-        text += f", lowest case {v.judge_min:g}/5" if v.judge_min is not None else ""
+    bars = [(v.judge_mean, "judge mean", JUDGE_FLOOR), (v.judge_min, "lowest case", JUDGE_CASE_FLOOR)]
+    for score, name, bar in bars:
+        if score is not None:
+            text += f", {name} {score:g}/5" + (f" < {bar:.1f}" if failed and score < bar else "")
     return text
 
 
@@ -201,7 +204,11 @@ def _urgency(v: Verdict) -> tuple:
     return (v.retires_on is None, v.retires_on or date.max, v.site_id)
 
 
-def _retiring(verdicts: list[Verdict], sites: dict[str, CallSite]) -> list[str]:
+def _retires(day: date, today: date) -> str:
+    return f"{'retired' if day < today else 'retires'} on {day.day} {day:%b %Y}"
+
+
+def _retiring(verdicts: list[Verdict], sites: dict[str, CallSite], today: date) -> list[str]:
     """The summary's lead: "Claude Sonnet 4.5 retires on 30 Nov 2026: cs_02, cs_03.", one line per date and
     model, the model named as its vendor's notice spells it; the dates come from the notices."""
     retiring: dict[tuple[date, str], list[str]] = {}
@@ -211,7 +218,7 @@ def _retiring(verdicts: list[Verdict], sites: dict[str, CallSite]) -> list[str]:
             name = spelled(model, v.sunset_risk or "") if model else "The source model"
             retiring.setdefault((v.retires_on, name), []).append(v.site_id)
     return [
-        f"**{name} retires on {day.day} {day:%b %Y}: {', '.join(sids)}.**"
+        f"**{name} {_retires(day, today)}: {', '.join(sids)}.**"
         for (day, name), sids in sorted(retiring.items())
     ]
 
@@ -225,7 +232,7 @@ def _quoted(text: str) -> str:
 def _row(ctx: PRContext, v: Verdict, site: CallSite | None) -> str:
     before = (site.source_model if site else None) or "—"
     if v.retires_on:
-        before += f" (retires {v.retires_on.day} {v.retires_on:%b %Y})"
+        before += f" ({_retires(v.retires_on, ctx.today).replace(' on ', ' ')})"
     elif v.sunset_risk:
         before += " (sunset risk)"
     file = f"`{site.file}`" if site else "—"
@@ -240,6 +247,10 @@ def _row(ctx: PRContext, v: Verdict, site: CallSite | None) -> str:
     elif v.decision == "KEEP_CLOSED":
         bar = f"{threshold(site, ctx.config) * 100:g}%"
         parity = f"{_parity(v, site)} < {bar}" if v.parity_pct is not None else f"below {bar}"
+        if _task(site) == "free_text" and v.judge_mean is not None:  # its bars are the judge's, not a share
+            parity = _parity(v, site, failed=True)
+            if "<" not in parity:
+                parity += f", more than {JUDGE_MARGIN:g} below the references' judge mean"
         cells = ["**NOT MIGRATED**", parity, "—", "—"]
     else:
         cells = ["**MANUAL REVIEW**", _parity(v, site), "—", "—"]
@@ -387,7 +398,7 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         return " ".join(out)
 
     out = ["## Summary", ""]
-    if lead := _retiring(verdicts, sites):
+    if lead := _retiring(verdicts, sites, ctx.today):
         out += [*lead, ""]
     if prose.summary:
         out += [prose.summary, ""]

@@ -42,7 +42,7 @@ Offramp evaluated 6 LLM call sites against references (69 cases, 24 in the holdo
 
 The source models' own outputs were never recorded; parity is agreement with references.
 
-Each site's cases are split once into dev (adapter iteration) and holdout (verdict only). Pass bar: 95% agreement with the references (90% for reasoning); free text: judge mean of at least 4.0 on a 1–5 rubric, no holdout case below 3.0. In brackets after a parity figure: holdout cases passing / evaluated, and the Wilson 95% lower bound of that pass rate; with few holdout cases, even 100% only shows the rate is above that bound. More holdout cases narrow it, and evaluating them costs cents on Nemotron 3.5 Lightning.
+Each site's cases are split once into dev (adapter iteration) and holdout (verdict only). Pass bar: 95% agreement with the references (90% for reasoning); free text: judge mean of at least 4.0 on a 1–5 rubric, no holdout case below 3.0. In brackets after a parity figure: holdout cases passing / evaluated (for JSON extraction, whose figure is the mean field match, the cases that pass whole), and the Wilson 95% lower bound of that pass rate; with few holdout cases, even 100% only shows, with 95% confidence, that the rate is above that bound. More holdout cases narrow it, and evaluating them costs cents on Nemotron 3.5 Lightning.
 - cs_02: free-text arguments escalate_to_human.priority, escalate_to_human.reason checked for presence, not wording.
 
 | Site | References | Cases (dev / holdout) | Reference audit (checked / agreed / dropped / human-verified, by) |

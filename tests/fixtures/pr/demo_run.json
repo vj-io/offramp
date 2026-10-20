@@ -960,6 +960,7 @@
         "escalate_to_human.reason"
       ]
     },
-    "client_path": "helphub/offramp_client.py"
+    "client_path": "helphub/offramp_client.py",
+    "today": "2026-10-21"
   }
 }
