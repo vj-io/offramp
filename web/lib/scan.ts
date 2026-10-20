@@ -12,8 +12,18 @@ export type ScanRow = {
   shape_guessed: boolean;
   streaming: boolean | null; // null: `stream=` is set at runtime
   flags: string[];
-  price_ratio: { input: number; output: number } | null;
+  // per Nemotron tier, cheapest first: source list price over the tier's, per input and per output token
+  price_ratio: Record<string, { input: number; output: number }> | null;
   price_note: string | null;
+};
+
+export type TierPrice = {
+  model: string;
+  tier: string;
+  input_usd_per_m: number;
+  output_usd_per_m: number;
+  price_status: string;
+  as_of: string;
 };
 
 export type ScanResult = {
@@ -21,17 +31,12 @@ export type ScanResult = {
   ref: string;
   commit: string | null;
   python_files: number;
-  reference: {
-    model: string;
-    tier: string;
-    input_usd_per_m: number;
-    output_usd_per_m: number;
-    price_status: string;
-    as_of: string;
-  };
+  references: TierPrice[];
   ratio_label: string;
   rows: ScanRow[];
+  rows_total: number; // rows is cut at 2,000
   warnings: string[];
+  warnings_total: number;
 };
 
 /** The new-run form posts to the API, so it only shows when NEXT_PUBLIC_API_URL names a local one. */
@@ -45,13 +50,26 @@ export function isLocalApi(url: string | undefined): boolean {
   }
 }
 
-const x = (v: number) => `${v}x`;
+const sig = (v: number) => String(Number(v.toPrecision(3)));
 
-/** "2.5x", or "50x in / 62.5x out" when input and output differ, as the CLI prints it. */
+/** Per tier, cheapest first, the input–output ratio or one number when equal, as the CLI prints it:
+ *  "50–62.5× / 10–16.7× / 3–5×". */
 export function ratioText(row: ScanRow): string {
-  const r = row.price_ratio;
-  if (!r) return row.price_note ?? "";
-  return r.input === r.output ? x(r.input) : `${x(r.input)} in / ${x(r.output)} out`;
+  if (!row.price_ratio) return row.price_note ?? "";
+  return Object.values(row.price_ratio)
+    .map(({ input, output }) => {
+      const [lo, hi] = [Math.min(input, output), Math.max(input, output)];
+      return lo === hi ? `${sig(lo)}×` : `${sig(lo)}–${sig(hi)}×`;
+    })
+    .join(" / ");
+}
+
+export const tierName = (tier: string) => tier.charAt(0).toUpperCase() + tier.slice(1);
+
+/** A GitHub link to one line of a scanned file, each path segment encoded. */
+export function fileUrl(repo: string, at: string, file: string, line: number): string {
+  const path = file.split("/").map(encodeURIComponent).join("/");
+  return `${repo}/blob/${encodeURIComponent(at).replaceAll("%2F", "/")}/${path}#L${line}`;
 }
 
 /** The message to show for a failed POST /api/scan. */

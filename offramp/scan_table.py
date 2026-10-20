@@ -1,4 +1,4 @@
-"""The `offramp scan` table: each call site's shape and its list-price ratio to the cheapest Nemotron tier.
+"""The `offramp scan` table: each call site's shape and its list-price ratio to each Nemotron tier.
 
 Static, like the scan: no key, no model call, the scanned code is never run. The shape comes from the call's
 own parameters when they settle it (tools, response_format); otherwise it is guessed from the prompt text and
@@ -21,13 +21,14 @@ CLASSIFY_ASK = re.compile(
 )
 
 
-def reference() -> dict[str, Any]:
-    """The cheapest Nemotron tier's pricing.yaml entry: what every ratio divides by."""
-    tier = TIER_ORDER[0].value
-    model, e = next((m, e) for m, e in load_pricing().items() if e.get("tier") == tier)
-    return {"model": model, "tier": tier} | {
-        k: e[k] for k in ("input_usd_per_m", "output_usd_per_m", "price_status", "as_of", "source")
-    }
+def references() -> list[dict[str, Any]]:
+    """The Nemotron tiers' pricing.yaml entries, cheapest first: what the ratios divide by."""
+    out = []
+    for tier in TIER_ORDER:
+        model, e = next((m, e) for m, e in load_pricing().items() if e.get("tier") == tier.value)
+        keys = ("input_usd_per_m", "output_usd_per_m", "price_status", "as_of", "source")
+        out.append({"model": model, "tier": tier.value} | {k: e[k] for k in keys})
+    return out
 
 
 def _shape(site: CallSite) -> tuple[str, bool]:
@@ -55,7 +56,9 @@ def _shape(site: CallSite) -> tuple[str, bool]:
     return "free text", True
 
 
-def _ratio(site: CallSite, ref: dict[str, Any]) -> tuple[dict[str, float] | None, str | None]:
+def _ratio(
+    site: CallSite, refs: list[dict[str, Any]]
+) -> tuple[dict[str, dict[str, float]] | None, str | None]:
     if site.kind == "embedding":
         return None, "no Nemotron embedding tier"
     if not site.source_model:
@@ -65,19 +68,22 @@ def _ratio(site: CallSite, ref: dict[str, Any]) -> tuple[dict[str, float] | None
     except KeyError:
         return None, "no list price on file"
     return {
-        "input": round(e["input_usd_per_m"] / ref["input_usd_per_m"], 1),
-        "output": round(e["output_usd_per_m"] / ref["output_usd_per_m"], 1),
+        ref["tier"]: {
+            "input": round(e["input_usd_per_m"] / ref["input_usd_per_m"], 2),
+            "output": round(e["output_usd_per_m"] / ref["output_usd_per_m"], 2),
+        }
+        for ref in refs
     }, None
 
 
 def table(result: ScanResult) -> dict[str, Any]:
     """The table as JSON: what `/api/scan` returns and what `render` prints."""
-    ref = reference()
+    refs = references()
     rows = []
     for s in result.sites:
         shape, guessed = _shape(s)
         stream = s.params.get("stream")
-        ratio, note = _ratio(s, ref)
+        ratio, note = _ratio(s, refs)
         flags = ["streams"] if stream is True else ["may stream"] if stream == EXPR else []
         if "NEEDS_RUNTIME_CAPTURE" in s.flags:
             flags.append("prompt built at runtime")
@@ -96,21 +102,30 @@ def table(result: ScanResult) -> dict[str, Any]:
                 "price_note": note,
             }
         )
-    return {"reference": ref, "ratio_label": RATIO_LABEL, "rows": rows, "warnings": result.warnings}
+    return {"references": refs, "ratio_label": RATIO_LABEL, "rows": rows, "warnings": result.warnings}
 
 
 def _x(v: float) -> str:
-    return f"{v:g}x"
+    return f"{v:.3g}"
+
+
+def ratio_text(ratio: dict[str, dict[str, float]]) -> str:
+    """Per tier, cheapest first: the input–output ratio, one number when equal ("2.5× / 0.5–0.67×")."""
+    parts = []
+    for r in ratio.values():
+        lo, hi = sorted((r["input"], r["output"]))
+        parts.append(f"{_x(lo)}×" if lo == hi else f"{_x(lo)}–{_x(hi)}×")
+    return " / ".join(parts)
 
 
 def render(result: ScanResult) -> str:
     t = table(result)
-    ref, rows = t["reference"], t["rows"]
+    refs, rows = t["references"], t["rows"]
     if not rows:
         lines = [f"No OpenAI, Anthropic, LiteLLM or LangChain call sites found in {result.repo}."]
     else:
-        tier = ref["tier"].capitalize()
-        head = ["id", "file:line", "provider / model", "shape", "flags", f"list-price ratio vs {tier}*"]
+        tiers = " / ".join(ref["tier"].capitalize() for ref in refs)
+        head = ["id", "file:line", "provider / model", "shape", "flags", f"list-price ratio vs {tiers}*"]
         body = [
             [
                 r["id"],
@@ -118,18 +133,16 @@ def render(result: ScanResult) -> str:
                 f"{r['sdk']} {r['model'] or '(model set at runtime)'}",
                 r["shape"] + ("~" if r["shape_guessed"] else ""),
                 ", ".join(r["flags"]) or "-",
-                (
-                    r["price_note"]
-                    if r["price_ratio"] is None
-                    else _x(r["price_ratio"]["input"])
-                    if r["price_ratio"]["input"] == r["price_ratio"]["output"]
-                    else f"{_x(r['price_ratio']['input'])} in / {_x(r['price_ratio']['output'])} out"
-                ),
+                r["price_note"] if r["price_ratio"] is None else ratio_text(r["price_ratio"]),
             ]
             for r in rows
         ]
         widths = [max(len(row[i]) for row in [head, *body]) for i in range(len(head))]
-        status = ref["price_status"].replace("-", " ")
+        prices = ", ".join(
+            f"{ref['tier'].capitalize()} ${ref['input_usd_per_m']:.2f}/${ref['output_usd_per_m']:.2f}"
+            for ref in refs
+        )
+        status = " and ".join(sorted({ref["price_status"].replace("-", " ") for ref in refs}))
         lines = [
             f"{len(rows)} call sites in {result.repo} "
             "(static scan: no key, no model call, the code was not run)",
@@ -139,9 +152,9 @@ def render(result: ScanResult) -> str:
                 for row in [head, *body]
             ),
             "",
-            f"* {RATIO_LABEL}: the source model's list price per token over Nemotron {tier}'s "
-            f"({ref['model']}, ${ref['input_usd_per_m']} in / ${ref['output_usd_per_m']} out per 1M tokens, "
-            f"{status}, as of {ref['as_of']}).",
+            f"* {RATIO_LABEL}: the source model's list price per token over each Nemotron tier's "
+            f"({prices} per 1M input/output tokens; {status}, as of {refs[0]['as_of']}). "
+            "A range is the input and the output token ratio; below 1× the source model lists cheaper.",
             "~ guessed from the prompt text. "
             "A full run (`offramp run`) labels every call and measures parity.",
         ]

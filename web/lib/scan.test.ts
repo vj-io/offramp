@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isLocalApi, ratioText, runScan, SCAN_CLI, scanErrorText, type ScanRow } from "./scan";
+import { fileUrl, isLocalApi, ratioText, runScan, SCAN_CLI, scanErrorText, type ScanRow } from "./scan";
 
 const row = (over: Partial<ScanRow>): ScanRow => ({
   id: "cs_01",
@@ -34,10 +34,29 @@ describe("isLocalApi", () => {
 });
 
 describe("ratioText", () => {
-  it("prints one ratio when input and output match, both otherwise, else the reason there is none", () => {
-    expect(ratioText(row({ price_ratio: { input: 2.5, output: 2.5 } }))).toBe("2.5x");
-    expect(ratioText(row({ price_ratio: { input: 50, output: 62.5 } }))).toBe("50x in / 62.5x out");
+  it("prints each tier's ratio, a range when input and output differ, else the reason there is none", () => {
+    const sonnet = {
+      lightning: { input: 50, output: 62.5 },
+      super: { input: 10, output: 16.67 },
+      ultra: { input: 3, output: 5 },
+    };
+    expect(ratioText(row({ price_ratio: sonnet }))).toBe("50–62.5× / 10–16.7× / 3–5×");
+    const mini = {
+      lightning: { input: 2.5, output: 2.5 },
+      super: { input: 0.5, output: 0.67 },
+      ultra: { input: 0.15, output: 0.2 },
+    };
+    expect(ratioText(row({ price_ratio: mini }))).toBe("2.5× / 0.5–0.67× / 0.15–0.2×");
     expect(ratioText(row({ price_note: "no list price on file" }))).toBe("no list price on file");
+  });
+});
+
+describe("fileUrl", () => {
+  it("encodes each path segment, so #, ? and spaces in names still link", () => {
+    expect(fileUrl("https://github.com/a/b", "abc123", "src/my file#1.py", 7)).toBe(
+      "https://github.com/a/b/blob/abc123/src/my%20file%231.py#L7",
+    );
+    expect(fileUrl("https://github.com/a/b", "feature/x", "a.py", 1)).toBe("https://github.com/a/b/blob/feature/x/a.py#L1");
   });
 });
 

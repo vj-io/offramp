@@ -8,6 +8,7 @@ the repo's .py files from GitHub's tarball, never imports or runs them, makes no
 import json
 import sys
 import time
+import traceback
 from collections import defaultdict, deque
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -20,10 +21,15 @@ RATE_LIMIT, WINDOW_S = 6, 60.0  # scans per client IP per window
 MAX_BODY = 4096
 # ponytail: best-effort limit kept in this instance's memory. Vercel runs several instances and recycles them, so a
 # client can get past it; move to the Vercel Firewall's rate limiting or a shared store if abuse shows up.
+# Refused requests count too, so bad input cannot be used to probe without limit.
 _hits: dict[str, deque[float]] = defaultdict(deque)
+MAX_TRACKED_IPS = 10_000
 
 
 def limited(ip: str, now: float) -> bool:
+    if len(_hits) > MAX_TRACKED_IPS:  # forget idle addresses, so the table cannot grow for the instance's life
+        for stale in [k for k, v in _hits.items() if not v or now - v[-1] > WINDOW_S]:
+            del _hits[stale]
     hits = _hits[ip]
     while hits and now - hits[0] > WINDOW_S:
         hits.popleft()
@@ -49,6 +55,9 @@ class handler(BaseHTTPRequestHandler):  # noqa: N801 - the name Vercel's Python 
             body = scan_github(url)
         except ScanError as exc:
             return self.send(exc.status, exc.code, exc.message)
+        except Exception:  # the traceback goes to the function log; the client never sees it or a server path
+            traceback.print_exc()
+            return self.send(500, "internal", "The scan failed on our side. Try again, or run the scan locally.")
         self.send(200, body=body)
 
     def send(self, status: int, error: str = "", message: str = "", body: dict | None = None):

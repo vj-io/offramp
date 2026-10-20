@@ -140,7 +140,7 @@ def scan_one(repo: str, cache: Path | None = None) -> dict[str, Any]:
     try:
         data = fetch(repo, deadline, cache)
         with tempfile.TemporaryDirectory(prefix="offramp-eco-") as tmp:
-            files, commit = extract_python(data, Path(tmp), deadline)
+            files, commit, _ = extract_python(data, Path(tmp), deadline)
             texts = (f.read_text("utf-8", errors="replace") for f in _py_files(Path(tmp)))
             sdks = sorted({m for text in texts for m in IMPORTS.findall(text)})
             if not sdks:
@@ -179,6 +179,7 @@ def summarize(repos: list[dict[str, Any]]) -> dict[str, Any]:
         "deterministic_from_parameters": sum(r["shape"] in DETERMINISTIC for r in certain),
         "streams": sum(r["streaming"] is True for r in chat),
         "may_stream": sum(r["streaming"] is None for r in chat),
+        "prompt_at_runtime": sum("prompt built at runtime" in r["flags"] for r in chat),
         "model_known": len(known),
         "sunset_retired": sum(s[0] == "retired" for s in risk),
         "sunset_deprecated": sum(s[0] == "deprecated" for s in risk),
@@ -194,13 +195,19 @@ def markdown(report: dict[str, Any]) -> str:
     streaming = t["streams"] + t["may_stream"]
     sdks = ", ".join(f"{v} {k}" for k, v in t["sdk"].items())
     queries = " and ".join(f"`{q}`" for q in report["queries"])
+    too_big = sum("over 25 MB" in s["reason"] for s in report["skipped"])
+    runtime = t["prompt_at_runtime"]
+    unknown = t["shapes"].get("unknown", 0)
+    sources = report["sunset_sources"]
     lines = [
         "# Ecosystem scan: closed-LLM call sites in popular public Python repos",
         "",
-        f"Offramp's static scan (`offramp scan`, the same code as the hosted /scan page) over the "
-        f"{t['repos']} most-starred public Python repos on GitHub that import `openai` or "
-        f"`anthropic`, run on {report['date']} with Offramp at `{report['offramp_commit'][:7]}` "
-        f"under Python {report['python']}. "
+        f"Offramp's static scan (`offramp scan`, the same code as the hosted /scan page) over "
+        f"{t['repos']} popular public Python repos, run on {report['date']} with Offramp at "
+        f"`{report['offramp_commit'][:7]}` under Python {report['python']}. The repos are the "
+        "most-starred results of a GitHub keyword search for `openai` and `anthropic` that import "
+        f"either SDK and whose archive is under 25 MB: {too_big} higher-starred hits were over 25 MB "
+        "and skipped (listed below), so this is not the top 30 importers. "
         "The scan reads each repo's .py files and never imports or runs them, makes no model call "
         "and needs no key. Raw data: [ecosystem-scan.json](ecosystem-scan.json). Regenerate with "
         "`uv run python scripts/ecosystem_scan.py`.",
@@ -212,13 +219,19 @@ def markdown(report: dict[str, Any]) -> str:
         f"- **{pct(det, chat)} of the chat calls ({det} of {chat}) have a classification, JSON or "
         "tool-call shape**, the shapes Offramp scores deterministically. The call's own `tools` or "
         f"`response_format` settles {det_params} of them; the rest are guessed from the prompt text.",
+        f"- **{pct(runtime, chat)} build their prompt at runtime** ({runtime} of {chat}). "
+        f"{pct(unknown, chat)} ({unknown}) have a shape a static scan cannot tell: the prompt is built "
+        "at runtime and the call passes no `tools` or `response_format`.",
         f"- **{pct(streaming, chat)} stream** ({t['streams']} pass `stream=True`, "
         f"{t['may_stream']} set `stream` at runtime). Offramp flags streaming calls for manual review.",
         f"- **Sunset risk: {pct(risk, known)} of the chat calls whose model is named in the code "
         f"({risk} of {known})** use a model its provider has retired ({t['sunset_retired']}) or "
-        f"scheduled for shutdown ({t['sunset_deprecated']}), per the provider deprecation pages "
-        f"read on {SUNSET_AS_OF}. The other {chat - known} chat calls set the model at runtime, so "
-        "a static scan cannot name it.",
+        f"scheduled for shutdown ({t['sunset_deprecated']}). The other {chat - known} chat calls set "
+        "the model at runtime, so a static scan cannot name it. The model-to-shutdown table in "
+        "`scripts/ecosystem_scan.py` was copied by hand from "
+        f"[OpenAI's deprecations page]({sources['openai']}) and "
+        f"[Anthropic's model deprecations page]({sources['anthropic']}) on {sources['as_of']}; an "
+        "alias (`gpt-4o`, `claude-3-5-sonnet-latest`) counts with the snapshot it points to.",
         "",
         "## Call shapes (chat calls)",
         "",

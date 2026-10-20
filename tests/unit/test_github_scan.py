@@ -72,6 +72,8 @@ def serve(monkeypatch, body: bytes, length: int | None = None, seen: list | None
         ("https://github.com/a/b/tree/main", ("a", "b", "main")),
         ("https://github.com/a/b/tree/feature/x-1.2/", ("a", "b", "feature/x-1.2")),
         ("https://github.com/acme/.github", ("acme", ".github", "HEAD")),
+        ("https://GitHub.com/a/b", ("a", "b", "HEAD")),  # the host is case-insensitive, the path is not
+        ("HTTPS://GITHUB.COM/A/b", ("A", "b", "HEAD")),
     ],
 )
 def test_accepts_github_repo_urls_with_an_optional_branch(url, expected):
@@ -177,7 +179,7 @@ def test_scan_stops_at_the_time_limit(monkeypatch):
     def slow_extract(data, dest, deadline):
         (dest / "app.py").write_text(CALL)
         time.sleep(0.05)
-        return 1, SHA
+        return 1, SHA, []
 
     monkeypatch.setattr(github_scan, "extract_python", slow_extract)
     with pytest.raises(ScanError) as exc:
@@ -210,7 +212,7 @@ def test_keeps_only_regular_python_files_and_drops_links(tmp_path):
     )
     dest = tmp_path / "out"
     dest.mkdir()
-    files, commit = extract_python(data, dest, time.monotonic() + 5)
+    files, commit, warnings = extract_python(data, dest, time.monotonic() + 5)
     assert commit == SHA
     assert sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*")) == ["app.py"]
     assert files == 1
@@ -219,8 +221,9 @@ def test_keeps_only_regular_python_files_and_drops_links(tmp_path):
 
 
 def test_archive_without_a_commit_header_still_scans(tmp_path):
-    files, commit = extract_python(tarball({"app.py": CALL}, sha=None), tmp_path, time.monotonic() + 5)
-    assert (files, commit) == (1, None)
+    data = tarball({"app.py": CALL}, sha=None)
+    files, commit, warnings = extract_python(data, tmp_path, time.monotonic() + 5)
+    assert (files, commit, warnings) == (1, None, [])
 
 
 # ---------------------------------------------------------------- never runs the scanned code
@@ -243,3 +246,44 @@ def test_cli_scan_never_imports_the_target_code(tmp_path, capsys):
     assert cli.main(["scan", str(repo)]) == 0
     assert "triage.py:" in capsys.readouterr().out
     assert not marker.exists()
+
+
+# ---------------------------------------------------------------- review of task 20 (minor findings)
+
+
+def test_redirects_are_not_followed():
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.request import Request
+
+    class Redirect(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(302)
+            self.send_header("Location", "http://127.0.0.1:1/elsewhere")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Redirect)
+    threading.Thread(target=server.handle_request, daemon=True).start()
+    with pytest.raises(HTTPError) as exc:
+        github_scan.urlopen(Request(f"http://127.0.0.1:{server.server_port}/x"), timeout=5)
+    assert exc.value.code == 302
+    server.server_close()
+
+
+def test_a_member_that_cannot_be_written_is_skipped_not_fatal(tmp_path):
+    data = tarball({"good.py": CALL, "n" * 300 + ".py": CALL})  # a name over the filesystem's limit
+    files, commit, warnings = extract_python(data, tmp_path, time.monotonic() + 5)
+    assert files == 1 and (tmp_path / "good.py").exists()
+    assert [w.split(":")[1].strip() for w in warnings] == ["could not be written (OSError)"]
+
+
+def test_rows_and_warnings_are_capped_so_the_response_stays_small(monkeypatch):
+    monkeypatch.setattr(github_scan, "MAX_ROWS", 2)
+    monkeypatch.setattr(github_scan, "MAX_WARNINGS", 1)
+    serve(monkeypatch, tarball({"a.py": CALL, "b.py": CALL, "c.py": CALL, "x.py": "def (", "y.py": "def ("}))
+    out = scan_github("https://github.com/a/b")
+    assert [r["file"] for r in out["rows"]] == ["a.py", "b.py"] and out["rows_total"] == 3
+    assert len(out["warnings"]) == 1 and out["warnings_total"] == 2

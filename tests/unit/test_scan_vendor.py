@@ -66,6 +66,14 @@ out = {
     "not_object": post(b"[1]"),
 }
 out["burst"] = [post(b"{}", ip="5.6.7.8")[0] for _ in range(fn.RATE_LIMIT + 1)]
+
+
+def crash(url):
+    raise RuntimeError("boom in /srv/secret/path")
+
+
+fn.scan_github = crash
+out["crash"] = post(json.dumps({"github_url": "https://github.com/a/b"}).encode(), ip="9.9.9.9")
 print(json.dumps(out))
 """
 
@@ -83,9 +91,14 @@ def test_function_serves_the_vendored_scanner(tmp_path):
     assert out["loaded"] and all(f.startswith(str(VENDOR)) for f in out["loaded"]), out["loaded"]
     status, body = out["ok"]
     assert status == 200 and body["commit"] == "abc123"
-    assert [(r["file"], r["model"], r["price_ratio"]) for r in body["rows"]] == [
-        ("app.py", "gpt-4o", {"input": 41.7, "output": 41.7})
-    ]
+    [row] = body["rows"]
+    assert (row["file"], row["model"], row["price_ratio"]["lightning"]) == (
+        "app.py",
+        "gpt-4o",
+        {"input": 41.67, "output": 41.67},
+    )
     assert out["bad_url"][0] == 400 and out["bad_url"][1]["error"] == "bad_url"
     assert out["bad_json"][0] == 400 and out["not_object"][0] == 400
     assert out["burst"][-1] == 429 and 429 not in out["burst"][:-1]  # per-IP limit, other IPs unaffected
+    status, body = out["crash"]  # any other failure: JSON 500, no traceback or server path in the response
+    assert status == 500 and body["error"] == "internal" and "secret" not in json.dumps(body)

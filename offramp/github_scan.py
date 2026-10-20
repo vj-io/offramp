@@ -15,7 +15,7 @@ import zlib
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from offramp.agents.scanner import scan_repo
 from offramp.scan_table import table
@@ -25,10 +25,23 @@ MAX_DOWNLOAD = 25 * 1024 * 1024  # bytes of tar.gz
 MAX_PY_FILES = 5000
 MAX_UNPACKED = 250 * 1024 * 1024  # declared size of every member: bounds the decompression work (zip bombs)
 TIME_LIMIT_S = 20.0
+MAX_ROWS, MAX_WARNINGS = 2000, 200  # keep the JSON far under Vercel's 4.5 MB response limit
 GITHUB_URL = re.compile(
     r"https://github\.com/(?P<owner>[A-Za-z0-9][A-Za-z0-9-]{0,38})/(?P<repo>[A-Za-z0-9._-]{1,100}?)(?:\.git)?"
     r"(?:/tree/(?P<ref>[A-Za-z0-9._/-]{1,200}?))?/?"
 )
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):  # a 3xx surfaces as HTTPError: codeload answers directly
+        return None
+
+
+_OPENER = build_opener(_NoRedirect)
+
+
+def urlopen(req: Request, timeout: float):
+    return _OPENER.open(req, timeout=timeout)
 
 
 class ScanError(Exception):
@@ -41,7 +54,9 @@ class ScanError(Exception):
 
 def parse_github_url(url: str) -> tuple[str, str, str]:
     """(owner, repo, ref) of https://github.com/<owner>/<repo>[/tree/<branch>]; "HEAD": default branch."""
-    m = GITHUB_URL.fullmatch(url.strip()) if isinstance(url, str) else None
+    if isinstance(url, str) and (url := url.strip())[:19].lower() == "https://github.com/":
+        url = "https://github.com/" + url[19:]  # scheme and host are case-insensitive
+    m = GITHUB_URL.fullmatch(url) if isinstance(url, str) else None
     ref = m and m["ref"]
     if not m or m["repo"] in (".", "..") or (ref and (".." in ref or "//" in ref or ref[0] in "-./")):
         raise ScanError(
@@ -55,10 +70,11 @@ def download(owner: str, repo: str, ref: str, deadline: float, max_bytes: int = 
     url = CODELOAD.format(owner=owner, repo=repo, ref=ref)
     chunks, size = [], 0
     try:
-        with urlopen(Request(url, headers={"User-Agent": "offramp-scan"}), timeout=10) as res:
+        timeout = min(10.0, max(1.0, deadline - time.monotonic()))
+        with urlopen(Request(url, headers={"User-Agent": "offramp-scan"}), timeout=timeout) as res:
             if int(res.headers.get("Content-Length") or 0) > max_bytes:
                 raise too_large
-            while chunk := res.read(1 << 16):
+            while chunk := res.read1(1 << 16):  # what has arrived, so a trickle cannot outlast the deadline
                 size += len(chunk)
                 if size > max_bytes:
                     raise too_large
@@ -82,11 +98,12 @@ def extract_python(
     deadline: float,
     max_files: int = MAX_PY_FILES,
     max_unpacked: int = MAX_UNPACKED,
-) -> tuple[int, str | None]:
+) -> tuple[int, str | None, list[str]]:
     """Unpack the regular .py files of a GitHub tarball into `dest`, without its top directory.
 
-    Returns (.py files written, commit SHA from the archive's pax header, or None)."""
+    Returns (.py files written, commit SHA from the archive's pax header or None, members skipped)."""
     files = unpacked = 0
+    skipped: list[str] = []
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
             for m in tar:
@@ -110,11 +127,15 @@ def extract_python(
                     tar.extract(m.replace(name=rel), dest, filter="data")
                 except tarfile.FilterError:  # an absolute or ../ path: never written
                     files -= 1
+                    skipped.append(f"skipped {rel}: a path outside the repository")
+                except OSError as exc:  # a name too long for the filesystem, a file/directory clash
+                    files -= 1
+                    skipped.append(f"skipped {rel}: could not be written ({type(exc).__name__})")
             commit = tar.pax_headers.get("comment")  # git archive puts the commit SHA here
     except (tarfile.TarError, EOFError, zlib.error, OSError) as exc:
         why = f"GitHub sent an archive that could not be read ({type(exc).__name__})."
         raise ScanError(502, "bad_archive", why) from None
-    return files, commit
+    return files, commit, skipped
 
 
 def scan_github(url: str, time_limit: float = TIME_LIMIT_S) -> dict[str, Any]:
@@ -123,14 +144,26 @@ def scan_github(url: str, time_limit: float = TIME_LIMIT_S) -> dict[str, Any]:
     owner, repo, ref = parse_github_url(url)
     data = download(owner, repo, ref, deadline)
     with tempfile.TemporaryDirectory(prefix="offramp-scan-") as tmp:
-        files, commit = extract_python(data, Path(tmp), deadline)
+        files, commit, skipped = extract_python(data, Path(tmp), deadline)
         try:
             result = scan_repo(tmp, deadline=deadline)
         except TimeoutError:
             raise ScanError(504, "timeout", "Scanning the repository took too long.") from None
-    return {
-        "repo": f"https://github.com/{owner}/{repo}",
-        "ref": ref,
-        "commit": commit,
-        "python_files": files,
-    } | table(result)
+    result.warnings[:0] = skipped
+    out = table(result)
+    rows, warnings = out["rows"], out["warnings"]
+    return (
+        {
+            "repo": f"https://github.com/{owner}/{repo}",
+            "ref": ref,
+            "commit": commit,
+            "python_files": files,
+        }
+        | out
+        | {
+            "rows": rows[:MAX_ROWS],
+            "rows_total": len(rows),
+            "warnings": warnings[:MAX_WARNINGS],
+            "warnings_total": len(warnings),
+        }
+    )

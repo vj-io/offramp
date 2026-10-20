@@ -68,6 +68,11 @@ ARITH = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul}
 CONVERSIONS = {"r": repr, "s": str, "a": ascii}
 KINDS = ["literal", "variable", "fstring"]  # prompt_source of renderable prompts, weakest first
 PARAM = object()  # _lookup result for an unassigned function parameter
+# Bounds for untrusted repos (/api/scan): past them a file is skipped, or a value becomes unknown (EXPR).
+MAX_FILE_BYTES = 1_000_000
+MAX_SIZE = 100_000  # characters of a resolved string; characters plus items of a resolved list, tuple or dict
+MAX_INT_BITS = 10_000  # str() of an int over 4,300 digits raises ValueError
+SPEC_NUMBER = re.compile(r"\d+")  # widths and precisions in a format spec
 
 Fn = ast.FunctionDef | ast.AsyncFunctionDef
 Scope = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | None  # None: module level
@@ -91,6 +96,10 @@ def scan_repo(path: str | Path, deadline: float | None = None) -> ScanResult:
             warnings.append(f"skipped {rel}: a symlink to outside the repository")
             continue
         try:
+            size = file.stat().st_size
+            if size > MAX_FILE_BYTES:  # parse and analysis cost grow with size; call sites sit in small files
+                warnings.append(f"skipped {rel}: over 1 MB ({size} bytes)")
+                continue
             source = file.read_bytes()
         except OSError as exc:  # unreadable, or a broken symlink named *.py
             warnings.append(f"skipped {rel}: not readable ({type(exc).__name__})")
@@ -99,14 +108,18 @@ def scan_repo(path: str | Path, deadline: float | None = None) -> ScanResult:
             with catch_warnings():  # the target's invalid escapes ("\s") are not ours to report
                 simplefilter("ignore", SyntaxWarning)
                 tree = ast.parse(source)  # bytes, so a BOM or a coding cookie is honoured
-        except (SyntaxError, ValueError, RecursionError) as exc:
+        except (SyntaxError, ValueError, RecursionError, MemoryError) as exc:  # MemoryError: parser stack
             version = f"{sys.version_info.major}.{sys.version_info.minor}"  # this interpreter's grammar
             warnings.append(f"skipped {rel}: not parseable as Python {version} ({type(exc).__name__})")
             continue
         try:
-            found += _Module(tree).sites(rel)
+            found += _Module(tree, deadline).sites(rel)
+        except TimeoutError:
+            raise
         except RecursionError:
             warnings.append(f"skipped {rel}: nested too deeply to analyse (RecursionError)")
+        except Exception as exc:  # one file never stops the scan, whatever it holds
+            warnings.append(f"skipped {rel}: could not be analysed ({type(exc).__name__})")
     for warning in warnings:
         log.warning("scanner: %s", warning)
     found.sort(key=lambda s: (s.file, s.lines))
@@ -192,14 +205,27 @@ def _known(value: Any) -> bool:
     return value is None or isinstance(value, int | float)
 
 
+def _large(value: Any) -> bool:
+    """An int or string json.dumps would turn into a big output (indent, separators)."""
+    if isinstance(value, str):
+        return len(value) > 16
+    return isinstance(value, int) and not isinstance(value, bool) and value > 16
+
+
+def _wide(spec: str) -> bool:
+    """A format spec whose width or precision would build a text over MAX_SIZE: never evaluated."""
+    return any(len(n) > 6 or int(n) > MAX_SIZE for n in SPEC_NUMBER.findall(spec))
+
+
 def _formatted(value: Any, conversion: str | None, spec: Any) -> str | None:
     """The text of one f-string field, `format(value!conversion, spec)`, or None when it is not known."""
-    if not (_known(value) and isinstance(spec, str) and spec != EXPR):
+    if not (_known(value) and isinstance(spec, str) and spec != EXPR) or _wide(spec):
         return None
     try:
-        return format(CONVERSIONS.get(conversion, lambda v: v)(value), spec)
+        text = format(CONVERSIONS.get(conversion, lambda v: v)(value), spec)
     except (TypeError, ValueError):
         return None
+    return text if len(text) <= MAX_SIZE else None
 
 
 def _conversion(code: int) -> str | None:
@@ -229,6 +255,8 @@ def _slot(source: str, kind: str, fmt: str = "") -> _Text:
 def _join(parts: list[_Text | None], sep: str = "", kind: str | None = None) -> _Text | None:
     if any(p is None for p in parts):
         return None
+    if sum(len(p.text) for p in parts) + len(sep) * len(parts) > MAX_SIZE:
+        return None
     slots: dict[str, tuple[str, str]] = {}
     for p in parts:
         for name, info in p.slots.items():
@@ -245,7 +273,13 @@ def _join(parts: list[_Text | None], sep: str = "", kind: str | None = None) -> 
 class _Module:
     """One parsed file: its SDK imports, client variables, module constants and the call sites they reveal."""
 
-    def __init__(self, tree: ast.Module):
+    def __init__(self, tree: ast.Module, deadline: float | None = None):
+        self.deadline = deadline
+        # Memos, keyed by (id of a definition node, id of its scope): each name is resolved and rendered once,
+        # so a chain like `a1 = a0 + a0` ... `a30 = a29 + a29` costs 30 steps, not 2**30.
+        self._resolved: dict[tuple[int, int], Any] = {}
+        self._rendered: dict[tuple[int, int], _Text | None] = {}
+        self._sizes: dict[int, tuple[Any, int]] = {}  # id -> (container kept alive, so ids stay unique, size)
         self.refs: dict[str, tuple[str, str]] = {}  # local name -> (sdk, "module"|"client"|"completion"|...)
         self.imported: set[str] = set()
         for node in ast.walk(tree):
@@ -287,6 +321,7 @@ class _Module:
         # `self.client = client or Anthropic()` (class), parameters annotated `client: OpenAI | None`.
         self.clients: dict[tuple[Scope, str], set[str]] = {}  # (scope, receiver source text) -> sdks
         for n, fn, scope, cls in self.nodes:
+            self._tick()
             if isinstance(n, ast.arg):
                 pairs = [(n.arg, n.annotation)]
             elif isinstance(n, ast.AnnAssign):
@@ -389,8 +424,28 @@ class _Module:
         return [
             self._site(file, node, fn, *hit)
             for node, fn, _, cls in self.nodes
-            if isinstance(node, ast.Call) and (hit := self._match(node, fn, cls))
+            if isinstance(node, ast.Call) and not self._tick() and (hit := self._match(node, fn, cls))
         ]
+
+    def _tick(self) -> None:
+        if self.deadline is not None and time.monotonic() > self.deadline:
+            raise TimeoutError("the scan passed its deadline")
+
+    def _size(self, value: Any) -> int:
+        """Characters plus items of a resolved value, counted as a tree (resolved values share structure)."""
+        if isinstance(value, str):
+            return len(value)
+        if not isinstance(value, list | tuple | dict):
+            return 1
+        if (hit := self._sizes.get(id(value))) is not None:
+            return hit[1]
+        kids = [*value, *value.values()] if isinstance(value, dict) else value
+        size = 1 + sum(self._size(k) for k in kids)
+        self._sizes[id(value)] = (value, size)
+        return size
+
+    def _capped(self, value: Any) -> Any:
+        return value if self._size(value) <= MAX_SIZE else EXPR
 
     def _site(self, file: str, call: ast.Call, fn: Fn | None, sdk: str, kind: str) -> CallSite:
         kw = {k.arg: k.value for k in call.keywords if k.arg}
@@ -467,42 +522,50 @@ class _Module:
         return node, fn
 
     def resolve(self, node: ast.expr, fn: Fn | None, seen: tuple[str, ...] = ()) -> Any:
-        """Constant-fold an expression from literals and single-assignment names; EXPR where that fails."""
+        """Constant-fold an expression from literals and single-assignment names; EXPR where that fails or the
+        value would pass MAX_SIZE."""
+        self._tick()
         if isinstance(node, ast.Name):
             found = None if node.id in seen else self._lookup(node.id, fn)
             if found is None or found is PARAM:
                 return EXPR
-            return self.resolve(found[0], found[1], (*seen, node.id))
+            key = (id(found[0]), id(found[1]))
+            if key not in self._resolved:
+                self._resolved[key] = self.resolve(found[0], found[1], (*seen, node.id))
+            return self._resolved[key]
         if isinstance(node, ast.List):
-            return [self.resolve(e, fn, seen) for e in node.elts]
+            return self._capped([self.resolve(e, fn, seen) for e in node.elts])
         if isinstance(node, ast.Tuple):
-            return tuple(self.resolve(e, fn, seen) for e in node.elts)
+            return self._capped(tuple(self.resolve(e, fn, seen) for e in node.elts))
         if isinstance(node, ast.Dict):
             d = _dict(node)
-            return EXPR if d is None else {k: self.resolve(v, fn, seen) for k, v in d.items()}
+            return EXPR if d is None else self._capped({k: self.resolve(v, fn, seen) for k, v in d.items()})
         if isinstance(node, ast.JoinedStr):
-            texts = []
+            texts, size = [], 0
             for v in node.values:
                 if isinstance(v, ast.FormattedValue):
                     spec = "" if v.format_spec is None else self.resolve(v.format_spec, fn, seen)
                     text = _formatted(self.resolve(v.value, fn, seen), _conversion(v.conversion), spec)
                 else:
                     text = v.value
-                if text is None:
+                if text is None or (size := size + len(text)) > MAX_SIZE:
                     return EXPR
                 texts.append(text)
             return "".join(texts)
         if isinstance(node, ast.BinOp) and type(node.op) in ARITH:
             a, b = self.resolve(node.left, fn, seen), self.resolve(node.right, fn, seen)
             if all(isinstance(x, int | float) and not isinstance(x, bool) for x in (a, b)):
-                return ARITH[type(node.op)](a, b)
+                value = ARITH[type(node.op)](a, b)
+                return EXPR if isinstance(value, int) and value.bit_length() > MAX_INT_BITS else value
             if isinstance(node.op, ast.Add) and type(a) is type(b) and isinstance(a, str | list | tuple):
-                return a + b if EXPR not in (a, b) else EXPR
+                if EXPR in (a, b) or len(a) + len(b) > MAX_SIZE:
+                    return EXPR
+                return self._capped(a + b)
             return EXPR
         if isinstance(node, ast.Call):
             return self._fold_call(node, fn, seen)
         try:
-            return ast.literal_eval(node)
+            return self._capped(ast.literal_eval(node))
         except (ValueError, TypeError, SyntaxError):
             return EXPR
 
@@ -516,11 +579,13 @@ class _Module:
         if name == "json.dumps" and len(args) == 1:
             if isinstance(args[0], str) and args[0].startswith("<pydantic:"):
                 return args[0]  # stands for that model's schema text
+            if any(_large(v) for v in kwargs.values()):
+                return EXPR  # indent=10**9 would build gigabytes
             try:
                 text = json.dumps(args[0], **kwargs)
             except (TypeError, ValueError):
                 return EXPR
-            return EXPR if EXPR in text else text
+            return EXPR if EXPR in text or len(text) > MAX_SIZE else text
         if name in ("os.getenv", "os.environ.get") and len(args) == 2:
             return args[1]
         if (
@@ -534,6 +599,7 @@ class _Module:
                 _scalar(sep)
                 and isinstance(sep, str)
                 and all(_scalar(a) and isinstance(a, str) for a in args[0])
+                and sum(map(len, args[0])) + len(sep) * len(args[0]) <= MAX_SIZE
             ):
                 return sep.join(args[0])
         return EXPR
@@ -591,6 +657,7 @@ class _Module:
 
     def _render(self, node: ast.expr, fn: Fn | None, seen: tuple[str, ...] = ()) -> _Text | None:
         """A string expression as a str.format template; None when its text cannot be known statically."""
+        self._tick()
         if isinstance(node, ast.Name) and node.id not in seen:
             found = self._lookup(node.id, fn)
             if found is PARAM:
@@ -599,7 +666,10 @@ class _Module:
                 return None
             value, scope = found
             if scope is not None:  # local variable assigned once
-                return self._render(value, scope, (*seen, node.id))
+                key = (id(value), id(scope))
+                if key not in self._rendered:
+                    self._rendered[key] = self._render(value, scope, (*seen, node.id))
+                return self._rendered[key]
             text = self.resolve(value, None)
             return _lit(str(text), "variable")._replace(ref=node.id) if _scalar(text) else None
         if isinstance(node, ast.JoinedStr):
@@ -622,8 +692,8 @@ class _Module:
     def _field(self, expr: ast.expr, conversion: str | None, spec: Any, fn: Fn | None) -> _Text | None:
         """One f-string or str.format field: its exact text when every name in it is a known constant, else
         one placeholder named from its source, with any conversion/spec recorded for case rendering."""
-        if not (isinstance(spec, str) and spec != EXPR and "{" not in spec):
-            return None  # the format spec itself is decided at runtime
+        if not (isinstance(spec, str) and spec != EXPR and "{" not in spec) or _wide(spec):
+            return None  # the format spec is decided at runtime, or too wide to ever apply
         text = _formatted(self.resolve(expr, fn), conversion, spec)
         if text is not None:
             return _lit(text, "fstring")

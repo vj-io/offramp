@@ -2,9 +2,9 @@
 
 import { useState, type FormEvent } from "react";
 import { FilePath } from "@/components/file-path";
-import { ratioText, runScan, type ScanResult } from "@/lib/scan";
+import { fileUrl, ratioText, runScan, tierName, type ScanResult } from "@/lib/scan";
 
-const COLUMNS = ["Site", "File", "Provider and model", "Call shape", "Flags", "List-price ratio vs Lightning*"];
+const COLUMNS = ["Site", "File", "Provider and model", "Call shape", "Flags"];
 
 export function ScanForm({ demoRepoUrl }: { demoRepoUrl: string }) {
   const [url, setUrl] = useState("");
@@ -81,9 +81,10 @@ function ScanTable({ result }: { result: ScanResult }) {
   const name = result.repo.replace("https://github.com/", "");
   const at = result.commit ?? result.ref;
   const shown = result.commit ? result.commit.slice(0, 7) : result.ref;
-  const fileUrl = (file: string, line: number) => `${result.repo}/blob/${at}/${file}#L${line}`;
-  const ref = result.reference;
-  const tier = ref.tier.charAt(0).toUpperCase() + ref.tier.slice(1);
+  const refs = result.references;
+  const tiers = refs.map((r) => tierName(r.tier)).join(" / ");
+  const prices = refs.map((r) => `${tierName(r.tier)} $${r.input_usd_per_m.toFixed(2)}/$${r.output_usd_per_m.toFixed(2)}`);
+  const statuses = [...new Set(refs.map((r) => r.price_status.replaceAll("-", " ")))].join(" and ");
   const guessed = result.rows.some((r) => r.shape_guessed);
 
   if (result.rows.length === 0) {
@@ -95,7 +96,7 @@ function ScanTable({ result }: { result: ScanResult }) {
           no OpenAI, Anthropic, LiteLLM or LangChain call. Calls in notebooks, or made through a wrapper defined in
           another package, are not detected.
         </p>
-        <Warnings warnings={result.warnings} />
+        <Warnings warnings={result.warnings} total={result.warnings_total} />
       </div>
     );
   }
@@ -103,7 +104,7 @@ function ScanTable({ result }: { result: ScanResult }) {
   return (
     <section aria-labelledby="scan-h" className="flex flex-col gap-3">
       <h2 id="scan-h" className="text-2xl font-extrabold tracking-tight">
-        {result.rows.length} call {result.rows.length === 1 ? "site" : "sites"} in{" "}
+        {result.rows_total} call {result.rows_total === 1 ? "site" : "sites"} in{" "}
         <a href={result.repo} className="underline underline-offset-4">
           {name}
         </a>
@@ -111,14 +112,15 @@ function ScanTable({ result }: { result: ScanResult }) {
       <p className="font-hand text-lg text-muted">
         {result.python_files} Python files read at <span className="font-mono text-sm">{shown}</span>. The code
         was not run.
+        {result.rows_total > result.rows.length && ` Showing the first ${result.rows.length.toLocaleString("en")}.`}
       </p>
       <div role="region" tabIndex={0} aria-label="Call sites, scrolls sideways" className="overflow-x-auto pb-2">
         <table className="w-full min-w-[48rem] border-collapse text-left">
           <thead className="font-hand text-lg">
             <tr className="border-b-2 border-ink">
-              {COLUMNS.map((h) => (
+              {[...COLUMNS, `List-price ratio vs ${tiers}*`].map((h) => (
                 <th key={h} scope="col" className="px-2 py-2 align-bottom font-normal">
-                  {h === COLUMNS[5] ? `List-price ratio vs ${tier}*` : h}
+                  {h}
                 </th>
               ))}
             </tr>
@@ -130,7 +132,7 @@ function ScanTable({ result }: { result: ScanResult }) {
                   {r.id}
                 </th>
                 <td className="min-w-[10rem] px-2 py-2.5 font-mono text-sm wrap-anywhere">
-                  <a href={fileUrl(r.file, r.line)} className="underline decoration-ink/30 underline-offset-4">
+                  <a href={fileUrl(result.repo, at, r.file, r.line)} className="underline decoration-ink/30 underline-offset-4">
                     <FilePath path={r.file} range={String(r.line)} />
                   </a>
                 </td>
@@ -151,21 +153,23 @@ function ScanTable({ result }: { result: ScanResult }) {
         </table>
       </div>
       <p className="max-w-4xl text-sm leading-relaxed text-muted">
-        * {result.ratio_label}: the source model&apos;s list price per token over Nemotron {tier}&apos;s ({ref.model}, $
-        {ref.input_usd_per_m} in / ${ref.output_usd_per_m} out per 1M tokens, {ref.price_status.replaceAll("-", " ")},
-        as of {ref.as_of}).
+        * {result.ratio_label}: the source model&apos;s list price per token over each Nemotron
+        tier&apos;s ({prices.join(", ")} per 1M input/output tokens; {statuses}, as of {refs[0]?.as_of}). A range is
+        the input and the output token ratio; below 1× the source model lists cheaper.
         {guessed && " ~ guessed from the prompt text; a full run labels each call."}
       </p>
-      <Warnings warnings={result.warnings} />
+      <Warnings warnings={result.warnings} total={result.warnings_total} />
     </section>
   );
 }
 
-function Warnings({ warnings }: { warnings: string[] }) {
+function Warnings({ warnings, total }: { warnings: string[]; total: number }) {
   if (warnings.length === 0) return null;
   return (
     <details className="font-mono text-xs text-muted">
-      <summary className="cursor-pointer font-hand text-base">{warnings.length} files skipped</summary>
+      <summary className="cursor-pointer font-hand text-base">
+        {total} {total === 1 ? "file" : "files"} skipped{total > warnings.length && `, first ${warnings.length} listed`}
+      </summary>
       <ul className="mt-1 flex flex-col gap-0.5">
         {warnings.map((w) => (
           <li key={w}>{w}</li>

@@ -1,4 +1,6 @@
 import sys
+import time
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -561,7 +563,7 @@ def test_recursion_error_skips_only_that_file(tmp_path, caplog):
 
 # Bugs the ecosystem scan (scripts/ecosystem_scan.py) found in public repos.
 
-STREAM_HELPERS = '''from anthropic import Anthropic
+STREAM_HELPERS = """from anthropic import Anthropic
 from openai import OpenAI
 
 claude, client = Anthropic(), OpenAI()
@@ -582,7 +584,7 @@ def draft(text):
 def answer(text):
     with client.responses.stream(model="gpt-4.1", input=text) as s:
         return s.get_final_response()
-'''
+"""
 
 
 def test_sdk_streaming_helpers_are_streaming_sites(tmp_path):
@@ -600,3 +602,99 @@ def test_invalid_escape_sequences_in_target_code_print_no_warning(tmp_path, recw
     (tmp_path / "m.py").write_text('PATTERN = "\\s+\\d"\n' + OPENAI_FILE)
     assert [s.file for s in scan_repo(tmp_path).sites] == ["m.py"]
     assert not [w for w in recwarn if issubclass(w.category, SyntaxWarning)]
+
+
+# Untrusted repos (/api/scan, task 20 review): one file's cost is bounded; one bad file never stops the scan.
+
+CLIENT = "from openai import OpenAI\nclient = OpenAI()\n"
+
+
+def _scan_timed(tmp_path):
+    start = time.monotonic()
+    tracemalloc.start()
+    try:
+        scan = scan_repo(tmp_path, deadline=start + 20)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    return scan, time.monotonic() - start, peak
+
+
+def test_a_doubling_name_chain_resolves_in_linear_time(tmp_path):
+    ints = "\n".join(["a0 = 1", *(f"a{i} = a{i - 1} + a{i - 1}" for i in range(1, 31))])
+    strs = "\n".join(['s0 = "ab"', *(f"s{i} = s{i - 1} + s{i - 1}" for i in range(1, 31))])
+    call = 'client.chat.completions.create(model=a30, messages=[{"role": "user", "content": s30}])\n'
+    (tmp_path / "chain.py").write_text(f"{ints}\n{strs}\n{CLIENT}{call}")
+    scan, took, peak = _scan_timed(tmp_path)
+    [site] = scan.sites
+    assert took < 2 and peak < 50e6
+    assert site.source_model is None  # an int, not a model id
+    # 2**31 characters: over the cap, so unknown
+    assert site.template is None and "NEEDS_RUNTIME_CAPTURE" in site.flags
+
+
+def test_a_format_spec_wider_than_the_cap_is_never_evaluated(tmp_path):
+    call = (
+        'def ask(q):\n    return client.chat.completions.create(model=f"{1:>400000000}",\n'
+        '        messages=[{"role": "user", "content": f"{q:>400000000}"}])\n'
+    )
+    (tmp_path / "wide.py").write_text(CLIENT + call)
+    scan, took, peak = _scan_timed(tmp_path)
+    [site] = scan.sites
+    assert took < 2 and peak < 50e6
+    assert site.source_model is None and site.template is None  # neither formatted nor kept as a format spec
+
+
+def test_a_file_over_1_mb_is_skipped_with_the_reason(tmp_path):
+    (tmp_path / "dense.py").write_text("x = 1\n" * 500_000)  # 3 MB of statements
+    (tmp_path / "ok.py").write_text(OPENAI_FILE)
+    scan, took, _ = _scan_timed(tmp_path)
+    assert took < 2 and [s.file for s in scan.sites] == ["ok.py"]
+    assert scan.warnings == ["skipped dense.py: over 1 MB (3000000 bytes)"]
+
+
+def test_a_file_the_parser_cannot_hold_is_skipped_not_fatal(tmp_path):
+    (tmp_path / "minus.py").write_text("x = " + "-" * 6100 + "1\n")  # MemoryError: parser stack overflowed
+    (tmp_path / "ok.py").write_text(OPENAI_FILE)
+    scan = scan_repo(tmp_path)
+    assert [s.file for s in scan.sites] == ["ok.py"]
+    [warning] = scan.warnings
+    assert warning.startswith("skipped minus.py: not parseable as Python ")
+
+
+def test_a_huge_int_constant_is_unknown_not_fatal(tmp_path):
+    factors = " * ".join(["9" * 200] * 30)  # 6,000 digits: str() of it raises ValueError
+    call = 'client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": C}])\n'
+    (tmp_path / "big.py").write_text(f"C = {factors}\n{CLIENT}{call}")
+    (tmp_path / "ok.py").write_text(OPENAI_FILE)
+    scan = scan_repo(tmp_path)
+    assert [s.file for s in scan.sites] == ["big.py", "ok.py"] and scan.warnings == []
+    assert scan.sites[0].template is None
+
+
+def test_any_error_analysing_one_file_skips_that_file(tmp_path, monkeypatch):
+    from offramp.agents import scanner
+
+    real = scanner._Module.sites
+
+    def sites(self, file):
+        if file == "bad.py":
+            raise TypeError("a scanner bug")
+        return real(self, file)
+
+    monkeypatch.setattr(scanner._Module, "sites", sites)
+    (tmp_path / "bad.py").write_text(OPENAI_FILE)
+    (tmp_path / "ok.py").write_text(OPENAI_FILE)
+    scan = scan_repo(tmp_path)
+    assert [s.file for s in scan.sites] == ["ok.py"]
+    assert scan.warnings == ["skipped bad.py: could not be analysed (TypeError)"]
+
+
+def test_the_deadline_is_checked_inside_one_file(tmp_path, monkeypatch):
+    from offramp.agents import scanner
+
+    clock = iter([0.0, *[100.0] * 10_000])  # the between-files check passes, the next check is past it
+    monkeypatch.setattr(scanner.time, "monotonic", lambda: next(clock))
+    (tmp_path / "m.py").write_text(OPENAI_FILE)
+    with pytest.raises(TimeoutError):
+        scan_repo(tmp_path, deadline=50.0)

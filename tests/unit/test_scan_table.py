@@ -90,16 +90,29 @@ def test_streaming_and_runtime_prompts_are_flagged(tmp_path):
     assert "prompt built at runtime" in r["cs_06"]["flags"]
 
 
-def test_list_price_ratio_against_the_cheapest_nemotron_tier(tmp_path):
+def test_list_price_ratio_against_each_nemotron_tier(tmp_path):
     r = rows(tmp_path)
-    # pricing.yaml: gpt-4o-mini 0.15/0.60, claude-sonnet-4-5 3.00/15.00, Lightning 0.06/0.24 per 1M tokens
-    assert r["cs_01"]["price_ratio"] == {"input": 2.5, "output": 2.5}
-    assert r["cs_02"]["price_ratio"] == {"input": 50.0, "output": 62.5}
+    # pricing.yaml per 1M tokens: gpt-4o-mini 0.15/0.60, claude-sonnet-4-5 3.00/15.00;
+    # Lightning 0.06/0.24, Super 0.30/0.90, Ultra 1.00/3.00
+    assert r["cs_01"]["price_ratio"] == {
+        "lightning": {"input": 2.5, "output": 2.5},
+        "super": {"input": 0.5, "output": 0.67},  # below 1: the source model lists cheaper than Super
+        "ultra": {"input": 0.15, "output": 0.2},
+    }
+    assert r["cs_02"]["price_ratio"] == {
+        "lightning": {"input": 50.0, "output": 62.5},
+        "super": {"input": 10.0, "output": 16.67},
+        "ultra": {"input": 3.0, "output": 5.0},
+    }
     assert r["cs_06"]["price_ratio"] is None and r["cs_06"]["price_note"] == "model set at runtime"
     assert r["cs_07"]["price_ratio"] is None and r["cs_07"]["price_note"] == "no list price on file"
     assert r["emb_01"]["price_ratio"] is None and r["emb_01"]["price_note"] == "no Nemotron embedding tier"
-    ref = scan_table.reference()
-    assert (ref["tier"], ref["model"]) == ("lightning", "nvidia/Nemotron-3_5-Lightning")
+    refs = scan_table.references()
+    assert [(ref["tier"], ref["model"]) for ref in refs] == [
+        ("lightning", "nvidia/Nemotron-3_5-Lightning"),
+        ("super", "nvidia/nemotron-3-super-120b-a12b"),
+        ("ultra", "nvidia/Nemotron-3-Ultra-550b-a55b"),
+    ]
 
 
 def test_rendered_table_labels_the_ratio_as_list_price_not_parity(tmp_path):
@@ -108,10 +121,11 @@ def test_rendered_table_labels_the_ratio_as_list_price_not_parity(tmp_path):
     assert "8 call sites" in text
     assert "list-price ratio, not measured parity" in text
     lines = text.splitlines()
+    assert "list-price ratio vs Lightning / Super / Ultra*" in lines[2]
     row = next(line for line in lines if line.startswith("cs_02"))
     assert "app.py:17" in row and "anthropic claude-sonnet-4-5" in row and "tool call" in row
-    assert "50x in / 62.5x out" in row
-    assert "2.5x" in next(line for line in lines if line.startswith("cs_01"))
+    assert row.endswith("50–62.5× / 10–16.7× / 3–5×")  # input–output ratio per tier
+    assert next(line for line in lines if line.startswith("cs_01")).endswith("2.5× / 0.5–0.67× / 0.15–0.2×")
 
 
 def test_cli_prints_the_table_by_default_and_the_scan_json_with_json(tmp_path, capsys):
