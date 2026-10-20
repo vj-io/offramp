@@ -25,7 +25,6 @@ import pytest
 
 from offramp import pipeline
 from offramp.agents.verdict import pricing_yaml_price
-from offramp.evals.scorers import aggregate
 from offramp.sandbox import docker_available
 from offramp.schemas import RunConfig, Stage
 from offramp.tf import Budget, TFClient
@@ -129,12 +128,9 @@ def test_record_demo_run(tmp_path, monkeypatch):
 
 
 def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch, unrecorded_patcher_calls_stop):
-    """Task 18 changed two things these cassettes predate; both go away with the next live re-record:
-    - the patcher's repair turn after a deleted test: cs_05's Ultra repair is not recorded for it, so the
-      replay stops cs_05 there (see the fixture), with its recorded first try's failure kept;
-    - the free-text per-case floor: under it cs_04's Lightning dev run (judge mean 4.24) fails on a case
-      below 3.0 and the pipeline iterates, which was never recorded. This replay keeps its recorded rule."""
-    monkeypatch.setattr(aggregate, "JUDGE_CASE_FLOOR", aggregate.RUBRIC_MIN)
+    """Task 18 changed the patcher's repair turn after a deleted test, so cs_05's Ultra repair is not recorded
+    for it yet: the replay stops cs_05 there (see the fixture), with its recorded first try's failure kept.
+    The free-text per-case floor (holdout only) changes nothing here: no recorded holdout case is below 3."""
     log = run_demo(tmp_path, monkeypatch, live=False)
     snap = pipeline.snapshot(log.run_id, log.events)
 

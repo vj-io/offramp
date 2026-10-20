@@ -243,45 +243,54 @@ def _migrated_line(ctx: PRContext, v: Verdict, site: CallSite | None) -> str:
     return f"{call} now sends the request that passed parity on the holdout split{measured}."
 
 
-def plain_reason(reason: str) -> tuple[str, str | None]:
-    """A patch-stage failure as one sentence a reviewer reads, plus the raw failure to fold under it:
-    (sentence, raw). Any other reason is a sentence already: (reason, None)."""
-    root = reason.rsplit("; last failure: ", 1)[-1]  # the last checked try: what actually failed
-    failing = sorted(set(re.findall(r"(?:FAILED|ERROR) ([^\s:]+)::", root)))
-    where = f" ({', '.join(failing)})" if failing else ""
-    if reason.startswith("green alone, but"):
-        sentence = (f"Its patch passes this repo's checks on its own, but not merged with the other migrated "
-                    f"sites' patches{where}.")  # fmt: skip
-    elif m := re.search(r"patch removes tests from (\S+): \[([^\]]*)\]", root):
-        names = re.findall(r"'(\w+)'", m[2])
-        tests = f"test{'s' if len(names) != 1 else ''} {', '.join(f'`{n}`' for n in names)}"
-        sentence = (f"The model's edit to {m[1]} deleted the {tests}, and Offramp never ships a patch that "
-                    "deletes a test.")  # fmt: skip
-    elif m := re.search(r"search text (not found|found \d+ times) in (\S+?)(?::| \()", root):
-        how = "are not in that file" if m[1] == "not found" else "occur in that file more than once"
-        sentence = f"The model's edit to {m[2]} quoted lines that {how}, so it could not be applied."
-    elif m := re.search(r"(\S+) is read-only", root):
-        sentence = f"The model tried to edit {m[1]}, which ships exactly as Offramp's code wrote it."
-    elif m := re.search(r"(\S+) is not editable for this site", root):
-        sentence = f"The model tried to edit {m[1]}, which this site's patch may not change."
-    elif m := re.search(r"(\S+) does not parse", root):
-        sentence = f"The model's edit left {m[1]} unparseable."
-    elif "the patch changes code that ships" in root:
-        sentence = "The model's patch changed code that ships, which only Offramp's code may write."
-    elif "does not send the evaluated request" in root:
-        sentence = "The patched call does not send the request that passed the evaluation."
-    elif (m := re.search(r"input_type=(\w+Block)\b", root)) and "validation error for ChatCompletion" in root:
-        sentence = (f"The model's test edits fed an Anthropic {m[1]} into the OpenAI chat completion the "
-                    f"test fake builds, so this repo's tests failed{where}.")  # fmt: skip
-    elif root.startswith("repo checks failed"):
-        sentence = f"With the model's test edits, this repo's checks still failed{where}."
-    elif root.startswith("the reply holds no complete edit block"):
-        sentence = "The model's reply held no complete edit."
-    elif re.search(r"cap (reached|exceeded)|no recording of this patcher call", root):
-        sentence = "The run's Token Factory budget ran out before a patch passed this repo's checks."
+# PatchFailure.kind -> what failed, from the patch stage's own record. The reason's text (the target repo's
+# check output among it) is never searched for a cause.
+_EDITED = "with the model's test edits applied,"
+_GREEN_ALONE = "its patch passes this repo's checks on its own, but"
+_CAUSE = {
+    "search_miss": "the model's edit to {files} quotes lines matching no single place there, so none applied",
+    "deletes_tests": "the model's edit deleted {tests}, and Offramp never ships a patch that deletes a test",
+    "locked_file": "the model tried to edit {files}, which ships exactly as Offramp's code wrote it",
+    "not_editable": "the model's edit to {files} is not allowed for this site",
+    "does_not_parse": "the model's edit left {files} unparseable",
+    "checks_failed": f"{_EDITED} this repo's checks still failed",
+    "backstop": f"{_EDITED} code that ships changed ({{files}}), and only Offramp's code may write it",
+    "probe_mismatch": f"{_EDITED} the call does not send the request that passed the evaluation",
+    "merge_conflict": f"{_GREEN_ALONE} it conflicts with another migrated site's patch in {{files}}",
+    "not_together": f"{_GREEN_ALONE} not merged with the other migrated sites' patches",
+    "merged_drift": f"{_GREEN_ALONE} on the merged tree its code or its evaluated request changed",
+    "repo_red": "this repo's own checks fail before any migration patch, so no patch could be checked",
+}
+_ALONE = {  # the last check ran Offramp's changes alone: no edit of the model's was ever applied
+    "checks_failed": "with Offramp's changes alone, this repo's checks fail",
+    "backstop": "with Offramp's changes alone, a check run changed code that ships ({files})",
+    "probe_mismatch": "Offramp's own rewrite does not send the request that passed the evaluation",
+}
+_ENDED = {  # how the repairs ended, said before what the last checked try showed
+    "budget_stop": "The run's model budget ran out {tries} at this site's patch",
+    "no_edit_block": "The model's last reply had no complete edit, so nothing was applied",
+    "no_change": "The model's last repair repeated an edit it had already tried",
+}
+
+
+def manual_reason(v: Verdict) -> tuple[str, str | None]:
+    """A manual-review verdict as one sentence a reviewer reads, plus the raw reason to fold under it:
+    (sentence, raw). Built from the patch stage's structured record; without one, the reason shows as is."""
+    f = v.patch_failure
+    if f is None:
+        return v.reason, None
+    shown = f.last or f.kind
+    cause = (_ALONE if not f.model_edit and shown in _ALONE else _CAUSE).get(shown, "")
+    tests = f"the test{'s' if len(f.tests) != 1 else ''} " + ", ".join(f"`{t}`" for t in f.tests)
+    cause = cause.format(files=", ".join(f"`{p}`" for p in f.files) or "a file", tests=tests)
+    if f.kind in _ENDED:
+        tries = (
+            f"after {f.tries} {'try' if f.tries == 1 else 'tries'}" if f.tries else "before the model replied"
+        )
+        sentence = _ENDED[f.kind].format(tries=tries) + (f"; {cause}" if cause else "")
     else:
-        return reason, None
-    return sentence, reason
+        sentence = cause[:1].upper() + cause[1:]
+    return f"{sentence}.", v.reason
 
 
 def _folded(raw: str) -> list[str]:
@@ -419,7 +428,7 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         )
     for v in manual:  # no model prose: the code-built reason, the raw failure folded under it
         site = sites.get(v.site_id)
-        sentence, raw = plain_reason(v.reason)
+        sentence, raw = manual_reason(v)
         out.append(f"- **{v.site_id}** `{site.file if site else '?'}` needs manual review: {sentence}")
         out += _folded(raw) if raw else []
     if not kept and not manual:
@@ -450,7 +459,7 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         "Each site's cases are split once into dev (adapter iteration) and holdout (verdict only). Pass bar: "
         f"{ctx.config.threshold * 100:g}% agreement with the references "
         f"({ctx.config.reasoning_threshold * 100:g}% for reasoning); free text: judge mean of at least "
-        f"{JUDGE_FLOOR:.1f} on a 1–5 rubric with no case below {JUDGE_CASE_FLOOR:.1f}{pairwise}.",
+        f"{JUDGE_FLOOR:.1f} on a 1–5 rubric, no holdout case below {JUDGE_CASE_FLOOR:.1f}{pairwise}.",
         *(
             f"- {sid}: free-text argument{'s' if len(args) > 1 else ''} {', '.join(args)} checked for "
             "presence, not wording."

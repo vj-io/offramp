@@ -220,6 +220,37 @@ class TierResult(BaseModel):
     case_scores: list[CaseScore] = Field(default_factory=list)
 
 
+PatchFailureKind = Literal[
+    "budget_stop",  # the run's model budget stopped the site's repairs
+    "no_edit_block",  # the model's last reply held no complete edit block, so nothing was applied
+    "no_change",  # a repair repeated an edit already tried
+    "search_miss",  # patch rules: a SEARCH that does not match exactly one place
+    "deletes_tests",  # patch rules: the patch deletes tests
+    "locked_file",  # patch rules: an edit to code that ships
+    "not_editable",  # patch rules: a file this site's patch may not change (or not whole)
+    "does_not_parse",  # patch rules: an edited file that does not parse
+    "checks_failed",  # the repo's ruff + pytest failed on the patched tree
+    "backstop",  # code that ships changed on disk
+    "probe_mismatch",  # the patched call does not send the evaluated request
+    "merge_conflict",  # green alone; its patch conflicts with another site's
+    "not_together",  # green alone; the merged tree fails the repo's checks
+    "merged_drift",  # green alone; on the merged tree its code or its request changed
+    "repo_red",  # the repo's checks fail before any patch
+]
+
+
+class PatchFailure(BaseModel):
+    """Why the patch stage sent a MIGRATE site to manual review, recorded where it happened: the PR's plain
+    sentence is built from this, never from the reason's text (which holds the target repo's check output)."""
+
+    kind: PatchFailureKind  # the outermost, decisive failure
+    last: PatchFailureKind | None = None  # budget_stop / no_edit_block / no_change: the last checked try's
+    tries: int = 0  # the model's replies for this site
+    model_edit: bool = False  # the last checked try was the model's edits (else Offramp's changes alone)
+    files: list[str] = Field(default_factory=list)  # the files that failure names (Offramp's own record)
+    tests: list[str] = Field(default_factory=list)  # deletes_tests: "path::name"
+
+
 class Verdict(BaseModel):
     site_id: str
     decision: Decision
@@ -243,6 +274,7 @@ class Verdict(BaseModel):
     # free text: holdout case -> the judge's score of its reference, for references scored below 3 (reference
     # QA: shown in the PR and the report, never excluded from the evaluation)
     weak_references: dict[str, float] = Field(default_factory=dict)
+    patch_failure: PatchFailure | None = None  # MANUAL_REVIEW from the patch stage: why, structured
     reason: str
 
 

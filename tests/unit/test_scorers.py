@@ -642,18 +642,40 @@ def test_site_pass_free_text(judge, baseline_mean, passed):
 @pytest.mark.parametrize(
     "judge,baseline_mean,passed",
     [
-        ([5.0] * 7 + [2.9], None, False),  # mean 4.74 >= 4.0, but one case below the per-case floor
+        ([5.0] * 7 + [2.9], None, False),  # mean 4.74 >= 4.0, but one holdout case below the per-case floor
         ([5.0] * 7 + [2.9], 4.5, False),  # ... with a reference mean too
         ([5.0] * 7 + [3.0], None, True),  # a case exactly at the floor passes
         ([5.0] * 7 + [3.0], 4.5, True),
     ],
     ids=["below_floor", "below_floor_with_reference", "at_floor", "at_floor_with_reference"],
 )
-def test_free_text_fails_when_any_case_is_below_the_per_case_floor(judge, baseline_mean, passed):
+def test_free_text_holdout_fails_when_any_case_is_below_the_per_case_floor(judge, baseline_mean, passed):
     assert aggregate.JUDGE_CASE_FLOOR == 3.0  # beside JUDGE_FLOOR (the mean) and JUDGE_MARGIN
-    got_passed, got_score = site_pass("free_text", _judge(*judge), Thresholds(), baseline_mean)
-    assert got_passed is passed
-    assert got_score == pytest.approx(sum(judge) / len(judge))
+    holdout = site_pass("free_text", _judge(*judge), Thresholds(), baseline_mean, split="holdout")
+    assert holdout == (passed, pytest.approx(sum(judge) / len(judge)))
+    assert site_pass("free_text", _judge(*judge), Thresholds(), baseline_mean, split="dev")[0] is True
+
+
+# Case scores of two dev runs that passed in the recorded demo run (offramp-demo-app evals/results at
+# e5baa78), with their references' judge mean: dev only decides whether holdout runs, so no floor gates it.
+RECORDED_DEV = {
+    "cs_06 Lightning dev v1": (
+        [5.0, 5.0, 5.0, 4.3333, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 2.3333, 2.3333, 3.3333],
+        4.41,
+    ),
+    "cs_04 Ultra dev v1": (
+        [5.0, 4.3333, 5.0, 4.3333, 5.0, 5.0, 5.0, 4.3333, 3.6667, 5.0, 5.0, 1.0, 4.0, 5.0, 4.3333],
+        4.6887,
+    ),
+}
+
+
+@pytest.mark.parametrize("run", RECORDED_DEV)
+def test_recorded_dev_runs_with_a_case_below_3_still_pass_dev_but_would_fail_holdout(run):
+    scores, reference_mean = RECORDED_DEV[run]
+
+    assert site_pass("free_text", _judge(*scores), Thresholds(), reference_mean, split="dev")[0] is True
+    assert site_pass("free_text", _judge(*scores), Thresholds(), reference_mean, split="holdout")[0] is False
 
 
 def test_free_text_ignores_fraction_thresholds():

@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
 from offramp.evals.scorers import score_case
 from offramp.evals.scorers.aggregate import (
     _NOT_VALID,
+    CANDIDATE_ERROR,
     JUDGE_CASE_FLOOR,
     JUDGE_FLOOR,
     JUDGE_MARGIN,
@@ -162,9 +163,12 @@ def _phrase(result: TierResult, task_type: TaskType, thresholds: Thresholds | Ru
         if not _at_least(result.score, JUDGE_FLOOR):
             return f"judge mean {mean:.2f} < {JUDGE_FLOOR:.1f} {parity}"
         low = min(result.case_scores, key=lambda c: c.score, default=None)
-        if low is not None and not _at_least(low.score, JUDGE_CASE_FLOOR):
-            return (f"judge mean {mean:.2f} ≥ {JUDGE_FLOOR:.1f}, but case {low.case_id} scored "
-                    f"{low.score:.2f} < {JUDGE_CASE_FLOOR:.1f} {parity}")  # fmt: skip
+        if result.split == "holdout" and low is not None and not _at_least(low.score, JUDGE_CASE_FLOOR):
+            low_text = f"scored {low.score:.2f} < {JUDGE_CASE_FLOOR:.1f}"
+            if low.error_category == CANDIDATE_ERROR:  # scored 1.0 by the runner, never judged
+                low_text = "had no answer (its call failed)"
+            head = f"judge mean {mean:.2f} ≥ {JUDGE_FLOOR:.1f}, but holdout case {low.case_id}"
+            return f"{head} {low_text} {parity}"
         return f"judge mean {mean:.2f} more than {JUDGE_MARGIN:g} below the references' judge mean {parity}"
     bar = thresholds.reasoning_threshold if task_type == "reasoning" else thresholds.threshold
     head, t = f"parity vs reference {pct:.1f}%", f"{round(bar * 100, 4):g}%"

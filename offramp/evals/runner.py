@@ -137,7 +137,7 @@ def run_tier(
         for s, r in zip(scores, results, strict=True)
     ]
 
-    passed, score = site_pass(contract.task_type, scores, thresholds, reference_mean)
+    passed, score = site_pass(contract.task_type, scores, thresholds, reference_mean, split=split)
     result = TierResult(
         site_id=site.id,
         tier=tier,

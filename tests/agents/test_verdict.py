@@ -26,7 +26,7 @@ from offramp.agents.verdict import (
 from offramp.evals.errors import MissingReference, ProviderError
 from offramp.evals.route import SiteRoute, route_site
 from offramp.evals.runner import BudgetStop
-from offramp.evals.scorers.aggregate import site_pass
+from offramp.evals.scorers.aggregate import CANDIDATE_ERROR, site_pass
 from offramp.integrations.tavily import SourceModelInfo
 from offramp.schemas import (
     Adapter,
@@ -131,7 +131,7 @@ def scores(passes: list[bool], prefix: str = "cs_01", category: str = "wrong_lab
 def result(
     site: CallSite, tier: Tier, split: str, case_scores: list[CaseScore], version: int = 0
 ) -> TierResult:
-    passed, score = site_pass(site.contract.task_type, case_scores, RunConfig(repo_url="x"))
+    passed, score = site_pass(site.contract.task_type, case_scores, RunConfig(repo_url="x"), split=split)
     return TierResult(
         site_id=site.id,
         tier=tier,
@@ -401,8 +401,18 @@ def test_a_free_text_case_below_the_per_case_floor_keeps_the_site_and_says_which
 
     assert v.decision == "KEEP_CLOSED"
     assert v.reason.startswith(
-        "judge mean 4.68 ≥ 4.0, but case cs_06:015 scored 2.50 < 3.0 (parity vs reference 87.5%) on Lightning"
+        "judge mean 4.68 ≥ 4.0, but holdout case cs_06:015 scored 2.50 < 3.0 (parity vs reference 87.5%) on "
+        "Lightning"
     )
+
+
+def test_a_failed_call_below_the_floor_is_named_as_a_failed_call_not_a_judged_score():
+    rows = [CaseScore(case_id=f"cs_06:{i:03d}", passed=True, score=5.0) for i in range(7)]
+    rows.append(CaseScore(case_id="cs_06:015", passed=False, score=1.0, error_category=CANDIDATE_ERROR))
+
+    v = keep(FREE_TEXT, Tier.LIGHTNING, result(FREE_TEXT, Tier.LIGHTNING, "holdout", rows))
+
+    assert "but holdout case cs_06:015 had no answer (its call failed) (parity" in v.reason
 
 
 def test_references_the_judge_scored_below_3_are_flagged_on_the_verdict_and_kept():

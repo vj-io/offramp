@@ -16,11 +16,11 @@ from offramp.agents.pr_writer import (
     PRContext,
     PRProse,
     SiteNote,
-    plain_reason,
+    manual_reason,
     reference_summary,
     render_pr,
 )
-from offramp.schemas import BaselineResult, EvalCase, ModelOutput, ToolCall
+from offramp.schemas import BaselineResult, EvalCase, ModelOutput, PatchFailure, ToolCall
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "pr"
 SNAPSHOT = FIXTURES / "expected_body.md"
@@ -298,9 +298,11 @@ CS03_RAW = (  # a live cs_03 reason's shape (run 5): the repair broke the format
 )
 
 
-def manual(c: PRContext, site_id: str, reason: str) -> PRContext:
+def manual(c: PRContext, site_id: str, reason: str, failure: PatchFailure | None = None) -> PRContext:
     c.verdicts = [
-        v.model_copy(update={"decision": "MANUAL_REVIEW", "reason": reason}) if v.site_id == site_id else v
+        v.model_copy(update={"decision": "MANUAL_REVIEW", "reason": reason, "patch_failure": failure})
+        if v.site_id == site_id
+        else v
         for v in c.verdicts
     ]
     return c
@@ -308,14 +310,14 @@ def manual(c: PRContext, site_id: str, reason: str) -> PRContext:
 
 def test_a_manual_review_site_reads_as_one_plain_sentence_with_the_raw_failure_folded():
     guess = PRProse(sites=[SiteNote(site_id="cs_03", note="A reviewer must confirm the German example.")])
+    failure = PatchFailure(kind="no_edit_block", last="checks_failed", tries=4, model_edit=True)
 
-    body = render_pr(manual(ctx(), "cs_03", CS03_RAW), guess).body
+    body = render_pr(manual(ctx(), "cs_03", CS03_RAW, failure), guess).body
 
     line = next(ln for ln in body.splitlines() if ln.startswith("- **cs_03**"))
-    assert line == (
-        "- **cs_03** `helphub/orders/extract.py` needs manual review: The model's test edits fed an "
-        "Anthropic TextBlock into the OpenAI chat completion the test fake builds, so this repo's tests "
-        "failed (tests/test_extract.py)."
+    assert line == (  # the outer cause first, then the last checked try; nothing read from the check output
+        "- **cs_03** `helphub/orders/extract.py` needs manual review: The model's last reply had no complete "
+        "edit, so nothing was applied; with the model's test edits applied, this repo's checks still failed."
     )
     assert "A reviewer must confirm" not in body  # no model prose on a manual-review site
     folded = body.split(line)[1].split("</details>")[0]
@@ -324,51 +326,63 @@ def test_a_manual_review_site_reads_as_one_plain_sentence_with_the_raw_failure_f
     assert CS03_RAW.split(" | ")[0] in folded
 
 
+EDITED, ALONE = "with the model's test edits applied,", "with Offramp's changes alone,"
+GREEN = "Its patch passes this repo's checks on its own, but"
+NEVER = "and Offramp never ships a patch that deletes a test."
+SHIPS = "code that ships changed (`app/x.py`), and only Offramp's code may write it."
+F, M = PatchFailure, True  # M: the last checked try applied the model's edits
+
+
 @pytest.mark.parametrize(
-    ("raw", "sentence"),
+    ("failure", "sentence"),
     [
-        (
-            "repair produced no change; last failure: patch rejected (patch rules): patch removes tests "
-            "from tests/test_call_sites.py: ['test_o3_rules']",
-            "The model's edit to tests/test_call_sites.py deleted the test `test_o3_rules`, and Offramp "
-            "never ships a patch that deletes a test.",
-        ),
-        (
-            "the reply holds no complete edit block; last failure: patch rejected (patch rules): search "
-            "text not found in tests/test_triage.py: 'def test_request_contract():'",
-            "The model's edit to tests/test_triage.py quoted lines that are not in that file, so it could "
-            "not be applied.",
-        ),
-        (
-            "repo checks failed on the patch (docker): FAILED tests/test_a.py::test_x | "
-            "FAILED tests/test_b.py::y",
-            "With the model's test edits, this repo's checks still failed "
-            "(tests/test_a.py, tests/test_b.py).",
-        ),
-        (
-            "patch not composed: Ultra agent call cap reached (0)",
-            "The run's Token Factory budget ran out before a patch passed this repo's checks.",
-        ),
-        (
-            "patch rejected (patch rules): helphub/x.py is read-only: it ships as Offramp's code wrote it; "
-            "edit only tests and fakes",
-            "The model tried to edit helphub/x.py, which ships exactly as Offramp's code wrote it.",
-        ),
-        (
-            "green alone, but not together with cs_02 (docker): FAILED tests/test_cli.py::test_x",
-            "Its patch passes this repo's checks on its own, but not merged with the other migrated sites' "
-            "patches (tests/test_cli.py).",
-        ),
+        (F(kind="search_miss", files=["tests/t.py"], model_edit=M),
+         "The model's edit to `tests/t.py` quotes lines matching no single place there, so none applied."),
+        (F(kind="deletes_tests", files=["tests/t.py"], tests=["tests/t.py::test_o3"], model_edit=M),
+         f"The model's edit deleted the test `tests/t.py::test_o3`, {NEVER}"),
+        (F(kind="locked_file", files=["app/x.py"], model_edit=M),
+         "The model tried to edit `app/x.py`, which ships exactly as Offramp's code wrote it."),
+        (F(kind="not_editable", files=["../x.py"], model_edit=M),
+         "The model's edit to `../x.py` is not allowed for this site."),
+        (F(kind="does_not_parse", files=["tests/t.py"], model_edit=M),
+         "The model's edit left `tests/t.py` unparseable."),
+        (F(kind="checks_failed", model_edit=M), f"{EDITED.capitalize()} this repo's checks still failed."),
+        (F(kind="backstop", files=["app/x.py"], model_edit=M), f"{EDITED.capitalize()} {SHIPS}"),
+        (F(kind="probe_mismatch", model_edit=M),
+         f"{EDITED.capitalize()} the call does not send the request that passed the evaluation."),
+        (F(kind="probe_mismatch"),
+         "Offramp's own rewrite does not send the request that passed the evaluation."),
+        (F(kind="merge_conflict", files=["tests/t.py"]),
+         f"{GREEN} it conflicts with another migrated site's patch in `tests/t.py`."),
+        (F(kind="not_together"), f"{GREEN} not merged with the other migrated sites' patches."),
+        (F(kind="merged_drift"), f"{GREEN} on the merged tree its code or its evaluated request changed."),
+        (F(kind="repo_red"),
+         "This repo's own checks fail before any migration patch, so no patch could be checked."),
+        (F(kind="budget_stop", last="checks_failed", tries=0),
+         f"The run's model budget ran out before the model replied at this site's patch; {ALONE} this repo's "
+         "checks fail."),
+        (F(kind="budget_stop", last="deletes_tests", tries=2, model_edit=M, tests=["t.py::test_a"]),
+         "The run's model budget ran out after 2 tries at this site's patch; the model's edit deleted the "
+         f"test `t.py::test_a`, {NEVER}"),
+        (F(kind="no_edit_block", last="checks_failed", tries=4),
+         f"The model's last reply had no complete edit, so nothing was applied; {ALONE} this repo's checks "
+         "fail."),
+        (F(kind="no_change", last="backstop", tries=2, model_edit=M, files=["app/x.py"]),
+         f"The model's last repair repeated an edit it had already tried; {EDITED} {SHIPS}"),
     ],
-    ids=["deleted-test", "search-miss", "checks-failed", "budget", "read-only", "not-together"],
-)
-def test_patch_failures_get_a_code_built_plain_sentence(raw, sentence):
-    assert plain_reason(raw) == (sentence, raw)
+    ids=["search-miss", "deletes-tests", "locked", "not-editable", "parse", "checks", "backstop", "probe",
+         "probe-offramp-alone", "merge-conflict", "not-together", "merged-drift", "repo-red", "budget-alone",
+         "budget-after-tries", "no-edit-block", "no-change"],
+)  # fmt: skip
+def test_each_recorded_failure_kind_reads_as_one_plain_sentence(failure, sentence):
+    v = verdict(manual(ctx(), "cs_03", "raw | output", failure), "cs_03")
+
+    assert manual_reason(v) == (sentence, "raw | output")
 
 
-def test_a_reason_that_is_already_a_sentence_is_shown_as_it_is():
+def test_a_verdict_without_a_recorded_patch_failure_shows_its_reason_as_it_is():
     reason = "patch not composed: Offramp could not rewrite this call; a model-written call is not shipped"
-    assert plain_reason(reason) == (reason, None)
+    assert manual_reason(verdict(manual(ctx(), "cs_03", reason), "cs_03")) == (reason, None)
 
     body = render_pr(manual(ctx(), "cs_03", reason)).body
 
@@ -394,7 +408,7 @@ def test_the_pass_bar_names_the_per_case_floor_for_free_text():
     section = render_pr(ctx()).body.split("## How parity was measured")[1]
 
     assert (
-        "free text: judge mean of at least 4.0 on a 1–5 rubric with no case below 3.0, and at least"
+        "free text: judge mean of at least 4.0 on a 1–5 rubric, no holdout case below 3.0, and at least"
         in section
     )
 

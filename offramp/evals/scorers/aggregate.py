@@ -20,7 +20,7 @@ from offramp.schemas import CaseScore, RunConfig, TaskType
 CANDIDATE_ERROR = "candidate_error"  # the candidate call itself failed: no output to validate
 JUDGE_MARGIN = 0.3  # free_text with a reference mean: judge mean >= reference mean - 0.3 ...
 JUDGE_FLOOR = 4.0  # ... and >= 4.0 on the 1-5 rubric ...
-JUDGE_CASE_FLOOR = 3.0  # ... and no case below 3.0 (a mean can hide one answer that is plainly wrong)
+JUDGE_CASE_FLOOR = 3.0  # ... and, on holdout, no case below 3.0 (a mean can hide a plainly wrong answer)
 WEAK_REFERENCE = 3.0  # a free-text reference the judge scores below this is flagged: shown, never dropped
 RUBRIC_MIN, RUBRIC_MAX = 1.0, 5.0
 
@@ -48,6 +48,8 @@ def site_pass(
     case_scores: Sequence[CaseScore],
     thresholds: Thresholds | RunConfig = DEFAULT_THRESHOLDS,
     baseline_judge_mean: float | None = None,
+    *,
+    split: str | None = None,
 ) -> tuple[bool, float]:
     """(passed, score).
 
@@ -55,15 +57,16 @@ def site_pass(
     (reasoning_threshold for reasoning); score is that fraction.
     json_extraction: pass when every case is schema-valid AND the fraction of passing cases >= threshold
     AND the mean field match >= threshold; score is the mean field match.
-    free_text: pass when the judge mean is >= 4.0, no case scores below 3.0 and, when `baseline_judge_mean`
-    (the references' mean on the same rubric) is given, the mean is also >= baseline_judge_mean - 0.3; score
-    is the judge mean. Judge scores and the reference mean outside 1..5 raise ValueError: they cannot be
-    rubric scores, so they never count.
+    free_text: pass when the judge mean is >= 4.0 and, when `baseline_judge_mean` (the references' mean on
+    the same rubric) is given, also >= baseline_judge_mean - 0.3; on the holdout split (`split="holdout"`,
+    the verdict's) no case may score below 3.0 either. Dev keeps the mean rule: it only decides whether
+    holdout runs. Score is the judge mean. Judge scores and the reference mean outside 1..5 raise ValueError:
+    they cannot be rubric scores, so they never count.
     """
     if not case_scores:
         return False, 0.0
     if task_type == "free_text":
-        return _free_text(case_scores, baseline_judge_mean)
+        return _free_text(case_scores, baseline_judge_mean, holdout=split == "holdout")
     fraction = sum(c.passed for c in case_scores) / len(case_scores)
     bar = thresholds.reasoning_threshold if task_type == "reasoning" else thresholds.threshold
     ok = _at_least(fraction, bar)
@@ -75,14 +78,18 @@ def site_pass(
     return ok, fraction
 
 
-def _free_text(case_scores: Sequence[CaseScore], baseline_judge_mean: float | None) -> tuple[bool, float]:
+def _free_text(
+    case_scores: Sequence[CaseScore], baseline_judge_mean: float | None, holdout: bool
+) -> tuple[bool, float]:
     for c in case_scores:
         if not RUBRIC_MIN <= c.score <= RUBRIC_MAX:  # also false for NaN
             raise ValueError(f"judge score {c.score!r} for case {c.case_id} is outside the 1-5 rubric")
     if baseline_judge_mean is not None and not RUBRIC_MIN <= baseline_judge_mean <= RUBRIC_MAX:
         raise ValueError(f"baseline_judge_mean {baseline_judge_mean!r} is outside the 1-5 rubric")
     mean = math.fsum(c.score for c in case_scores) / len(case_scores)
-    ok = _at_least(mean, JUDGE_FLOOR) and all(_at_least(c.score, JUDGE_CASE_FLOOR) for c in case_scores)
+    ok = _at_least(mean, JUDGE_FLOOR)
+    if holdout:
+        ok = ok and all(_at_least(c.score, JUDGE_CASE_FLOOR) for c in case_scores)
     if baseline_judge_mean is not None:
         ok = ok and _at_least(mean, baseline_judge_mean - JUDGE_MARGIN)
     return ok, mean

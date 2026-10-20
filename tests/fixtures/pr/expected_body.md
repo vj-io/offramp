@@ -35,7 +35,7 @@ Offramp evaluated 6 LLM call sites against references (140 cases, 43 in the hold
 The source models' own outputs were never recorded; parity is agreement with references.
 Reference outputs for cs_04, cs_06 were produced by `claude-sonnet-5.5 (via Claude Code; not the repo's source model)`.
 
-Each site's cases are split once into dev (adapter iteration) and holdout (verdict only). Pass bar: 95% agreement with the references (90% for reasoning); free text: judge mean of at least 4.0 on a 1–5 rubric with no case below 3.0, and at least the references' judge mean − 0.3 where references hold text (cs_04, cs_06).
+Each site's cases are split once into dev (adapter iteration) and holdout (verdict only). Pass bar: 95% agreement with the references (90% for reasoning); free text: judge mean of at least 4.0 on a 1–5 rubric, no holdout case below 3.0, and at least the references' judge mean − 0.3 where references hold text (cs_04, cs_06).
 - cs_02: free-text argument escalate_to_human.reason checked for presence, not wording.
 
 | Site | References | Cases (dev / holdout) | Reference audit (checked / agreed / dropped / human-verified, by) |
