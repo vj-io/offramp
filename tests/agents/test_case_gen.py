@@ -1712,6 +1712,9 @@ def test_a_signed_first_name_is_not_excused_by_the_seeded_email_handle(case_id, 
         ("team_name", "Team name", False),
         ("customer_name", "Full name of the customer as shown on the shop order", True),
         ("buyer_name", "Name of the customer who bought the item", True),
+        ("account_holder_name", "Name of the account holder", True),  # re-review NB7: a thing-word earlier
+        ("team_lead_name", "Team lead", True),  # in the key is not the thing being named
+        ("device_owner_name", "Owner of the device", True),
     ],
 )
 def test_every_person_name_field_gets_the_name_detector(key, desc, person):

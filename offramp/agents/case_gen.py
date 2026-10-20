@@ -1055,7 +1055,9 @@ def _absent_kind(key: str, prop: dict[str, Any]) -> tuple[str, str | None] | Non
     if kind == "example":
         return "id", _shape_pattern(_EXAMPLE.search(prop.get("description", ""))[1])
     if kind == "name":  # a person (customer, first/last/full name, plain "name"), not product_name, shop_name
-        return None if set(re.findall(r"[a-z]+", key.lower())) & _NON_PERSON_WORDS else ("name", None)
+        words = re.findall(r"[a-z]+", key.lower())
+        before = words[words.index("name") - 1] if "name" in words[1:] else None  # account_holder: person
+        return None if before in _NON_PERSON_WORDS else ("name", None)
     return (kind, None) if kind in ("email", "date", "currency") else None
 
 
@@ -1224,7 +1226,6 @@ _NON_PERSON_WORDS = {
     "book",
     "song",
     "game",
-    "account",
     "product",
     "products",
     "company",
