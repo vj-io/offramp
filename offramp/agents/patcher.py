@@ -27,6 +27,7 @@ import os
 import re
 import shutil
 import string
+import textwrap
 import tokenize
 import tomllib
 from collections.abc import Callable
@@ -49,8 +50,9 @@ MAX_TOKENS = 8000
 REPAIR_MAX_TOKENS = 12000  # a complete second set of blocks, with room to spare (a recorded repair ran out)
 REPAIRS = 2  # tries after the first, each shown the last failure; a repeated patch stops at once
 REPAIR = """Your edits were not accepted: {failure}
-The files are unchanged from my first message. Reply with SEARCH/REPLACE edit blocks only, no analysis or \
-explanation: a complete new set (all blocks, not only the fix), then the NOTES line. Begin with `FILE:`."""
+Reply with SEARCH/REPLACE edit blocks only, no analysis or explanation, then the NOTES line. Each file you \
+name is taken as shown in my first message with your new blocks applied, so give every block that file \
+needs, not only the fix; a file you do not name keeps your previous edits. Begin with `FILE:`."""
 ROOT_CLIENT = ("offramp/client.py", "offramp.client")  # when the sites are not inside one package
 TEMPLATE = Path(__file__).parents[1] / "templates" / "client.py.tmpl"
 IGNORE = shutil.ignore_patterns(
@@ -74,6 +76,7 @@ AUTO_IMPORTS = {
     "token_factory_client": "from {client} import token_factory_client",
     "OpenAI": "from openai import OpenAI",
     "json": "import json",
+    "ChatCompletion": "from openai.types.chat import ChatCompletion",
 }
 # pytest's built-in fixtures: a patched test may use one without requesting it; added like an import.
 PYTEST_FIXTURES = ("monkeypatch", "capsys", "capfd", "caplog", "tmp_path", "tmp_path_factory")
@@ -344,11 +347,15 @@ def _module_values(tree: ast.Module) -> dict[str, Any]:
     return out
 
 
+SCHEMA_PARAMS = {"tools": "NEMOTRON_TOOLS", "response_format": "NEMOTRON_RESPONSE_FORMAT"}  # long: constants
+
+
 def _prepare(source: str, site: CallSite, spec: AdapterSpec, params: dict[str, Any], width: int):
     """Write the evaluated request into the site's module, mechanically. Returns (source, constants,
-    system_name, rewritten): constants maps "request" (every call parameter: model, max_tokens, temperature,
-    extra_body, response_format, tools, tool_choice), "few_shot", "prefix", "suffix" -> constant name;
-    system_name holds the system prompt; rewritten: the call is already `create(**REQUEST, messages=...)`."""
+    system_name, rewritten, fixed): constants maps "few_shot", "prefix", "suffix", "tools",
+    "response_format" -> module constant name; system_name holds the system prompt; rewritten: the call
+    already sends the request as literal keyword arguments; fixed: the reply is read the OpenAI way too, so
+    the module is final."""
     tree = ast.parse(source)
     taken = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | set(_module_values(tree))
 
@@ -381,17 +388,21 @@ def _prepare(source: str, site: CallSite, spec: AdapterSpec, params: dict[str, A
         ("few_shot", "NEMOTRON_FEW_SHOT", spec.few_shot or None),
         ("prefix", "NEMOTRON_USER_PREFIX", spec.user_prefix or None),
         ("suffix", "NEMOTRON_USER_SUFFIX", spec.user_suffix or None),
-        ("request", "NEMOTRON_REQUEST", params),  # the evaluated call parameters, all of them
+        *((key, base, params.get(key)) for key, base in SCHEMA_PARAMS.items()),
     ]:
         if value is not None:
             constants[key] = name(base)
             blocks.append(f"{constants[key]} = {py_literal(value, 0, width, len(constants[key]) + 3)}")
-    top = _top_node(tree, site)
-    at = min([top.lineno, *(d.lineno for d in getattr(top, "decorator_list", []))]) - 1
-    lines = source.splitlines(keepends=True)
-    source = "".join(lines[:at]) + "\n\n".join(blocks) + "\n\n\n" + "".join(lines[at:])
-    rewritten = _rewrite_call(source, site, constants, system_name)
-    return (rewritten or source), constants, system_name, rewritten is not None
+    if blocks:
+        top = _top_node(tree, site)
+        at = min([top.lineno, *(d.lineno for d in getattr(top, "decorator_list", []))]) - 1
+        lines = source.splitlines(keepends=True)
+        source = "".join(lines[:at]) + "\n\n".join(blocks) + "\n\n\n" + "".join(lines[at:])
+    rewritten = _rewrite_call(source, site, constants, system_name, params, width)
+    if rewritten is None:
+        return source, constants, system_name, False, False
+    mapped = _map_reply(rewritten, site)
+    return (mapped or rewritten), constants, system_name, True, mapped is not None
 
 
 def _offset(lines: list[str], lineno: int, col: int) -> int:
@@ -408,12 +419,18 @@ def _role(node: ast.expr) -> str | None:
 
 
 def _rewrite_call(
-    source: str, site: CallSite, constants: dict[str, str], system_name: str | None
+    source: str,
+    site: CallSite,
+    constants: dict[str, str],
+    system_name: str | None,
+    params: dict[str, Any],
+    width: int,
 ) -> str | None:
-    """The site's call rewritten to `<client>.chat.completions.create(**REQUEST, messages=[system, *few-shot,
-    ...the call's own messages, the last user content wrapped in prefix/suffix])`, from an OpenAI
-    `chat.completions.create` or an Anthropic `messages.create` (its `system=` becomes the first message).
-    None when the call is not a single call with a literal `messages=[...]` list: the model then writes it."""
+    """The site's call rewritten to `<client>.chat.completions.create(model=..., <every evaluated parameter as
+    a literal keyword argument, schemas by constant name>, messages=[system, *few-shot, ...the call's own
+    messages, the last user content wrapped in prefix/suffix])`, from an OpenAI `chat.completions.create` or
+    an Anthropic `messages.create` (its `system=` becomes the first message). None when the call is not a
+    single call with a literal `messages=[...]` list: the model then writes it."""
     tree = ast.parse(source)
     scope = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
                   and n.name == site.function), tree)  # fmt: skip
@@ -464,14 +481,127 @@ def _rewrite_call(
     indent = re.match(r"[ \t]*", lines[call.lineno - 1]).group(0)
     i1, i2 = indent + "    ", indent + "        "
     entries = "".join(f"{i2}{x},\n" for x in [*head, *body])
-    text = (f"{seg(receiver)}.chat.completions.create(\n{i1}**{constants['request']},\n{i1}messages=[\n"
-            f"{entries}{i1}],\n{indent})")  # fmt: skip
+    args = "".join(
+        f"{i1}{k}={constants.get(k) or py_literal(v, len(i1), width, len(i1) + len(k) + 1)},\n"
+        for k, v in params.items()
+    )
+    text = f"{seg(receiver)}.chat.completions.create(\n{args}{i1}messages=[\n{entries}{i1}],\n{indent})"
     rewritten = source[:start] + text + source[end:]
     try:
         ast.parse(rewritten)
     except SyntaxError:
         return None
     return rewritten
+
+
+def _calls(fn: ast.AST) -> list[ast.Call]:
+    kinds = ("chat.completions.create", "messages.create")
+    return [c for c in ast.walk(fn) if isinstance(c, ast.Call) and _call_name(c.func).endswith(kinds)]
+
+
+def _function(tree: ast.Module, site: CallSite) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    return next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+                 and n.name == site.function), None)  # fmt: skip
+
+
+def _is_content(node: ast.AST, reply: str) -> bool:  # `<reply>.content`
+    return (isinstance(node, ast.Attribute) and node.attr == "content" and isinstance(node.value, ast.Name)
+            and node.value.id == reply)  # fmt: skip
+
+
+def _is_type(node: ast.AST, var: str, kind: str) -> bool:  # `<var>.type == "<kind>"`
+    return (isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq)
+            and isinstance(node.left, ast.Attribute) and node.left.attr == "type"
+            and isinstance(node.left.value, ast.Name) and node.left.value.id == var
+            and isinstance(node.comparators[0], ast.Constant)
+            and node.comparators[0].value == kind)  # fmt: skip
+
+
+def _text_read(node: ast.AST, reply: str) -> bool:
+    """`"".join(b.text for b in <reply>.content if b.type == "text")` or `<reply>.content[0].text`."""
+    if (isinstance(node, ast.Attribute) and node.attr == "text" and isinstance(node.value, ast.Subscript)
+            and _is_content(node.value.value, reply) and isinstance(node.value.slice, ast.Constant)
+            and node.value.slice.value == 0):  # fmt: skip
+        return True
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "join"
+            and isinstance(node.func.value, ast.Constant) and isinstance(node.func.value.value, str)
+            and len(node.args) == 1 and not node.keywords
+            and isinstance(node.args[0], ast.GeneratorExp | ast.ListComp)):  # fmt: skip
+        return False
+    gen = node.args[0]
+    if len(gen.generators) != 1 or not isinstance(gen.generators[0].target, ast.Name):
+        return False
+    var = gen.generators[0].target.id
+    return (_is_content(gen.generators[0].iter, reply) and isinstance(gen.elt, ast.Attribute)
+            and gen.elt.attr == "text" and isinstance(gen.elt.value, ast.Name) and gen.elt.value.id == var
+            and all(_is_type(c, var, "text") for c in gen.generators[0].ifs))  # fmt: skip
+
+
+def _map_reply(source: str, site: CallSite) -> str | None:
+    """The migrated function reads the reply the OpenAI way, by code. An OpenAI site already does. For an
+    Anthropic site: `"".join(b.text for b in r.content if b.type == "text")` and `r.content[0].text` become
+    `(r.choices[0].message.content or "")`; a `for b in r.content:` loop over tool_use blocks walks
+    `r.choices[0].message.tool_calls or []` (`b.type == "tool_use"` -> `"function"`, `b.name` ->
+    `b.function.name`, `b.input` -> `json.loads(b.function.arguments)`); an `Anthropic` annotation of a
+    parameter becomes `OpenAI`. None when the reply is used any other way: the model maps it then."""
+    if site.sdk == "openai":
+        return source
+    tree = ast.parse(source)
+    fn = _function(tree, site)
+    calls = _calls(fn) if fn else []
+    if len(calls) != 1:
+        return None
+    holder = next((n for n in ast.walk(fn) if isinstance(n, ast.Assign) and n.value is calls[0]), None)
+    if holder is None or len(holder.targets) != 1 or not isinstance(holder.targets[0], ast.Name):
+        return None
+    reply = holder.targets[0].id
+    lines = source.splitlines(keepends=True)
+    spans: list[tuple[int, int, str]] = []
+
+    def put(node: ast.AST, text: str) -> None:
+        start = _offset(lines, node.lineno, node.col_offset)
+        spans.append((start, _offset(lines, node.end_lineno, node.end_col_offset), text))
+
+    parents = {child: node for node in ast.walk(fn) for child in ast.iter_child_nodes(node)}
+    for node in ast.walk(fn):
+        if _text_read(node, reply):
+            text = f'{reply}.choices[0].message.content or ""'
+            bare = isinstance(parents.get(node), ast.Assign | ast.Return | ast.Call | ast.keyword)
+            put(node, text if bare else f"({text})")
+        elif (
+            isinstance(node, ast.For) and _is_content(node.iter, reply) and isinstance(node.target, ast.Name)
+        ):
+            block = node.target.id
+            put(node.iter, f"{reply}.choices[0].message.tool_calls or []")
+            for use in (n for part in [*node.body, *node.orelse] for n in ast.walk(part)):
+                if not (isinstance(use, ast.Name) and use.id == block):
+                    continue
+                attr = parents[use]
+                if not isinstance(attr, ast.Attribute) or attr.attr not in ("type", "name", "input", "id"):
+                    return None
+                if attr.attr == "type":
+                    if not _is_type(parents[attr], block, "tool_use"):
+                        return None
+                    put(parents[attr].comparators[0], '"function"')
+                elif attr.attr != "id":
+                    new = "function.name" if attr.attr == "name" else None
+                    put(attr, f"{block}.{new}" if new else f"json.loads({block}.function.arguments)")
+    for arg in [*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs]:
+        if isinstance(arg.annotation, ast.Name) and arg.annotation.id == "Anthropic":
+            put(arg.annotation, "OpenAI")
+    spans.sort()
+    if any(a[1] > b[0] for a, b in zip(spans, spans[1:], strict=False)):
+        return None
+    for start, end, text in reversed(spans):
+        source = source[:start] + text + source[end:]
+    fn = _function(ast.parse(source), site)  # every use of the reply is now an OpenAI one
+    parents = {child: node for node in ast.walk(fn) for child in ast.iter_child_nodes(node)}
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Name) and node.id == reply and isinstance(node.ctx, ast.Load):
+            parent = parents[node]
+            if not (isinstance(parent, ast.Attribute) and parent.attr in ("choices", "id", "model")):
+                return None
+    return source
 
 
 def _top_node(tree: ast.Module, site: CallSite) -> ast.stmt:
@@ -485,7 +615,25 @@ def _top_node(tree: ast.Module, site: CallSite) -> ast.stmt:
     return next((n for n in tree.body if n.lineno <= site.lines[0] <= n.end_lineno), tree.body[-1])
 
 
-def _apply(edits: list[Edit], files: dict[str, str]) -> list[str]:
+def _near(text: str, search: str) -> tuple[int, int] | None:
+    """Where a long SEARCH block that the model copied with a slip sits: the one run of as many lines whose
+    first and last lines match exactly and at least 90% of whose lines do. None when it is short (5 lines or
+    fewer), or no run or more than one run qualifies."""
+    want = search.split("\n")
+    have = text.split("\n")
+    n = len(want)
+    if n <= 5:
+        return None
+    runs = [i for i in range(len(have) - n + 1) if have[i] == want[0] and have[i + n - 1] == want[-1]
+            and sum(a == b for a, b in zip(have[i : i + n], want, strict=True)) >= 0.9 * n]  # fmt: skip
+    if len(runs) != 1:
+        return None
+    start = sum(len(line) + 1 for line in have[: runs[0]])
+    return start, start + len("\n".join(have[runs[0] : runs[0] + n]))
+
+
+def _apply(edits: list[Edit], files: dict[str, str], locked: frozenset[str] = frozenset()) -> list[str]:
+    """Apply the edit blocks in order; `locked` files are shown but read-only."""
     shown = dict(files)
     seen = set()
     for e in edits:
@@ -501,6 +649,12 @@ def _apply(edits: list[Edit], files: dict[str, str]) -> list[str]:
         ):  # labelled with the wrong editable file: its text is unique elsewhere
             e = e.model_copy(update={"path": elsewhere[0]})
             n = 1
+        if e.path in locked:
+            return [f"{e.path} is migrated by Offramp and read-only: edit only the tests and fakes"]
+        near = _near(files[e.path], e.search) if n == 0 and e.search not in shown[e.path] else None
+        if near:  # a slip in copying a long block: it still names one place
+            files[e.path] = files[e.path][: near[0]] + e.replace + files[e.path][near[1] :]
+            continue
         if n != 1:
             hint = (
                 " (an earlier block already changed these lines: merge the two)"
@@ -630,10 +784,11 @@ def rewrite_callers(source: str, function: str, client: str) -> str:
     return add_imports(source, client)
 
 
-def mirror_fakes(source: str, modules: set[str]) -> str:
-    """In a test: `monkeypatch.setattr(<module>, "OpenAI", <fake>)` for a module whose code now builds
-    `token_factory_client()` gets a twin for `token_factory_client`, with the same fake. Only for OpenAI-SDK
-    sites: the Token Factory client is an OpenAI client, so the repo's OpenAI fake fits it as it is."""
+def mirror_fakes(source: str, modules: set[str], old: str = "OpenAI") -> str:
+    """In a test: `monkeypatch.setattr(<module>, "<old>", <fake>)` for a module whose code now builds
+    `token_factory_client()` gets a twin for `token_factory_client`, with the same fake. An OpenAI fake
+    fits the Token Factory client as it is; an Anthropic fake does once `convert_fakes` taught it the
+    OpenAI call."""
     tree = ast.parse(source)
     lines = source.splitlines(keepends=True)
     setattrs = [c for c in ast.walk(tree) if isinstance(c, ast.Call) and len(c.args) == 3
@@ -648,7 +803,7 @@ def mirror_fakes(source: str, modules: set[str]) -> str:
         call = stmt.value
         if (ast.unparse(call.func).endswith("monkeypatch.setattr") and len(call.args) == 3
                 and isinstance(call.args[0], ast.Name) and call.args[0].id in modules
-                and isinstance(call.args[1], ast.Constant) and call.args[1].value == "OpenAI"
+                and isinstance(call.args[1], ast.Constant) and call.args[1].value == old
                 and (call.args[0].id, "token_factory_client") not in present):  # fmt: skip
             head = ast.get_source_segment(source, call.func)
             fake = ast.get_source_segment(source, call.args[2])
@@ -659,6 +814,120 @@ def mirror_fakes(source: str, modules: set[str]) -> str:
     for row, text in sorted(inserts, reverse=True):
         lines.insert(row, text)
     return "".join(lines)
+
+
+FAKE_HELPER = '''def chat_completion_from_blocks(blocks) -> ChatCompletion:
+    """Anthropic content blocks as the OpenAI chat completion that a call site
+    migrated by Offramp reads: text blocks joined, tool_use blocks as tool calls."""
+    text = "".join(b.text for b in blocks if b.type == "text")
+    calls = [
+        {
+            "id": b.id,
+            "type": "function",
+            "function": {"name": b.name, "arguments": json.dumps(b.input)},
+        }
+        for b in blocks
+        if b.type == "tool_use"
+    ]
+    message = {"role": "assistant", "content": text or None}
+    if calls:
+        message["tool_calls"] = calls
+    return ChatCompletion.model_validate(
+        {
+            "id": "chatcmpl-fake",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "fake",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "tool_calls" if calls else "stop",
+                    "message": message,
+                }
+            ],
+        }
+    )
+'''
+
+
+def _fake_messages_method(cls: ast.ClassDef) -> tuple[ast.stmt, ast.FunctionDef, ast.expr] | None:
+    """(the `self.messages = SimpleNamespace(create=self.<m>)` statement, method <m>, the expression its
+    `return Message(..., content=<expr>)` answers with) for an Anthropic fake class, else None."""
+    methods = {n.name: n for n in cls.body if isinstance(n, ast.FunctionDef)}
+    init = methods.get("__init__")
+    stmts = [n for n in ast.walk(init) if isinstance(n, ast.Assign)] if init else []
+    if any(ast.unparse(t) == "self.chat" for n in stmts for t in n.targets):
+        return None  # already answers the OpenAI call
+    for n in stmts:
+        if ([ast.unparse(t) for t in n.targets] == ["self.messages"] and isinstance(n.value, ast.Call)
+                and len(n.value.keywords) == 1 and n.value.keywords[0].arg == "create"
+                and ast.unparse(n.value.keywords[0].value).startswith("self.")):  # fmt: skip
+            method = methods.get(ast.unparse(n.value.keywords[0].value).removeprefix("self."))
+            last = method.body[-1] if method else None
+            if (isinstance(last, ast.Return) and isinstance(last.value, ast.Call)
+                    and ast.unparse(last.value.func).split(".")[-1] == "Message"):  # fmt: skip
+                content = next((k.value for k in last.value.keywords if k.arg == "content"), None)
+                if content is not None:
+                    return n, method, content
+    return None
+
+
+def convert_fakes(source: str, client: str) -> str:
+    """In a test helper: an Anthropic fake (`self.messages = SimpleNamespace(create=self.<m>)`, <m> returning
+    `Message(..., content=<blocks>)`) also answers `chat.completions.create`, with the same canned blocks as
+    an OpenAI chat completion (`chat_completion_from_blocks`, added once to the module). <m>'s other steps
+    are kept, an argument check against `Messages.create` checking against `Completions.create` instead."""
+    tree = ast.parse(source)
+    found = [
+        (cls, hit)
+        for cls in tree.body
+        if isinstance(cls, ast.ClassDef) and (hit := _fake_messages_method(cls))
+    ]
+    if not found:
+        return source
+    lines = source.splitlines(keepends=True)
+    bound = _bound(tree)
+    inserts: list[tuple[int, str]] = []  # (0-based line index to insert before, text)
+    for _, (assign, method, content) in found:
+        pad = re.match(r"[ \t]*", lines[assign.lineno - 1]).group(0)
+        inserts.append(
+            (
+                assign.end_lineno,
+                f"{pad}self.chat = SimpleNamespace(\n"
+                f"{pad}    completions=SimpleNamespace(create=self._chat_completion)\n{pad})\n",
+            )
+        )
+        indent = " " * method.col_offset
+        body = " " * method.body[0].col_offset
+        steps = []
+        for stmt in method.body[:-1]:
+            if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
+                continue  # its docstring
+            text = "".join(lines[stmt.lineno - 1 : stmt.end_lineno])
+            if re.search(r"\bMessages\b", text):
+                if "Completions" not in bound:
+                    continue
+                text = re.sub(r"\bMessages\b", "Completions", text)
+            steps.append(text)
+        expr = ast.get_source_segment(source, content)
+        inserts.append(
+            (
+                method.end_lineno,
+                (
+                    f"\n{indent}def _chat_completion(self, **kwargs):\n"
+                    f'{body}"""The same canned reply, as an OpenAI chat completion (Offramp)."""\n'
+                    + "".join(steps)
+                    + f"{body}return chat_completion_from_blocks({expr})\n"
+                ),
+            )
+        )
+    if "chat_completion_from_blocks" not in bound:
+        first = min(found, key=lambda f: f[0].lineno)[0]
+        at = min([first.lineno, *(d.lineno for d in first.decorator_list)]) - 1
+        inserts.append((at, FAKE_HELPER + "\n\n"))
+    for row, text in sorted(inserts, key=lambda i: i[0], reverse=True):
+        lines.insert(row, text)
+    return add_imports("".join(lines), client)
 
 
 def _signature(source: str, function: str | None) -> str | None:
@@ -689,8 +958,9 @@ def _call_name(node: ast.expr) -> str:
 def conformance(
     source: str, site: CallSite, params: dict[str, Any], constants: dict[str, str], system_name: str | None
 ) -> list[str]:
-    """Problems with the patched site file: the call must be `create(**REQUEST, messages=[...])`, REQUEST must
-    still hold exactly the evaluated parameters, and the prompt constants must be used."""
+    """Problems with the patched site file: the call must pass exactly the evaluated parameters as written-out
+    keyword arguments (a schema may be a module constant holding it) plus messages, and use the prompt
+    constants."""
     tree = ast.parse(source)
     scope = next(
         (
@@ -707,14 +977,22 @@ def conformance(
         return [f"the old messages.create call is still in {where}"]
     if len(tf) != 1:
         return [f"expected one chat.completions.create call in {where}, found {len(tf)}"]
-    request = constants["request"]
-    splats = [k.value for k in tf[0].keywords if k.arg is None]
-    named = {k.arg for k in tf[0].keywords if k.arg}
-    problems = []
-    if tf[0].args or named != {"messages"} or len(splats) != 1 or getattr(splats[0], "id", None) != request:
-        problems.append(f"the call must be exactly create(**{request}, messages=[...]), nothing else")
-    if _module_values(tree).get(request) != params:
-        problems.append(f"{request} must hold exactly the evaluated request: {_flat(params)[:200]}")
+    call, problems = tf[0], []
+    if call.args or any(k.arg is None for k in call.keywords):
+        problems.append("the call takes written-out keyword arguments only: no positional arguments, no **")
+    named = {k.arg: k.value for k in call.keywords if k.arg}
+    if set(named) != {*params, "messages"}:
+        problems.append(f"the call must pass exactly {', '.join([*params, 'messages'])}, nothing else")
+    values = _module_values(tree)
+    for key, want in params.items():
+        if (node := named.get(key)) is None:
+            continue
+        try:
+            got = values.get(node.id, ...) if isinstance(node, ast.Name) else ast.literal_eval(node)
+        except (ValueError, TypeError, SyntaxError):
+            got = ...
+        if got != want:
+            problems.append(f"`{key}` must be exactly the evaluated {_flat(want)[:200]}")
     used = {n.id for n in ast.walk(scope) if isinstance(n, ast.Name)}
     named_constants = (
         ("system prompt", system_name),
@@ -775,10 +1053,11 @@ def _context(repo: Path, site: CallSite, client_path: str) -> list[str]:
     return [f.as_posix() for f in [own, *callers, *tests, *sorted(helpers)]]
 
 
-SYSTEM = """You migrate one LLM call site of a Python repository to NVIDIA Nemotron on Nebius Token Factory, \
-which is OpenAI-compatible: the call becomes `client.chat.completions.create(...)` on an `openai.OpenAI` \
-client. Offramp has measured that the request given below reaches parity; make the code send exactly that \
-request and keep the repository's ruff and tests green.
+SYSTEM = """Offramp migrates one LLM call site of a Python repository to NVIDIA Nemotron on Nebius Token \
+Factory, which is OpenAI-compatible: the call becomes `client.chat.completions.create(...)` on an \
+`openai.OpenAI` client, sending a request Offramp measured to reach parity. Offramp's code has already \
+rewritten what it could (see "The call" and "Already changed by Offramp"). You make the rest of the \
+repository fit, keeping its ruff and tests green.
 
 Reply with edit blocks only, then one NOTES line:
 
@@ -796,40 +1075,48 @@ as shown (same indentation, same escapes), with enough lines to be unique. Block
 the result of the previous ones; never repeat a block. Only files marked (editable); no new files.
 
 Rules:
-1. Keep every function's name, parameters and return value. Only the type of an injected client parameter \
-may change, to `OpenAI` (from openai).
-2. The call is `client.chat.completions.create(**NEMOTRON_REQUEST, messages=[...])` as described under "The \
-call"; NEMOTRON_REQUEST and the other NEMOTRON_* constants are already in the file. Keep them and that call \
-exactly as they are; never pass the parameters any other way.
-3. Read the reply the OpenAI way: text is `response.choices[0].message.content` (may be None); tool calls \
-are `response.choices[0].message.tool_calls or []`, each with `.function.name` and `.function.arguments` \
-(a JSON string: json.loads it). Map them onto exactly what the function returned before.
-4. Code in this repo that constructs the old SDK client to call this function must pass \
-`token_factory_client()` (imported from the client module named under "The call") instead. \
-Tests that replaced that constructor in such a module with a fake must replace `token_factory_client` \
-there instead: check the editable tests for such patches, since one left on the old constructor makes the \
-code call the real client.
-5. Tests: you may update the tests that pin the old provider - assertions on the request's shape (model, \
-SDK keyword arguments, message layout, checks of the call's source such as `"X" in ast.unparse(call)`) \
-and the repo's provider fakes: extend its existing OpenAI-style fake helper when it cannot yet return what \
-the new code reads (e.g. tool calls), building real openai response objects the way the helper already \
-does, instead of writing ad-hoc fake classes inside tests. The system prompt is now the first message: \
-a test that read the user message as `messages[0]` reads it as `messages[-1]`, asserting the same \
-things. A test that requires literal keyword arguments at every call site (no `**` unpacking, a literal \
-`model=`) must accept this migrated call's `**NEMOTRON_REQUEST` and read the model from \
-`NEMOTRON_REQUEST["model"]`; keep the check as it is for every other call site. Never weaken a \
-behavioural or parsing assertion: expected return values and parsing checks stay exactly as they are. \
-Never delete or rename a test.
-6. Add the imports your code needs and remove the ones it leaves unused (import order is fixed \
-automatically afterwards).
-7. Keep lines within the repo's line length.
-8. If nothing besides the call needs to change, reply with only the NOTES line."""
+1. Files marked (read-only) are final: never edit them. When the migrated module is read-only, edit only \
+the tests and their fakes.
+2. Never change the request: the call's keyword arguments, their values and its messages stay exactly as \
+Offramp wrote them. Keep every function's name, parameters and return value.
+3. Only when the migrated module is editable: make the code send exactly the request under "The call" \
+(written-out keyword arguments, no ** unpacking) and read the reply the OpenAI way: text is \
+`response.choices[0].message.content` (may be None); tool calls are \
+`response.choices[0].message.tool_calls or []`, each with `.function.name` and `.function.arguments` (a \
+JSON string: json.loads it). Map them onto exactly what the function returned before.
+4. Code that builds the old SDK client to call the migrated function passes `token_factory_client()` \
+instead, and a test that replaced that constructor with a fake replaces `token_factory_client` the same \
+way (Offramp did this where the client is built inside the call).
+5. Tests: update what pins the old provider for THIS call site so it asserts the new request: the model ID, \
+SDK keyword arguments (`system=`, `max_completion_tokens`, a `tool_choice` or `tools` value, parameter \
+rules of the old model), the message layout, and checks of the call's source (tables of call sites, \
+`ast` checks of keyword arguments). Every other call site keeps its old pins. The system prompt is now the \
+first message: a test that read the user message as `messages[0]` reads it as `messages[-1]`, asserting \
+the same things. Never weaken a behavioural or parsing assertion: expected return values and parsing \
+checks stay exactly as they are. Never delete or rename a test.
+6. Fakes: when a provider fake still cannot answer `chat.completions.create` the way the new code reads \
+it, extend the repo's existing fake helper, building real openai response objects the way it already \
+does, instead of writing ad-hoc fake classes inside tests.
+7. Add the imports your code needs and remove the ones it leaves unused (import order is fixed \
+automatically afterwards). Keep lines within the repo's line length.
+8. When "What fails now" lists failing checks, your edits must make every one of them pass."""
+
+
+def _call_text(source: str, site: CallSite) -> str | None:
+    """The source of the site's single LLM call, dedented to its statement's indentation."""
+    tree = ast.parse(source)
+    calls = _calls(_function(tree, site) or tree)
+    if len(calls) != 1:
+        return None
+    lines = source.splitlines(keepends=True)
+    stmt = min((n for n in ast.walk(tree) if isinstance(n, ast.stmt) and calls[0] in ast.walk(n)),
+               key=lambda n: n.end_lineno - n.lineno)  # fmt: skip
+    return textwrap.dedent("".join(lines[stmt.lineno - 1 : stmt.end_lineno])).rstrip("\n")
 
 
 def _prompt(
     site: CallSite,
     tier: Tier,
-    spec: AdapterSpec,
     params: dict[str, Any],
     constants: dict[str, str],
     system_name: str | None,
@@ -837,43 +1124,55 @@ def _prompt(
     client: str,
     client_at: tuple[str, str],
     width: int,
-    rewritten: bool,
+    calls: tuple[str | None, str | None],
+    fixed: bool,
     done: list[str],
+    failing: str | None = None,
 ) -> str:
-    request = constants["request"]
-    messages = [
-        f'{{"role": "system", "content": {system_name}}}'
-        if system_name
-        else "the system prompt the code sends today, as the first message (an Anthropic `system=` argument "
-        'becomes {"role": "system", "content": ...})'
-    ]
-    if "few_shot" in constants:
-        messages.append(f"*{constants['few_shot']}")
-    last = "the user message(s) the code sends today"
-    wraps = [
-        f"{constants[k]} {how}"
-        for k, how in (("prefix", "prepended"), ("suffix", "appended"))
-        if k in constants
-    ]
-    if wraps:
-        last += f", with {' and '.join(wraps)} to the content of the last one"
-    messages.append(last)
-    if rewritten:
+    before, now = calls
+    if fixed:
         call = [
-            f"The call in `{site.file}` is already rewritten to "
-            f"`client.chat.completions.create(**{request}, messages=[...])`. {request} (defined in the file) "
-            f"holds every evaluated parameter: {_flat(params)[:400]}. Keep that call and the constants as "
-            "they are.",
+            f"`{site.file}` is migrated by Offramp and read-only: `{site.function}` now sends the evaluated "
+            "request with written-out keyword arguments and reads the reply the OpenAI way.",
+        ]
+    elif now != before:
+        call = [
+            f"Offramp rewrote the call in `{site.file}` (below; keep it exactly). Map how `{site.function}` "
+            "reads the reply onto the OpenAI shape (rule 3).",
         ]
     else:
-        call = [
-            f"Rewrite the call in `{site.file}` to exactly `client.chat.completions.create(**{request}, "
-            f"messages=[...])`: {request} (defined in the file) holds every evaluated parameter, nothing "
-            "else is passed.",
+        messages = [
+            f'{{"role": "system", "content": {system_name}}}'
+            if system_name
+            else "the system prompt the code sends today, as the first message (an Anthropic `system=` "
+            'argument becomes {"role": "system", "content": ...})'
         ]
-    args = [*call, "messages, in this order:", *(f"{i}. {m}" for i, m in enumerate(messages, 1))]
+        if "few_shot" in constants:
+            messages.append(f"*{constants['few_shot']}")
+        last = "the user message(s) the code sends today"
+        wraps = [f"{constants[k]} {how}" for k, how in (("prefix", "prepended"), ("suffix", "appended"))
+                 if k in constants]  # fmt: skip
+        if wraps:
+            last += f", with {' and '.join(wraps)} to the content of the last one"
+        messages.append(last)
+        written = ", ".join(f"{k}={constants.get(k) or _flat(v)}" for k, v in params.items())
+        call = [
+            f"Rewrite the call in `{site.file}` to `client.chat.completions.create({written}, "
+            "messages=[...])`, these keyword arguments written out exactly, nothing else passed; the "
+            "NEMOTRON_* constants are defined in the file.",
+            "messages, in this order:",
+            *(f"{i}. {m}" for i, m in enumerate(messages, 1)),
+        ]
+    if before:
+        call += ["", "Before (what the tests pin today):", "```python", before, "```"]
+    if now and now != before:
+        call += ["Now:", "```python", now, "```"]
     if done:
-        args += ["", "Already changed by Offramp (keep these):", *(f"- {d}" for d in done)]
+        call += ["", "Already changed by Offramp (keep these):", *(f"- {d}" for d in done)]
+    if failing:
+        if failing.startswith("repo checks failed"):
+            failing = "this repo's checks fail:\n- " + failing.partition("): ")[2].replace(" | ", "\n- ")
+        call += ["", "## What fails now", f"With Offramp's changes alone, {failing}", "Make these pass."]
     task = site.contract.task_type if site.contract else "unknown"
     lines = [
         f"## Call site {site.id}",
@@ -882,7 +1181,7 @@ def _prompt(
         "Factory.",
         "",
         "## The call",
-        *args,
+        *call,
         "",
         f"Token Factory client: `from {client_at[1]} import token_factory_client` (module shown below).",
         f"Repo ruff line length: {width}.",
@@ -894,7 +1193,8 @@ def _prompt(
         "```",
     ]
     for path, text in files.items():
-        lines += [f"### {path} (editable)", "```python", text.rstrip("\n"), "```"]
+        mode = "read-only" if fixed and path == site.file else "editable"
+        lines += [f"### {path} ({mode})", "```python", text.rstrip("\n"), "```"]
     return "\n".join(lines) + "\n"
 
 
@@ -922,8 +1222,14 @@ def _summary(output: str) -> str:
     """The lines that say what failed (pytest FAILED/ERROR, ruff findings), else the output's tail."""
     # run-specific tokens (object addresses, durations) out: the summary feeds the next request's cache key
     output = re.sub(r"\b\d+(\.\d+)?s\b", "<t>s", re.sub(r"0x[0-9a-fA-F]{6,}", "0x…", output))
-    keep = [ln for ln in output.splitlines() if re.match(r"(FAILED|ERROR) |\S+\.py:\d+:\d+: |\$ |E\s{3}", ln)]
-    return (" | ".join(keep[:8]) if keep else output.strip()[-500:])[:1200]
+    lines = output.splitlines()
+    failed: dict[str, list[str]] = {}  # a parametrised test's cases count once
+    for ln in lines:
+        if re.match(r"(FAILED|ERROR) |\S+\.py:\d+:\d+: |\$ ", ln):
+            failed.setdefault(re.sub(r"\[[^\]]*\]( - .*)?$", "[…]", ln), []).append(ln)
+    tests = [hits[0] if len(hits) == 1 else f"{key} ({len(hits)} cases)" for key, hits in failed.items()]
+    keep = tests[:14] + [ln for ln in lines if re.match(r"E\s{3}", ln)][:6]  # which tests, then why
+    return (" | ".join(keep) if keep else output.strip()[-500:])[:2400]
 
 
 def changed_lines(before: str, after: str) -> set[int]:
@@ -1021,8 +1327,8 @@ def wrap_long_strings(source: str, lines: set[int], width: int) -> str:
     for row, c1, c2, joined in sorted(
         _literals(source), reverse=True
     ):  # bottom-right first: offsets stay valid
-        line = text[row - 1]
-        if row not in lines or len(line.rstrip("\r\n")) <= width:
+        line = text[row - 1]  # may hold several physical lines once a literal to its right was split
+        if row not in lines or len(line.split("\n", 1)[0].rstrip("\r")) <= width:
             continue
         segment = line[c1:c2]
         indent = re.match(r"[ \t]*", line).group(0)
@@ -1126,25 +1432,36 @@ class _Job:
     before: dict[str, str]  # on disk before the site's patch: the base every site is patched against
     client_module: str  # import path of the Token Factory client module
     width: int  # the target's ruff line length
-    rewritten: bool  # the call is already `create(**REQUEST, messages=[...])`: no edit may be needed
+    rewritten: bool  # the call already sends the request: no edit may be needed
+    fixed: bool  # the site's module is final (call and reply rewritten by code): the model edits tests only
 
 
-def _wrap(job: _Job, path: str, text: str) -> str:
-    if not path.endswith(".py"):
-        return text
-    return wrap_long_strings(text, changed_lines(job.before[path], text), job.width)
+def _settle(box: Sandbox, repo: Path, paths: list[str], before: dict[str, str], width: int, formatted: bool):
+    """Mechanical clean-up of changed files on disk: the repo's ruff fixes (and format), then over-long
+    strings on changed lines wrapped (formatted again: the pieces no longer fit on one line, so they stay)."""
+    box.tidy(paths, format_code=formatted)
+    rewrapped = []
+    for p in paths:  # after formatting, whose indentation is final
+        text = (repo / p).read_text()
+        if (
+            p.endswith(".py")
+            and (wrapped := wrap_long_strings(text, changed_lines(before[p], text), width)) != text
+        ):
+            (repo / p).write_text(wrapped)
+            rewrapped.append(p)
+    if formatted and rewrapped:
+        box.tidy(rewrapped, format_code=True)
 
 
 def _attempt(
-    job: _Job, reply: str, repo: Path, box: Sandbox, formatted: bool, write
+    job: _Job, edits: list[Edit], repo: Path, box: Sandbox, formatted: bool, write
 ) -> tuple[str | None, dict]:
-    """Apply one reply to the base, check it alone, then put the base back. (None, the site's patched files)
-    when the repo is green with it; else (why not, {})."""
-    patch = parse_edits(reply)
-    if not patch.edits and not job.rewritten:
+    """Apply one set of edits to the base, check it alone, then put the base back. (None, the site's patched
+    files) when the repo is green with it; else (why not, {})."""
+    if not edits and not job.rewritten:
         return "the reply holds no edit blocks", {}
     new = dict(job.editable)
-    problems = _apply(patch.edits, new)
+    problems = _apply(edits, new, frozenset([job.site.file] if job.fixed else []))
     for path in new if not problems else []:
         try:
             if new[path] != job.editable[path]:
@@ -1169,15 +1486,7 @@ def _attempt(
     changed = [p for p in new if new[p] != job.before[p]]
     for p in changed:
         write(p, new[p])
-    box.tidy(changed, format_code=formatted)
-    rewrapped = []
-    for p in changed:  # after formatting, whose indentation is final: wrap over-long strings
-        text = (repo / p).read_text()
-        if (wrapped := _wrap(job, p, text)) != text:
-            (repo / p).write_text(wrapped)
-            rewrapped.append(p)
-    if formatted and rewrapped:  # the pieces no longer fit on one line, so formatting keeps them split
-        box.tidy(rewrapped, format_code=True)
+    _settle(box, repo, changed, job.before, job.width, formatted)
     result: CheckResult = box.check()
     patched = {p: (repo / p).read_text() for p in changed}
     for p in changed:  # every site is checked against the same base
@@ -1284,9 +1593,14 @@ def compose_patches(
             why = "evaluated as json_object plus a validation repair retry, which a patch cannot reproduce"
             downgrade(v, f"patch not composed: the adapter was {why}")
             continue
-        prepared, constants, system_name, rewritten = _prepare(
-            read(site.file), site, adapter.spec, params, width
+        original = read(site.file)
+        prepared, constants, system_name, rewritten, fixed = _prepare(
+            original, site, adapter.spec, params, width
         )
+        (repo / site.file).write_text(add_imports(prepared, client_at[1]))
+        _settle(box, repo, [site.file], {site.file: original}, width, formatted)  # shown as it will ship
+        prepared = read(site.file)
+        (repo / site.file).write_text(original)
         context = _context(repo, site, client_at[0])
         editable = {p: (prepared if p == site.file else read(p)) for p in context}
         for p in context:  # mechanical: callers hand the migrated function a Token Factory client
@@ -1295,32 +1609,38 @@ def compose_patches(
         changed_callers = {Path(p).stem for p in context if p != site.file and editable[p] != read(p)}
         done = [f"`{p}` passes `token_factory_client()` to `{site.function}`" for p in context
                 if p != site.file and not is_test_path(p) and editable[p] != read(p)]  # fmt: skip
-        if site.sdk == "openai" and changed_callers:  # same SDK: the repo's OpenAI fakes fit as they are
-            for p in context:
-                if is_test_path(p) and p.endswith(".py"):
-                    editable[p] = mirror_fakes(editable[p], changed_callers)
-                    if editable[p] != read(p):
-                        done.append(f"`{p}` also fakes `token_factory_client` where it faked `OpenAI`")
+        old = "OpenAI" if site.sdk == "openai" else "Anthropic"
+        for p in context:  # mechanical: the repo's provider fakes answer the Token Factory client's call
+            if not (is_test_path(p) and p.endswith(".py")):
+                continue
+            if (
+                site.sdk == "anthropic"
+                and (converted := convert_fakes(editable[p], client_at[1])) != editable[p]
+            ):
+                editable[p] = converted
+                done.append(f"`{p}`: its Anthropic fake also answers `chat.completions.create`, with the "
+                            "same canned blocks as an OpenAI chat completion")  # fmt: skip
+            if (
+                changed_callers
+                and (mirrored := mirror_fakes(editable[p], changed_callers, old)) != editable[p]
+            ):
+                editable[p] = mirrored
+                done.append(f"`{p}` also fakes `token_factory_client` where it faked `{old}`")
         before = {p: read(p) for p in editable}
         job = _Job(site, tier, adapter.spec, params, constants, system_name, editable, before,
-                   client_module=client_at[1], width=width, rewritten=rewritten)  # fmt: skip
-        prompt = _prompt(
-            site,
-            tier,
-            adapter.spec,
-            params,
-            constants,
-            system_name,
-            editable,
-            client,
-            client_at,
-            width,
-            rewritten,
-            done,
-        )
-        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
+                   client_module=client_at[1], width=width, rewritten=rewritten, fixed=fixed)  # fmt: skip
         failure, patched, tried = None, {}, []
-        for attempt in range(1 + REPAIRS):
+        if (
+            rewritten
+        ):  # Offramp's own changes alone: green needs no model call; red shows the model what fails
+            failure, patched = _attempt(job, [], repo, box, formatted, write)
+            tried.append([])
+        checked = failure  # what the last check said
+        calls = (_call_text(read(site.file), site), _call_text(prepared, site))
+        prompt = _prompt(site, tier, params, constants, system_name, editable, client, client_at, width,
+                         calls, fixed, done, failure)  # fmt: skip
+        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
+        for attempt in range(1 + REPAIRS if failure or not rewritten else 0):
             try:
                 res = llm.chat(
                     role=ROLE,
@@ -1336,13 +1656,21 @@ def compose_patches(
                 failure = f"patch not composed: {e}" + (f"; last failure: {failure}" if failure else "")
                 break
             edits = parse_edits(res.output.text or "").edits
-            if edits in tried:  # a patch already tried (A-B-A too): the sandbox would say the same again
-                failure = f"repair produced no change; last failure: {failure}"
-                break
-            tried.append(edits)
-            failure, patched = _attempt(job, res.output.text or "", repo, box, formatted, write)
-            if failure is None:
-                break
+            if not edits and (attempt or rewritten):  # empty or malformed: ask again, no check needed
+                failure = "the reply holds no complete edit block" + (
+                    f"; last failure: {checked}" if checked else ""
+                )
+            else:
+                named = {e.path for e in edits}
+                edits += [e for e in (tried[-1] if attempt else []) if e.path not in named]  # kept as is
+                if edits in tried:  # a patch already tried (A-B-A too): the sandbox would say the same again
+                    failure = f"repair produced no change; last failure: {failure}"
+                    break
+                tried.append(edits)
+                failure, patched = _attempt(job, edits, repo, box, formatted, write)
+                checked = failure
+                if failure is None:
+                    break
             messages = [
                 *messages,
                 {"role": "assistant", "content": res.output.text or ""},

@@ -10,14 +10,19 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
+from openai.types.chat import ChatCompletion
 
 from offramp import sandbox as sandbox_module
 from offramp.agents.patcher import (
+    FAKE_HELPER,
     Edit,
     PatchEdits,
+    _apply,
+    _map_reply,
     _rewrite_call,
     _summary,
     add_fixtures,
@@ -25,6 +30,8 @@ from offramp.agents.patcher import (
     call_params,
     client_location,
     compose_patches,
+    conformance,
+    convert_fakes,
     copy_repo,
     edits_text,
     keep_comment,
@@ -66,19 +73,31 @@ def work_dir(name: str) -> Path:
     return path
 
 
+SITE_MODULES = ("tinyapp/greet.py", "tinyapp/shout.py")
+
+
 class FakeSandbox:
-    """Stands in for offramp.sandbox.Sandbox: canned check results, records what it was asked."""
+    """Stands in for offramp.sandbox.Sandbox: canned check results, records what it was asked. The check of
+    Offramp's own changes alone (a site module changed, the tests not yet) answers `precheck` and leaves
+    `results` to the other checks."""
 
     mode = "docker"
 
-    def __init__(self, repo: Path, results: list[bool] | None = None):
+    def __init__(self, repo: Path, results: list[bool] | None = None, precheck: bool = False):
         self.repo, self.results, self.checks, self.fixed = repo, list(results or []), [], []
+        self.precheck, self.start = precheck, self._files()
+
+    def _files(self) -> dict[str, str]:
+        return {p.relative_to(self.repo).as_posix(): p.read_text() for p in self.repo.rglob("*.py")}
 
     def check(self) -> CheckResult:
-        self.checks.append(
-            {p.relative_to(self.repo).as_posix(): p.read_text() for p in self.repo.rglob("*.py")}
-        )
-        ok = self.results.pop(0) if self.results else True
+        files = self._files()
+        self.checks.append(files)
+        tests_as_before = all(files.get(p) == t for p, t in self.start.items() if p.startswith("tests/"))
+        if tests_as_before and any(files.get(p) != self.start.get(p) for p in SITE_MODULES):
+            ok = self.precheck
+        else:
+            ok = self.results.pop(0) if self.results else True
         return CheckResult(ok=ok, mode="docker", output="" if ok else "FAILED tests/test_tinyapp.py::x")
 
     def formatted(self) -> bool:
@@ -143,16 +162,23 @@ def tiny_adapters(**spec_over) -> dict[str, Adapter]:
     }
 
 
-SPLAT = "**NEMOTRON_REQUEST"  # the call is rewritten by code to create(**NEMOTRON_REQUEST, messages=[...])
+MIGRATED = f'model="{LIGHTNING}",'  # the call is rewritten by code, the evaluated request written out
+TESTS = "tests/test_tinyapp.py"
+BREAK_GREET = Edit(path=TESTS, search='"Hi Ana!"', replace='"Hi Ana"')  # a test edit the sandbox may fail
+BREAK_GREET_2 = Edit(path=TESTS, search='"Hi Ana!"', replace='"hi ana!"')
+BREAK_SHOUT = Edit(path=TESTS, search='"BIG NEWS"', replace='"big news"')
+
+
+MARKS = {"tinyapp/greet.py": "def test_greet_strips_the_reply():", "tinyapp/shout.py": "def test_shout_"}
 
 
 def migrate(path: str, extra: list[Edit] = ()) -> PatchEdits:
-    """A patcher reply for a tiny-repo site: the code rewrote the call already, only `extra` edits remain."""
-    return PatchEdits(edits=[*extra], notes="nothing else to change")
-
-
-def request_edit(path: str, search: str, replace: str) -> list[Edit]:
-    return [Edit(path=path, search=search, replace=replace)]
+    """A patcher reply for a tiny-repo site: the code rewrote the module already; the reply touches its test
+    (a mark standing in for updated pins) plus any `extra` edits."""
+    mark = Edit(
+        path="tests/test_tinyapp.py", search=MARKS[path], replace=f"# migrated: {path}\n{MARKS[path]}"
+    )
+    return PatchEdits(edits=[mark, *extra], notes="pins updated")
 
 
 def patcher_llm(*replies) -> FakeLLM:
@@ -160,15 +186,16 @@ def patcher_llm(*replies) -> FakeLLM:
     return FakeLLM().add("patcher", *(edits_text(r) if isinstance(r, PatchEdits) else r for r in replies))
 
 
-def run(llm, results=None, sandboxes=None, adapters=None, verdicts=None, name="tiny", build=BUILD):
+def run(llm, results=None, sandboxes=None, adapters=None, verdicts=None, name="tiny", build=BUILD, repo=TINY,
+        precheck=False):  # fmt: skip
     def factory(repo):
-        box = FakeSandbox(repo, results)
+        box = FakeSandbox(repo, results, precheck)
         if sandboxes is not None:
             sandboxes.append(box)
         return box
 
     return compose_patches(
-        TINY,
+        repo,
         tiny_sites(),
         verdicts or tiny_verdicts(),
         adapters or tiny_adapters(),
@@ -188,11 +215,12 @@ def verdict(result, site_id):
 
 
 def test_migrates_passing_sites_and_comments_kept_ones():
-    llm = patcher_llm(migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"))
+    llm = patcher_llm()  # the tiny repo's tests do not pin the provider: Offramp's own changes are green
     boxes = []
 
-    result = run(llm, sandboxes=boxes)
+    result = run(llm, sandboxes=boxes, precheck=True)
 
+    assert llm.calls == []
     assert [v.decision for v in result.verdicts] == ["MIGRATE", "KEEP_CLOSED", "MIGRATE"]
     assert set(result.files) == {
         "tinyapp/offramp_client.py",  # inside the package that holds the sites: it ships in the wheel
@@ -201,7 +229,10 @@ def test_migrates_passing_sites_and_comments_kept_ones():
         "tinyapp/shout.py",
     }
     assert result.client_path == "tinyapp/offramp_client.py"
-    assert SPLAT in result.files["tinyapp/greet.py"] and LIGHTNING in result.files["tinyapp/greet.py"]
+    assert (
+        MIGRATED in result.files["tinyapp/greet.py"]
+        and "temperature=0.0," in result.files["tinyapp/greet.py"]
+    )
     assert (
         "    # offramp: kept on o3 — parity 60.0% < 95%\n    response = client"
         in result.files["tinyapp/motto.py"]
@@ -217,7 +248,8 @@ def test_migrates_passing_sites_and_comments_kept_ones():
     assert result.sandbox_mode == "docker"
     assert len(boxes[0].checks) == 5  # untouched, + client and comments, each site alone, then combined
     assert "tinyapp/offramp_client.py" not in boxes[0].checks[0]
-    assert boxes[0].fixed == [["tinyapp/greet.py"], ["tinyapp/shout.py"]]
+    # each site's module tidied as it will ship (shown to the model so), then each patch
+    assert boxes[0].fixed == [["tinyapp/greet.py"]] * 2 + [["tinyapp/shout.py"]] * 2
 
 
 def test_client_module_reads_the_key_and_pins_verified_tier_ids():
@@ -240,10 +272,7 @@ def test_client_module_reads_the_key_and_pins_verified_tier_ids():
 
 
 def test_failing_repo_tests_downgrade_the_site_and_drop_its_patch():
-    breaking = migrate(
-        "tinyapp/shout.py",
-        extra=[Edit(path="tinyapp/shout.py", search=".strip().upper()", replace=".strip()")],
-    )
+    breaking = migrate("tinyapp/shout.py", extra=[BREAK_SHOUT])
     llm = patcher_llm(migrate("tinyapp/greet.py"), breaking, breaking)  # shout: first try + repair round
 
     result = run(llm, results=[True, True, True, False])  # untouched, + client, greet, shout (then a repeat)
@@ -268,8 +297,22 @@ def test_a_red_baseline_downgrades_every_migration_names_the_step_and_changes_no
     assert result.files == {}
 
 
+def test_an_empty_or_malformed_reply_is_asked_again_without_another_check():
+    boxes = []
+    malformed = "FILE: tests/test_tinyapp.py\n<<<<<<< SEARCH\nx\n=======\ny\n======="  # no REPLACE marker
+    llm = patcher_llm(PatchEdits(edits=[]), malformed, PatchEdits(edits=[]), migrate("tinyapp/shout.py"))
+
+    result = run(llm, sandboxes=boxes)
+
+    reason = verdict(result, "cs_01").reason
+    assert reason.startswith("the reply holds no complete edit block; last failure: repo checks failed")
+    assert reason.endswith("FAILED tests/test_tinyapp.py::x")  # the checks' own failure is kept
+    assert [c["tier"] for c in llm.calls[:3]] == [Tier.SUPER, Tier.ULTRA, Tier.ULTRA]
+    assert len(boxes[0].checks) == 5  # untouched, base, greet alone (red); shout alone (red), its try
+
+
 def test_no_accepted_migration_means_no_client_module():
-    llm = patcher_llm(*[PatchEdits(edits=[])] * 4)  # two sites, each a try and an identical repair
+    llm = patcher_llm(*[PatchEdits(edits=[])] * 6)  # two sites, each a try and two repairs, all empty
 
     result = run(llm, results=[True, True, False, False])
 
@@ -279,64 +322,17 @@ def test_no_accepted_migration_means_no_client_module():
 @pytest.mark.parametrize(
     ("edits", "problem"),
     [
-        ([Edit(path="tinyapp/greet.py", search="no such text", replace="x")], "not found"),
+        ([Edit(path=TESTS, search="no such text", replace="x")], "not found"),
         ([Edit(path="pyproject.toml", search="tinyapp", replace="x")], "not editable"),
         ([Edit(path="../escape.py", search="x", replace="y")], "not editable"),
         (
-            [
-                Edit(
-                    path="tests/test_tinyapp.py",
-                    search="def test_greet_strips_the_reply():",
-                    replace="def _skipped():",
-                )
-            ],
+            [Edit(path=TESTS, search="def test_greet_strips_the_reply():", replace="def _skipped():")],
             "removes tests",
         ),
-        (request_edit("tinyapp/greet.py", '"max_tokens": 32,', '"max_tokens": 64,'), "evaluated request"),
-        (request_edit("tinyapp/greet.py", '"temperature": 0.0,', '"temperature": 0.7,'), "evaluated request"),
-        (
-            request_edit("tinyapp/greet.py", '"enable_thinking": False', '"enable_thinking": True'),
-            "evaluated request",
-        ),
-        (
-            request_edit("tinyapp/greet.py", f'"model": "{LIGHTNING}",', '"model": "gpt-4o-mini",'),
-            "evaluated request",
-        ),
-        (
-            request_edit(
-                "tinyapp/greet.py", "**NEMOTRON_REQUEST,", "**NEMOTRON_REQUEST,\n        top_p=0.5,"
-            ),
-            "the call must be exactly",
-        ),  # fmt: skip
-        (
-            request_edit("tinyapp/greet.py", "**NEMOTRON_REQUEST,", f'model="{LIGHTNING}", max_tokens=32,'),
-            "the call must be exactly",
-        ),  # fmt: skip
-        (
-            [
-                Edit(
-                    path="tinyapp/greet.py",
-                    search='"content": GREET_SYSTEM_PROMPT',
-                    replace='"content": "Be brief."',
-                ),
-                *migrate("tinyapp/greet.py").edits,
-            ],
-            "system prompt",
-        ),
+        ([Edit(path="tinyapp/greet.py", search="max_tokens=32,", replace="max_tokens=64,")], "read-only"),
+        ([Edit(path="tinyapp/greet.py", search=".strip()", replace="")], "read-only"),
     ],
-    ids=[
-        "search-missing",
-        "file-not-allowed",
-        "path-escape",
-        "test-removed",
-        "max-tokens",
-        "temperature",
-        "thinking",
-        "model",
-        "extra-kwarg",
-        "explicit-kwargs",
-        "system-prompt",
-    ],
+    ids=["search-missing", "file-not-allowed", "path-escape", "test-removed", "request", "module"],
 )
 def test_patches_that_break_the_adapter_spec_or_the_rules_are_rejected(edits, problem):
     llm = patcher_llm(PatchEdits(edits=edits), PatchEdits(edits=edits), migrate("tinyapp/shout.py"))
@@ -378,10 +374,13 @@ def test_patcher_call_is_super_with_thinking_off_and_shows_the_exact_request():
     )
     assert first["response_model"] is None  # plain edit blocks, not code inside JSON strings
     prompt = first["messages"][-1]["content"]
-    assert "create(**NEMOTRON_REQUEST, messages=[...])" in prompt and "already rewritten" in prompt
-    assert f'"model": "{LIGHTNING}"' in prompt and '"max_tokens": 32' in prompt
-    assert '"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}' in prompt
-    assert "### tinyapp/greet.py (editable)" in prompt and "### tests/test_tinyapp.py (editable)" in prompt
+    assert "`tinyapp/greet.py` is migrated by Offramp and read-only" in prompt
+    failing = "## What fails now\nWith Offramp's changes alone, this repo's checks fail:\n- FAILED tests/"
+    assert failing in prompt  # Offramp's own changes were checked first
+    before, now = prompt.split("Before (what the tests pin today):")[1].split("Now:")
+    assert 'model="gpt-4o-mini",' in before and MIGRATED in now and "max_tokens=32," in now
+    assert 'extra_body={"chat_template_kwargs": {"enable_thinking": False}},' in now
+    assert "### tinyapp/greet.py (read-only)" in prompt and "### tests/test_tinyapp.py (editable)" in prompt
     assert "### tinyapp/offramp_client.py (read-only)" in prompt
     second = llm.calls[1]["messages"][-1]["content"]  # each site is patched against the same base
     assert "### tinyapp/greet.py" not in second  # unrelated module: not shown
@@ -406,24 +405,23 @@ def test_adapter_constants_are_written_into_the_file_before_the_call():
         few_shot=few,
         system_prompt="You write one-line greetings. Never use emoji.",
     )
-    llm = patcher_llm(*[PatchEdits(edits=[])] * 4)
+    llm = patcher_llm(*[PatchEdits(edits=[])] * 6)
 
     run(llm, adapters=adapters)
 
     prompt = llm.calls[0]["messages"][-1]["content"]
-    source = prompt.split("### tinyapp/greet.py (editable)\n```python\n")[1].split("```")[0]
+    source = prompt.split("### tinyapp/greet.py (read-only)\n```python\n")[1].split("```")[0]
     module = ast.parse(source)
     consts = {n.targets[0].id: ast.literal_eval(n.value) for n in module.body if isinstance(n, ast.Assign)}
-    assert consts["NEMOTRON_REQUEST"]["tools"] == tools  # one constant holds every evaluated parameter
-    assert consts["NEMOTRON_REQUEST"]["tool_choice"] == "auto"  # Lightning: build_request's swap
+    assert consts["NEMOTRON_TOOLS"] == tools  # a schema: a module constant, passed by name
+    assert 'tool_choice="auto",' in source  # Lightning: build_request's swap, written out
     assert consts["NEMOTRON_FEW_SHOT"] == few
     assert (
         consts["GREET_SYSTEM_PROMPT"] == "You write one-line greetings. Never use emoji."
     )  # replaced in place
-    assert source.index("NEMOTRON_REQUEST =") < source.index("def greet")
-    assert "*NEMOTRON_FEW_SHOT," in source and SPLAT in source  # the call itself is rewritten by code
+    assert source.index("NEMOTRON_TOOLS =") < source.index("def greet")
+    assert "*NEMOTRON_FEW_SHOT," in source and "tools=NEMOTRON_TOOLS," in source and MIGRATED in source
     assert max(len(line) for line in source.splitlines()) <= 100
-    assert '"tool_choice": "auto"' in prompt
 
 
 # ---------------------------------------------------------------- helpers
@@ -514,12 +512,12 @@ def test_call_parameters_come_from_build_request():
     adapters = tiny_adapters(
         tools=[{"type": "function", "function": {"name": "f", "parameters": {}}}], tool_choice="required"
     )
-    llm = patcher_llm(*[PatchEdits(edits=[])] * 4)
+    llm = patcher_llm(*[PatchEdits(edits=[])] * 6)
 
     run(llm, adapters=adapters, build=build)
 
     prompt = llm.calls[0]["messages"][-1]["content"]
-    assert '"max_tokens": 2032' in prompt and '"tool_choice": "auto"' in prompt
+    assert "max_tokens=2032," in prompt and 'tool_choice="auto",' in prompt
 
 
 def test_keep_comment_format():
@@ -541,7 +539,7 @@ def test_keep_comment_format():
 # ---------------------------------------------------------------- demo repo on cassettes
 
 
-DEMO_OUTCOME = ({"cs_04": False, "cs_05": False, "cs_06": False}, [])  # recorded live (Task 10c), 2026-10-20
+DEMO_OUTCOME = ({"cs_04": True, "cs_05": True, "cs_06": False}, ["cs_04", "cs_05"])  # live, 10c r2
 CS05_SUFFIX = (
     "\n\nReply with the final refund amount in the customer's currency alone on the last line as "
     "`ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator)."
@@ -634,9 +632,7 @@ def test_edit_blocks_round_trip_with_python_escapes_and_empty_replacements():
 
 
 def test_a_failed_try_gets_one_repair_round_that_sees_the_failure():
-    breaking = migrate(
-        "tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace="")]
-    )
+    breaking = migrate("tinyapp/greet.py", extra=[BREAK_GREET])
     llm = patcher_llm(breaking, migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"))
 
     result = run(llm, results=[True, True, False, True, True, True])
@@ -650,8 +646,8 @@ def test_a_failed_try_gets_one_repair_round_that_sees_the_failure():
 
 
 def test_a_block_overlapping_an_earlier_one_is_explained():
-    first = Edit(path="tinyapp/greet.py", search='"max_tokens": 32,', replace='"max_tokens": 32,  # a')
-    overlap = Edit(path="tinyapp/greet.py", search='"max_tokens": 32,\n    "temperature"', replace="x")
+    first = Edit(path=TESTS, search='== "Hi Ana!"', replace='== "Hi Ana!"  # a')
+    overlap = Edit(path=TESTS, search='"Ana") == "Hi Ana!"\n', replace="x")
     bad = PatchEdits(edits=[first, overlap])
     llm = patcher_llm(bad, bad, migrate("tinyapp/shout.py"))
 
@@ -661,7 +657,7 @@ def test_a_block_overlapping_an_earlier_one_is_explained():
 
 
 def test_a_repeated_edit_is_applied_once():
-    edit = Edit(path="tinyapp/greet.py", search='"max_tokens": 32,', replace='"max_tokens": 32,  # same')
+    edit = Edit(path=TESTS, search='== "Hi Ana!"', replace='== "Hi Ana!"  # same')
     llm = patcher_llm(
         PatchEdits(edits=[*migrate("tinyapp/greet.py").edits, edit, edit]), migrate("tinyapp/shout.py")
     )
@@ -669,7 +665,7 @@ def test_a_repeated_edit_is_applied_once():
     result = run(llm)
 
     assert verdict(result, "cs_01").decision == "MIGRATE"
-    assert result.files["tinyapp/greet.py"].count("# same") == 1
+    assert result.files[TESTS].count("# same") == 1
 
 
 def test_add_imports_binds_known_names_after_the_last_import():
@@ -812,14 +808,14 @@ def test_a_block_without_its_own_file_line_belongs_to_the_previous_file():
 
 
 def test_a_block_labelled_with_the_wrong_file_applies_where_its_text_is_unique():
-    text = 'or "").strip()\n'  # only in greet.py; the reply labels it with the test file
-    wrong = Edit(path="tests/test_tinyapp.py", search=text, replace='or "").strip()  # relabelled\n')
+    text = '== "Hi Ana!"\n'  # only in the test file; the reply labels it with the module
+    wrong = Edit(path="tinyapp/greet.py", search=text, replace='== "Hi Ana!"  # relabelled\n')
     llm = patcher_llm(PatchEdits(edits=[wrong]), migrate("tinyapp/shout.py"))
 
     result = run(llm)
 
     assert verdict(result, "cs_01").decision == "MIGRATE"
-    assert "# relabelled" in result.files["tinyapp/greet.py"]
+    assert "# relabelled" in result.files[TESTS]
 
 
 def test_failure_summaries_are_stable_across_runs():
@@ -830,6 +826,8 @@ def test_failure_summaries_are_stable_across_runs():
 
     assert _summary(run_a) == _summary(run_b)
     assert "FAILED t.py::x - boom" in _summary(run_a)
+    cases = "".join(f"FAILED t.py::y[{i}] - boom {i}\n" for i in range(3))
+    assert _summary(cases) == "FAILED t.py::y[…] (3 cases)"  # a parametrised test counts once
 
 
 def test_a_symlink_loop_is_dropped_not_fatal():
@@ -948,9 +946,7 @@ def test_patches_changing_the_same_line_differently_conflict():
 
 
 def test_a_repair_that_repeats_the_failed_patch_stops_without_another_check():
-    breaking = migrate(
-        "tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace="")]
-    )
+    breaking = migrate("tinyapp/greet.py", extra=[BREAK_GREET])
     llm = patcher_llm(breaking, breaking, migrate("tinyapp/shout.py"))
     boxes = []
 
@@ -959,7 +955,7 @@ def test_a_repair_that_repeats_the_failed_patch_stops_without_another_check():
     assert verdict(result, "cs_01").reason.startswith(
         "repair produced no change; last failure: repo checks failed"
     )
-    assert len(boxes[0].checks) == 4  # untouched, base, greet's one try, shout (no combined: one site)
+    assert len(boxes[0].checks) == 6  # untouched, base, greet alone + one try, shout alone + its try
     repair = llm.calls[1]
     assert repair["max_tokens"] > llm.calls[0]["max_tokens"] and repair["reasoning"] == "off"
     assert "edit blocks only" in repair["messages"][-1]["content"]
@@ -974,9 +970,9 @@ def test_each_site_is_patched_alone_then_all_together():
     result = run(llm, sandboxes=boxes)
 
     combined = boxes[0].checks[-1]
-    assert SPLAT in combined["tinyapp/greet.py"] and SPLAT in combined["tinyapp/shout.py"]
+    assert MIGRATED in combined["tinyapp/greet.py"] and MIGRATED in combined["tinyapp/shout.py"]
     assert combined["tests/test_tinyapp.py"].count("# both sites") == 1
-    assert SPLAT not in boxes[0].checks[3]["tinyapp/greet.py"]  # shout was checked alone
+    assert MIGRATED not in boxes[0].checks[5]["tinyapp/greet.py"]  # shout was checked alone
     assert result.alone == {"cs_01": True, "cs_03": True} and result.combined == ["cs_01", "cs_03"]
     assert result.files["tests/test_tinyapp.py"].count("# both sites") == 1
 
@@ -1064,10 +1060,8 @@ def test_a_test_body_on_the_signature_line_does_not_crash_the_run():
 
 
 def test_two_repair_rounds_each_see_the_last_failure():
-    first = migrate("tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace="")])
-    second = migrate(
-        "tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace=".lower()")]
-    )
+    first = migrate("tinyapp/greet.py", extra=[BREAK_GREET])
+    second = migrate("tinyapp/greet.py", extra=[BREAK_GREET_2])
     llm = patcher_llm(first, second, migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"))
 
     result = run(llm, results=[True, True, False, False, True, True, True])
@@ -1079,17 +1073,15 @@ def test_two_repair_rounds_each_see_the_last_failure():
 
 
 def test_a_repair_that_returns_to_an_earlier_patch_stops_too():
-    a = migrate("tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace="")])
-    b = migrate(
-        "tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace=".lower()")]
-    )
+    a = migrate("tinyapp/greet.py", extra=[BREAK_GREET])
+    b = migrate("tinyapp/greet.py", extra=[BREAK_GREET_2])
     boxes = []
 
     result = run(patcher_llm(a, b, a, migrate("tinyapp/shout.py")), results=[True, True, False, False, True],
                  sandboxes=boxes)  # fmt: skip
 
     assert verdict(result, "cs_01").reason.startswith("repair produced no change; last failure:")
-    assert len(boxes[0].checks) == 5  # untouched, base, a, b, shout: the repeated a was never checked
+    assert len(boxes[0].checks) == 7  # untouched, base, greet alone, a, b, shout alone, shout: a once
 
 
 @pytest.mark.parametrize(
@@ -1108,9 +1100,7 @@ def test_a_module_name_that_might_be_the_fixture_is_never_shadowed(module_bindin
 
 
 def test_repairs_run_on_ultra_with_thinking_off():
-    breaking = migrate(
-        "tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace="")]
-    )
+    breaking = migrate("tinyapp/greet.py", extra=[BREAK_GREET])
     llm = patcher_llm(breaking, migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"))
 
     run(llm, results=[True, True, False, True, True])
@@ -1142,42 +1132,182 @@ ANTHROPIC_SITE = """def step(client, text):
     )
     return response.content
 """
+REQUEST = {
+    "model": LIGHTNING,
+    "max_tokens": 16,
+    "temperature": 0.0,
+    "tools": [{"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}],
+    "tool_choice": "required",
+    "extra_body": THINK_OFF,
+}
 
 
-def _site(function):
-    return CallSite(id="cs_09", file="m.py", lines=[2, 10], sdk="openai", call="c", function=function,
+def _site(function, sdk="openai"):
+    return CallSite(id="cs_09", file="m.py", lines=[2, 10], sdk=sdk, call="c", function=function,
                     prompt_source="fstring")  # fmt: skip
 
 
 @pytest.mark.parametrize(("source", "function"), [(OPENAI_SITE, "triage"), (ANTHROPIC_SITE, "step")])
 def test_the_call_is_rewritten_by_code_to_the_evaluated_request(source, function):
-    constants = {
-        "request": "NEMOTRON_REQUEST",
-        "few_shot": "NEMOTRON_FEW_SHOT",
-        "suffix": "NEMOTRON_USER_SUFFIX",
-    }
+    constants = {"few_shot": "NEMOTRON_FEW_SHOT", "suffix": "NEMOTRON_USER_SUFFIX", "tools": "NEMOTRON_TOOLS"}
 
-    out = _rewrite_call(source, _site(function), constants, "PROMPT")
+    out = _rewrite_call(source, _site(function), constants, "PROMPT", REQUEST, 100)
 
     call = next(n for n in ast.walk(ast.parse(out)) if isinstance(n, ast.Call) and n.keywords)
     assert ast.unparse(call.func).endswith("chat.completions.create") and "messages.create" not in out
-    assert [k.arg for k in call.keywords] == [None, "messages"] and call.keywords[
-        0
-    ].value.id == "NEMOTRON_REQUEST"
-    first, few, user = call.keywords[1].value.elts
-    assert (
-        ast.unparse(first) == "{'role': 'system', 'content': PROMPT}"
-        and ast.unparse(few) == "*NEMOTRON_FEW_SHOT"
-    )
+    kwargs = {k.arg: k.value for k in call.keywords}
+    assert list(kwargs) == [*REQUEST, "messages"]  # written out, in order; nothing else passed
+    assert ast.unparse(kwargs["tools"]) == "NEMOTRON_TOOLS"  # a schema goes by its constant's name
+    assert {k: ast.literal_eval(v) for k, v in kwargs.items() if k not in ("tools", "messages")} == {
+        k: v for k, v in REQUEST.items() if k != "tools"
+    }
+    first, few, user = kwargs["messages"].elts
+    assert ast.unparse(first) == "{'role': 'system', 'content': PROMPT}"
+    assert ast.unparse(few) == "*NEMOTRON_FEW_SHOT"
     assert ast.unparse(user.values[1]).endswith("+ NEMOTRON_USER_SUFFIX")
-    for gone in ("model=", "max_tokens=", "temperature=", "tools=", "tool_choice=", "system="):
-        assert gone not in out
+    assert "system=" not in out and "gpt-4o-mini" not in out and "claude" not in out
 
 
 def test_a_call_whose_messages_are_built_elsewhere_is_left_to_the_model():
     source = "def f(client, msgs):\n    return client.chat.completions.create(model='m', messages=msgs)\n"
 
-    assert _rewrite_call(source, _site("f"), {"request": "NEMOTRON_REQUEST"}, None) is None
+    assert _rewrite_call(source, _site("f"), {}, None, REQUEST, 100) is None
+
+
+def _rewritten(edit=None):
+    out = _rewrite_call(OPENAI_SITE, _site("triage"), {"tools": "NEMOTRON_TOOLS"}, "PROMPT", REQUEST, 100)
+    out = f"PROMPT = 'p'\nNEMOTRON_TOOLS = {REQUEST['tools']!r}\n\n\n{out}"
+    return out if edit is None else out.replace(*edit)
+
+
+@pytest.mark.parametrize(
+    ("edit", "problem"),
+    [
+        (("max_tokens=16,", "max_tokens=64,"), "`max_tokens` must be exactly"),
+        (("temperature=0.0,", "temperature=0.7,"), "`temperature` must be exactly"),
+        (('"enable_thinking": False', '"enable_thinking": True'), "`extra_body` must be exactly"),
+        ((f'model="{LIGHTNING}",', 'model="gpt-4o-mini",'), "`model` must be exactly"),
+        (("tool_choice=", "top_p=0.5,\n        tool_choice="), "must pass exactly"),
+        (("max_tokens=16,", "**EXTRA,"), "no **"),
+        (("'type': 'object'", "'type': 'array'"), "`tools` must be exactly"),
+        (('"content": PROMPT', '"content": "Be brief."'), "system prompt constant PROMPT is not used"),
+    ],
+    ids=["max-tokens", "temperature", "thinking", "model", "extra-kwarg", "splat", "schema", "system-prompt"],
+)
+def test_a_call_that_strays_from_the_evaluated_request_is_not_conformant(edit, problem):
+    assert conformance(_rewritten(), _site("triage"), REQUEST, {"tools": "NEMOTRON_TOOLS"}, "PROMPT") == []
+
+    problems = conformance(_rewritten(edit), _site("triage"), REQUEST, {"tools": "NEMOTRON_TOOLS"}, "PROMPT")
+
+    assert any(problem in p for p in problems), problems
+
+
+TEXT_SITE = """def summarize(client: Anthropic, thread):
+    response = client.chat.completions.create(model="m", messages=[])
+    return "".join(block.text for block in response.content if block.type == "text").strip()
+"""
+FIRST_TEXT_SITE = """def summarize(client, thread):
+    response = client.chat.completions.create(model="m", messages=[])
+    reply = response.content[0].text
+    return reply
+"""
+TOOL_SITE = """def step(client: Anthropic, text):
+    response = client.chat.completions.create(model="m", messages=[])
+    for block in response.content:
+        if block.type == "tool_use" and block.name in NAMES:
+            return Action(tool=block.name, args=dict(block.input), ref=block.id)
+    return None
+"""
+
+
+@pytest.mark.parametrize(
+    ("source", "function", "expected"),
+    [
+        (TEXT_SITE, "summarize", 'return (response.choices[0].message.content or "").strip()'),
+        (FIRST_TEXT_SITE, "summarize", 'reply = response.choices[0].message.content or ""'),
+        (TOOL_SITE, "step", "for block in response.choices[0].message.tool_calls or []:\n"
+         '        if block.type == "function" and block.function.name in NAMES:\n'
+         "            return Action(tool=block.function.name, "
+         "args=dict(json.loads(block.function.arguments)), ref=block.id)"),
+    ],
+    ids=["joined-text", "first-text", "tool-loop"],
+)  # fmt: skip
+def test_an_anthropic_reply_is_read_the_openai_way_by_code(source, function, expected):
+    out = _map_reply(source, _site(function, sdk="anthropic"))
+
+    assert expected in out and "response.content" not in out
+    assert "Anthropic" not in out or "client: OpenAI" in out  # the client's annotation follows
+    assert _map_reply(OPENAI_SITE, _site("triage")) == OPENAI_SITE  # an OpenAI site already reads it so
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        ANTHROPIC_SITE.replace(
+            "client.messages.create", "client.chat.completions.create"
+        ),  # returns it whole
+        TOOL_SITE.replace("block.id", "block.text"),  # a text block read inside the tool loop
+        TEXT_SITE.replace(".strip()", " + str(response.usage.input_tokens)"),
+    ],
+    ids=["whole-reply", "mixed-loop", "usage"],
+)
+def test_a_reply_used_any_other_way_is_left_to_the_model(source):
+    function = "step" if "def step" in source else "summarize"
+
+    assert _map_reply(source, _site(function, sdk="anthropic")) is None
+
+
+FAKES = """import inspect
+from types import SimpleNamespace
+
+from anthropic.resources.messages import Messages
+from openai.resources.chat.completions import Completions
+
+
+def _check_kwargs(method, kwargs):
+    assert set(kwargs) <= set(inspect.signature(method).parameters)
+
+
+class FakeAnthropic:
+    \"\"\"Replies with the given content blocks.\"\"\"
+
+    def __init__(self, *blocks):
+        self.blocks = list(blocks)
+        self.calls = []
+        self.messages = SimpleNamespace(create=self._messages)
+
+    def _messages(self, **kwargs):
+        _check_kwargs(Messages.create, kwargs)
+        self.calls.append(kwargs)
+        return Message(id="msg_fake", content=self.blocks, stop_reason="end_turn")
+"""
+
+
+def test_an_anthropic_fake_also_answers_the_openai_call_with_the_same_blocks():
+    out = convert_fakes(FAKES, "helphub.offramp_client")
+
+    ast.parse(out)
+    assert "    def _chat_completion(self, **kwargs):\n" in out
+    assert "        _check_kwargs(Completions.create, kwargs)\n        self.calls.append(kwargs)\n" in out
+    assert "        return chat_completion_from_blocks(self.blocks)\n" in out
+    assert "self.chat = SimpleNamespace(" in out and "create=self._chat_completion" in out
+    assert out.index("def chat_completion_from_blocks") < out.index("class FakeAnthropic")
+    assert "import json" in out and "from openai.types.chat import ChatCompletion" in out
+    assert convert_fakes(out, "helphub.offramp_client") == out  # once only
+
+
+def test_the_fake_helper_turns_blocks_into_a_real_chat_completion():
+    space: dict = {"json": json, "ChatCompletion": ChatCompletion}
+    exec(FAKE_HELPER, space)  # noqa: S102 - our own constant
+    text = SimpleNamespace(type="text", text="Hello")
+    tool = SimpleNamespace(type="tool_use", id="toolu_1", name="lookup_order", input={"order_id": "HH-1"})
+
+    message = space["chat_completion_from_blocks"]([text, tool]).choices[0].message
+    empty = space["chat_completion_from_blocks"]([]).choices[0].message
+
+    assert message.content == "Hello" and message.tool_calls[0].function.name == "lookup_order"
+    assert json.loads(message.tool_calls[0].function.arguments) == {"order_id": "HH-1"}
+    assert empty.content is None and empty.tool_calls is None
 
 
 @pytest.mark.parametrize(
@@ -1230,26 +1360,58 @@ def test_tests_that_fake_the_openai_constructor_fake_the_token_factory_client_to
     )
     assert 'other, "token_factory_client"' not in out  # not a module whose code was changed
     assert mirror_fakes(out, {"cli"}) == out
-
-
-def test_a_patch_that_changes_the_migrated_functions_parameters_is_rejected():
-    """cs_01's live try dropped `client` from triage_ticket and built a client inside: callers broke."""
-    drop = Edit(
-        path="tinyapp/greet.py",
-        search="def greet(client, name: str) -> str:",
-        replace="def greet(name: str) -> str:",
+    anthropic = mirror_fakes(source, {"cli"}, "Anthropic")  # an Anthropic site: its (converted) fake
+    assert anthropic.splitlines()[3] == (
+        '    monkeypatch.setattr(cli, "token_factory_client", lambda: FakeAnthropic())'
     )
-    llm = patcher_llm(PatchEdits(edits=[drop]), PatchEdits(edits=[drop]), migrate("tinyapp/shout.py"))
 
-    reason = verdict(run(llm), "cs_01").reason
 
-    assert "signature of `greet` changed" in reason
+BUILT_GREET = """GREET_SYSTEM_PROMPT = "You write one-line greetings."
+
+
+def greet(client, name: str) -> str:
+    messages = [
+        {"role": "system", "content": GREET_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Greet {name}."},
+    ]
+    response = client.chat.completions.create(model="gpt-4o-mini", max_tokens=32, messages=messages)
+    return (response.choices[0].message.content or "").strip()
+"""
+
+
+def tiny_built() -> tuple[Path, Edit]:
+    """The tiny repo with greet's messages built before the call (the code cannot rewrite that call), and
+    the edit a model would write for it."""
+    repo = work_dir("tiny-built") / "src"
+    shutil.copytree(TINY, repo)
+    (repo / "tinyapp" / "greet.py").write_text(BUILT_GREET)
+    old = 'create(model="gpt-4o-mini", max_tokens=32, messages=messages)'
+    thinking = 'extra_body={"chat_template_kwargs": {"enable_thinking": False}}'
+    args = [MIGRATED, "max_tokens=32,", "temperature=0.0,", f"{thinking},", "messages=messages,"]
+    new = "create(\n" + "".join(f"        {a}\n" for a in args) + "    )"
+    return repo, Edit(path="tinyapp/greet.py", search=old, replace=new)
+
+
+def test_a_call_the_code_cannot_rewrite_is_left_to_the_model_and_checked():
+    """greet's messages are built before the call: the model writes the call, the checks still apply."""
+    repo, write = tiny_built()
+    drop = Edit(path="tinyapp/greet.py", search="def greet(client, name", replace="def greet(name")
+    llm = patcher_llm(
+        PatchEdits(edits=[write]), PatchEdits(edits=[write, drop]), *[PatchEdits(edits=[drop])] * 2
+    )
+
+    good = run(llm, repo=repo, name="tiny-built-run", precheck=True)  # shout: green on Offramp's own changes
+    bad = run(llm, repo=repo, name="tiny-built-run", precheck=True)
+
+    prompt = llm.calls[0]["messages"][-1]["content"]
+    assert "Rewrite the call in `tinyapp/greet.py`" in prompt and "### tinyapp/greet.py (editable)" in prompt
+    assert verdict(good, "cs_01").decision == "MIGRATE" and MIGRATED in good.files["tinyapp/greet.py"]
+    reason = verdict(bad, "cs_01").reason  # the parameters changed; a repair without the call fails too
+    assert "signature of `greet` changed" in reason and "must pass exactly" in reason
 
 
 def test_a_repair_stopped_by_the_budget_keeps_the_first_failure_in_the_reason():
-    breaking = migrate(
-        "tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace="")]
-    )
+    breaking = migrate("tinyapp/greet.py", extra=[BREAK_GREET])
     llm = patcher_llm(
         breaking, BudgetExceeded("Ultra agent call cap reached (0)"), migrate("tinyapp/shout.py")
     )
@@ -1259,3 +1421,51 @@ def test_a_repair_stopped_by_the_budget_keeps_the_first_failure_in_the_reason():
     assert reason.startswith(
         "patch not composed: Ultra agent call cap reached (0); last failure: repo checks failed"
     )
+
+
+def test_once_a_literal_is_split_the_shorter_one_left_of_it_stays():
+    """cs_01's live patch: after its value moved to its own line, the dict key was wrapped as well."""
+    value = "Subject: Order confirmation email not received and order missing from dashboard"
+    lines = [
+        "def test_x(call):",
+        "    assert call == {",
+        '        "role": "user",',
+        f'        "content": "{value}",',
+    ]
+    source = "\n".join([*lines, "    }", ""])
+
+    wrapped = wrap_long_strings(source, {4}, 88)
+
+    assert '        "content": (\n' in wrapped and '("content")' not in wrapped
+    assert ast.dump(ast.parse(wrapped)) == ast.dump(ast.parse(source))
+
+
+def test_a_long_block_copied_with_a_slip_still_applies_where_it_is_unique():
+    """cs_06's Ultra repair: a 45-line SEARCH with one expected value mis-copied was rejected as not found."""
+    body = "".join(f"    assert step({i}) == {i}\n" for i in range(12))
+    text = f"def test_a():\n{body}\n\ndef test_b():\n    assert True\n"
+    slip = text.split("\n\n\ndef test_b")[0].replace("step(3) == 3", "step(3) == 33")
+    edit = Edit(path="t.py", search=slip, replace="def test_a():\n    assert step(1) == 1")
+
+    files = {"t.py": text}
+    assert _apply([edit], files) == [] and files["t.py"].startswith(
+        "def test_a():\n    assert step(1) == 1\n\n"
+    )
+    short = Edit(path="t.py", search="    assert step(1) == 11\n    assert step(2) == 2", replace="x")
+    assert "not found" in _apply([short], {"t.py": text})[0]  # a short block must match exactly
+    twice = {"t.py": text + "\n" + text.replace("test_a", "test_c")}
+    lone = Edit(path="t.py", search=slip.replace("def test_a():", "    assert step(0) == 0"), replace="x")
+    assert "not found" in _apply([lone], twice)[0]  # more than one place: never guess
+
+
+def test_a_repair_keeps_the_previous_edits_of_files_it_leaves_out():
+    """Repairs that resent 'a complete new set' kept dropping blocks that had worked (cs_06, live)."""
+    repo, write = tiny_built()
+    fix = migrate("tinyapp/greet.py")  # names the test file only: greet.py keeps the call written in try 1
+    llm = patcher_llm(PatchEdits(edits=[write, BREAK_GREET]), fix)
+
+    result = run(llm, results=[True, True, False], repo=repo, name="tiny-built-run", precheck=True)
+
+    assert "a file you do not name keeps your previous edits" in llm.calls[1]["messages"][-1]["content"]
+    assert verdict(result, "cs_01").decision == "MIGRATE" and MIGRATED in result.files["tinyapp/greet.py"]
+    assert '"Hi Ana!"' in result.files[TESTS]  # the test file is the repair's own version

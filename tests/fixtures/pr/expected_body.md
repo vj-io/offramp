@@ -23,6 +23,7 @@ Offramp evaluated 6 LLM call sites against references (140 cases, 43 in the hold
 - **cs_03** `helphub/orders/extract.py` → Nemotron 3 Super. Adapter changes: v0: OrderFields schema enforced with response_format json_schema (strict).
 - **cs_04** `helphub/qa/rag_answer.py` → Nemotron 3 Super. Adapter changes: v1: temperature 0.2 -> 0; v2: system prompt forbids citing ids that are not in the excerpts.
 - **cs_06** `helphub/summaries/summarize.py` → Nemotron 3.5 Lightning. Adapter changes: v1: one worked handoff note as a few-shot example.
+- Offramp's code rewrote each migrated call where it could (the evaluated request as written-out keyword arguments, the reply read the OpenAI way) and the callers that build its client; Nemotron 3 Super wrote the remaining edits, chiefly the tests and fakes that pinned the old provider, with up to two repair rounds on Nemotron 3 Ultra (thinking off) when this repo's checks failed.
 - Each site's patch was checked with this repo's own `ruff check` and `pytest` in Docker (network off, 2 CPUs); a patch that failed them was dropped and its site marked for manual review.
 
 ## What Offramp did NOT change

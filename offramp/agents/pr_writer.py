@@ -292,6 +292,14 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         out.append(
             f"- **{v.site_id}** `{site.file if site else '?'}` → {TIER_NAMES[Tier(v.tier)]}. {text}".rstrip()
         )
+    if migrated:
+        out.append(
+            "- Offramp's code rewrote each migrated call where it could (the evaluated request as "
+            "written-out keyword arguments, the reply read the OpenAI way) and the callers that build its "
+            "client; Nemotron 3 Super wrote the remaining edits, chiefly the tests and fakes that pinned the "
+            "old provider, with up to two repair rounds on Nemotron 3 Ultra (thinking off) when this repo's "
+            "checks failed."
+        )
     if ctx.sandbox == "docker":
         out.append(
             "- Each site's patch was checked with this repo's own `ruff check` and `pytest` in Docker "
