@@ -24,7 +24,7 @@ Evidence paths are all in this repo. Recorded responses and tests replay offline
 | 15 | A fresh CLI profile lists no tenant, with no hint why | AI Cloud setup | open the console once |
 | 16 | `iam v2 project list --all` fails with an invalid `parentId` | AI Cloud setup | none found |
 | 17 | Console onboarding created a project in each of 9 regions | AI Cloud setup | none |
-| 18 | Without a bucket, Serverless Jobs move data only through 64 KiB injected files and logs | job path design | chunked input files, results as base64 lines in the log |
+| 18 | Without a bucket, Serverless Jobs move data only through 64 KiB injected files and logs (per the CLI reference) | job path design | chunked input files, results as base64 lines in the log |
 
 ## Token Factory API behaviour
 
@@ -88,7 +88,7 @@ The catalogue spells the three models we use three different ways: `nvidia/Nemot
 - **`json_schema` and function tools on all three tiers**, with `strict: true` schemas. A strict `OrderFields` schema on Lightning with thinking off extracted a German order email correctly. Evidence: `docs/plan/tf-probe.md` (rows `*/json_schema`, `*/tools`), `tests/agents/test_adapter.py::test_adapted_requests_run_on_token_factory[cs_03]` and its cassette.
 - **Ultra as judge.** On 20 classification tickets we wrote, with a mix of correct, wrong and badly formatted answers, the Ultra judge agreed with the deterministic label scorer on 19 of 20, and its position-swap consistency was 100%. The one disagreement was `"Billing."`: the scorer forgives the trailing period, the judge took 2 points off for format. Evidence: `docs/evidence/judge-sanity.md` (reproduces the figures offline from `tests/fixtures/cassettes/judge/`), `tests/harness/test_judge_sanity.py`.
 - **One OpenAI-compatible endpoint for all tiers**, so the tier matrix is three model ids and the client is the stock OpenAI SDK.
-- **Prompt caching shows in `usage`.** Recorded responses carry `prompt_tokens_details.cached_tokens` plus `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens`; on one recorded Ultra patch call, 4,352 of 8,396 prompt tokens were cache hits. Ask: say on the price page whether cached input is billed at a lower rate. Our spend counter charges all input at list price, so it may overstate what we spent. Evidence: `tests/fixtures/cassettes/pipeline/003bd8f6776312aa30454a02cd48a04023764752f17178680316eafea374c0e2.json`.
+- **Prompt caching shows in `usage`.** Recorded responses carry `prompt_tokens_details.cached_tokens` plus `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens`; on one recorded Ultra Iterator call, 4,352 of 8,396 prompt tokens were cache hits. Ask: say on the price page whether cached input is billed at a lower rate. Our spend counter charges all input at list price, so it may overstate what we spent. Evidence: `tests/fixtures/cassettes/pipeline/003bd8f6776312aa30454a02cd48a04023764752f17178680316eafea374c0e2.json`.
 
 ## NVIDIA Nemotron model behaviour
 
@@ -123,7 +123,7 @@ The judge scores a whole (site, tier, split) batch in one Ultra call, and the re
 
 ### 12. Super, writing call-site patches from a spec, dropped details of the spec
 
-In the second live run (`20261019-222942730-2c0f0b`, whose evaluation the demo uses), Nemotron 3 Super wrote each migrated call site from the evaluated adapter: model id, `extra_body` with the thinking switch, few-shot constant, and the test edits. All 6 sites had passed parity, and 5 of the 6 patches were rejected, 4 by our checks against the adapter and 1 by the repo's own tests. The few-shot constant was defined but not used (cs_01, cs_04), the old `messages.create` call stayed in place (cs_02), the model id was not the evaluated tier's and `extra_body` was missing (cs_04), two SEARCH blocks overlapped (cs_03), and a test that checks the prompt failed (cs_06). Only cs_05 was patched. Each rejection was a lost migration, not a wrong one, because the checks caught every bad patch.
+In the second live run (`20261019-222942730-2c0f0b`, whose evaluation the demo uses), Nemotron 3 Super wrote each migrated call site from the evaluated adapter: model id, `extra_body` with the thinking switch, few-shot constant, and the test edits. All 6 sites had passed parity, and 5 of the 6 patches were rejected, 4 by our patch checks and 1 by the repo's own tests. The few-shot constant was defined but not used (cs_01, cs_04), the old `messages.create` call stayed in place (cs_02), the model id was not the evaluated tier's and `extra_body` was missing (cs_04), two SEARCH blocks overlapped (cs_03), and a test that checks the prompt failed (cs_06). Only cs_05 was patched. Each rejection was a lost migration, not a wrong one, because the checks caught every bad patch.
 
 - Workaround: code now writes the evaluated request into the call site (an AST rewrite, with the request as literal keyword arguments), and the model may edit only tests and test fakes. Every non-test file must match the code-written tree. With that change, the final runs patched 3 sites.
 - Ask: guidance on the edit format Super handles best (unified diff, SEARCH/REPLACE blocks, whole files). Ours was a guess.

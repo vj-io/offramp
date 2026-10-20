@@ -8,7 +8,7 @@ Offramp
 
 ## Tagline
 
-Proves which closed-LLM calls NVIDIA Nemotron on Nebius Token Factory can take over, then opens the pull request.
+Tests each closed-LLM call in a Python repo against NVIDIA Nemotron on Nebius Token Factory, then opens a pull request for the calls that pass.
 
 ## Track
 
@@ -16,7 +16,7 @@ Coding and Agentic Engineering
 
 ## Inspiration
 
-Moving a product off a closed LLM API sounds like a base-URL change, and teams have reasons to do it: price, vendor lock-in, and deprecations. In our demo app, Tavily found that one of the source models, `claude-sonnet-4-5`, retires on 30 November 2026. What stops teams is risk they cannot see: JSON that no longer parses, tool schemas that drift, answers that are slightly worse. Nobody wants to migrate on a vibe check, and nobody has time to prove parity call site by call site. We wanted a tool that does the proving and hands over a pull request a reviewer can trust.
+Moving a product off a closed LLM API sounds like a base-URL change, and teams have reasons to do it: price, vendor lock-in, and deprecations. In our demo app, Tavily found that one of the source models, `claude-sonnet-4-5`, retires on 30 November 2026. What stops teams is risk they cannot see: JSON that no longer parses, tool schemas that drift, answers that are slightly worse. Nobody wants to migrate on a vibe check, and nobody has time to check parity call site by call site. We wanted a tool that does the checking and hands over a pull request a reviewer can trust.
 
 ## What it does
 
@@ -46,18 +46,18 @@ A dashboard shows all of it live: stage stepper, call-site cards, a parity-by-ti
 ## Challenges we ran into
 
 - **No closed-model keys.** We had only hackathon credits, so the source models' own outputs could not be recorded. We redefined parity as agreement with references whose ground truth is known, labelled every reference with where it came from, and audited the seed references blind with a different model family.
-- **Judges skip cases.** In our first live demo run, an Ultra judge batch returned no score for one Japanese question, and a retry replayed the same cached reply, so the run failed. The judge now asks again about only the skipped cases.
-- **Models are unreliable at writing shipped code to a spec.** Asked to rewrite call sites from the evaluated adapter, Super's patches were rejected on 5 of 6 sites: an unused few-shot constant, the old call left in place, a wrong model id, overlapping edits, a failing test. We moved the call-site rewrite into deterministic code and let the model edit tests only. Ultra repairs then broke the edit-block format three times (`FILES:` instead of `FILE:`, a missing `>>>>>>>`), and those sites went to manual review.
+- **The Ultra judge skipped a case.** In our first live demo run, an Ultra judge batch returned no score for one Japanese question, and a retry replayed the same cached reply, so the run failed. The judge now asks again about only the skipped cases.
+- **Super was unreliable at writing shipped code to a spec.** Asked to rewrite call sites from the evaluated adapter, Super's patches were rejected on 5 of 6 sites: an unused few-shot constant, the old call left in place, a wrong model id, overlapping edits, a failing test. We moved the call-site rewrite into deterministic code and let the model edit tests only. Ultra repairs then broke the edit-block format three times (`FILES:` instead of `FILE:`, a missing `>>>>>>>`), and those sites went to manual review.
 - **Nemotron specifics:** reasoning is on by default and its tokens count toward `max_tokens`; Lightning with `tool_choice="required"` looped until the token cap. Our `docs/FEEDBACK.md` has the details and evidence.
 - **AI Cloud billing.** Running the eval matrix as a Nebius AI Cloud Serverless Job needed a payment card and a $25 top-up, separate from the Token Factory credits. We built the job path and tested it against a fake CLI, but it never ran on Nebius; the matrix runs on a local worker.
 - **Small holdouts.** With 3 to 9 holdout cases per site, one miss moves parity by 11 to 33 points, so the report shows n for every site.
 
 ## Accomplishments that we're proud of
 
-- An end-to-end run on a real repo that ends in a real pull request: 6 call sites, 121 cases, 3 migrations, each with evidence, and 3 honest "a human should look at this" verdicts instead of patches we could not verify.
-- Offramp writes every change to application code itself; Nemotron edits only tests and test fakes, and the PR lists each of those edits for the reviewer. The three shipped patches passed the target repo's own ruff and pytest, alone and merged.
+- An end-to-end run on our demo repo that ends in a real pull request: 6 call sites, 121 cases, 3 migrations, each with evidence, and 3 honest "a human should look at this" verdicts instead of patches we could not verify.
+- Offramp writes every change to application code itself; Nemotron edits only tests and test fakes, and the PR lists the test files each model edit touched, for the reviewer. The three shipped patches passed the target repo's own ruff and pytest, alone and merged.
 - Every number on screen and in the PR is rendered from run artifacts. Costs are labelled as estimates with their price source and date, and latency before migration is shown as not measured.
-- The four live pipeline runs behind the demo cost $0.94 together on Token Factory, by our spend counter at list prices.
+- The four live pipeline runs behind the demo cost $0.94 together on Token Factory, by our spend counter at list prices (unverified, because the price page is login-gated) and excluding case generation. One full live pipeline cost $0.83; each re-run after a fix cost $0.03 to $0.08, because the response cache served every unchanged call.
 - Judges can watch the whole recorded run at <https://offramp-seven.vercel.app> with no login and no keys, or run `make demo` locally.
 
 ## What we learned
@@ -94,11 +94,13 @@ Python, FastAPI, Pydantic, SQLModel, OpenAI Python SDK, Nebius Token Factory, NV
 
 ## Gallery images
 
-1500x1000 PNGs in `docs/media/`, taken with Playwright from the deployed dashboard on 2026-10-20. For `04`, the page column was widened so the whole table shows without its sideways scroll; the content is unchanged. `05` is the real PR body rendered as markdown on a plain page, with no site chrome.
+1500x1000 PNGs in `docs/media/`, taken with Playwright from the deployed dashboard on 2026-10-20. For `04`, the page column was widened so the whole table shows without its sideways scroll; the content is unchanged. In `03` the evidence table is cut at the right edge, as the page shows it at this width.
+
+`05` is the real PR body rendered as markdown on a plain page, with no site chrome; the line above the title and the caption under it are ours, not part of the PR.
 
 | File | Caption |
 |---|---|
-| `01-replay-mid-run.png` | Mid-run: each call site's tiers fill in, and Nemotron 3 Ultra rewrites an adapter for the RAG answerer after Lightning and Super fall short. |
+| `01-replay-mid-run.png` | Mid-run: the RAG answerer has failed on Lightning after three adapter rewrites, and Nemotron 3 Ultra is rewriting its adapter for Super. |
 | `02-replay-done.png` | Done: the parity-by-tier grid with the chosen tier circled for each migrated call site. |
 | `03-report-summary.png` | The report: 3 of 6 calls move to Nemotron; estimated cost across all six sites $49.24 → $43.86 per 1,000 calls (−11%). |
 | `04-report-evidence.png` | The evidence table: before and after model, parity vs reference on holdout, p50 latency on Nemotron, estimated cost per 1,000 calls. |

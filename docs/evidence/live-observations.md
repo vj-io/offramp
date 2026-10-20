@@ -51,7 +51,7 @@ The run's budget counter (`budget.json`): 355,556 input and 237,923 output token
 
 Source: `var/runs/20261019-222942730-2c0f0b/report.json`, the verdict reasons after the patch stage. All six sites had passed parity on holdout before patching.
 
-| Site | Outcome | Reason, as recorded |
+| Site | Outcome | Reason (abridged from the report) |
 |---|---|---|
 | cs_01 | manual review | patch rejected (adapter spec or patch rules): few-shot constant NEMOTRON_FEW_SHOT is not used in `triage_ticket` |
 | cs_02 | manual review | patch rejected (adapter spec or patch rules): the old messages.create call is still in `next_action` |
