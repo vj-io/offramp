@@ -836,6 +836,32 @@ def test_the_python_version_reaches_the_image_only_when_it_is_a_version(monkeypa
         assert built and built[0].startswith(f"FROM ghcr.io/astral-sh/uv:{base}-bookworm-slim\n")
 
 
+@pytest.mark.parametrize("name", ["requirements.txt", ".python-version"])
+def test_a_symlinked_dependency_file_never_reaches_the_image_or_a_message(monkeypatch, tmp_path, name):
+    """The sandbox also builds from the original clone (schema imports, oracles), where no link was dropped:
+    in the clone layout runs/<id>/repo, requirements.txt -> ../../../.env would carry a host file into the
+    image, and a linked .python-version would echo it in the error."""
+    repo = tmp_path / "runs" / "r1" / "repo"
+    repo.mkdir(parents=True)
+    (tmp_path / "outside.env").write_text("canary-outside-the-repo\n")
+    (repo / name).symlink_to(Path("../../../outside.env"))
+    built = []
+
+    def fake_run(cmd, **kw):
+        if cmd[:2] == ["docker", "build"]:
+            built.append({f.name: f.read_text() for f in Path(cmd[-1]).iterdir()})
+        return subprocess.CompletedProcess(cmd, 1 if cmd[:3] == ["docker", "image", "inspect"] else 0, "", "")
+
+    monkeypatch.setattr(sandbox_module.subprocess, "run", fake_run)
+    box = Sandbox(repo, docker=True)
+
+    result, (code, out, err) = box.check(), box.python("print(1)")
+
+    assert built == []  # no build context, so no image, holds it
+    assert not result.ok and code != 0 and f"{name} is a symlink" in result.output + err
+    assert "canary" not in result.output + out + err
+
+
 def test_without_docker_or_the_local_opt_in_nothing_runs(monkeypatch):
     monkeypatch.delenv("OFFRAMP_ALLOW_LOCAL_SANDBOX", raising=False)
     llm = FakeLLM()  # no reply queued: the patcher must not be asked

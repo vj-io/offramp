@@ -193,6 +193,14 @@ class Sandbox:
         """Image with the repo's dependencies (network on at build time only), cached by dependency hash."""
         if self._image:
             return self._image
+        # never follow a link: the repo may be a raw clone, where runs/<id>/repo/requirements.txt ->
+        # ../../../.env would copy a host file into the image (and a linked .python-version into a message)
+        linked = [f for f in DEP_FILES if (self.repo / f).is_symlink()]
+        if linked:
+            raise RuntimeError(
+                f"{', '.join(linked)} is a symlink: the sandbox image takes dependency files only as regular "
+                "files in the repo; no sandbox image"
+            )
         present = [f for f in DEP_FILES if (self.repo / f).is_file()]
         version = (
             (self.repo / ".python-version").read_text().strip() if ".python-version" in present else "3.12"
