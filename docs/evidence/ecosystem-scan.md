@@ -1,6 +1,6 @@
 # Ecosystem scan: closed-LLM call sites in popular public Python repos
 
-Offramp's static scan (`offramp scan`, the same code as the hosted /scan page) over 30 popular public Python repos, run on 2026-10-21 with Offramp at `f17ea30` under Python 3.14.7. The repos are the most-starred results of a GitHub keyword search for `openai` and `anthropic` that import either SDK and whose archive is under 25 MB: 22 higher-starred hits were over 25 MB and skipped (listed below), so this is not the top 30 importers. The scan reads each repo's .py files and never imports or runs them, makes no model call and needs no key. Raw data: [ecosystem-scan.json](ecosystem-scan.json). Regenerate with `uv run python scripts/ecosystem_scan.py`.
+Offramp's static scan (`offramp scan`, the same code as the hosted /scan page) over 30 popular public Python repos, run on 2026-10-21 with Offramp at `5f44099` under Python 3.14.7. The repos are the most-starred results of a GitHub keyword search for `openai` and `anthropic` that import either SDK and whose archive is under 25 MB: 22 higher-starred hits were over 25 MB and skipped (listed below), so this is not the top 30 importers. The scan reads each repo's .py files and never imports or runs them, makes no model call and needs no key. Raw data: [ecosystem-scan.json](ecosystem-scan.json). Regenerate with `uv run python scripts/ecosystem_scan.py`.
 
 ## Totals
 
@@ -50,11 +50,11 @@ Offramp's static scan (`offramp scan`, the same code as the hosted /scan page) o
 | [langchain-ai/langgraph](https://github.com/langchain-ai/langgraph) | 43,597 | [`a24fc97`](https://github.com/langchain-ai/langgraph/tree/a24fc97778fca67cfac4cd3fc63e508ee1d29f59) | 476 | 13 | 0 |
 | [AstrBotDevs/AstrBot](https://github.com/AstrBotDevs/AstrBot) | 42,433 | [`f2404c1`](https://github.com/AstrBotDevs/AstrBot/tree/f2404c191716a64daaa422be7f3c567cace50d39) | 747 | 6 | 2 |
 | [PDFMathTranslate/PDFMathTranslate](https://github.com/PDFMathTranslate/PDFMathTranslate) | 37,706 | [`17922e7`](https://github.com/PDFMathTranslate/PDFMathTranslate/tree/17922e7610291d3f2f43098b34478059087549fe) | 33 | 5 | 0 |
-| [mukul975/Anthropic-Cybersecurity-Skills](https://github.com/mukul975/Anthropic-Cybersecurity-Skills) | 34,761 | [`54a7988`](https://github.com/mukul975/Anthropic-Cybersecurity-Skills/tree/54a798831d2266a3ca61ce68a7acb80b81160d57) | 1,103 | 1 | 0 |
+| [mukul975/Anthropic-Cybersecurity-Skills](https://github.com/mukul975/Anthropic-Cybersecurity-Skills) | 34,762 | [`54a7988`](https://github.com/mukul975/Anthropic-Cybersecurity-Skills/tree/54a798831d2266a3ca61ce68a7acb80b81160d57) | 1,103 | 1 | 0 |
 | [openai/openai-agents-python](https://github.com/openai/openai-agents-python) | 30,182 | [`64cd5df`](https://github.com/openai/openai-agents-python/tree/64cd5dfc5a1579870dcbed0ea42b27aa84033fee) | 1,020 | 7 | 0 |
 | [chidiwilliams/buzz](https://github.com/chidiwilliams/buzz) | 22,105 | [`6186d09`](https://github.com/chidiwilliams/buzz/tree/6186d09a9f7c2b51c9d5de89592ace2e9cc0092c) | 226 | 3 | 0 |
 | [openai/swarm](https://github.com/openai/swarm) | 22,064 | [`6af0b4c`](https://github.com/openai/swarm/tree/6af0b4caf37dca4526dfd98e9fbd8ce36e7eeb22) | 62 | 2 | 5 |
-| [langbot-app/LangBot](https://github.com/langbot-app/LangBot) | 18,318 | [`fc62f2e`](https://github.com/langbot-app/LangBot/tree/fc62f2ee137f5936284fcc462bbaec4807ae36b3) | 1,171 | 2 | 0 |
+| [langbot-app/LangBot](https://github.com/langbot-app/LangBot) | 18,317 | [`fc62f2e`](https://github.com/langbot-app/LangBot/tree/fc62f2ee137f5936284fcc462bbaec4807ae36b3) | 1,171 | 2 | 0 |
 | [AsyncFuncAI/deepwiki-open](https://github.com/AsyncFuncAI/deepwiki-open) | 18,232 | [`d92819a`](https://github.com/AsyncFuncAI/deepwiki-open/tree/d92819a9c9f3b99416e3580ff235fc9d3adf8b89) | 67 | 4 | 2 |
 | [TransformerOptimus/SuperAGI](https://github.com/TransformerOptimus/SuperAGI) | 17,711 | [`c3c1982`](https://github.com/TransformerOptimus/SuperAGI/tree/c3c1982e7bd6a11cfed53c5a193ea502f924b1b6) | 461 | 2 | 0 |
 | [Usagi-org/ai-goofish-monitor](https://github.com/Usagi-org/ai-goofish-monitor) | 15,045 | [`77f8d75`](https://github.com/Usagi-org/ai-goofish-monitor/tree/77f8d75869acd65f9dba72731b95c7c49ea67bdf) | 115 | 0 | 0 |
@@ -72,37 +72,37 @@ Offramp's static scan (`offramp scan`, the same code as the hosted /scan page) o
 | [LearningCircuit/local-deep-research](https://github.com/LearningCircuit/local-deep-research) | 9,372 | [`683a967`](https://github.com/LearningCircuit/local-deep-research/tree/683a967df20fe98ec0ddc99668041e22b95ff78b) | 3,167 | 4 | 0 |
 | [zilliztech/deep-searcher](https://github.com/zilliztech/deep-searcher) | 8,350 | [`ddc36db`](https://github.com/zilliztech/deep-searcher/tree/ddc36db317836bd42302b36f03166bec5324708d) | 156 | 11 | 4 |
 | [zilliztech/GPTCache](https://github.com/zilliztech/GPTCache) | 8,213 | [`a74ac65`](https://github.com/zilliztech/GPTCache/tree/a74ac654473f7bf4109118e8576945161616e17a) | 229 | 5 | 0 |
-| [RayVentura/ShortGPT](https://github.com/RayVentura/ShortGPT) | 8,052 | [`3df4e0f`](https://github.com/RayVentura/ShortGPT/tree/3df4e0f7a422bf7386565d498bf4521a2544c614) | 68 | 1 | 0 |
+| [RayVentura/ShortGPT](https://github.com/RayVentura/ShortGPT) | 8,053 | [`3df4e0f`](https://github.com/RayVentura/ShortGPT/tree/3df4e0f7a422bf7386565d498bf4521a2544c614) | 68 | 1 | 0 |
 | [Upsonic/Upsonic](https://github.com/Upsonic/Upsonic) | 7,960 | [`101f031`](https://github.com/Upsonic/Upsonic/tree/101f0313b0ddb96cd4078354879b2ff57005db29) | 968 | 3 | 2 |
 
 ## How the repos were picked
 
 GitHub repository search, most stars first: `openai language:python archived:false fork:false stars:>1000` and `anthropic language:python archived:false fork:false stars:>1000`. Each candidate was downloaded as GitHub's HEAD tarball with /api/scan's caps (25 MB download, 5,000 .py files; 1200 s instead of 20 s, since this ran locally) and kept once a file the scanner reads imports `openai` or `anthropic`, until 30 were kept. Skipped on the way:
 
-- NousResearch/hermes-agent (255,573 stars): The repository archive is over 25 MB.
-- microsoft/markitdown (191,305 stars): no file the scanner reads imports openai or anthropic
-- Significant-Gravitas/AutoGPT (187,676 stars): The repository archive is over 25 MB.
-- langgenius/dify (159,060 stars): The repository archive is over 25 MB.
-- open-webui/open-webui (156,296 stars): no file the scanner reads imports openai or anthropic
-- vllm-project/vllm (94,419 stars): The repository archive is over 25 MB.
-- unslothai/unsloth (78,324 stars): The repository archive is over 25 MB.
-- headroomlabs-ai/headroom (76,731 stars): The repository archive is over 25 MB.
-- calesthio/OpenMontage (70,288 stars): The repository archive is over 25 MB.
+- NousResearch/hermes-agent (255,579 stars): The repository archive is over 25 MB.
+- microsoft/markitdown (191,307 stars): no file the scanner reads imports openai or anthropic
+- Significant-Gravitas/AutoGPT (187,677 stars): The repository archive is over 25 MB.
+- langgenius/dify (159,062 stars): The repository archive is over 25 MB.
+- open-webui/open-webui (156,299 stars): no file the scanner reads imports openai or anthropic
+- vllm-project/vllm (94,426 stars): The repository archive is over 25 MB.
+- unslothai/unsloth (78,325 stars): The repository archive is over 25 MB.
+- headroomlabs-ai/headroom (76,740 stars): The repository archive is over 25 MB.
+- calesthio/OpenMontage (70,293 stars): The repository archive is over 25 MB.
 - asgeirtj/system_prompts_leaks (69,940 stars): no file the scanner reads imports openai or anthropic
-- BerriAI/litellm (61,670 stars): The repository archive is over 25 MB.
-- hesreallyhim/awesome-claude-code (56,108 stars): no file the scanner reads imports openai or anthropic
-- Aider-AI/aider (49,667 stars): The repository archive is over 25 MB.
+- BerriAI/litellm (61,671 stars): The repository archive is over 25 MB.
+- hesreallyhim/awesome-claude-code (56,112 stars): no file the scanner reads imports openai or anthropic
+- Aider-AI/aider (49,668 stars): The repository archive is over 25 MB.
 - oobabooga/textgen (47,737 stars): no file the scanner reads imports openai or anthropic
 - zhayujie/CowAgent (47,482 stars): no file the scanner reads imports openai or anthropic
-- anthropics/claude-plugins-official (43,397 stars): no file the scanner reads imports openai or anthropic
-- wshobson/agents (41,246 stars): no file the scanner reads imports openai or anthropic
+- anthropics/claude-plugins-official (43,403 stars): no file the scanner reads imports openai or anthropic
+- wshobson/agents (41,247 stars): no file the scanner reads imports openai or anthropic
 - mouredev/Hello-Python (37,815 stars): no file the scanner reads imports openai or anthropic
-- davila7/claude-code-templates (32,785 stars): The repository archive is over 25 MB.
+- davila7/claude-code-templates (32,788 stars): The repository archive is over 25 MB.
 - openai/openai-python (31,889 stars): the OpenAI SDK itself
 - mlflow/mlflow (28,470 stars): The repository archive is over 25 MB.
 - SYSTRAN/faster-whisper (25,996 stars): no file the scanner reads imports openai or anthropic
 - karpathy/minGPT (24,960 stars): no file the scanner reads imports openai or anthropic
-- guillaumemeyer/watermarks-remover (24,545 stars): no file the scanner reads imports openai or anthropic
+- guillaumemeyer/watermarks-remover (24,547 stars): no file the scanner reads imports openai or anthropic
 - comet-ml/opik (22,786 stars): The repository archive is over 25 MB.
 - modelscope/FunASR (20,769 stars): The repository archive is over 25 MB.
 - openai/gpt-oss (20,479 stars): The repository archive is over 25 MB.
@@ -117,14 +117,14 @@ GitHub repository search, most stars first: `openai language:python archived:fal
 - kyegomez/OpenMythos (14,908 stars): no file the scanner reads imports openai or anthropic
 - e2b-dev/E2B (14,475 stars): no file the scanner reads imports openai or anthropic
 - 567-labs/instructor (14,038 stars): The repository archive is over 25 MB.
-- DLR-RM/stable-baselines3 (13,915 stars): no file the scanner reads imports openai or anthropic
+- DLR-RM/stable-baselines3 (13,916 stars): no file the scanner reads imports openai or anthropic
 - xszyou/Fay (13,581 stars): The repository archive is over 25 MB.
 - jina-ai/clip-as-service (12,832 stars): no file the scanner reads imports openai or anthropic
 - FareedKhan-dev/train-llm-from-scratch (12,391 stars): no file the scanner reads imports openai or anthropic
 - dataelement/bisheng (12,060 stars): The repository archive is over 25 MB.
 - EmbraceAGI/awesome-chatgpt-zh (11,768 stars): The repository archive is over 25 MB.
 - lucidrains/DALLE2-pytorch (11,302 stars): no file the scanner reads imports openai or anthropic
-- aden-hive/hive (11,112 stars): The repository archive is over 25 MB.
+- aden-hive/hive (11,113 stars): The repository archive is over 25 MB.
 - xonsh/xonsh (9,680 stars): no file the scanner reads imports openai or anthropic
 - anthropics/anthropic-sdk-python (3,985 stars): the Anthropic SDK itself
 

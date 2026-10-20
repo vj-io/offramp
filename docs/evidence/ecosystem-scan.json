@@ -1,6 +1,6 @@
 {
  "date": "2026-10-21",
- "offramp_commit": "f17ea30187274c98b683922b26a567affc09a30e",
+ "offramp_commit": "5f44099d4187982d5faa571d68b5a3ecab801c14",
  "python": "3.14.7",
  "queries": [
   "openai language:python archived:false fork:false stars:>1000",
@@ -802,7 +802,7 @@
   },
   {
    "repo": "mukul975/Anthropic-Cybersecurity-Skills",
-   "stars": 34761,
+   "stars": 34762,
    "commit": "54a798831d2266a3ca61ce68a7acb80b81160d57",
    "python_files": 1103,
    "imports": [
@@ -1101,7 +1101,7 @@
   },
   {
    "repo": "langbot-app/LangBot",
-   "stars": 18318,
+   "stars": 18317,
    "commit": "fc62f2ee137f5936284fcc462bbaec4807ae36b3",
    "python_files": 1171,
    "imports": [
@@ -3168,7 +3168,7 @@
   },
   {
    "repo": "RayVentura/ShortGPT",
-   "stars": 8052,
+   "stars": 8053,
    "commit": "3df4e0f7a422bf7386565d498bf4521a2544c614",
    "python_files": 68,
    "imports": [
@@ -3284,47 +3284,47 @@
  "skipped": [
   {
    "repo": "NousResearch/hermes-agent",
-   "stars": 255573,
+   "stars": 255579,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "microsoft/markitdown",
-   "stars": 191305,
+   "stars": 191307,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "Significant-Gravitas/AutoGPT",
-   "stars": 187676,
+   "stars": 187677,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "langgenius/dify",
-   "stars": 159060,
+   "stars": 159062,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "open-webui/open-webui",
-   "stars": 156296,
+   "stars": 156299,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "vllm-project/vllm",
-   "stars": 94419,
+   "stars": 94426,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "unslothai/unsloth",
-   "stars": 78324,
+   "stars": 78325,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "headroomlabs-ai/headroom",
-   "stars": 76731,
+   "stars": 76740,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "calesthio/OpenMontage",
-   "stars": 70288,
+   "stars": 70293,
    "reason": "The repository archive is over 25 MB."
   },
   {
@@ -3334,17 +3334,17 @@
   },
   {
    "repo": "BerriAI/litellm",
-   "stars": 61670,
+   "stars": 61671,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "hesreallyhim/awesome-claude-code",
-   "stars": 56108,
+   "stars": 56112,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "Aider-AI/aider",
-   "stars": 49667,
+   "stars": 49668,
    "reason": "The repository archive is over 25 MB."
   },
   {
@@ -3359,12 +3359,12 @@
   },
   {
    "repo": "anthropics/claude-plugins-official",
-   "stars": 43397,
+   "stars": 43403,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "wshobson/agents",
-   "stars": 41246,
+   "stars": 41247,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
@@ -3374,7 +3374,7 @@
   },
   {
    "repo": "davila7/claude-code-templates",
-   "stars": 32785,
+   "stars": 32788,
    "reason": "The repository archive is over 25 MB."
   },
   {
@@ -3399,7 +3399,7 @@
   },
   {
    "repo": "guillaumemeyer/watermarks-remover",
-   "stars": 24545,
+   "stars": 24547,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
@@ -3474,7 +3474,7 @@
   },
   {
    "repo": "DLR-RM/stable-baselines3",
-   "stars": 13915,
+   "stars": 13916,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
@@ -3509,7 +3509,7 @@
   },
   {
    "repo": "aden-hive/hive",
-   "stars": 11112,
+   "stars": 11113,
    "reason": "The repository archive is over 25 MB."
   },
   {
