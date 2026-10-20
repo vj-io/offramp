@@ -213,7 +213,7 @@ make live       # delete the recorded cassettes, then re-record them against Tok
 
 - Python 3.12, `uv`, ruff; tests under `tests/{unit,agents,harness,integration,e2e}`. Tests marked `live` run only with `--live`.
 - CI (`.github/workflows/ci.yml`): ruff, pytest with `--cov=offramp --cov-fail-under=70`, web test, lint and build, gitleaks over the full history, and a Docker build of the API image.
-- A nightly workflow re-records the cassettes against Token Factory and opens an issue when the answers stop satisfying the parsers. It runs only when the repository has a `NEBIUS_API_KEY` secret.
+- A live-check workflow (`.github/workflows/nightly-live.yml`) re-records the cassettes against Token Factory and opens an issue when the answers stop satisfying the parsers. Every run spends Token Factory credit, so it runs only when started by hand (`workflow_dispatch`), never on a schedule, and only when the repository has a `NEBIUS_API_KEY` secret.
 
 ```
 offramp/

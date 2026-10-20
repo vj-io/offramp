@@ -1,12 +1,12 @@
 name: Nightly live check
 
 # Re-records the cassettes against the real Token Factory and fails when the API's answers no longer
-# satisfy our parsers (schema drift). It spends Token Factory credit on every run, so it runs only when the
-# repository has a NEBIUS_API_KEY secret; without it the live job is skipped. The fallback key is
-# deliberately not forwarded: a nightly must never spend the reserve key.
+# satisfy our parsers (schema drift). Spend bound: it runs only when started by hand (workflow_dispatch),
+# never on a schedule, because each run deletes the recorded cassettes and re-records all of them, the full
+# demo pipeline included (about $0.50 of Token Factory credit for that recorder alone, measured in Task 12).
+# It also needs a NEBIUS_API_KEY secret; without it the live job is skipped. The fallback key is
+# deliberately not forwarded: a live check must never spend the reserve key.
 on:
-  schedule:
-    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:
