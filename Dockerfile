@@ -3,7 +3,7 @@
 # image is Dockerfile.eval.
 #
 #   docker build -t offramp-api .
-#   docker run --rm -p 8000:8000 -v offramp-data:/data --env-file .env offramp-api   # --env-file is optional
+#   docker run --rm -p 127.0.0.1:8000:8000 -v offramp-data:/data --env-file .env offramp-api   # --env-file is optional; no auth: localhost only
 #
 # Without keys the API still serves the recorded replay (`?replay=demo`); keys only matter for live runs.
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim

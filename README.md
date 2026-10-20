@@ -164,7 +164,7 @@ make install
 | `LANGSMITH_API_KEY`, `LANGSMITH_TRACING`, `LANGSMITH_PROJECT` | Tracing and datasets |
 | `TENDEM_API_KEY` | Human audit of references |
 | `NEBIUS_PROJECT_ID`, `OFFRAMP_EVAL_IMAGE` | Submit the eval matrix as a Serverless Job instead of running it locally (needs an AI Cloud account) |
-| `OFFRAMP_DATA_DIR`, `OFFRAMP_RATE_LIMIT_PER_MIN`, `OFFRAMP_WEB_ORIGIN`, `OFFRAMP_ALLOW_LIVE_RUNS` | API data directory, rate limit on `POST /api/runs`, allowed web origin for CORS, opt-in for live runs through the API (off by default) |
+| `OFFRAMP_DATA_DIR`, `OFFRAMP_RATE_LIMIT_PER_MIN`, `OFFRAMP_WEB_ORIGIN`, `OFFRAMP_ALLOW_LIVE_RUNS` | API data directory, rate limit on `POST /api/runs`, allowed web origin for CORS, opt-in for any run through the API, cache-only or live (off by default; replays need none) |
 | `*_FALLBACK` (Nebius, Tavily, LangSmith, Tendem) | Second key, used for the rest of the process when the primary is rejected or out of credit; the switch is logged without the key |
 
 `.env` is gitignored, keys are read server-side only, and CI scans the full history with gitleaks.
@@ -173,7 +173,7 @@ make install
 
 - **What runs where.** Offramp runs code from the repo it is given in three places: the repo's own `ruff` and `pytest` on each patch, the Pydantic models it imports to read their JSON schemas, and the oracles in `evals/reference/`. All three run in the Docker sandbox (`offramp/sandbox.py`). The repo's dependencies are installed when the sandbox image is built, inside Docker; the code then runs with the network off, the repo mounted read-only, no capabilities, and none of this machine's environment variables. Everything else (scanning, Token Factory calls, scoring, the PR) runs in the Offramp process and only reads the repo.
 - **What never sees keys.** Target code never gets a Token Factory, Tavily, LangSmith or GitHub key: the container receives no host environment. Run events are scrubbed of the value of every variable whose name holds KEY, TOKEN, SECRET or PASSWORD before they are stored.
-- **Opt-ins.** Without Docker, target code runs only when `OFFRAMP_ALLOW_LOCAL_SANDBOX=1`, as a subprocess on this machine whose environment holds no key or token. That is not isolation: the code runs as you, with your files and your network, so use it only on repos you trust. Without Docker and without the opt-in nothing from the target repo runs: `offramp run` and `offramp prepare` stop with a message saying so when a site needs a schema or an oracle, and the patch stage sends its sites to manual review ("no sandbox").
+- **Opt-ins.** Without Docker, target code runs only when `OFFRAMP_ALLOW_LOCAL_SANDBOX=1`, as a subprocess on this machine whose environment holds no key or token. That is not isolation: the code runs as you, with your files and your network, so use it only on repos you trust. Without Docker and without the opt-in nothing from the target repo runs: `offramp run` and `offramp prepare` stop with a message saying so when a site needs a schema or an oracle, and the patch stage sends its sites to manual review ("no sandbox"). The API starts runs only with `OFFRAMP_ALLOW_LIVE_RUNS=1` and has no authentication, so bind it to localhost.
 
 ```bash
 uv run offramp scan <path>                     # list closed-LLM call sites (no model calls)
@@ -187,7 +187,7 @@ The API contract the dashboard depends on:
 
 | Endpoint | |
 |---|---|
-| `POST /api/runs` | Body is the run config; returns `{"run_id"}`. `?replay=demo` starts a replay with no Token Factory calls. A live run (`"live": true`) answers 403 unless the server sets `OFFRAMP_ALLOW_LIVE_RUNS=1`, because it imports the target repo's code on that host; cache-only runs and replays are always allowed. Repo URLs must be `https://` with no credentials (422). 30 requests per minute per IP |
+| `POST /api/runs` | Body is the run config; returns `{"run_id"}`. `?replay=demo` starts a replay with no Token Factory calls. Every run, cache-only (`"live": false`) included, answers 403 unless the server sets `OFFRAMP_ALLOW_LIVE_RUNS=1`, because a run clones the repo it is given, runs its code in the sandbox and can open a pull request with the server's GitHub token; replays are always allowed. Repo URLs must be `https://` with no credentials (422). 30 requests per minute per IP |
 | `GET /api/runs/{id}` | Snapshot: stage, sites, tier results, verdicts, case summaries, totals, artifacts |
 | `GET /api/runs/{id}/events` | Server-sent events, resumable with `Last-Event-ID` |
 | `GET /api/runs/{id}/report` | JSON download of the snapshot and the PR body |
@@ -197,10 +197,10 @@ The API contract the dashboard depends on:
 
 ```bash
 docker build -t offramp-api .
-docker run --rm -p 8000:8000 -v offramp-data:/data --env-file .env offramp-api
+docker run --rm -p 127.0.0.1:8000:8000 -v offramp-data:/data --env-file .env offramp-api
 ```
 
-The image serves the API only; the dashboard in `web/` deploys separately. `Dockerfile.eval` is the Serverless Job image.
+The image serves the API only; the dashboard in `web/` deploys separately. The API has no authentication and serves every run on its disk, so publish it on localhost only, as above. `Dockerfile.eval` is the Serverless Job image.
 
 ## Development
 
