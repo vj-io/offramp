@@ -16,8 +16,9 @@ Sources (all optional; the committed cassettes are the default, so a clean clone
 
 Only fields that exist in the entries are used. The role of a call is NOT recorded: it is read off the
 system prompt (ROLE_PREFIXES); a call whose system prompt matches none of them is the migrated app's own
-call, which the budget names "eval_target". The output holds aggregates only, never request or response
-text.
+call, which the budget names "eval_target". The output holds aggregates, the 60-character heads of the
+system prompts that matched no role (so the role reading can be checked) and the run-log messages; never
+request or response text.
 """
 
 from __future__ import annotations
@@ -99,7 +100,6 @@ def to_call(entry: dict[str, Any], source: str) -> dict[str, Any]:
         "input_tokens": usage.get("prompt_tokens", 0),
         "output_tokens": usage.get("completion_tokens", 0),
         "prompt_cache_hit_tokens": raw_usage.get("prompt_cache_hit_tokens"),
-        "reasoning_tokens": (raw_usage.get("completion_tokens_details") or {}).get("reasoning_tokens"),
         "finish_reason": choice.get("finish_reason"),
         "thinking": thinking,
         "max_tokens": params.get("max_tokens"),
@@ -152,6 +152,8 @@ def load_runs(runs_dir: Path) -> list[dict[str, Any]]:
     runs = []
     for run in sorted(p for p in runs_dir.iterdir() if (p / "events.jsonl").exists()):
         events = [json.loads(line) for line in (run / "events.jsonl").read_text().splitlines() if line]
+        if not events:
+            continue
         budget = run / "budget.json"
         logs = [e["payload"] for e in events if e["type"] == "log"]
         warnings = [p["message"] for p in logs if p["level"] == "warn"]
@@ -195,7 +197,7 @@ def summarise(calls: list[dict[str, Any]]) -> dict[str, Any]:
     reporting = [c for c in calls if c["prompt_cache_hit_tokens"] is not None]
     judged = [c for c in calls if c["json_valid"] is not None]
     invalid = Counter(c["finish_reason"] for c in judged if not c["json_valid"])
-    latency ={"n": len(lat), "p50": percentile(lat, 50), "p95": percentile(lat, 95)}
+    latency = {"n": len(lat), "p50": percentile(lat, 50), "p95": percentile(lat, 95)}
     latency["max"] = max(lat, default=None)
     return {
         "calls": n,
@@ -264,9 +266,25 @@ def aggregate(
     by_model_role: dict[str, dict[str, Any]] = defaultdict(dict)
     for (m, role), v in group(calls, "model", "role").items():
         by_model_role[m][role] = summarise(v)
-    thinking = sorted(group(calls, "model", "thinking").items(), key=lambda kv: str(kv[0]))
+    cassette_only = [c for c in calls if c["source"] == "cassette"]
+    eval_target = [c for c in calls if c["role"] == EVAL_TARGET_ROLE]
+
+    def by_thinking(sel: list[dict[str, Any]]) -> dict[str, Any]:
+        flags = sorted(group(sel, "model", "thinking").items(), key=lambda kv: str(kv[0]))
+        return {
+            f"{m} | {'on' if t else 'off' if t is False else 'unset'}": summarise(v) for (m, t), v in flags
+        }
+
     length_keys = (
-        "model", "role", "thinking", "max_tokens", "output_tokens", "tool_choice", "json_kind", "scope"
+        "model",
+        "role",
+        "source",
+        "thinking",
+        "max_tokens",
+        "output_tokens",
+        "tool_choice",
+        "json_kind",
+        "scope",
     )
     return {
         "inputs": {
@@ -282,10 +300,12 @@ def aggregate(
         "by_model": {m: summarise(v) for (m,), v in sorted(group(calls, "model").items())},
         "by_model_in_runs": {m: summarise(v) for (m,), v in sorted(group(in_runs, "model").items())},
         "by_model_cache_only": {m: summarise(v) for (m,), v in sorted(group(cache_only, "model").items())},
-        "by_model_role": dict(by_model_role),
-        "by_model_thinking": {
-            f"{m} | {'on' if t else 'off' if t is False else 'unset'}": summarise(v) for (m, t), v in thinking
+        "by_model_cassette_only": {
+            m: summarise(v) for (m,), v in sorted(group(cassette_only, "model").items())
         },
+        "by_model_role": dict(by_model_role),
+        "by_model_thinking": by_thinking(calls),
+        "by_model_thinking_eval_target": by_thinking(eval_target),
         "by_scope": {k[0]: summarise(v) for k, v in sorted(group(calls, "scope").items())},
         "length_calls": [{k: c[k] for k in length_keys} for c in calls if c["finish_reason"] == "length"],
         "run_reconciliation": reconcile(calls, runs),
@@ -324,14 +344,19 @@ def stat_cells(s: dict[str, Any]) -> list[str]:
         f"{s['output_tokens']['total']:,} / {s['output_tokens']['p50']:,}",
         f"{seconds(lat['p50'])} / {seconds(lat['p95'])}{'†' if n < 20 else ''}",
         finish,
-        f"{s['length_share']:.1%}",
+        f"{s['length_share']:.1%}{'†' if n < 20 else ''}",
         f"{j['valid']} / {j['calls_with_response_format']}" if j["calls_with_response_format"] else "n/a",
     ]
 
 
 STAT_HEADERS = [
-    "Calls", "Input tokens (total / p50)", "Output tokens (total / p50)", "Latency s (p50 / p95)",
-    "Finish: stop / tool_calls / length", "`length` share", "JSON valid",
+    "Calls",
+    "Input tokens (total / p50)",
+    "Output tokens (total / p50)",
+    "Latency s (p50 / p95)",
+    "Finish: stop / tool_calls / length",
+    "`length` share",
+    "JSON valid",
 ]
 
 
@@ -341,20 +366,27 @@ def table(headers: list[str], rows: list[list[str]]) -> str:
 
 
 def reflow(md: str, width: int = 110) -> str:
-    """Re-wrap prose and bullet paragraphs at `width`; headings and tables pass through."""
+    """Re-wrap prose and bullet paragraphs at `width`; headings, tables and code fences pass through."""
     out = []
     for block in md.split("\n\n"):
         if not block:
             continue
-        if block.startswith(("#", "|")):
+        if block.startswith(("#", "|", "```")):
             out.append(block)
             continue
         items = re.split(r"\n(?=- )", block)
-        out.append("\n".join(
-            textwrap.fill(" ".join(i.split()), width, subsequent_indent="  " if i.startswith("- ") else "",
-                          break_long_words=False, break_on_hyphens=False)
-            for i in items
-        ))
+        out.append(
+            "\n".join(
+                textwrap.fill(
+                    " ".join(i.split()),
+                    width,
+                    subsequent_indent="  " if i.startswith("- ") else "",
+                    break_long_words=False,
+                    break_on_hyphens=False,
+                )
+                for i in items
+            )
+        )
     return "\n\n".join(out)
 
 
@@ -365,11 +397,22 @@ def render_md(r: dict[str, Any]) -> str:
     ids = ", ".join(f"{tier_name(m)} = `{m}`" for m in models)
     first, last = inp["created_at_first"][:10], inp["created_at_last"][:10]
     n_runs = len(runs)
+    n_cache, n_cassette = (inp["calls_by_source"].get(s, 0) for s in ("cache", "cassette"))
     in_runs = sum(x["cache_calls"] for x in runs)
-    cache_calls = inp["calls_by_source"].get("cache", 0)
     all_ok = all(x["matches_budget"] for x in runs)
     spend = sum(x["budget_tf_spend_usd"] or 0 for x in runs)
     fin = o["finish_reasons"]
+    if n_cache:
+        scope = (
+            f"all {o['calls']:,} recorded calls: {n_cache:,} from the response cache plus {n_cassette:,} "
+            f"from the committed cassettes, with {n_runs} run directories for the run checks."
+        )
+    else:
+        scope = (
+            f"the {n_cassette:,} calls in the committed cassettes only. No response cache was given, so "
+            "this is not the full set: the figures differ from a document generated with the cache and "
+            "the run files, and there are no run tables."
+        )
 
     def calls_in(scope: str) -> str:
         return f"{by_scope.get(scope, {}).get('calls', 0):,}"
@@ -378,13 +421,16 @@ def render_md(r: dict[str, Any]) -> str:
         ["Where the calls were recorded", "Calls"],
         [[f"Run `{x['run_id']}` (cache entries inside its time window)", calls_in(x["run_id"])] for x in runs]
         + [
-            ["Response cache, outside any run window (development and test calls)",
-             calls_in("cache_outside_runs")],
-            ["Committed cassettes in `tests/fixtures/cassettes` (recorded by TFClient, not marked synthetic)",
-             calls_in("cassette")],
+            ["Response cache, not inside any recorded run window", calls_in("cache_outside_runs")],
+            [
+                "Committed cassettes in `tests/fixtures/cassettes` (committed test and dev recordings, "
+                "recorded by TFClient, not marked synthetic)",
+                calls_in("cassette"),
+            ],
             ["**Total**", f"**{o['calls']:,}**"],
         ],
     )
+
     def model_table(key: str) -> str:
         rows = [[tier_name(m), *stat_cells(r[key][m])] for m in models if m in r[key]]
         return table(["Model", *STAT_HEADERS], rows)
@@ -393,9 +439,13 @@ def render_md(r: dict[str, Any]) -> str:
         f"{caption}\n\n{model_table(key)}"
         for caption, key in (
             (f"Only the calls inside the runs' time windows ({in_runs:,} calls):", "by_model_in_runs"),
-            (f"Only the response cache ({cache_calls:,} calls, no cassettes):", "by_model_cache_only"),
+            (f"Only the response cache ({n_cache:,} calls, no cassettes):", "by_model_cache_only"),
+            (
+                f"Only the committed cassettes ({n_cassette:,} calls; what a clean clone reproduces):",
+                "by_model_cassette_only",
+            ),
         )
-        if r[key]
+        if r[key] and sum(s["calls"] for s in r[key].values()) != o["calls"]
     )
 
     role_table = table(
@@ -406,30 +456,64 @@ def render_md(r: dict[str, Any]) -> str:
             for role, s in sorted(r["by_model_role"][m].items(), key=lambda kv: -kv[1]["calls"])
         ],
     )
-    thinking = {
-        (m, flag): s
-        for (m, flag), s in sorted(
-            ((tuple(k.split(" | ")), s) for k, s in r["by_model_thinking"].items()),
-            key=lambda kv: (tier_rank(kv[0][0]), kv[0][1]),
-        )
-    }
-    thinking_table = table(
-        ["Model", "Thinking", *STAT_HEADERS],
-        [[tier_name(m), flag, *stat_cells(s)] for (m, flag), s in thinking.items()],
-    )
 
-    def by_flag(flag: str, key: str) -> str:
+    def split_flags(key: str) -> dict[tuple[str, str], dict[str, Any]]:
+        return {
+            (m, flag): s
+            for (m, flag), s in sorted(
+                ((tuple(k.split(" | ")), s) for k, s in r[key].items()),
+                key=lambda kv: (tier_rank(kv[0][0]), kv[0][1]),
+            )
+        }
+
+    def thinking_table(key: str) -> str:
+        return table(
+            ["Model", "Thinking", *STAT_HEADERS],
+            [[tier_name(m), flag, *stat_cells(s)] for (m, flag), s in split_flags(key).items()],
+        )
+
+    eval_flags = split_flags("by_model_thinking_eval_target")
+
+    def off_vs_on(key: str) -> str:
+        """Per model, one percentile of the thinking-off group against the same percentile of the on group."""
         return ", ".join(
-            f"{tier_name(m)} {seconds(s['latency_ms'][key])} s" for (m, f), s in thinking.items() if f == flag
+            f"{tier_name(m)} {seconds(eval_flags[m, 'off']['latency_ms'][key])} s vs "
+            f"{seconds(eval_flags[m, 'on']['latency_ms'][key])} s"
+            for m in models
+            if (m, "off") in eval_flags and (m, "on") in eval_flags
         )
 
+    n_on = sum(s["calls"] for (m, flag), s in split_flags("by_model_thinking").items() if flag == "on")
+    n_on_eval = sum(s["calls"] for (m, flag), s in eval_flags.items() if flag == "on")
+    patcher_p95 = ", ".join(
+        f"{tier_name(m)} {seconds(r['by_model_role'][m]['patcher']['latency_ms']['p95'])} s"
+        for m in models
+        if "patcher" in r["by_model_role"][m]
+    )
     on_off = {True: "on", False: "off"}
     length = r["length_calls"]
     length_table = table(
-        ["Model", "Role", "Thinking", "max_tokens", "Output tokens", "tool_choice", "response_format"],
         [
-            [tier_name(c["model"]), c["role"], on_off.get(c["thinking"], "unset"), f"{c['max_tokens']:,}",
-             f"{c['output_tokens']:,}", str(c["tool_choice"] or "none"), c["json_kind"] or "none"]
+            "Model",
+            "Role",
+            "Source",
+            "Thinking",
+            "max_tokens",
+            "Output tokens",
+            "tool_choice",
+            "response_format",
+        ],
+        [
+            [
+                tier_name(c["model"]),
+                c["role"],
+                c["source"],
+                on_off.get(c["thinking"], "unset"),
+                f"{c['max_tokens']:,}" if c["max_tokens"] is not None else "unset",
+                f"{c['output_tokens']:,}",
+                str(c["tool_choice"] or "none"),
+                c["json_kind"] or "none",
+            ]
             for c in length
         ],
     )
@@ -438,36 +522,56 @@ def render_md(r: dict[str, Any]) -> str:
     n_think = sum(1 for c in length if c["thinking"])
     n_required = sum(1 for c in length if c["tool_choice"] == "required")
     recon_table = table(
-        ["Run", "Calls", "Tokens in (cache / budget)", "Tokens out (cache / budget)",
-         "Ultra agent calls (cache / budget)", "Budget spend", "Match"],
         [
-            [f"`{x['run_id']}`", f"{x['cache_calls']:,}",
-             f"{x['cache_tokens_in']:,} / {x['budget_tokens_in']:,}",
-             f"{x['cache_tokens_out']:,} / {x['budget_tokens_out']:,}",
-             f"{x['cache_ultra_agent_calls']} / {x['budget_ultra_agent_calls']}",
-             f"${x['budget_tf_spend_usd']:.2f}", "yes" if x["matches_budget"] else "**no**"]
+            "Run",
+            "Calls",
+            "Tokens in (cache / budget)",
+            "Tokens out (cache / budget)",
+            "Ultra agent calls (cache / budget)",
+            "Budget spend",
+            "Match",
+        ],
+        [
+            [
+                f"`{x['run_id']}`",
+                f"{x['cache_calls']:,}",
+                f"{x['cache_tokens_in']:,} / {x['budget_tokens_in']:,}",
+                f"{x['cache_tokens_out']:,} / {x['budget_tokens_out']:,}",
+                f"{x['cache_ultra_agent_calls']} / {x['budget_ultra_agent_calls']}",
+                f"${x['budget_tf_spend_usd']:.2f}",
+                "yes" if x["matches_budget"] else "**no**",
+            ]
             for x in runs
         ],
     )
     cache_lines = []
     for m in models:
         pc = r["by_model"][m]["prompt_cache"]
-        total = pc["prompt_tokens_of_reporting_calls"]
-        hits = pc["hit_tokens"]
-        cache_lines.append(f"{tier_name(m)} {hits:,} of {total:,} ({hits / total:.1%})")
+        total, hits = pc["prompt_tokens_of_reporting_calls"], pc["hit_tokens"]
+        cache_lines.append(
+            f"{tier_name(m)} {hits:,} of {total:,} ({hits / total:.1%})" if total else f"{tier_name(m)} n/a"
+        )
     invalid = ", ".join(f"{n} with finish_reason `{k}`" for k, n in j["invalid_by_finish_reason"].items())
     failed = "; ".join(f"`{e['run_id']}` at {e['stage']}: {e['reason']}" for e in ev["runs_failed"])
     warns = "; ".join(f"`{w['run_id']}`: {w['message']}" for w in ev["warnings"])
+    judge_note = (
+        " That failure is Offramp's own `ProviderError`: a judge reply that left a case unscored,"
+        " not an HTTP error from Token Factory (`docs/FEEDBACK.md` item 11)."
+        if any("judge:" in e["reason"] for e in ev["runs_failed"])
+        else ""
+    )
     synthetic_repairs = j["repair_retries_of_synthetic_replies"]
     match_word = "match" if all_ok else "do not all match"
     role_check = (
         f"The per-run Ultra agent-call counts below {match_word} `budget.json`, which checks the split "
         "between agent roles and `eval_target` for the Ultra calls."
-        if runs else ""
+        if runs
+        else ""
     )
     run_errors = (
-        f"Runs that ended FAILED: {failed or 'none'}. Warning events: {warns or 'none'}."
-        if runs else "No run files were given, so run errors are not listed."
+        f"Runs that ended FAILED: {failed or 'none'}. Warning events: {warns or 'none'}.{judge_note}"
+        if runs
+        else "No run files were given, so run errors are not listed."
     )
     budget_section = (
         "## Runs against their budgets\n\n"
@@ -476,14 +580,17 @@ def render_md(r: dict[str, Any]) -> str:
         + ("All runs match." if all_ok else "Not all runs match; see the `no` rows.")
         + " A run that replays cached calls charges only its new ones, so later runs show few calls or none. "
         f"`budget.json` also records spend: ${spend:.2f} across the {n_runs} runs.\n\n{recon_table}\n\n"
-        if runs else ""
+        if runs
+        else ""
     )
     synthetic, copies = inp.get("synthetic_excluded", 0), inp.get("duplicate_copies_dropped", 0)
     n_rest = len(length) - n_think - n_required
     return reflow(f"""# Token Factory by the numbers
 
-Measured from the Token Factory calls Offramp actually made: {o['calls']:,} distinct recorded chat
-completions ({o['input_tokens']['total']:,} prompt tokens, {o['output_tokens']['total']:,} completion
+**Scope: {scope}**
+
+Measured from the Token Factory calls Offramp actually made: {o["calls"]:,} distinct recorded chat
+completions ({o["input_tokens"]["total"]:,} prompt tokens, {o["output_tokens"]["total"]:,} completion
 tokens) on the three tiers ({ids}), recorded between {first} and {last} (UTC). Nothing here is an estimate
 or a re-run: every figure is computed by `scripts/tf_stats.py` from three kinds of files, and the raw
 numbers are in [`tf-production.json`](tf-production.json).
@@ -499,11 +606,28 @@ numbers are in [`tf-production.json`](tf-production.json).
 
 A "call" is one response that Token Factory returned and Offramp recorded. A request replayed from the
 cache is not counted again. Latency is the client's wall-clock time around the OpenAI SDK call
-(non-streaming), so it includes the SDK's automatic retries and any queueing from Offramp's parallel eval
-threads. Percentiles are nearest-rank: each is an actual recorded value. † marks a group of fewer than 20
-calls, where p95 is close to the maximum. A call's role is not recorded; it is read from the system prompt
-(the table in the script), and `eval_target` is the migrated app's own call on the candidate tier.
+(non-streaming), so it includes the SDK's automatic retries, the one retry on the fallback key, and any
+queueing from Offramp's parallel eval threads. Percentiles are nearest-rank: each is an actual recorded
+value. † marks a group of fewer than 20 calls, where p95 is close to the maximum and one call moves the
+`length` share by 5 points or more. A call's role is not recorded; it is read from the system prompt (the
+table in the script), and `eval_target` is the migrated app's own call on the candidate tier.
 {role_check}
+
+## Reproduce
+
+```
+uv run python scripts/tf_stats.py --cache var/tf-cache --runs var/runs --format md \\
+  > docs/evidence/tf-production.md
+uv run python scripts/tf_stats.py --cache var/tf-cache --runs var/runs \\
+  > docs/evidence/tf-production.json
+```
+
+`var/` is not committed, so a clean clone has no cache or run files and reproduces only the cassette part
+({n_cassette:,} calls; its scope line says so):
+
+```
+uv run python scripts/tf_stats.py --format md
+```
 
 ## Where the calls come from
 
@@ -523,13 +647,21 @@ All recorded calls:
 
 ## Thinking on and off
 
-Latency by the request's `enable_thinking` flag.
+Latency by the request's `enable_thinking` flag, over all calls. Thinking is on for {n_on} calls, {n_on_eval}
+of them `eval_target` calls, while the thinking-off group also holds the agent roles that write long
+outputs (the patcher's p95 is {patcher_p95}). The two groups are therefore confounded by role, and p95 of
+one is not comparable with p50 of the other.
 
-{thinking_table}
+{thinking_table("by_model_thinking")}
+
+The same split over `eval_target` calls only. The files do not say why thinking was on for a given call,
+so this is still not a controlled comparison.
+
+{thinking_table("by_model_thinking_eval_target")}
 
 ## The `length` finishes
 
-{len(length)} of {o['calls']:,} calls ({o['length_share']:.1%}) ended on `finish_reason: length`:
+{len(length)} of {o["calls"]:,} calls ({o["length_share"]:.1%}) ended on `finish_reason: length`:
 {length_desc}. {n_think} of them had thinking on (the reasoning-budget case in `docs/FEEDBACK.md` item 2);
 {n_required} used `tool_choice="required"` (item 4, Lightning looping on tool calls until the cap); the
 other {n_rest} ran to the cap with thinking off. The files record no cause. Where the reply had to be
@@ -539,33 +671,33 @@ JSON, a `length` finish leaves it truncated and invalid (next section).
 
 ## Validity, retries, errors, caching
 
-- **JSON validity.** {j['valid']} of {j['calls_with_response_format']} calls that asked for `json_schema`
+- **JSON validity.** {j["valid"]} of {j["calls_with_response_format"]} calls that asked for `json_schema`
   or `json_object` returned JSON that parses and, for `json_schema`, satisfies the schema in the request
   (checked here with `jsonschema`; a `json_object` call is checked only for parsing as an object, because
-  its schema is not in the request). The invalid replies: {invalid or 'none'}.
-- **Repair retries.** {j['repair_retry_calls']} calls were repair retries ("Your previous reply is not
+  its schema is not in the request). The invalid replies: {invalid or "none"}.
+- **Repair retries.** {j["repair_retry_calls"]} calls were repair retries ("Your previous reply is not
   valid"): {synthetic_repairs} answered a synthetic reply (the excluded hand-cut ones, so not provider
-  failures) and {j['repair_retry_calls'] - synthetic_repairs} a real reply that failed validation.
+  failures) and {j["repair_retry_calls"] - synthetic_repairs} a real reply that failed validation.
 - **Run errors.** {run_errors}
-- **Not recorded.** HTTP errors, 429s, timeouts and the SDK's automatic retries (up to 3 per call): the
-  client caches only successful responses, so a failed request leaves no file. The provider error rate is
-  unknown here, not zero.
+- **Not recorded.** HTTP errors, 429s, timeouts, the SDK's automatic retries (up to 3 per call) and the
+  one retry on the fallback key: the client caches only successful responses, so a failed request leaves
+  no file. The provider error rate is unknown here, not zero.
 - **Provider prompt-cache hits** (`prompt_cache_hit_tokens` in the response usage):
-  {'; '.join(cache_lines)}.
+  {"; ".join(cache_lines)}.
 
 {budget_section}## What this does and doesn't show
 
-It shows that the three Nemotron tiers on Token Factory returned {o['calls']:,} responses to Offramp's own
-calls between {first} and {last}: {fin.get('stop', 0):,} `stop` finishes, {fin.get('tool_calls', 0):,}
-`tool_calls` (the normal end of a tool-use call) and {fin.get('length', 0)} `length`, and {j['valid']} of
-{j['calls_with_response_format']} structured-output replies were valid JSON. It shows where the latency
-tail sits: with thinking off, p95 latency is {by_flag('off', 'p95')}; with thinking on, p50 latency is
-{by_flag('on', 'p50')}. It does not show uptime or an error rate (failed requests are not recorded),
-throughput or behaviour under sustained load (the calls came from Offramp's pipeline and tests in bursts,
-with at most 8 eval calls in flight), time to first token (nothing was streamed), or cost per call
-(`budget.json` has run totals only). All of it comes from one demo app's call sites, the cassettes are
-development and test recordings rather than customer traffic, the roles are inferred from system prompts, and
-latency was measured on the client side only.""")
+It shows that the three Nemotron tiers on Token Factory returned {o["calls"]:,} responses to Offramp's own
+calls between {first} and {last}: {fin.get("stop", 0):,} `stop` finishes, {fin.get("tool_calls", 0):,}
+`tool_calls` (the normal end of a tool-use call) and {fin.get("length", 0)} `length`, and {j["valid"]} of
+{j["calls_with_response_format"]} structured-output replies were valid JSON. On `eval_target` calls alone,
+p50 latency with thinking off against on is {off_vs_on("p50")}, and p95 is {off_vs_on("p95")}; those are
+different calls, not a controlled experiment. It does not show uptime or an error rate (failed requests are
+not recorded), throughput or behaviour under sustained load (the calls came from Offramp's pipeline and
+tests in bursts, with at most 8 eval calls in flight), time to first token (nothing was streamed), or cost
+per call (`budget.json` has run totals only). All of it comes from one demo app's call sites, the
+cassettes are committed test and dev recordings rather than customer traffic, the roles are inferred from
+system prompts, and latency was measured on the client side only.""")
 
 
 def main() -> None:

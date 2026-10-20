@@ -19,8 +19,20 @@ def load_script():
     return module
 
 
-def entry(content, *, system=APP, latency=100, tin=10, tout=1, finish="stop", fmt=None, rid="c-1",
-          created="2026-10-19T10:00:00+00:00", last=None, **extra):
+def entry(
+    content,
+    *,
+    system=APP,
+    latency=100,
+    tin=10,
+    tout=1,
+    finish="stop",
+    fmt=None,
+    rid="c-1",
+    created="2026-10-19T10:00:00+00:00",
+    last=None,
+    **extra,
+):
     messages = [{"role": "system", "content": system}, {"role": "user", "content": "hi"}]
     if last:
         messages += [{"role": "assistant", "content": last[0]}, {"role": "user", "content": last[1]}]
@@ -71,7 +83,13 @@ def test_summarise_counts_tokens_percentiles_finish_and_json_validity():
     result = stats.aggregate(calls, [], {})
     assert result["by_model_role"][MODEL]["judge"]["calls"] == 2
     assert result["length_calls"][0]["output_tokens"] == 50
-    assert "# Token Factory by the numbers" in stats.render_md(result)
+    md = stats.render_md(result)
+    assert "# Token Factory by the numbers" in md
+    assert "Scope: all 4 recorded calls" in md
+    assert "uv run python scripts/tf_stats.py --cache var/tf-cache --runs var/runs --format md" in md
+    cassettes = [c for c in calls if c["source"] == "cassette"]  # a clean clone has no cache
+    stats.assign_scopes(cassettes, [])
+    assert "committed cassettes only" in stats.render_md(stats.aggregate(cassettes, [], {}))
 
 
 def test_load_calls_skips_synthetic_and_non_entries_and_counts_a_copy_once(tmp_path):
@@ -81,7 +99,10 @@ def test_load_calls_skips_synthetic_and_non_entries_and_counts_a_copy_once(tmp_p
     real = entry("hello", rid="c-real")
     cut = entry('{"a": ', rid="c-cut", created="2026-10-19T11:00:00+00:00", synthetic=True)
     repair = entry(
-        '{"a": 1}', rid="c-fix", created="2026-10-19T12:00:00+00:00", fmt=JSON_SCHEMA,
+        '{"a": 1}',
+        rid="c-fix",
+        created="2026-10-19T12:00:00+00:00",
+        fmt=JSON_SCHEMA,
         last=('{"a": ', stats.REPAIR_ASK + " Validation error: eof"),
     )
     (cache / "real.json").write_text(json.dumps(real))
@@ -96,3 +117,75 @@ def test_load_calls_skips_synthetic_and_non_entries_and_counts_a_copy_once(tmp_p
     assert meta == {"synthetic_excluded": 1, "duplicate_copies_dropped": 1}
     assert calls[1]["repair_retry"] and calls[1]["repair_of_synthetic"]
     assert stats.summarise(calls)["json"]["repair_retries_of_synthetic_replies"] == 1
+
+
+def test_role_of_maps_every_prefix_and_each_prefix_is_still_in_the_source():
+    stats = load_script()
+    retired = {"You migrate one LLM call site"}  # the patcher's first prompt, kept for old recordings
+    source = "".join(p.read_text() for p in (ROOT / "offramp").rglob("*.py"))
+    for prefix, role in stats.ROLE_PREFIXES:
+        assert stats.role_of([{"role": "system", "content": prefix + " and more"}])[0] == role
+        assert (prefix in source) != (prefix in retired), prefix  # a reworded agent prompt fails here
+    assert stats.role_of([{"role": "system", "content": APP}]) == ("eval_target", APP)
+    assert stats.role_of([{"role": "user", "content": "no system prompt"}])[0] == "eval_target"
+
+
+def test_assign_scopes_puts_only_cache_calls_inside_a_run_window_into_the_run():
+    stats = load_script()
+    runs = [{"run_id": "r1", "start": "2026-10-19T10:00:00.000000Z", "end": "2026-10-19T10:10:00.000000Z"}]
+    calls = [
+        stats.to_call(entry("x", created="2026-10-19T10:00:00+00:00"), "cache"),  # start bound, inclusive
+        stats.to_call(entry("x", created="2026-10-19T10:10:00+00:00"), "cache"),  # end bound, inclusive
+        stats.to_call(entry("x", created="2026-10-19T10:10:01+00:00"), "cache"),  # a second too late
+        stats.to_call(entry("x", created="2026-10-19T10:05:00+00:00"), "cassette"),  # inside, but a cassette
+    ]
+
+    stats.assign_scopes(calls, runs)
+
+    assert [c["scope"] for c in calls] == ["r1", "r1", "cache_outside_runs", "cassette"]
+
+
+def test_load_runs_skips_non_runs_and_reconcile_compares_the_window_with_the_budget(tmp_path):
+    stats = load_script()
+
+    def event(ts, kind, payload):
+        return {"ts": ts, "type": kind, "payload": payload}
+
+    run = tmp_path / "r1"
+    run.mkdir()
+    events = [
+        event("2026-10-19T10:00:00.000000Z", "stage", {}),
+        event("2026-10-19T10:03:00.000000Z", "log", {"level": "warn", "message": "slow judge"}),
+        event(
+            "2026-10-19T10:04:00.000000Z", "error", {"stage": "ITERATING", "reason": "ProviderError: judge"}
+        ),
+        event("2026-10-19T10:10:00.000000Z", "stage", {}),
+    ]
+    (run / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events))
+    (run / "budget.json").write_text(json.dumps({"tokens_in": 30, "tokens_out": 3, "ultra_agent_calls": 1}))
+    (tmp_path / "empty").mkdir()
+    (tmp_path / "empty" / "events.jsonl").write_text("")  # a run with no events has no window
+    (tmp_path / "notes.txt").write_text("not a run")
+
+    runs = stats.load_runs(tmp_path)
+
+    assert [r["run_id"] for r in runs] == ["r1"]
+    assert runs[0]["warnings"] == ["slow judge"]
+    assert runs[0]["errors"] == [{"stage": "ITERATING", "reason": "ProviderError: judge"}]
+    calls = [  # an Ultra agent call and an Ultra eval_target call, both inside the window
+        stats.to_call(
+            entry("a", system=JUDGE, tin=10, tout=1, rid="c-1", created="2026-10-19T10:01:00+00:00"), "cache"
+        ),
+        stats.to_call(
+            entry("b", system=APP, tin=20, tout=2, rid="c-2", created="2026-10-19T10:02:00+00:00"), "cache"
+        ),
+    ]
+    stats.assign_scopes(calls, runs)
+
+    row = stats.reconcile(calls, runs)[0]
+
+    assert (row["cache_calls"], row["cache_tokens_in"], row["cache_tokens_out"]) == (2, 30, 3)
+    assert row["cache_ultra_agent_calls"] == 1  # eval_target is not an agent call
+    assert row["matches_budget"]
+    runs[0]["budget"]["ultra_agent_calls"] = 2
+    assert not stats.reconcile(calls, runs)[0]["matches_budget"]
