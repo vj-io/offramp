@@ -663,7 +663,7 @@ def gpt_4o(tmp_path, *extract, extraction=None):
     return info, server, llm
 
 
-def test_a_rejected_search_price_is_read_from_the_vendors_own_pages_through_tavily_extract(tmp_path):
+def test_an_extracted_page_printing_the_checked_in_price_confirms_it(tmp_path):
     info, server, llm = gpt_4o(
         tmp_path, extracted((GPT_4O_PAGE, MODEL_PAGE_TEXT), (OPENAI_PRICES, PRICE_LIST_TEXT))
     )
@@ -678,33 +678,69 @@ def test_a_rejected_search_price_is_read_from_the_vendors_own_pages_through_tavi
     assert info.price_source_url == GPT_4O_PAGE and info.note is None
     assert info.price_quote == "Input $2.50 Cached input $1.25 Output $10.00"
     assert info.evidence() == PriceEvidence(
-        method="extract",
+        method="extract (confirms table)",
         query=tavily._search_payload("gpt-4o")["query"],
         url=GPT_4O_PAGE,
         quote=info.price_quote,
         date="2026-10-19",
     )
-    assert "fetched via Tavily Extract 2026-10-19" in info.cost_before_note()
+    assert "confirmed via Tavily Extract 2026-10-19, as in pricing.yaml" in info.cost_before_note()
 
 
-def test_a_comparison_table_on_the_model_page_never_ships_another_models_price(tmp_path):
-    """Review T19 N1, end to end: a model page whose only gpt-4o mention is a column header."""
-    table = "| | GPT-4o mini | GPT-4o |\n| Input | $0.15 | $2.50 |\n| Output | $0.60 | $10.00 |"
-    info, server, _ = gpt_4o(tmp_path, extracted((GPT_4O_PAGE, table), (OPENAI_PRICES, PRICE_LIST_TEXT)))
+N_TABLE = "| | {a} | GPT-4o |\n| Input | {ai}{u} | $2.50{u} |\n| Output | {ao}{u} | $10.00{u} |"
+STACKED = "GPT-4o mini{sep}GPT-4o\nInput\n$0.15{u}\n$2.50{u}\nOutput\n$0.60{u}\n$10.00{u}"
+# Every comparison layout from the T19 reviews (N1 tables, N3 unit tables, N4 stacked cards) as gpt-4o's own
+# page, and the price, if any, that the verifier reads off it: never shipped, only reported.
+REVIEW_LAYOUTS = [
+    (N_TABLE.format(a="GPT-4o mini", ai="$0.15", ao="$0.60", u=""), None),  # N1
+    (N_TABLE.format(a="GPT-4.1", ai="$2.00", ao="$8.00", u=""), None),  # N1, the other column order
+    (N_TABLE.format(a="GPT-4o mini", ai="$0.15", ao="$0.60", u=" / 1M tokens"), None),  # N3
+    (N_TABLE.format(a="GPT-4o mini", ai="$0.15", ao="$0.60", u=" / MTok"), None),  # N3
+    (STACKED.format(sep="\n", u=""), "$0.15/$0.60"),  # N4: one value per line
+    (STACKED.format(sep="   ", u=""), "$0.15/$0.60"),  # N4: both names on one line
+    ("| | GPT-4o mini | GPT-4o |\n| Input | $0.15\n$2.50 |\n| Output | $0.60\n$10.00 |", "$0.15/$0.60"),  # N4
+    (STACKED.format(sep="\n", u=" / 1M tokens"), "$0.15/$0.60"),  # N4, stacked with units
+]
+
+
+@pytest.mark.parametrize("page,shown", REVIEW_LAYOUTS)
+def test_no_comparison_layout_ships_any_price_but_the_checked_in_one(tmp_path, page, shown):
+    """Reviews T19 N1-N4, end to end: Tavily Extract only ever confirms pricing.yaml's price."""
+    info, server, _ = gpt_4o(tmp_path, extracted((GPT_4O_PAGE, page), (OPENAI_PRICES, PRICE_LIST_TEXT)))
     assert len(server.extracts) == 1
     assert (info.via, info.input_usd_per_m, info.output_usd_per_m) == ("pricing.yaml", 2.5, 10.0)
-    assert "nor do the vendor's own pages read through Tavily Extract" in info.note
+    assert info.evidence().method == "yaml fallback" and info.price_quote is None
+    if shown is None:  # the verifier read no price: nothing to report
+        assert "nor do the vendor's own pages read through Tavily Extract" in info.note
+    else:
+        disagreement = f"Tavily page {GPT_4O_PAGE} shows {shown}; checked-in table $2.50/$10.00; not used"
+        assert disagreement in info.note and disagreement in info.evidence().note
+        assert disagreement in info.cost_before_note()  # what the verdict and the PR's Prices section carry
 
 
-@pytest.mark.parametrize("unit", ["1M tokens", "MTok"])
-def test_a_comparison_table_with_units_never_ships_another_models_price(tmp_path, unit):
-    """Review T19 N3, end to end: the column table with a unit after each amount."""
-    table = (
-        f"| | GPT-4o mini | GPT-4o |\n| Input | $0.15 / {unit} | $2.50 / {unit} |\n"
-        f"| Output | $0.60 / {unit} | $10.00 / {unit} |"
-    )
-    info, _, _ = gpt_4o(tmp_path, extracted((GPT_4O_PAGE, table), (OPENAI_PRICES, PRICE_LIST_TEXT)))
+def test_a_vendor_price_change_is_reported_not_adopted(tmp_path):
+    """A single-model page whose output price differs from pricing.yaml's: each price is compared."""
+    page = MODEL_PAGE_TEXT.replace("$10.00", "$12.00")
+    info, _, _ = gpt_4o(tmp_path, extracted((GPT_4O_PAGE, page)))
     assert (info.via, info.input_usd_per_m, info.output_usd_per_m) == ("pricing.yaml", 2.5, 10.0)
+    assert info.note == (
+        "fallback: Tavily price not used (the cited page prints no unambiguous price for exactly this model; "
+        f"Tavily page {GPT_4O_PAGE} shows $2.50/$12.00; checked-in table $2.50/$10.00; not used)"
+    )
+    assert info.evidence().note == info.note
+    assert len(list((tmp_path / "cache").glob("*.json"))) == 1  # judged: cached like any fallback
+
+
+def test_a_model_without_a_checked_in_price_does_not_use_tavily_extract(tmp_path):
+    """Extract can only confirm pricing.yaml: with no entry there it is not asked, and the unknown-price path
+    applies (KeyError naming both failures)."""
+    server = Tavily(body(("https://developers.openai.com/api/docs/models/gpt-9", "GPT-9 is new.")))
+    ext = PricingExtraction(
+        input_usd_per_m=1.0, output_usd_per_m=2.0, price_source_url="https://developers.openai.com/x"
+    )
+    with pytest.raises(KeyError, match="gpt-9.*Tavily: Tavily price not used"):
+        lookup(tmp_path, server, ext, model="gpt-9")
+    assert server.extracts == []
 
 
 VERIFIED_PAGES = Path(__file__).parents[1] / "fixtures" / "tavily_verified_pages.json"
@@ -1068,7 +1104,7 @@ def test_recorded_searches_where_super_answered_from_memory_are_rejected(model, 
     assert (info.input_usd_per_m, info.output_usd_per_m) == pricing.price(model)
     if info.via == "tavily extract":
         assert info.price_source_url in tavily._extract_urls(model) and info.price_quote
-        assert info.evidence().method == "extract"
+        assert info.evidence().method == "extract (confirms table)"
     else:
         assert info.note.startswith("fallback: Tavily price not used (") and "Tavily Extract" in info.note
         assert "pricing.yaml as of 2026-10-19" in info.cost_before_note()

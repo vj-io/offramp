@@ -5,12 +5,14 @@ publishes. At runtime one Tavily search (restricted to the vendor's own pricing 
 those pages, Nemotron Super extracts the numbers, and every number must appear in the page it is cited to or
 the extraction is rejected; a translated page's citation moves to an English page printing the same price.
 When the search gives no verified price, one Tavily Extract of the vendor's own model page and price list
-follows and the same verifier reads the price out of that text. Whatever cannot be verified falls back to
-pricing.yaml, and says so. Every outcome carries its evidence: the query, the cited url, the page's text that
-prints the price, the method and the date (SourceModelInfo.evidence()).
+follows and the same verifier reads the price out of that text; that price only confirms the checked-in
+pricing.yaml one, never replaces it (a different one is reported, not used). Whatever cannot be verified
+falls back to pricing.yaml, and says so. Every outcome carries its evidence: the query, the cited url, the
+page's text that prints the price, the method and the date (SourceModelInfo.evidence()).
 """
 
 import logging
+import math
 import os
 import re
 import tempfile
@@ -80,8 +82,9 @@ class SourceModelInfo(BaseModel):
     fetched_at: datetime  # when Tavily returned the page; the pricing.yaml `as_of` date on a fallback
     deprecation: str | None = None  # the vendor page's own words (verbatim quote) on this model's retirement
     deprecation_url: str | None = None
-    via: Literal["tavily", "tavily extract", "pricing.yaml"] = "tavily"  # Tavily Search, Tavily Extract
-    note: str | None = None  # why the pricing.yaml fallback was used
+    # Tavily Search; Tavily Extract confirming pricing.yaml's price; pricing.yaml
+    via: Literal["tavily", "tavily extract", "pricing.yaml"] = "tavily"
+    note: str | None = None  # why the pricing.yaml fallback was used (and a Tavily price it did not use)
     query: str | None = None  # the Tavily search query; None when Tavily was not asked
     price_quote: str | None = None  # the cited page's text that prints the price (verified there)
 
@@ -92,7 +95,7 @@ class SourceModelInfo(BaseModel):
         day = f"{self.fetched_at:%Y-%m-%d}"
         source = {
             "tavily": f"fetched via Tavily {day}",
-            "tavily extract": f"fetched via Tavily Extract {day}",
+            "tavily extract": f"confirmed via Tavily Extract {day}, as in pricing.yaml",
         }.get(self.via, f"pricing.yaml as of {day}; {self.note}")
         return f"est.: {self.model} {prices} ({where}, {source}) x tokens measured on the Token Factory call"
 
@@ -106,13 +109,14 @@ class SourceModelInfo(BaseModel):
 
     def evidence(self) -> PriceEvidence:
         """Verdict.price_evidence: what the Tavily evidence panel and the PR's Prices section show."""
-        method = {"tavily": "search", "tavily extract": "extract"}.get(self.via, "yaml fallback")
+        methods = {"tavily": "search", "tavily extract": "extract (confirms table)"}
         return PriceEvidence(
-            method=method,
+            method=methods.get(self.via, "yaml fallback"),
             query=self.query,
             url=self.price_source_url,
             quote=self.price_quote,
             date=f"{self.fetched_at:%Y-%m-%d}",
+            note=self.note,
         )
 
 
@@ -157,6 +161,10 @@ SYSTEM = (
     "A deprecation notice says this model is Deprecated or Retired, or gives it a shutdown or retirement "
     "date; a model listed as Active with a 'not sooner than' date has no notice."
 )
+
+
+def _same_price(a: float, b: float) -> bool:
+    return math.isclose(a, b, abs_tol=1e-9)
 
 
 def _usd(value: float) -> str:
@@ -760,11 +768,13 @@ def lookup_source_model(
     them for this model (its own model page or table row). A translated page's citation moves to an English
     result printing the same price. When Super's numbers are rejected, one Tavily Extract of the vendor's
     model page and price list follows, and the same verifier reads the price out of that text (no model in
-    between). Anything that cannot be verified falls back to pricing.yaml with a short reason in `note`, which
-    cost_before_note() shows; KeyError if pricing.yaml has no such model either. The outcome, verified or
-    rejected, is cached on disk per (model, UTC day), so a judged model costs one search and at most one
-    extract a day. A lookup that could not be judged (no key; Tavily, Super or the extract unavailable) is not
-    cached, so the next lookup repeats the search too.
+    between). That price only corroborates: it counts when it equals pricing.yaml's for this model, and a
+    different one is reported in `note` while pricing.yaml's ships (so a misread column is harmless); with no
+    pricing.yaml entry, Extract is not asked. Anything that cannot be verified falls back to pricing.yaml with
+    a short reason in `note`, which cost_before_note() shows; KeyError if pricing.yaml has no such model
+    either. The outcome, verified or rejected, is cached on disk per (model, UTC day), so a judged model costs
+    one search and at most one extract a day. A lookup that could not be judged (no key; Tavily, Super or the
+    extract unavailable) is not cached, so the next lookup repeats the search too.
     """
     now = now or datetime.now(UTC)
     model = model_id.rsplit("/", 1)[-1]
@@ -773,12 +783,16 @@ def lookup_source_model(
         return cached
 
     payload = _search_payload(model)
+    try:
+        table = pricing.price(model)  # the checked-in price: all a Tavily Extract price can do is confirm it
+    except KeyError:
+        table = None
     extracted = None
     own_http = http is None
     http = http or httpx.Client(timeout=TIMEOUT_S)
     try:
         ext, results, problem, settled = _search(http, model, payload, llm)
-        if problem is not None and settled and _extract_urls(model):
+        if problem is not None and settled and table and _extract_urls(model):
             try:
                 extracted = _extract_price(http, model)
             except TavilyError as e:
@@ -786,6 +800,13 @@ def lookup_source_model(
                 problem += f"; the Tavily extract failed ({e})"
             if extracted is None and settled:
                 problem += "; nor do the vendor's own pages read through Tavily Extract"
+            elif extracted is not None and not all(map(_same_price, extracted[0], table)):
+                (p_in, p_out), url, _ = extracted
+                problem += (
+                    f"; Tavily page {url} shows {_usd(p_in)}/{_usd(p_out)}; "
+                    f"checked-in table {_usd(table[0])}/{_usd(table[1])}; not used"
+                )
+                extracted = None
     finally:
         if own_http:
             http.close()
@@ -809,12 +830,12 @@ def lookup_source_model(
             price_source_url=url,
             price_quote=quote,
         )
-    elif extracted is not None:
-        (p_in, p_out), url, quote = extracted
+    elif extracted is not None:  # the vendor's own page prints pricing.yaml's price
+        _, url, quote = extracted
         info = SourceModelInfo(
             **found,
-            input_usd_per_m=p_in,
-            output_usd_per_m=p_out,
+            input_usd_per_m=table[0],
+            output_usd_per_m=table[1],
             price_source_url=url,
             price_quote=quote,
             via="tavily extract",

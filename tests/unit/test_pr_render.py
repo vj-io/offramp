@@ -181,6 +181,15 @@ def test_each_before_price_shows_how_it_was_found_and_the_quote():
     assert "Price by" not in line  # a verdict recorded without evidence says nothing it does not know
 
 
+def test_a_price_tavily_extract_confirmed_says_so():
+    c = ctx()
+    v = verdict(c, "cs_02")
+    v.price_evidence = v.price_evidence.model_copy(update={"method": "extract (confirms table)"})
+    line = next(ln for ln in render_pr(c).body.splitlines() if ln.startswith("- Before, cs_02:"))
+    quote = "`Input $3 / MTok Output $15 / MTok`"
+    assert line.endswith(f". Price by Tavily Extract, confirming pricing.yaml; the page prints {quote}.")
+
+
 def test_a_long_quote_is_cut_and_backticks_cannot_break_out_of_it():
     c = ctx()
     v = verdict(c, "cs_02")

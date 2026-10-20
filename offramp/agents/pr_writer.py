@@ -53,7 +53,7 @@ BOUNDS = (
 )
 PRICE_METHODS = {
     "search": "Tavily search",
-    "extract": "Tavily Extract",
+    "extract (confirms table)": "Tavily Extract, confirming pricing.yaml",
     "yaml fallback": "pricing.yaml fallback",
 }
 QUOTE_CHARS = 200

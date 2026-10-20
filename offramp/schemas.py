@@ -258,11 +258,13 @@ class PatchFailure(BaseModel):
 class PriceEvidence(BaseModel):
     """Where the source model's price behind cost_before came from: the report's Tavily evidence panel."""
 
-    method: Literal["search", "extract", "yaml fallback"]  # Tavily Search, Tavily Extract or pricing.yaml
+    # Tavily Search; Tavily Extract printing pricing.yaml's own price (it never replaces it); pricing.yaml
+    method: Literal["search", "extract (confirms table)", "yaml fallback"]
     query: str | None = None  # the Tavily search query; None when Tavily was not asked
     url: str  # the page the price was read from (pricing.yaml's own source on a fallback)
     quote: str | None = None  # that page's text printing the price, checked on the page; None on fallback
     date: str  # YYYY-MM-DD: the day Tavily returned the page, or pricing.yaml's as_of
+    note: str | None = None  # on a fallback, why ("Tavily page <url> shows $X/$Y; checked-in table $A/$B")
 
 
 class AfterPrice(BaseModel):
