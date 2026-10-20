@@ -15,11 +15,16 @@ Evidence paths are all in this repo. Recorded responses and tests replay offline
 | 7 | The price page is login-gated | cost estimates | prices marked unverified |
 | 8 | Super escapes code badly inside JSON | patch writing, fixture mapping | plain-text edit blocks, decode escapes |
 | 9 | Ultra followed an instruction inside the input | blind reference audit | audit disagreements are dropped |
-| 10 | Tavily answers picked other models' prices | price lookup | verify on the cited page |
-| 11 | Token Factory credits cannot fund AI Cloud Serverless Jobs | eval matrix on Nebius | local worker, job path tested against a fake CLI |
-| 12 | A fresh CLI profile lists no tenant, with no hint why | AI Cloud setup | open the console once |
-| 13 | `iam v2 project list --all` fails with an invalid `parentId` | AI Cloud setup | none found |
-| 14 | Console onboarding created a project in each of 9 regions | AI Cloud setup | none |
+| 10 | Super invented a schema reference in a free-form JSON field | call-site labelling | schema comes from the code |
+| 11 | An Ultra judge batch left a case unscored | first live demo run failed | re-ask about skipped cases alone |
+| 12 | Super dropped spec details when writing call-site patches | patch stage, 5 of 6 sites | code writes the call; the model edits tests only |
+| 13 | Ultra repair replies broke the edit-block format | 3 repairs on 2 sites | none: the site goes to manual review |
+| – | Tavily answers picked other models' prices | price lookup | verify on the cited page |
+| 14 | Token Factory credits cannot fund AI Cloud Serverless Jobs | eval matrix on Nebius | local worker, job path tested against a fake CLI |
+| 15 | A fresh CLI profile lists no tenant, with no hint why | AI Cloud setup | open the console once |
+| 16 | `iam v2 project list --all` fails with an invalid `parentId` | AI Cloud setup | none found |
+| 17 | Console onboarding created a project in each of 9 regions | AI Cloud setup | none |
+| 18 | Without a bucket, Serverless Jobs move data only through 64 KiB injected files and logs (per the CLI reference) | job path design | chunked input files, results as base64 lines in the log |
 
 ## Token Factory API behaviour
 
@@ -83,6 +88,7 @@ The catalogue spells the three models we use three different ways: `nvidia/Nemot
 - **`json_schema` and function tools on all three tiers**, with `strict: true` schemas. A strict `OrderFields` schema on Lightning with thinking off extracted a German order email correctly. Evidence: `docs/plan/tf-probe.md` (rows `*/json_schema`, `*/tools`), `tests/agents/test_adapter.py::test_adapted_requests_run_on_token_factory[cs_03]` and its cassette.
 - **Ultra as judge.** On 20 classification tickets we wrote, with a mix of correct, wrong and badly formatted answers, the Ultra judge agreed with the deterministic label scorer on 19 of 20, and its position-swap consistency was 100%. The one disagreement was `"Billing."`: the scorer forgives the trailing period, the judge took 2 points off for format. Evidence: `docs/evidence/judge-sanity.md` (reproduces the figures offline from `tests/fixtures/cassettes/judge/`), `tests/harness/test_judge_sanity.py`.
 - **One OpenAI-compatible endpoint for all tiers**, so the tier matrix is three model ids and the client is the stock OpenAI SDK.
+- **Prompt caching shows in `usage`.** Recorded responses carry `prompt_tokens_details.cached_tokens` plus `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens`; on one recorded Ultra Iterator call, 4,352 of 8,396 prompt tokens were cache hits. Ask: say on the price page whether cached input is billed at a lower rate. Our spend counter charges all input at list price, so it may overstate what we spent. Evidence: `tests/fixtures/cassettes/pipeline/003bd8f6776312aa30454a02cd48a04023764752f17178680316eafea374c0e2.json`.
 
 ## NVIDIA Nemotron model behaviour
 
@@ -107,6 +113,30 @@ When labelling a call site whose prompt only held a placeholder for a Pydantic s
 
 - Evidence: `tests/agents/test_scanner_label.py::test_recorded_dangling_ref_reply_loses_its_schema` and its cassette in `tests/fixtures/cassettes/scanner/`.
 
+### 11. An Ultra judge batch left a case unscored, and a cached retry repeated it
+
+The judge scores a whole (site, tier, split) batch in one Ultra call, and the reply is a list with one score per case. In the first live demo run (`20261019-220847641-43d3df`), the batch for cs_04 on Lightning (dev) came back with no score for `cs_04:020`, a Japanese question. Our one retry sent the identical request, which our response cache answered with the same reply, so the run stopped with `ProviderError: judge: left 1 case(s) unscored: cs_04:020`. That run had spent $0.50 by our spend counter; the next run reused its responses from the cache.
+
+- Workaround: the judge now asks again about only the skipped cases, in a new and smaller request. A case skipped twice is still a run error, never a score.
+- Ask: document which JSON Schema keywords strict `json_schema` decoding enforces, for example `minItems` and `maxItems`, so a batch reply can be held to one entry per input. Our schema did not set them, so we do not know whether that would have prevented the skip.
+- Evidence: `tests/agents/test_judge.py::test_a_case_the_judge_skipped_is_asked_again_alone` (commit `66c7fd4`); the run's last events in `docs/evidence/live-observations.md` (E5).
+
+### 12. Super, writing call-site patches from a spec, dropped details of the spec
+
+In the second live run (`20261019-222942730-2c0f0b`, whose evaluation the demo uses), Nemotron 3 Super wrote each migrated call site from the evaluated adapter: model id, `extra_body` with the thinking switch, few-shot constant, and the test edits. All 6 sites had passed parity, and 5 of the 6 patches were rejected, 4 by our patch checks and 1 by the repo's own tests. The few-shot constant was defined but not used (cs_01, cs_04), the old `messages.create` call stayed in place (cs_02), the model id was not the evaluated tier's and `extra_body` was missing (cs_04), two SEARCH blocks overlapped (cs_03), and a test that checks the prompt failed (cs_06). Only cs_05 was patched. Each rejection was a lost migration, not a wrong one, because the checks caught every bad patch.
+
+- Workaround: code now writes the evaluated request into the call site (an AST rewrite, with the request as literal keyword arguments), and the model may edit only tests and test fakes. Every non-test file must match the code-written tree. With that change, the final runs patched 3 sites.
+- Ask: guidance on the edit format Super handles best (unified diff, SEARCH/REPLACE blocks, whole files). Ours was a guess.
+- Evidence: `docs/evidence/live-observations.md` (E6, the rejection reasons quoted from that run's report).
+
+### 13. Ultra repair replies broke the edit-block format
+
+When the repo's checks reject a patch, Nemotron 3 Ultra (thinking off, `max_tokens=12000`) gets the failure and replies with new edit blocks. The prompt shows the format and says to begin with `FILE:`. A reply counts only if it holds complete `FILE:` / `<<<<<<< SEARCH` / `=======` / `>>>>>>> REPLACE` blocks. Three replies did not, on the two sites that ended in manual review. The cs_01 repair in the fourth live run began with `FILES:` instead of `FILE:`. Both cs_03 repairs (third and fourth runs) ended their block with a bare `REPLACE` line instead of `>>>>>>> REPLACE`; each was one block whose SEARCH part (144 and 171 lines) started at the top of `tests/fakes.py`. All three ended with `finish_reason: "stop"` at 670, 1,826 and 2,924 completion tokens, far below the cap, so they were not truncated.
+
+- Workaround: none that we ship. A reply with no complete block counts as a failed repair, and the site goes to manual review with that reason in the PR.
+- Ask: a constrained-output option for non-JSON formats (a regex or grammar `response_format`), so a fixed edit syntax can be enforced the way `json_schema` is.
+- Evidence: the reasons in the PR body's "What Offramp did NOT change" section (`offramp/api/replay/demo-events.pr.md`); reply extracts in `docs/evidence/live-observations.md` (E7).
+
 ## Other services we used
 
 ### Tavily: answers and domain filters (for the Best Use of Tavily prize)
@@ -126,30 +156,38 @@ Offramp looks up each source model's price and deprecation notice with Tavily at
 
 ## Nebius AI Cloud
 
-First-hand notes from setting up AI Cloud for the eval matrix, observed during the build (2026-10-19, `nebius` CLI 0.12.292). They come from an interactive account setup, so there is nothing to replay; the repo's job path is built and tested against a fake `nebius` CLI and has not been run against a real account (see item 11).
+First-hand notes from setting up AI Cloud for the eval matrix, observed during the build (2026-10-19, `nebius` CLI 0.12.292). They come from an interactive account setup, so there is nothing to replay; the repo's job path is built and tested against a fake `nebius` CLI and has not been run against a real account (see items 14 and 18).
 
-### 11. Token Factory credits cannot fund AI Cloud, so we could not run a real Serverless Job
+### 14. Token Factory credits cannot fund AI Cloud, so we could not run a real Serverless Job
 
 The Token Factory balance sits in an organisation (`aitenant-...`) that is a separate tenant from AI Cloud, and it cannot pay for Serverless Jobs. AI Cloud onboarding asks for a payment card and a $25 top-up. Our budget was hackathon credits only, so we did not run the eval matrix as a Serverless Job: the submit path (`nebius ai job ...`) is tested against a fake CLI on `PATH`, and the matrix runs on a local worker with the same output format.
 
 - Ask: let hackathon credits (or the Token Factory balance) cover a small AI Cloud job, or give participants a job-sized AI Cloud grant; say up front in the hackathon materials that the two balances are separate.
 
-### 12. A fresh CLI profile lists no tenant and does not say why
+### 15. A fresh CLI profile lists no tenant and does not say why
 
 After `nebius profile create`, `nebius iam v2 tenant list` returned `{}`. Nothing hinted that the tenant is created on the first visit to the web console. Separately, `nebius iam tenant list` printed a deprecation warning pointing at `iam v2 tenant`.
 
 - Ask: make the empty result explain itself (for example "no tenant yet: open the console once to create it").
 
-### 13. `nebius iam v2 project list --all` fails instead of listing
+### 16. `nebius iam v2 project list --all` fails instead of listing
 
 `nebius iam v2 project list --all` failed with `'' is invalid for parentId` (InvalidArgument) instead of listing projects across tenants.
 
 - Ask: either make `--all` work, or return an error that names the parent it needs.
 
-### 14. Console onboarding created a default project in each of 9 regions
+### 17. Console onboarding created a default project in each of 9 regions
 
 Onboarding through the console auto-created a default project in each of 9 regions.
 
 - Ask: create one project in the chosen region, or ask which regions to create.
 
-<!-- AI Cloud Serverless Jobs: add run feedback here if a live job run happens (Task 14) -->
+### 18. Serverless Jobs: what we built, and what we could not check
+
+No Serverless Job ran on Nebius. We wrote the job path for the eval matrix (`offramp/evals/serverless_job/`, image `Dockerfile.eval`) from the CLI reference (`docs.nebius.com/cli/reference/ai/job/{create,get,logs,cancel}`) and `nebius ai job create --help`, and tested it against a fake `nebius` on `PATH`. AI Cloud billing needs a payment card and a $25 top-up, and this project spends only granted credits (item 14). Every demo run, the recorded one included, logged `eval matrix (18 cells) ran locally (nebius job: not configured)`. Building it still taught us three things:
+
+- **Data in and out.** As we read the reference, a job receives files only through `--inject-file` (64 KiB per file) and, without a mounted bucket, returns data only through its logs. So the matrix and the cached responses it replays go in as a tar.gz cut into 48 KiB parts (at most 32, about 1.5 MB), and the results come back as base64 lines of 8,000 characters on stdout, below the 16 KiB at which container runtimes split a log line. Ask: a small output directory returned with the job, or larger injected files, so a short batch job needs no bucket.
+- **Secrets.** `--env-secret NAME=SECRET_ID` needs the environment variable's name to equal the key inside the MysteryBox secret's payload; we found no other syntax, so a secret stored under a different key name cannot be mapped. Ask: a form that names the payload key, such as `NAME=SECRET_ID:payload_key`.
+- **What only a real account can confirm.** Whether a real job accepts our flags as we use them (`--args` split on spaces, several `--inject-file`), the CPU platform and preset names (`cpu-d3`, `4vcpu-16gb`; the default is a GPU platform, and this work is network-bound), the field names of `nebius ai job get --format json`, and the log line format. Ask: a validate or dry-run mode for `nebius ai job create` that works before billing is set up, and an example CPU job in the docs.
+
+Evidence: the module docstrings of `offramp/evals/serverless_job/submit.py` and `offramp/evals/serverless_job/transport.py`, `tests/integration/test_serverless_job.py` (the fake CLI), and the log line in `web/public/replay/demo-events.json` (event 18).

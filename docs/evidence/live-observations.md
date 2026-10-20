@@ -1,6 +1,6 @@
 # Live observations behind docs/FEEDBACK.md
 
-Plain-text extracts from the project's build log (the per-task reports written while building Offramp, 2026-10-19, kept outside this repository). They are the only public record of these live Token Factory observations, so they are not replayable from this repo; the items in FEEDBACK.md that have recorded cassettes or tests cite those instead. No keys, tokens or personal data are included.
+Plain-text extracts from the project's build log (the per-task reports written while building Offramp, 2026-10-19, kept outside this repository); E5 to E7 come from the demo runs' own directories and response cache (2026-10-19 and 2026-10-20), also kept outside it. They are the only public record of these live Token Factory observations, so they are not replayable from this repo; the items in FEEDBACK.md that have recorded cassettes or tests cite those instead. No keys, tokens or personal data are included.
 
 ## E1. Super as patch writer (FEEDBACK items 2 and 8a)
 
@@ -36,3 +36,36 @@ Source: build log progress notes, "Tendem key verified 2026-10-19". Where the ke
 - Endpoint `https://mcp.tendem.ai/mcp`, streamable HTTP with an `Mcp-Session-Id` header.
 - Tools seen: `create_task`, `get_task`, `approve_task`, `get_task_result`, `get_file_upload_url`, `get_contract`, `list_tasks`, `read_chat`, `send_message`, `cancel_task`, `get_account`.
 - `approve_task` spends credit, so in our workflow every paid task needs a person's explicit approval of its quoted price.
+
+## E5. Ultra judge left a case unscored (FEEDBACK item 11)
+
+Source: the event log of the first live demo run, `var/runs/20261019-220847641-43d3df/events.jsonl` (run directories are not committed). Its last three events, 2026-10-19 22:18:03 UTC:
+
+- `log` (warn): "cs_04: lightning dev: judge: left 1 case(s) unscored: cs_04:020; retrying once"
+- `stage`: FAILED, "ProviderError: judge: left 1 case(s) unscored: cs_04:020"
+- `error`: stage ITERATING, the same reason.
+
+The run's budget counter (`budget.json`): 355,556 input and 237,923 output tokens, 26 Ultra agent calls, $0.50 at list prices. The next run reused these responses from the cache.
+
+## E6. Super's call-site patches in the second live run (FEEDBACK item 12)
+
+Source: `var/runs/20261019-222942730-2c0f0b/report.json`, the verdict reasons after the patch stage. All six sites had passed parity on holdout before patching.
+
+| Site | Outcome | Reason (abridged from the report) |
+|---|---|---|
+| cs_01 | manual review | patch rejected (adapter spec or patch rules): few-shot constant NEMOTRON_FEW_SHOT is not used in `triage_ticket` |
+| cs_02 | manual review | patch rejected (adapter spec or patch rules): the old messages.create call is still in `next_action` |
+| cs_03 | manual review | repair produced no change; last failure: search text not found in tests/test_extract.py (an earlier block already changed these lines: merge the two) |
+| cs_04 | manual review | patch rejected (adapter spec or patch rules): model must be 'nvidia/Nemotron-3-Ultra-550b-a55b'; extra_body missing; few-shot constant NEMOTRON_FEW_SHOT is not used in `answer_question` |
+| cs_05 | migrated | patched |
+| cs_06 | manual review | repo checks failed on the patch (docker): a test's `startswith('Ticket thread, 4 messages:')` assertion got the system prompt |
+
+## E7. Ultra repair replies without a complete edit block (FEEDBACK item 13)
+
+Source: the response cache of the third and fourth live runs (`var/tf-cache/`, not committed; files named by the request hash). Model `nvidia/Nemotron-3-Ultra-550b-a55b`, `temperature=0`, `max_tokens=12000`, `enable_thinking=false`.
+
+| Cache file (prefix) | Run | Site | Completion tokens | `finish_reason` | What broke the format |
+|---|---|---|---|---|---|
+| `e321e45b544d` | 4 (`20261020-122354830-57c50b`) | cs_01 | 670 | stop | the reply begins `FILES: tests/test_triage.py`; the prompt asks for `FILE:` |
+| `5ebd419f009e` | 3 (`20261020-115200254-46f068`) | cs_03 | 1,826 | stop | one block for `tests/fakes.py` (a 144-line SEARCH part from the top of the file) ends `=======` then `REPLACE`, without `>>>>>>> ` |
+| `051f65658df8` | 4 (`20261020-122354830-57c50b`) | cs_03 | 2,924 | stop | the same shape: one block for `tests/fakes.py` (a 171-line SEARCH part) ending with a bare `REPLACE` |
