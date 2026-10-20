@@ -1,0 +1,9 @@
+# Checked 2026-10-20: every value below is a fake test value or docstring text, and none equals a real key
+# (compared against the local .env without printing). Fingerprint = commit:file:rule:line, so a new finding
+# in the same file still fails the build.
+55ef87e8589a962d1bad3164078926baa9bef6c6:tests/e2e/test_pipeline_flow.py:generic-api-key:537
+55ef87e8589a962d1bad3164078926baa9bef6c6:tests/e2e/test_pipeline_flow.py:generic-api-key:539
+f6fbaa4c620090e6febc9f0e179593f963e1e81a:tests/integration/test_serverless_job.py:generic-api-key:48
+78f00a80b6f859cf6871ad57b726912244803ed3:tests/unit/test_tavily.py:generic-api-key:508
+c28956bbba002335cfd11d69b2e588a515c7570e:offramp/integrations/langsmith.py:generic-api-key:63
+0a89e3704a7884d7a458cb95c540e6586b8f12c1:offramp/integrations/langsmith.py:generic-api-key:63
