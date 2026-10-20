@@ -13,6 +13,7 @@ The same sandbox runs the target code the case generator needs (`python`: Pydant
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -31,6 +32,7 @@ NO_SANDBOX = "no sandbox (Docker unavailable)"
 DOCKER_LIMITS = ["--network", "none", "--cpus", "2", "--memory", "2g", "--pids-limit", "256",
                  "--cap-drop", "ALL", "--security-opt", "no-new-privileges"]  # fmt: skip
 Mode = Literal["docker", "local", "none"]
+PYTHON_VERSION = re.compile(r"\d+\.\d+(\.\d+)?")  # .python-version goes into the Dockerfile's FROM line
 CHECKS = (
     ["ruff", "check", "--no-cache", "--output-format", "concise", "."],
     ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"],
@@ -195,6 +197,10 @@ class Sandbox:
         version = (
             (self.repo / ".python-version").read_text().strip() if ".python-version" in present else "3.12"
         )
+        if not PYTHON_VERSION.fullmatch(version):  # target-repo text: refuse anything but a version number
+            raise RuntimeError(
+                f".python-version {version[:40]!r} is not a version such as 3.12: no sandbox image"
+            )
         dockerfile = DOCKERFILE.format(python=".".join(version.split(".")[:2]))
         digest = hashlib.sha256(dockerfile.encode())
         for f in present:
