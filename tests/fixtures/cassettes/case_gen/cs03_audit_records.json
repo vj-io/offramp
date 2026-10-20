@@ -1,0 +1,298 @@
+{
+ "source": "offramp-demo-app evals/ cs_03 (read-only copy): records the blind audit dropped before Task 7b, and the records it kept after Task 7b",
+ "schema": {
+  "properties": {
+   "order_id": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "description": "Order id such as HH-48213, null if not stated",
+    "title": "Order Id"
+   },
+   "customer_name": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "description": "Full name of the customer as written",
+    "title": "Customer Name"
+   },
+   "customer_email": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "description": "Customer's email address",
+    "title": "Customer Email"
+   },
+   "order_date": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "description": "Order date as YYYY-MM-DD, null if not stated",
+    "title": "Order Date"
+   },
+   "total_amount": {
+    "anyOf": [
+     {
+      "type": "number"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "description": "Order total as a plain number, no symbol",
+    "title": "Total Amount"
+   },
+   "currency": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "description": "ISO 4217 currency code, e.g. EUR",
+    "title": "Currency"
+   },
+   "issue": {
+    "enum": [
+     "damaged",
+     "missing_item",
+     "wrong_item",
+     "late_delivery",
+     "billing_error",
+     "other"
+    ],
+    "title": "Issue",
+    "type": "string"
+   }
+  },
+  "required": [
+   "order_id",
+   "customer_name",
+   "customer_email",
+   "order_date",
+   "total_amount",
+   "currency",
+   "issue"
+  ],
+  "title": "OrderFields",
+  "type": "object"
+ },
+ "dropped_before_7b": [
+  {
+   "id": "cs_03:001",
+   "email": "De: hanako.t3@example.de\nPara: soporte@helphub.example\nFecha: jueves, 5 de marzo de 2025 11:30:00 +0100\nAsunto: Problema con pedido HH-15874\n\nHola,\n\nEl importe de mi pedido HH-15874 es 194.8 JPY pero tengo un inconveniente distinto a los habituales.\n\n¿Podrían ayudarme?\n\nGracias,\nHanako",
+   "reference": "{\"order_id\": \"HH-15874\", \"customer_name\": null, \"customer_email\": \"hanako.t3@example.de\", \"order_date\": null, \"total_amount\": 194.8, \"currency\": \"JPY\", \"issue\": \"other\"}",
+   "auditor": "{\"order_id\": \"HH-15874\", \"customer_name\": \"Hanako\", \"customer_email\": \"hanako.t3@example.de\", \"order_date\": null, \"total_amount\": 194.8, \"currency\": \"JPY\", \"issue\": \"other\"}",
+   "audit_wrong_fields": [
+    "customer_name"
+   ]
+  },
+  {
+   "id": "cs_03:002",
+   "email": "From: Priya Nair <priya.nair@example.com>\nTo: support@helphub.example\nDate: Sun, 18 Aug 2024 07:22:11 +0000\nSubject: 🚨 Urgent: HH-14400 delayed 📦⏳\n\nHey team,\n\nMy order HH-14400 placed on 2024-08-18 is super late!!! Tracking shows nothing since dispatch. Amount was 439.73 EUR.\n\nPls help ASAP!!!\n\nThanks 🙏\nPriya 😊",
+   "reference": "{\"order_id\": \"HH-14400\", \"customer_name\": \"Priya Nair\", \"customer_email\": null, \"order_date\": \"2024-08-18\", \"total_amount\": 439.73, \"currency\": \"EUR\", \"issue\": \"late_delivery\"}",
+   "auditor": "{\"order_id\": \"HH-14400\", \"customer_name\": \"Priya Nair\", \"customer_email\": \"priya.nair@example.com\", \"order_date\": \"2024-08-18\", \"total_amount\": 439.73, \"currency\": \"EUR\", \"issue\": \"late_delivery\"}",
+   "audit_wrong_fields": [
+    "customer_email"
+   ]
+  },
+  {
+   "id": "cs_03:003",
+   "email": "From: Olga Ivanova <olga.ivanova@example.ru>\nTo: support@helphub.example\nDate: Fri, 20 Dec 2024 16:45:03 +0000\nSubject: Request regarding order HH-88573\n\nDear Support Team,\n\nI am writing to follow up on my order HH-88573 placed on December 20, 2024. The total amount paid was 456.5 JPY, which included standard shipping to Moscow. Despite the estimated delivery window of 5-7 business days, I have not yet received the item as of today. I have checked the tracking information regularly, and it shows no updates since the shipment was processed.\n\nI kindly ask you to investigate the status of this shipment and provide an updated estimated delivery date. If the item cannot be located, please advise on the next steps for a replacement or refund.\n\nThank you for your attention to this matter.\n\nSincerely,\nOlga Ivanova",
+   "reference": "{\"order_id\": \"HH-88573\", \"customer_name\": \"Olga Ivanova\", \"customer_email\": null, \"order_date\": \"2024-12-20\", \"total_amount\": 456.5, \"currency\": \"JPY\", \"issue\": \"late_delivery\"}",
+   "auditor": "{\"order_id\": \"HH-88573\", \"customer_name\": \"Olga Ivanova\", \"customer_email\": \"olga.ivanova@example.ru\", \"order_date\": \"2024-12-20\", \"total_amount\": 456.5, \"currency\": \"JPY\", \"issue\": \"late_delivery\"}",
+   "audit_wrong_fields": [
+    "customer_email"
+   ]
+  },
+  {
+   "id": "cs_03:004",
+   "email": "From chloe.d35@example.com\nSubject: billing error\nDate: 2026-07-25\n\nI was overcharged 237.24 JPY for no reason. Fix this please.\n\nThanks",
+   "reference": "{\"order_id\": null, \"customer_name\": null, \"customer_email\": \"chloe.d35@example.com\", \"order_date\": \"2026-07-25\", \"total_amount\": 237.24, \"currency\": \"JPY\", \"issue\": \"billing_error\"}",
+   "auditor": "{\"order_id\": null, \"customer_name\": null, \"customer_email\": \"chloe.d35@example.com\", \"order_date\": null, \"total_amount\": 237.24, \"currency\": \"JPY\", \"issue\": \"billing_error\"}",
+   "audit_wrong_fields": [
+    "order_date"
+   ]
+  },
+  {
+   "id": "cs_03:006",
+   "email": "From: Olga Ivanova <olga.ivanova@example.ru>\nTo: support@helphub.example\nDate: Fri, 23 Feb 2024 07:15:00 +0000\nSubject: Order HH-51595 - other issue\n\nHello,\n\nThere is an issue with order HH-51595 placed on 2024-02-23 for 133.27 GBP. The item works but not as described.\n\nPlease advise.\n\nThanks,\nOlga Ivanova",
+   "reference": "{\"order_id\": \"HH-51595\", \"customer_name\": \"Olga Ivanova\", \"customer_email\": null, \"order_date\": \"2024-02-23\", \"total_amount\": 133.27, \"currency\": \"GBP\", \"issue\": \"other\"}",
+   "auditor": "{\"order_id\": \"HH-51595\", \"customer_name\": \"Olga Ivanova\", \"customer_email\": \"olga.ivanova@example.ru\", \"order_date\": \"2024-02-23\", \"total_amount\": 133.27, \"currency\": \"GBP\", \"issue\": \"other\"}",
+   "audit_wrong_fields": [
+    "customer_email"
+   ]
+  },
+  {
+   "id": "cs_03:007",
+   "email": "From: kwame35@example.es\nTo: billing@helphub.example\nDate: Sunday, July 20, 2025 10:30:00 GMT+1\nSubject: Re: Invoice discrepancy for order placed 2025-06-15\n\nHello Billing Team,\n\nI am writing to follow up on the invoice I received on 2025-07-01 for a purchase made on 2025-06-15. The amount charged does not match the quote provided at checkout. I have attached screenshots of the cart summary showing 484.71 JPY as the correct total, yet the invoice reflects 520.00 JPY. This discrepancy of 35.29 JPY needs to be corrected promptly.\n\nPlease review the attached documents and issue a revised invoice at your earliest convenience. Let me know if you require any additional information from my side.\n\nI appreciate your attention to this matter and look forward to a swift resolution.\n\nBest regards,\nKwame Osei\nkwame35@example.es",
+   "reference": "{\"order_id\": null, \"customer_name\": null, \"customer_email\": \"kwame35@example.es\", \"order_date\": \"2025-07-20\", \"total_amount\": 484.71, \"currency\": \"JPY\", \"issue\": \"billing_error\"}",
+   "auditor": "{\"order_id\": null, \"customer_name\": \"Kwame Osei\", \"customer_email\": \"kwame35@example.es\", \"order_date\": \"2025-06-15\", \"total_amount\": 484.71, \"currency\": \"JPY\", \"issue\": \"billing_error\"}",
+   "audit_wrong_fields": [
+    "customer_name",
+    "order_date"
+   ]
+  },
+  {
+   "id": "cs_03:011",
+   "email": "Von: hanako.t83@example.jp\nAn: support@helphub.example\nDatum: So, 3 Aug 2025 10:30:00 +0000\nBetreff: Rechnung falsch\n\nHilfe! Meine letzte Bestellung zeigt einen Betrag von 367,97 €, aber ich habe nur 200 € erwartet. Bitte prüfen Sie die Rechnung und korrigieren Sie den Fehler.\n\nDanke,\nPriya Nair\n",
+   "reference": "{\"order_id\": null, \"customer_name\": \"Priya Nair\", \"customer_email\": \"hanako.t83@example.jp\", \"order_date\": \"2025-08-03\", \"total_amount\": 367.97, \"currency\": null, \"issue\": \"billing_error\"}",
+   "auditor": "{\"order_id\": null, \"customer_name\": \"Priya Nair\", \"customer_email\": \"hanako.t83@example.jp\", \"order_date\": null, \"total_amount\": 367.97, \"currency\": \"EUR\", \"issue\": \"billing_error\"}",
+   "audit_wrong_fields": [
+    "order_date",
+    "currency"
+   ]
+  },
+  {
+   "id": "cs_03:012",
+   "email": "From: 🎯📧✉️📦🔍\nTo: support@helphub.example\nDate: Wed, 19 Feb 2025 08:45:12 +0000\nSubject: 🚨 Urgent: billing issue on 2025-02-19\n\n💰 Charge of 120.93 EUR appeared on my statement today for an order I don't recognize. No confirmation email, no tracking, nothing in my account history.\n\n🔎 Please investigate and reverse if erroneous.\n\nThanks,\n🌟",
+   "reference": "{\"order_id\": null, \"customer_name\": null, \"customer_email\": null, \"order_date\": \"2025-02-19\", \"total_amount\": 120.93, \"currency\": \"EUR\", \"issue\": \"billing_error\"}",
+   "auditor": "{\"order_id\": null, \"customer_name\": null, \"customer_email\": null, \"order_date\": null, \"total_amount\": 120.93, \"currency\": \"EUR\", \"issue\": \"billing_error\"}",
+   "audit_wrong_fields": [
+    "order_date"
+   ]
+  },
+  {
+   "id": "cs_03:013",
+   "email": "From: Chloé Dubois <chloe.dubois@protonmail.ch>\nTo: support@helphub.example\nDate: Mon, 15 Oct 2025 09:41:22 +0200\nSubject: Order HH-54714 - still not here\n\nHi,\n\nI'm writing again about order HH-54714. I placed it weeks ago — the confirmation email said 2025-09-28 — and the estimated delivery window was 3-5 business days. It's now 15 October and nothing has arrived. No tracking updates since 'label created' on the 30th. I've checked with neighbours, the local depot, even the building concierge. Nothing.\n\nThe order was for a set of noise-cancelling headphones (the matte black model, SKU WH-1100) and a spare cable. Total came to 476.55 USD. I paid with my company card ending in 4482. Invoice reference INV-2025-09-28-54714.\n\nI've already replied twice to the automated 'your order has shipped' emails asking for a real update. Each time I get a bot reply saying 'we're looking into it' and a new ticket number. Ticket #22411, #22587, #22703. Nobody has actually checked with the carrier.\n\nMy colleague Marcus Webb (marcus.webb@example.org) had a similar issue with HH-70344 last month — wrong item delivered — and it took three emails to get a human response. I'd really like to avoid that runaround.\n\nCould someone please escalate this to the logistics team and give me a concrete delivery date or a refund? I need these for a client workshop on the 27th.\n\nThanks,\nChloé Dubois\nSenior Audio Engineer | Dubois Acoustics GmbH\n+49 30 555 0199\n\n---\nPrevious correspondence:\n> On 3 Oct 2025, at 14:22, HelpHub Support <support@helphub.example> wrote:\n> \n> Hello Chloé, thanks for your patience. We've opened an inquiry with the carrier. Reference: CARR-8821.\n> \n> Kind regards,\n> Lisa\n> HelpHub Support\n\n> On 8 Oct 2025, at 11:05, HelpHub Support <support@helphub.example> wrote:\n> \n> Hello Chloé, the carrier reports no exception scans. We'll continue monitoring.\n> \n> Kind regards,\n> Tom\n> HelpHub Support\n",
+   "reference": "{\"order_id\": \"HH-54714\", \"customer_name\": \"Chloé Dubois\", \"customer_email\": null, \"order_date\": null, \"total_amount\": 476.55, \"currency\": \"USD\", \"issue\": \"late_delivery\"}",
+   "auditor": "{\"order_id\": \"HH-54714\", \"customer_name\": \"Chloé Dubois\", \"customer_email\": \"chloe.dubois@protonmail.ch\", \"order_date\": \"2025-09-28\", \"total_amount\": 476.55, \"currency\": \"USD\", \"issue\": \"late_delivery\"}",
+   "audit_wrong_fields": [
+    "customer_email",
+    "order_date"
+   ]
+  },
+  {
+   "id": "cs_03:014",
+   "email": "From: priya.n7@example.com\nSubject: HH-9912 wrong item\n\nOrder 2025-10-13 total 321.43 JPY. Got the blue one instead of black. Need correct item sent.\n\nPriya",
+   "reference": "{\"order_id\": null, \"customer_name\": null, \"customer_email\": \"priya.n7@example.com\", \"order_date\": \"2025-10-13\", \"total_amount\": 321.43, \"currency\": \"JPY\", \"issue\": \"wrong_item\"}",
+   "auditor": "{\"order_id\": \"HH-9912\", \"customer_name\": \"Priya\", \"customer_email\": \"priya.n7@example.com\", \"order_date\": \"2025-10-13\", \"total_amount\": 321.43, \"currency\": \"JPY\", \"issue\": \"wrong_item\"}",
+   "audit_wrong_fields": [
+    "order_id",
+    "customer_name"
+   ]
+  },
+  {
+   "id": "cs_03:015",
+   "email": "From: mjgarcia80@example.jp\nTo: support@helphub.example\nDate: Fri, 7 Nov 2025 22:14:03 +0900\nSubject: HH-58765 damaged!!!\n\nhi i recieved order HH-58765 today and the box was crushed!! the corner was totally smashed in and the item inside — a cast iron dutch oven 5.2L matte black — has a big chip on the rim and the lid doesnt sit flat anymore. i have photos and video of the unboxing. the shipping box had NO padding just the item rattling around. this is unacceptable.\n\ni ordered this on 2025-11-02 for my wifes birthday (nov 15) and now its ruined. the charge was in GBP on my card but i dont remember the exact amount maybe 189.99 or something? anyway the currency was definitely GBP. my name is Chloé Dubois (the account is under my wifes name but i placed the order). email is mjgarcia80@example.jp obviously.\n\nPLEASE dont make me jump through hoops like last time with the standing desk fiasco (HH-70344 Marcus Webb). just send a replacement or refund me. i can return the damaged one whatever.\n\nthx\nMiguel Garcia\n\n> On 5 Nov 2025, at 10:30, HelpHub Support <support@helphub.example> wrote:\n> \n> Hello, your order HH-58765 has shipped! Tracking: 1Z999AA10123456784\n> \n> Kind regards,\n> HelpHub Support\n",
+   "reference": "{\"order_id\": \"HH-58765\", \"customer_name\": \"Chloé Dubois\", \"customer_email\": \"mjgarcia80@example.jp\", \"order_date\": \"2025-11-02\", \"total_amount\": null, \"currency\": \"GBP\", \"issue\": \"damaged\"}",
+   "auditor": "{\"order_id\": \"HH-58765\", \"customer_name\": \"Miguel Garcia\", \"customer_email\": \"mjgarcia80@example.jp\", \"order_date\": \"2025-11-02\", \"total_amount\": null, \"currency\": \"GBP\", \"issue\": \"damaged\"}",
+   "audit_wrong_fields": [
+    "customer_name"
+   ]
+  },
+  {
+   "id": "cs_03:016",
+   "email": "From: Jürgen Müller <jurgen.mueller@t-online.de>\nTo: support@helphub.example\nDate: Tue, 9 Apr 2024 16:22:11 +0900\nSubject: 注文 HH-47206 がまだ届きません\n\nお世話になっております。\n\n注文番号 HH-47206 についてご連絡いたします。\n2024年4月2日に注文し、4月5日〜7日の配送予定とのことでしたが、本日4月9日になっても商品が到着しておりません。\n追跡番号を確認しましたが、「配送センター到着」のまま3日間更新がありません。\n\n注文内容は、オフィスチェア（エルゴノミックモデル、ブラック）1台です。\n支払いは完了しており、通貨はGBPでした。金額は請求書を確認中で、現時点では正確な金額をお伝えできません。\n\n至急、配送状況の確認と、到着予定日をご連絡いただけますでしょうか。\n4月15日にオフィス移転を控えており、それまでにセットアップを完了させる必要があります。\n\nお手数をおかけしますが、よろしくお願いいたします。\n\nJürgen Müller\nMüller Consulting GmbH\n+49 89 1234 5678\n\n---\n前回のやり取り:\n> 2024年4月5日 10:15、HelpHub Support <support@helphub.example> より:\n> \n> こんにちは、ご注文ありがとうございます。発送準備が整い次第、追跡番号をお送りします。\n> \n> よろしくお願いいたします。\n> HelpHub Support\n\n> 2024年4月6日 14:30、HelpHub Support <support@helphub.example> より:\n> \n> 追跡番号: 1Z999AA10123456789\n> 配送業者: DHL Express\n> \n> よろしくお願いいたします。\n> HelpHub Support\n",
+   "reference": "{\"order_id\": \"HH-47206\", \"customer_name\": \"Jürgen Müller\", \"customer_email\": null, \"order_date\": \"2024-04-02\", \"total_amount\": null, \"currency\": \"GBP\", \"issue\": \"late_delivery\"}",
+   "auditor": "{\"order_id\": \"HH-47206\", \"customer_name\": \"Jürgen Müller\", \"customer_email\": \"jurgen.mueller@t-online.de\", \"order_date\": \"2024-04-02\", \"total_amount\": null, \"currency\": \"GBP\", \"issue\": \"late_delivery\"}",
+   "audit_wrong_fields": [
+    "customer_email"
+   ]
+  }
+ ],
+ "kept_after_7b": [
+  {
+   "id": "cs_03:001",
+   "email": "Von: Fatima Zahra El Idrissi <fatima.zahra@example.jp>\nAn: support@helphub.example\nDatum: Mo, 18 Nov 2024 09:05:12 +0000\nBetreff: Rechnung HH-78848 fehlerhaft\n\nSehr geehrte Damen und Herren,\n\nbei meiner Bestellung HH-78848 vom 17.11.2024 wurde mir ein Betrag von 326,25 in Rechnung gestellt, obwohl der korrekte Preis 299,00 beträgt. Bitte korrigieren Sie die Rechnung und erstatten Sie den Differenzbetrag.\n\nMit freundlichen Grüßen\nFatima Zahra El Idrissi",
+   "reference": "{\"order_id\": \"HH-78848\", \"customer_name\": \"Fatima Zahra El Idrissi\", \"customer_email\": \"fatima.zahra@example.jp\", \"order_date\": \"2024-11-17\", \"total_amount\": 326.25, \"currency\": null, \"issue\": \"billing_error\"}"
+  },
+  {
+   "id": "cs_03:002",
+   "email": "From: Søren Holm <sren13@example.jp>\nTo: support@helphub.example\nDate: Fri, 14 Feb 2025 09:03:12 +0000\nSubject: Late again HH-35055\n\nHey,\n\nStill waiting on HH-35055 from 2024-02-16. No update. Currency is EUR.\n\nSøren",
+   "reference": "{\"order_id\": \"HH-35055\", \"customer_name\": \"Søren Holm\", \"customer_email\": \"sren13@example.jp\", \"order_date\": \"2024-02-16\", \"total_amount\": null, \"currency\": \"EUR\", \"issue\": \"late_delivery\"}"
+  },
+  {
+   "id": "cs_03:004",
+   "email": "注文番号: HH-26501\n日付: 2026-07-25\n金額: 237.24 JPY\n問題: 請求エラー\n\nメール: chloe.d35@example.com\n\nご確認ください。",
+   "reference": "{\"order_id\": \"HH-26501\", \"customer_name\": null, \"customer_email\": \"chloe.d35@example.com\", \"order_date\": \"2026-07-25\", \"total_amount\": 237.24, \"currency\": \"JPY\", \"issue\": \"billing_error\"}"
+  },
+  {
+   "id": "cs_03:005",
+   "email": "From: Nguyễn Thị Lan <nguyen.thi@example.com>\nTo: support@helphub.example\nDate: Miércoles, 12 de marzo de 2025 16:45:00 +0000\nAsunto: Artículo faltante en mi pedido\n\nHola,\n\nRecibí mi pedido hoy y falta un artículo. No tengo el número de pedido ni la fecha porque no guardo esos correos. Solo sé que pagué en EUR y que debería haber recibido dos libros pero solo llegó uno. Necesito que me envíen el libro faltante o me devuelvan el dinero.\n\nGracias,\nNguyễn Thị Lan",
+   "reference": "{\"order_id\": null, \"customer_name\": \"Nguyễn Thị Lan\", \"customer_email\": \"nguyen.thi@example.com\", \"order_date\": null, \"total_amount\": null, \"currency\": \"EUR\", \"issue\": \"missing_item\"}"
+  },
+  {
+   "id": "cs_03:006",
+   "email": "Von: Liam O'Connor <liam.o@example.es>\nAn: support@helphub.example\nDatum: So, 22 Dez 2024 10:05:00 +0000\nBetreff: Bestellung HH-08911 - Sonstiges\n\nHallo Support-Team,\n\nbei meiner Bestellung HH-08911 vom 22.12.2024 ist etwas anderes passiert als erwartet. Der Gesamtbetrag betrug 101,08 USD. Bitte prüfen Sie den Vorgang.\n\nViele Grüße\nLiam O'Connor",
+   "reference": "{\"order_id\": \"HH-08911\", \"customer_name\": \"Liam O'Connor\", \"customer_email\": \"liam.o@example.es\", \"order_date\": \"2024-12-22\", \"total_amount\": 101.08, \"currency\": \"USD\", \"issue\": \"other\"}"
+  },
+  {
+   "id": "cs_03:007",
+   "email": "From: kwame17@example.es\nTo: support@helphub.example\nDate: Thu, 9 Jan 2025 08:30:00 +0000\nSubject: billing problem\n\nHey there\n\nI was charged 136.27 JPY on 2025-01-09 for something I didnt order. Please check and refund if needed.\n\nThanks\nKwame Mensah",
+   "reference": "{\"order_id\": null, \"customer_name\": \"Kwame Mensah\", \"customer_email\": \"kwame17@example.es\", \"order_date\": \"2025-01-09\", \"total_amount\": 136.27, \"currency\": \"JPY\", \"issue\": \"billing_error\"}"
+  },
+  {
+   "id": "cs_03:008",
+   "email": "From: Olga Ivanova <olga12@example.com>\nTo: support@helphub.example\nDate: Thu, 11 Sep 2025 09:30:00 +0000\nSubject: HH-43522 ???\n\nHH-43522 status unclear. GBP involved.\n\nOlga",
+   "reference": "{\"order_id\": \"HH-43522\", \"customer_name\": \"Olga Ivanova\", \"customer_email\": \"olga12@example.com\", \"order_date\": null, \"total_amount\": null, \"currency\": \"GBP\", \"issue\": \"other\"}"
+  },
+  {
+   "id": "cs_03:010",
+   "email": "From: 田中 花子 <hanako.t41@example.de>\nTo: support@helphub.example\nDate: Sat, 29 Nov 2025 11:20:00 +0000\nSubject: 請求書 HH-72882 に関する問い合わせ\n\nサポートチームへ\n\n注文番号 HH-72882（2025-11-29）について、請求金額 210.51 USD に不備があると思われます。詳細を確認のうえ、対応をお願いいたします。\n\n田中 花子",
+   "reference": "{\"order_id\": \"HH-72882\", \"customer_name\": \"田中 花子\", \"customer_email\": \"hanako.t41@example.de\", \"order_date\": \"2025-11-29\", \"total_amount\": 210.51, \"currency\": \"USD\", \"issue\": \"billing_error\"}"
+  },
+  {
+   "id": "cs_03:011",
+   "email": "From: Olga Ivanova <oivanova@example.com>\nTo: support@helphub.example\nDate: Mon, 16 Dec 2024 09:05:22 +0000\nSubject: Inquiry about HH-41605\n\nDear Support Team,\n\nI am writing regarding my recent purchase, order HH-41605, which I placed on December 13, 2024. The item arrived without issue, but I have a general question about warranty coverage for future reference. No damage, missing parts, or incorrect items were observed upon inspection.\n\nPlease note that the transaction was processed in Japanese Yen, though I do not have the exact amount available at this time.\n\nKind regards,\nOlga Ivanova",
+   "reference": "{\"order_id\": \"HH-41605\", \"customer_name\": \"Olga Ivanova\", \"customer_email\": \"oivanova@example.com\", \"order_date\": \"2024-12-13\", \"total_amount\": null, \"currency\": \"JPY\", \"issue\": \"other\"}"
+  },
+  {
+   "id": "cs_03:012",
+   "email": "From: mjgarcia93@example.es\nTo: support@helphub.example\nDate: Mon, 2 Jun 2025 10:30:00 +0000\nSubject: pedido HH-84451 faltante\n\nHola,\n\nEl pedido HH-84451 del 2025-06-02 llegó incompleto. Falta un artículo. El importe fue 364,39 EUR.\n\n¿Podrían enviarme lo que falta o gestionar una solución?\n\nGracias\n",
+   "reference": "{\"order_id\": \"HH-84451\", \"customer_name\": null, \"customer_email\": \"mjgarcia93@example.es\", \"order_date\": \"2025-06-02\", \"total_amount\": 364.39, \"currency\": \"EUR\", \"issue\": \"missing_item\"}"
+  },
+  {
+   "id": "cs_03:013",
+   "email": "Von: j.mueller16@example.com\nAn: support@helphub.example\nBetreff: falscher Artikel erhalten\n\nHallo,\n\nDie gelieferte Ware entspricht nicht meiner Bestellung. Statt des bestellten Artikels erhielt ich einen anderen. Der Betrag beträgt 203,63.\n\nBitte um Klärung.\n",
+   "reference": "{\"order_id\": null, \"customer_name\": null, \"customer_email\": \"j.mueller16@example.com\", \"order_date\": null, \"total_amount\": 203.63, \"currency\": null, \"issue\": \"wrong_item\"}"
+  },
+  {
+   "id": "cs_03:014",
+   "email": "From: priya.n7@example.com\nTo: support@helphub.example\nSubject: wrong item hh-70732\n\norder date 2025-10-13 amount 321.43 currency JPY\nitem received was not what i ordered its a different model completely unhappy with this service pls help\n",
+   "reference": "{\"order_id\": \"HH-70732\", \"customer_name\": null, \"customer_email\": \"priya.n7@example.com\", \"order_date\": \"2025-10-13\", \"total_amount\": 321.43, \"currency\": \"JPY\", \"issue\": \"wrong_item\"}"
+  },
+  {
+   "id": "cs_03:016",
+   "email": "From: mjgarcia93@example.jp\nTo: support@helphub.example\nDate: Wed, 26 Mar 2025 14:22:11 +0900\nSubject: Order HH-20613 incomplete\n\nOrder HH-20613 placed 2025-03-26 for 135.25. The package arrived today but the wireless charger listed on the packing slip is missing. Everything else is there. Please ship the missing unit or refund the difference.\n\nRegards",
+   "reference": "{\"order_id\": \"HH-20613\", \"customer_name\": null, \"customer_email\": \"mjgarcia93@example.jp\", \"order_date\": \"2025-03-26\", \"total_amount\": 135.25, \"currency\": null, \"issue\": \"missing_item\"}"
+  },
+  {
+   "id": "cs_03:017",
+   "email": "From: ana.ruiz@example.es\nTo: support@helphub.example\nDate: Sat, 5 Apr 2025 09:15:33 +0900\nSubject: 商品が壊れて届きました\n\n2025-04-05 に注文した商品（合計 130.44 EUR）が今日届きましたが、ガラス製の花瓶が割れていました。写真を添付します。交換か返金をお願いします。\n\nAna Ruiz",
+   "reference": "{\"order_id\": null, \"customer_name\": \"Ana Ruiz\", \"customer_email\": \"ana.ruiz@example.es\", \"order_date\": \"2025-04-05\", \"total_amount\": 130.44, \"currency\": \"EUR\", \"issue\": \"damaged\"}"
+  },
+  {
+   "id": "cs_03:018",
+   "email": "From: María José García <maria.jose@example.com>\nTo: support@helphub.example\nDate: Mon, 15 Jul 2024 09:30:00 +0200\nSubject: Re: Re: Your order HH-62720 has shipped\n\nHi team,\n\nI am writing again because the situation with my recent delivery is still not resolved. To give you the full context: I placed an order for a set of ergonomic office chairs — specifically the charcoal grey mesh model with adjustable lumbar support — and paid a total of 202.80 EUR. What arrived at my doorstep last week was a completely different product: two boxes of lightweight folding stools in a bright blue colour, which share no SKU or description with what I ordered. I have not assembled them; the boxes are still sealed with the original shipping labels attached.\n\nI have already replied twice to the previous thread (ticket references #8841 and #8892) providing photos of the labels and the packing slip, but each time a new agent asks for the same information. To avoid further back-and-forth, here are all the details in one place:\n\n  Order number: HH-62720\n  Name: María José García\n  Email: maria.jose@example.com\n  Amount paid: 202.80 EUR\n  Problem: wrong item delivered\n\nI need the correct chairs shipped immediately and the incorrect stools collected. If the charcoal grey model is out of stock, please issue a full refund to my original payment method. My home office renovation is scheduled for the first week of August, so I cannot wait for a restock that has no confirmed date.\n\nPlease confirm you have received this summary and let me know the next steps.\n\nBest regards,\nMaría José García\n",
+   "reference": "{\"order_id\": \"HH-62720\", \"customer_name\": \"María José García\", \"customer_email\": \"maria.jose@example.com\", \"order_date\": null, \"total_amount\": 202.8, \"currency\": \"EUR\", \"issue\": \"wrong_item\"}"
+  },
+  {
+   "id": "cs_03:019",
+   "email": "De: María José García\nPara: soporte@helphub.example\nFecha: Lun, 4 Nov 2024 11:15:00 +0100\nAsunto: Pedido incorrecto recibido\n\nHola,\n\nLes escribo porque el paquete que recibí ayer no corresponde en absoluto a lo que compré. Hice un pedido de una mesa de centro de roble macizo, acabado natural, y pagué un total de 332.17 JPY. Lo que me entregaron fue una estantería metálica de cinco baldas en color negro, un artículo totalmente distinto, con otra referencia y dimensiones. La caja venía precintada y no la he abierto más que para comprobar la etiqueta de envío.\n\nAdjunto fotos de la etiqueta y del albarán de entrega por si las necesitáis. Quiero que me envíen la mesa correcta y que recojan la estantería equivocada. Si la mesa de roble no está en stock, por favor hacedme el reembolso completo al mismo método de pago; mi mudanza es el 20 de noviembre y no puedo esperar a una reposición sin fecha.\n\nDatos para que no tengáis que pedírmelos otra vez:\n\n  Nombre: María José García\n  Fecha del pedido: 2024-11-04\n  Importe: 332.17 JPY\n  Incidencia: artículo equivocado\n\nQuedo a la espera de vuestra confirmación y próximos pasos.\n\nSaludos,\nMaría José García\n",
+   "reference": "{\"order_id\": null, \"customer_name\": \"María José García\", \"customer_email\": null, \"order_date\": \"2024-11-04\", \"total_amount\": 332.17, \"currency\": \"JPY\", \"issue\": \"wrong_item\"}"
+  }
+ ]
+}

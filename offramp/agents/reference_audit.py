@@ -291,13 +291,18 @@ Write one JSON object per line to `answers.jsonl` in this folder:
 """
 
 
-def _default_bundle_dir(repo: Path) -> Path:
+def _default_bundle_dir(repo: Path, site_ids: list[str] | None = None) -> Path:
+    """One folder per repo, and a separate one per site selection, so a partial bundle never mixes with
+    the site files of an earlier full one."""
     from offramp.agents.case_gen import data_dir
 
-    return data_dir() / "audit" / f"{repo.name}-{hashlib.sha256(str(repo).encode()).hexdigest()[:8]}"
+    name = f"{repo.name}-{hashlib.sha256(str(repo).encode()).hexdigest()[:8]}"
+    return data_dir() / "audit" / (name + "".join(f"-{s}" for s in sorted(site_ids or [])))
 
 
-def export_blind_audit(repo_path: str | Path, out_dir: str | Path | None = None) -> Path:
+def export_blind_audit(
+    repo_path: str | Path, out_dir: str | Path | None = None, site_ids: list[str] | None = None
+) -> Path:
     """Write what the closed auditor (GC27: a Claude subagent) may see, outside the target repo (default
     OFFRAMP_DATA_DIR/audit/<repo>-<hash>/): per site the case ids and input_messages, the tools in OpenAI
     form, the label set or response JSON schema, and the answer format. Never a reference. Returns the
@@ -306,9 +311,10 @@ def export_blind_audit(repo_path: str | Path, out_dir: str | Path | None = None)
     from offramp.agents.translate import openai_tool, openai_tool_choice
 
     repo = Path(repo_path).resolve()
-    evals, out = repo / "evals", Path(out_dir) if out_dir else _default_bundle_dir(repo)
+    evals = repo / "evals"
+    out = Path(out_dir) if out_dir else _default_bundle_dir(repo, site_ids)
     out.mkdir(parents=True, exist_ok=True)
-    sites = baselines.load_sites(evals)
+    sites = [s for s in baselines.load_sites(evals) if site_ids is None or s.id in site_ids]
     for site in sites:
         kind = site.contract.task_type
         bundle: dict[str, Any] = {
@@ -382,8 +388,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     evals = args.repo / "evals"
+    site_ids = [s.strip() for s in args.sites.split(",") if s.strip()] if args.sites else None
+    unknown = sorted(set(site_ids or []) - {s.id for s in baselines.load_sites(evals)})
+    if unknown:
+        print(f"unknown site id(s): {', '.join(unknown)}", file=sys.stderr)
+        return 2
     if args.export_blind:
-        print(export_blind_audit(args.repo, args.out))
+        print(export_blind_audit(args.repo, args.out, site_ids))
         return 0
     if args.closed:
         result = ingest_blind_audit(args.closed, args.repo, args.model)
@@ -394,7 +405,7 @@ def main(argv: list[str] | None = None) -> int:
         from offramp.tf import Budget, TFClient
 
         llm = TFClient(budget=Budget())
-    counts = audit_repo(evals, llm, args.sites.split(",") if args.sites else None)
+    counts = audit_repo(evals, llm, site_ids)
     print(json.dumps(counts, indent=1))
     return 0
 

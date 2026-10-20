@@ -472,3 +472,25 @@ def test_ultra_fallback_replays_recorded_calls(tmp_path):
 @pytest.mark.live
 def test_record_reference_audit_cassettes(tmp_path):
     run_ultra_audit(tmp_path, live=True)
+
+
+def test_the_blind_bundle_can_hold_one_site(tmp_path, monkeypatch):
+    monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path / "data"))
+    repo = tmp_path / "repo"
+    blind_dataset(repo)
+
+    out = ra.export_blind_audit(repo, site_ids=["cs_02"])
+
+    assert sorted(p.name for p in out.glob("cs_*.json")) == ["cs_02.json"]
+    assert json.loads((out / "bundle.json").read_text())["sites"] == ["cs_02"]
+
+
+def test_export_refuses_unknown_sites_and_strips_spaces(tmp_path, monkeypatch):
+    monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path / "data"))
+    repo = tmp_path / "repo"
+    blind_dataset(repo)
+
+    assert ra.main([str(repo), "--export-blind", "--sites", "cs_9"]) != 0
+    assert ra.main([str(repo), "--export-blind", "--sites", "cs_02, cs_01"]) == 0
+    out = next((tmp_path / "data" / "audit").glob("repo-*-cs_01-cs_02"))
+    assert sorted(p.name for p in out.glob("cs_*.json")) == ["cs_01.json", "cs_02.json"]

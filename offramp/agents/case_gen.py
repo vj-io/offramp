@@ -39,6 +39,7 @@ import signal
 import subprocess
 import sys
 import tomllib
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -619,6 +620,10 @@ class Seed:
     giveaways: list[str] = field(default_factory=list)  # expected values never written as "Label: value"
     verbatim: list[str] = field(default_factory=list)  # identifiers never written in what the person says
     undetermined: list[str] = field(default_factory=list)  # values of free enums no input may dictate
+    present: list[tuple[str, Any, str]] = field(default_factory=list)  # (detector kind, seeded value, field)
+    absent: list[tuple[str, str, str | None]] = field(
+        default_factory=list
+    )  # null fields: (name, kind, id regex)
 
 
 NULL_RATE = 0.25
@@ -638,11 +643,12 @@ NAMES = [
 ]
 HANDLES = ["priya.n", "j.mueller", "mjgarcia", "hanako.t", "chloe.d", "kwame", "o.ivanova", "liam.oc"]
 CURRENCIES = ["USD", "EUR", "GBP", "JPY"]
-CURRENCY_ALIASES = {
-    "USD": ["usd", "$", "dollar"],
-    "EUR": ["eur", "€", "euro"],
-    "GBP": ["gbp", "£", "pound"],
-    "JPY": ["jpy", "¥", "円", "yen"],
+CURRENCY_ALIASES = {  # how an input may write a currency: ISO code, symbol, names in major languages
+    "USD": ["usd", "$", "us$", "dollar", "dollars", "dólar", "dólares", "ドル", "美元"],
+    "EUR": ["eur", "€", "euro", "euros", "ユーロ", "欧元"],
+    "GBP": ["gbp", "£", "pound", "pounds", "sterling", "libra", "libras", "pfund", "ポンド", "英镑"],
+    "JPY": ["jpy", "¥", "円", "yen", "日元"],
+    "INR": ["inr", "₹", "rupee", "rupees", "rupia", "rupias", "ルピー"],
 }
 FREE_TEXT = ["Customer reports a problem with the order.", "Customer asks for help with an invoice."]
 _EXAMPLE = re.compile(r"(?:e\.g\.|such as|for example)\s*:?\s*([A-Za-z]*-?\d[A-Za-z0-9-]*)")
@@ -705,6 +711,17 @@ def _fake_string(name: str, schema: dict[str, Any], rng: random.Random) -> str:
     return rng.choice(FREE_TEXT)
 
 
+def _email_for(name: str, rng: random.Random) -> str | None:
+    """An address built from a (possibly accented) name; None for names with no Latin letters."""
+    words = re.findall(
+        r"[a-z]+", unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+    )
+    if not words:
+        return None
+    local = rng.choice([".".join(words[:2]), f"{words[0]}{rng.randint(1, 99)}", words[0][0] + words[-1]])
+    return f"{local}@example.{rng.choice(['com', 'de', 'es', 'jp'])}"
+
+
 def _fake(name: str, schema: dict[str, Any], rng: random.Random, root: dict[str, Any]) -> Any:
     """A value valid under `schema`, shaped by field names and descriptions (ids mimic the schema example).
     Objects get every property: an input can say a value is unknown (null), never that a key is absent."""
@@ -727,7 +744,14 @@ def _fake(name: str, schema: dict[str, Any], rng: random.Random, root: dict[str,
     limit = _AT_MOST.search(schema.get("description", ""))
     high = schema.get("maximum", float(limit[1]) if limit else None)
     if kind == "object":
-        return {k: _fake(k, v, rng, root) for k, v in schema.get("properties", {}).items()}
+        props = schema.get("properties", {})
+        obj = {k: _fake(k, v, rng, root) for k, v in props.items()}
+        kinds = {k: _string_kind(k, _flat(v, root)) for k, v in props.items() if isinstance(obj[k], str)}
+        name = next((obj[k] for k, kind in kinds.items() if kind == "name"), None)
+        for k, kind in kinds.items():
+            if kind == "email" and name:  # a sender's address fits their name; writers "fix" ones that don't
+                obj[k] = _email_for(name, rng) or obj[k]
+        return obj
     if kind == "array":
         return [_fake(name, schema.get("items", {}), rng, root) for _ in range(rng.randint(1, 3))]
     if kind == "boolean":
@@ -1022,6 +1046,48 @@ def _json_stated(record: dict[str, Any], schema: dict[str, Any]) -> list[tuple[s
     return out
 
 
+def _absent_kind(key: str, prop: dict[str, Any]) -> tuple[str, str | None] | None:
+    """How to detect a field in an input when its seed value is null: (detector kind, id regex)."""
+    if _schema_type(prop) in ("number", "integer"):
+        text = f"{key} {prop.get('description', '')}".lower()
+        return ("amount", None) if any(w in text for w in _AMOUNT_WORDS) else None
+    kind = _string_kind(key, prop)
+    if kind == "example":
+        return "id", _shape_pattern(_EXAMPLE.search(prop.get("description", ""))[1])
+    if kind == "name":  # a person (customer, first/last/full name, plain "name"), not product_name, shop_name
+        words = re.findall(r"[a-z]+", key.lower())
+        before = words[words.index("name") - 1] if "name" in words[1:] else None  # account_holder: person
+        return None if before in _NON_PERSON_WORDS else ("name", None)
+    return (kind, None) if kind in ("email", "date", "currency") else None
+
+
+def json_seed(record: dict[str, Any], schema: dict[str, Any]) -> Seed:
+    """The seed for one extraction record: its non-null values must be stated in the input, and its null
+    fields must not appear anywhere in it (the writer is given their names)."""
+    text = json.dumps(record, ensure_ascii=False)
+    nulls = [k for k, v in record.items() if v is None]
+    shown = f"JSON {text}"
+    if nulls:
+        shown += f"; null fields, which must not appear anywhere in the record: {', '.join(nulls)}"
+    absent = []
+    for key in nulls:
+        found = _absent_kind(key, _flat(schema.get("properties", {}).get(key, {}), schema))
+        if found:
+            absent.append((key, *found))
+    present = []
+    for key, value in record.items():
+        if value is None or isinstance(value, dict | list | bool):
+            continue
+        found = _absent_kind(key, _flat(schema.get("properties", {}).get(key, {}), schema))
+        if found:
+            present.append((found[0], value, key))
+        elif isinstance(value, int | float):  # a seeded discount or refund: its number is not a null total
+            present.append(("amount", value, key))
+    return Seed(
+        ModelOutput(text=text), shown, stated=_json_stated(record, schema), present=present, absent=absent
+    )
+
+
 def make_seeds(
     site: CallSite, n: int, rng: random.Random, tool_args: dict[str, ToolArgs] | None = None
 ) -> list[Seed]:
@@ -1045,16 +1111,8 @@ def make_seeds(
         seedable = [name for name, r in rules.items() if r.unseedable is None]
         return [_tool_seed(name, rules[name], rng) for name in _cycle(seedable, n, rng)] if seedable else []
     if contract.task_type == "json_extraction" and contract.json_schema:
-        seeds = []
-        for _ in range(n):
-            record = _fake("", contract.json_schema, rng, contract.json_schema)
-            text = json.dumps(record, ensure_ascii=False)
-            seeds.append(
-                Seed(
-                    ModelOutput(text=text), f"JSON {text}", stated=_json_stated(record, contract.json_schema)
-                )
-            )
-        return seeds
+        schema = contract.json_schema
+        return [json_seed(_fake("", schema, rng, schema), schema) for _ in range(n)]
     return []
 
 
@@ -1063,18 +1121,18 @@ def make_seeds(
 
 _NUMBER_RUN = re.compile(r"\d(?:[\d.,'   ]*\d)?")
 _MONTHS = [
-    "january jan januar enero janvier",
-    "february feb februar febrero février",
-    "march mar märz marzo mars",
-    "april apr abril avril",
-    "may mai mayo",
-    "june jun juni junio juin",
-    "july jul juli julio juillet",
+    "january jan januar enero janvier janeiro gennaio",
+    "february feb februar febrero février fevereiro febbraio",
+    "march mar märz marzo mars março",
+    "april apr abril avril aprile",
+    "may mai mayo maio maggio",
+    "june jun juni junio juin junho giugno",
+    "july jul juli julio juillet julho luglio",
     "august aug agosto août",
-    "september sep sept septiembre septembre",
-    "october oct oktober octubre octobre",
-    "november nov noviembre novembre",
-    "december dec dezember diciembre décembre",
+    "september sep sept septiembre septembre setembro settembre",
+    "october oct oktober octubre octobre outubro ottobre",
+    "november nov noviembre novembre novembro",
+    "december dec dezember diciembre décembre dezembro dicembre",
 ]
 _QUOTES = "\"'`“”‘’«»"
 
@@ -1111,7 +1169,9 @@ def _date_stated(iso: str, text: str) -> bool:
         f"{d.day}/{d.month}/{d.year}",
         f"{d.month}/{d.day}/{d.year}",
         f"{d.year}年{d.month}月{d.day}日",
+        f"{d.year}.{d.month:02}.{d.day:02}",
     ]
+    text = re.sub(r"(\d)(?:st|nd|rd|th)\b", r"\1", text)  # "12th March 2025"
     if any(f in text for f in forms):
         return True
     words = set(re.findall(r"\w+", text.casefold()))
@@ -1131,11 +1191,9 @@ def _derivable(value: Any, kind: str | None, text: str) -> bool:
     if isinstance(value, int | float):
         return Decimal(str(value)) in _numbers(text)
     if kind == "currency":
-        return any(
-            a in text.casefold() for a in CURRENCY_ALIASES.get(str(value).upper(), [str(value).casefold()])
-        )
-    if kind == "date":
-        return _date_stated(str(value), text)
+        return _currency_named(str(value), text)
+    if kind == "date":  # in the body: header dates (Date, Subject) are about the message, not the record
+        return _date_stated(str(value), _header_block(text)[1])
     return _squash(str(value)) in _squash(text)
 
 
@@ -1152,6 +1210,690 @@ def _given_away(text: str, value: str) -> bool:
     return re.search(pattern, text, re.IGNORECASE) is not None
 
 
+_CJK = r"[぀-ヿ一-鿿가-힯]"
+_OTHER_CURRENCY_CODES = ["chf", "cny", "aud", "cad", "mxn", "brl", "krw", "sek", "nok", "dkk", "pln"]
+_EMAIL = re.compile(
+    r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+|[\w.+-]+\s*[\[(]at[\])]\s*[\w-]+(?:\s*[\[(]dot[\])]\s*[\w-]+)+"
+)
+_AMOUNT_WORDS = ("amount", "total", "price", "cost", "sum", "paid", "fee", "charge")
+_NON_PERSON_WORDS = {
+    "team",
+    "event",
+    "venue",
+    "room",
+    "device",
+    "course",
+    "book",
+    "song",
+    "game",
+    "product",
+    "products",
+    "company",
+    "shop",
+    "store",
+    "file",
+    "brand",
+    "item",
+    "merchant",
+    "vendor",
+    "business",
+    "organisation",
+    "organization",
+    "street",
+    "city",
+    "country",
+    "domain",
+    "host",
+    "plan",
+    "project",
+    "app",
+    "model",
+    "category",
+    "bank",
+    "hotel",
+    "airline",
+}
+
+# ---- email headers: keys compared without inner spaces ("Dat e:" is a Date header the writer mangled)
+_HEADER_KEYS = {
+    "from",
+    "to",
+    "cc",
+    "bcc",
+    "reply-to",
+    "subject",
+    "date",
+    "sent",
+    "de",
+    "para",
+    "asunto",
+    "fecha",
+    "enviado",
+    "von",
+    "an",
+    "betreff",
+    "datum",
+    "gesendet",
+    "à",
+    "objet",
+    "envoyé",
+    "da",
+    "van",
+    "oggetto",
+    "data",
+    "差出人",
+    "送信者",
+    "宛先",
+    "件名",
+    "日付",
+    "送信日時",
+}
+_ADDRESS_KEYS = _HEADER_KEYS - {
+    "date",
+    "sent",
+    "fecha",
+    "enviado",
+    "datum",
+    "gesendet",
+    "envoyé",
+    "data",
+    "日付",
+    "送信日時",
+}
+_DATE_KEYS = _HEADER_KEYS - _ADDRESS_KEYS
+_RECIPIENT_KEYS = {"to", "cc", "bcc", "para", "an", "à", "宛先"}
+_KEY = re.compile(r"^\s*>?\s*([^\W\d_][^\n:：]{0,24}?)\s*[:：]")
+
+# ---- currencies: names and symbols that mean money anywhere; short or ambiguous ones only next to a number;
+# a bare three-letter code only next to a number, minus time zones and units. "pound(s)" alone is a weight
+# ("3 pounds"), so only the reverse check (CURRENCY_ALIASES) accepts it.
+_NULL_CURRENCY_WORDS = (
+    ({a for names in CURRENCY_ALIASES.values() for a in names} - {"pound", "pounds"})
+    | set(_OTHER_CURRENCY_CODES)
+    | {
+        "franc",
+        "francs",
+        "franken",
+        "yuan",
+        "peso",
+        "pesos",
+        "reais",
+        "rublo",
+        "rublos",
+        "ruble",
+        "rubles",
+        "rouble",
+        "roubles",
+        "livre",
+        "livres",
+        "sterlina",
+        "sterline",
+        "krona",
+        "kronor",
+        "krone",
+        "kroner",
+        "złoty",
+        "zloty",
+        "₩",
+        "₽",
+        "₺",
+        "₪",
+        "฿",
+        "₱",
+        "₫",
+        "r$",
+    }
+)
+_NEAR_NUMBER_WORDS = {"kr", "rs", "rs.", "zł", "元", "원"}
+_ISO_CODES = set(  # ISO 4217, minus ALL / TOP / CUP (words) and KGS (kilograms)
+    "AED AFN AMD ANG AOA ARS AUD AWG AZN BAM BBD BDT BGN BHD BIF BMD BND BOB BRL BSD BTN BWP BYN BZD CAD CDF "
+    "CHF CLP CNY COP CRC CUC CVE CZK DJF DKK DOP DZD EGP ERN ETB EUR FJD FKP GBP GEL GHS GIP GMD GNF GTQ GYD "
+    "HKD HNL HTG HUF IDR ILS INR IQD IRR ISK JMD JOD JPY KES KHR KMF KPW KRW KWD KYD KZT LAK LBP LKR LRD LSL "
+    "LYD MAD MDL MGA MKD MMK MNT MOP MRU MUR MVR MWK MXN MYR MZN NAD NGN NIO NOK NPR NZD OMR PAB PEN PGK PHP "
+    "PKR PLN PYG QAR RON RSD RUB RWF SAR SBD SCR SDG SEK SGD SHP SLE SOS SRD SSP STN SYP SZL THB TJS TMT TND "
+    "TRY TTD TWD TZS UAH UGX USD UYU UZS VES VND VUV WST XAF XCD XOF XPF YER ZAR ZMW ZWL".split()
+)
+_NUM = r"\d[\d.,']*\d|\d"
+
+
+def _alias_pattern(alias: str) -> str:
+    """Words match whole ("eur" is not in "Europe"); symbols and CJK aliases match anywhere."""
+    if alias.isalpha() and not re.search(_CJK, alias):
+        return rf"(?<![^\W\d_]){re.escape(alias)}(?![^\W\d_])"
+    return re.escape(alias)
+
+
+def _alternation(words: set[str]) -> str:
+    return "|".join(_alias_pattern(a) for a in sorted(words, key=len, reverse=True))
+
+
+_CURRENCY_NAMES = re.compile(_alternation(_NULL_CURRENCY_WORDS), re.IGNORECASE)
+_NEAR = _alternation(_NEAR_NUMBER_WORDS)
+_CODE = rf"(?<![A-Za-z])(?:{'|'.join(sorted(_ISO_CODES))})(?![A-Za-z])"
+_NEAR_NUMBER = re.compile(rf"(?:{_NUM})\s?(?:(?i:{_NEAR})|{_CODE})|(?:(?i:{_NEAR})|{_CODE})\s?(?:{_NUM})")
+_CURRENCY_MARKER = rf"(?i:{_alternation(_NULL_CURRENCY_WORDS)}|{_NEAR})|{_CODE}"
+_AMOUNT = re.compile(rf"(?:{_CURRENCY_MARKER})\s?(?:{_NUM})|(?:{_NUM})\s?(?:{_CURRENCY_MARKER})")
+
+# ---- dates: written forms in en/de/es/fr/pt/it
+_MONTH_WORDS = "|".join(sorted({w for m in _MONTHS for w in m.split()}, key=len, reverse=True))
+_DATE_FORMS = [
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"(?<!\d)\d{4}-\d{1,2}-\d{1,2}(?!\d)",
+        r"(?<!\d)\d{4}/\d{1,2}/\d{1,2}(?!\d)",
+        r"(?<![\d.])\d{4}\.\d{1,2}\.\d{1,2}(?!\d|\.\d)",
+        r"(?<![\d.,])\d{1,2}[./]\d{1,2}[./]\d{2,4}(?!\d)",
+        r"\d{4}\s*年\s*\d{1,2}\s*月(?:\s*\d{1,2}\s*日)?",
+        r"\d{1,2}\s*月\s*\d{1,2}\s*日",
+        rf"(?<!\d)\d{{1,2}}(?:st|nd|rd|th)?\s+of\s+(?:{_MONTH_WORDS})(?![^\W\d_])(?:,?\s+\d{{4}})?",
+        rf"(?<!\d)\d{{1,2}}(?:st|nd|rd|th)?\.?\s+(?:de\s+)?(?:{_MONTH_WORDS})(?![^\W\d_])"
+        r"(?:,?\s+(?:de\s+)?\d{4})?",
+        rf"(?<![^\W\d_])(?:{_MONTH_WORDS})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?!\d)(?:,?\s+\d{{4}})?",
+    )
+]
+
+# ---- names: where a sender is named, and what is not a name
+_SIGNOFFS = [
+    "thanks",
+    "thank you",
+    "many thanks",
+    "thanks a lot",
+    "thank you very much",
+    "thanks and regards",
+    "thx",
+    "regards",
+    "best",
+    "best regards",
+    "best wishes",
+    "kind regards",
+    "warm regards",
+    "warmest regards",
+    "all the best",
+    "with thanks",
+    "cheers",
+    "sincerely",
+    "yours",
+    "yours sincerely",
+    "sincerely yours",
+    "yours faithfully",
+    "gracias",
+    "muchas gracias",
+    "saludos",
+    "saludos cordiales",
+    "un saludo",
+    "atentamente",
+    "danke",
+    "danke schön",
+    "vielen dank",
+    "grüße",
+    "gruß",
+    "viele grüße",
+    "liebe grüße",
+    "beste grüße",
+    "mit freundlichen grüßen",
+    "lg",
+    "merci",
+    "cordialement",
+    "bien cordialement",
+    "bien à vous",
+    "obrigado",
+    "obrigada",
+    "cumprimentos",
+    "grazie",
+    "grazie mille",
+    "cordiali saluti",
+    "saluti",
+]
+_SIGNOFF = re.compile(  # longest first: "Best regards" is one sign-off, not "Best" + a name "regards"
+    r"^(?:"
+    + "|".join(re.escape(x) for x in sorted(_SIGNOFFS, key=len, reverse=True))
+    + r"|よろしく[^\n]*|ありがとう[^\n]*|宜しく[^\n]*)(?![^\W\d_])[\s,.!。、]*(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_GREETING = re.compile(
+    r"^(?:hi|hello|hey|dear|hola|hallo|bonjour|bonsoir|salut|ciao|buongiorno|buonasera|olá|ola|oi|liebe|lieber|"
+    r"estimad[oa]|querid[oa]|caro|cara|sehr geehrte[rs]?|good (?:morning|afternoon|evening)|"
+    r"buen[oa]s (?:días|dias|tardes|noches)|guten (?:tag|morgen|abend))(?![^\W\d_])[\s,]*(?P<rest>.+)",
+    re.IGNORECASE,
+)
+_LABEL = re.compile(
+    r"^(?:name|customer|customer name|client|kunde|kundin|nombre|cliente|nom|nome|ship to|bill to|ordered by|"
+    r"recipient|contact|absender|remitente|destinatario|氏名|名前|お名前)"
+    r"\s*[:：]\s*(?P<rest>.+)$",
+    re.IGNORECASE,
+)
+_INTRODUCTION = re.compile(
+    r"(?:\bmy name is|\bi am|\bi'm|\bthis is|\bme llamo|\bmi nombre es|\bsoy|\bich bin|\bich heiße|"
+    r"\bmein name ist|\bje m'appelle|\bje suis)\s+([^\W\d_][\w'’-]*(?:\s+[^\W\d_][\w'’-]*)?)",
+    re.IGNORECASE,
+)
+_HERE = re.compile(r"(?:^|[.!?,]\s*)([A-Z][\w'’-]+(?:\s+[A-Z][\w'’-]+)?)\s+here\b")
+_HONORIFIC = re.compile(rf"({_CJK}{{1,4}})\s?(?:様|さん|殿|님)(?!{_CJK})")
+_DEVICE = re.compile(
+    r"^(?:sent from|enviado desde|enviado do|von meinem|envoyé de|inviato da|送信元|发自)", re.IGNORECASE
+)
+_NOT_NAMES = {
+    "team",
+    "support",
+    "customer",
+    "customers",
+    "service",
+    "services",
+    "care",
+    "desk",
+    "staff",
+    "admin",
+    "billing",
+    "sales",
+    "everyone",
+    "all",
+    "there",
+    "friend",
+    "friends",
+    "sir",
+    "madam",
+    "colleagues",
+    "equipo",
+    "soporte",
+    "atención",
+    "cliente",
+    "clientes",
+    "kundenservice",
+    "kundendienst",
+    "zusammen",
+    "alle",
+    "équipe",
+    "client",
+    "assistance",
+    "supporto",
+    "equipe",
+    "atendimento",
+    "the",
+    "urgent",
+    "important",
+    "regarding",
+    "about",
+    "order",
+    "ticket",
+    "request",
+    "help",
+    "hilfe",
+    "ayuda",
+    "aide",
+    "aiuto",
+    "ajuda",
+    "damen",
+    "herren",
+    "お客",
+    "nothing",
+    "nobody",
+    "everything",
+    "everybody",
+    "anyone",
+    "someone",
+    "something",
+    "click",
+    "delivered",
+    "terrible",
+    "please",
+    "refund",
+    "kunde",
+    "kundin",
+    "i",
+    "i'm",
+    "im",
+    "me",
+    "my",
+    "we",
+    "our",
+}
+_CLOSERS = {
+    "以上",
+    "谢谢",
+    "謝謝",
+    "감사합니다",
+    "お願いします",
+    "よろしくお願いします",
+    "よろしく",
+    "ありがとう",
+    "ありがとうございます",
+    "敬具",
+    "草々",
+    "再见",
+    "此致",
+    "敬礼",
+    "お客",
+    "以上です",
+    "多谢",
+    "感謝",
+    "감사해요",
+    "お願い",
+    "お願いいたします",
+    "宜しくお願いします",
+    "担当",
+    "皆様",
+    "各位",
+    "御中",
+}
+_TITLES = {
+    "mr",
+    "mrs",
+    "ms",
+    "miss",
+    "dr",
+    "prof",
+    "herr",
+    "frau",
+    "sr",
+    "sra",
+    "srta",
+    "m",
+    "mme",
+    "mlle",
+    "sig",
+    "dott",
+}
+
+
+def _header_key(line: str) -> str | None:
+    """A line's normalised header key ("Dat e:" -> "date"; a quoted "> From:" -> "from"), if it has one."""
+    if re.match(r"^\s*>?\s*from\s+\S+@\S+", line, re.IGNORECASE):  # "From chloe@example.com" (no colon)
+        return "from"
+    match = _KEY.match(line)
+    if not match:
+        return None
+    key = re.sub(r"\s+", "", match[1]).casefold()
+    return key if key in _HEADER_KEYS or key.startswith("x-") else None
+
+
+def _header_block(text: str) -> tuple[list[str], str]:
+    """(the leading email header lines, the rest). The leading run of header lines is a header block when it
+    has an address-type key (From, To, Subject, their translations) or ends at a blank line, as headers do;
+    a note such as "Date: ...\nOrder: ..." or "注文番号: ..." has none."""
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines) and lines[i].strip() and _header_key(lines[i]):
+        i += 1
+    blank_after = i < len(lines) and not lines[i].strip()
+    if not i or not ({_header_key(line) for line in lines[:i]} & _ADDRESS_KEYS or blank_after):
+        return [], text
+    return lines[:i], "\n".join(lines[i:])
+
+
+def _without_date_headers(text: str) -> str:
+    """The text minus the email's own Date header: when the message was sent, never a value of the record
+    (Task 14: seeds whose order date sat only in that header were rightly read as null). A "日付:" line in
+    a note's body stays: there it is a value."""
+    headers, rest = _header_block(text)
+    return "\n".join([h for h in headers if _header_key(h) not in _DATE_KEYS] + [rest])
+
+
+def _customer_emails(text: str) -> list[str]:
+    """Email addresses in `text` that are not the support desk's: not on a recipient line (To/Cc/Para/An,
+    quoted ones included), not at a recipient's domain, not a role address such as support@ or info@."""
+    recipients = {
+        a.casefold()
+        for line in text.splitlines()
+        if _header_key(line) in _RECIPIENT_KEYS
+        for a in _EMAIL.findall(line)
+    }
+    desk = {a.split("@")[-1] for a in recipients}
+    roles = {
+        "support",
+        "soporte",
+        "suporte",
+        "help",
+        "helpdesk",
+        "info",
+        "service",
+        "services",
+        "kundenservice",
+        "kundendienst",
+        "noreply",
+        "no-reply",
+        "contact",
+        "billing",
+        "sales",
+        "ops",
+        "admin",
+        "care",
+        "hilfe",
+        "atendimento",
+        "assistance",
+    }
+    found = []
+    for address in _EMAIL.findall(text):
+        local, _, domain = address.casefold().partition("@")
+        if address.casefold() not in recipients and domain not in desk and local not in roles:
+            found.append(address)
+    return found
+
+
+def _currency_named(code: str, text: str) -> bool:
+    aliases = CURRENCY_ALIASES.get(code.upper(), [code.casefold()])
+    return any(re.search(_alias_pattern(a), text, re.IGNORECASE) for a in aliases)
+
+
+def _currency_matches(text: str) -> list[str]:
+    """Currency mentions in text order: names, symbols and known codes anywhere; ambiguous short words and
+    other three-letter codes only next to a number."""
+    found = [(m.start(), m[0]) for m in _CURRENCY_NAMES.finditer(text)]
+    found += [(m.start(), m[0]) for m in _NEAR_NUMBER.finditer(text)]
+    return [m for _, m in sorted(found)]
+
+
+def _shape_pattern(example: str) -> str:
+    """A regex for ids shaped like the schema's example: "HH-48213" -> two letters, a hyphen, digits."""
+    parts = re.findall(r"[A-Za-z]+|\d+|[^A-Za-z\d]", example)
+    body = "".join(
+        f"[A-Za-z]{{{len(p)}}}" if p.isalpha() else r"\d+" if p.isdigit() else re.escape(p) for p in parts
+    )
+    return rf"(?<![\w-]){body}(?![\w-])"
+
+
+def _name_like(text: str, brands: set[str]) -> bool:
+    """Whether `text` is a person's name: 1-4 capitalised words (titles and initials allowed), none of them
+    boilerplate ("Team", "Support"), a brand from the call's own prompt ("HelpHub") or a lowercase word; or
+    a CJK/Hangul run of at most 4 characters that is not a closing phrase ("以上", "谢谢")."""
+    if re.search(_CJK, text):
+        core = "".join(re.findall(_CJK, text))
+        return bool(core) and not any(c in core for c in _CLOSERS) and len(core) <= 4
+    words = re.findall(r"[^\W\d_][\w'’.-]*", text)
+    names = [w for w in words if w.rstrip(".").casefold() not in _TITLES]
+    if not names or len(words) > 4:
+        return False
+    for word in names:
+        bare = word.rstrip(".'’")
+        parts = re.split(r"[-‐]", bare.casefold())  # "Support-Team", "HelpHub-Team"
+        if any(part in _NOT_NAMES or part in brands for part in parts):
+            return False
+        if not word[0].isupper() or (bare.isupper() and len(bare) > 1):
+            return False
+    return True
+
+
+def _person_names(text: str, brands: set[str], sources: frozenset[str] | None = None) -> list[str]:
+    """Where an input names a person: a From display name, a greeting ("Hi Priya,", "> Dear Mr. Tanaka"), a
+    label line ("Name: Priya Nair"), a signature (after a sign-off, or a short last line), "Priya here", a
+    self-introduction ("I'm Priya"), a CJK name with an honorific ("田中様"). `sources` limits the positions
+    (from, greeting, label, signoff, last, here, intro, honorific)."""
+    found: list[tuple[str, str]] = []
+    lines = [line.strip().lstrip(">").strip() for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    brands = brands | {
+        label
+        for line in lines
+        if _header_key(line) in _RECIPIENT_KEYS
+        for address in _EMAIL.findall(line)
+        for label in address.split("@")[-1].casefold().split(".")
+    }
+    for line in lines:
+        key = _header_key(line)
+        if key in ("from", "de", "von", "da", "van", "差出人", "送信者"):
+            value = line.split(":", 1)[-1].split("：", 1)[-1].strip()
+            display = value.split("<")[0] if "<" in value else ("" if "@" in value else value)
+            if display and _name_like(display, brands):
+                found.append(("from", display.strip()))
+            continue
+        for source, pattern in (("greeting", _GREETING), ("label", _LABEL)):
+            match = pattern.match(line)
+            name = _leading_name(match["rest"]) if match else ""
+            if name and _name_like(name, brands):
+                found.append((source, name))
+    for i, line in enumerate(lines):
+        signoff = _SIGNOFF.match(line)
+        if not signoff:
+            continue
+        rest = signoff["rest"].strip()
+        if rest and _name_like(rest, brands):
+            found.append(("signoff", rest))
+        elif _continues(rest) and i + 1 < len(lines) and not _DEVICE.match(lines[i + 1]):
+            nxt = lines[i + 1]  # "Thanks so much,\nPriya"; never a sign-off line itself ("...\nSincerely,")
+            if len(nxt) <= 40 and not _SIGNOFF.match(nxt) and _name_like(nxt, brands):
+                found.append(("signoff", nxt))
+    last = lines[-1] if lines else ""
+    if (
+        len(last) <= 30
+        and not re.search(r"[.!?。:：\d]", last)
+        and not _SIGNOFF.match(last)
+        and not _DEVICE.match(last)
+        and not _header_key(last)
+        and _name_like(last, brands)
+    ):
+        found.append(("last", last))
+    found += [("here", m[1]) for m in _HERE.finditer(text) if _name_like(m[1], brands)]
+    found += [
+        ("intro", m[1])
+        for m in _INTRODUCTION.finditer(text)
+        if m[1][0].isupper() and _name_like(m[1], brands)
+    ]
+    found += [("honorific", m[1]) for m in _HONORIFIC.finditer(text) if not any(c in m[1] for c in _CLOSERS)]
+    return [name for source, name in found if sources is None or source in sources]
+
+
+def _continues(rest: str) -> bool:
+    """Whether what follows a sign-off word still belongs to the sign-off ("", "so much,", "a lot!"), rather
+    than being a sentence ("for your prompt attention to this matter.")."""
+    rest = rest.strip()
+    return not rest or (len(rest.split()) <= 3 and not re.search(rf"[A-Z]|{_CJK}|\.$", rest))
+
+
+_SENDER_SOURCES = frozenset(
+    {"from", "signoff", "label", "here", "intro"}
+)  # not greetings: they address others
+_REPLY_MARKER = re.compile(
+    r"^\s*(?:-{2,}\s*(?:original message|ursprüngliche nachricht|mensaje original|message d'origine|"
+    r"messaggio originale|forwarded message|weitergeleitete nachricht)\s*-{2,}|on .+ wrote:|am .+ schrieb.*:|"
+    r"el .+ escribió:|le .+ a écrit\s*:|il .+ ha scritto:)\s*$",
+    re.IGNORECASE | re.M,
+)
+
+
+def _own_text(text: str) -> str:
+    """What the person wrote: without quoted lines ("> ...") and without a quoted or forwarded thread below a
+    reply marker ("-----Original Message-----", "On ... wrote:") or below a second From header."""
+    lines = [line for line in text.splitlines() if not line.lstrip().startswith(">")]
+    headers, _ = _header_block("\n".join(lines))
+    for i, line in enumerate(lines):
+        if _REPLY_MARKER.match(line) or (i >= len(headers) and _header_key(line) in ("from", "de", "von")):
+            return "\n".join(lines[:i])
+    return "\n".join(lines)
+
+
+def _name_words(name: str) -> set[str]:
+    """A name's words without titles and initials: "Dr. Priya R. Nair" -> {"priya", "nair"}."""
+    words = {w.casefold().strip(".'’") for w in re.findall(r"[^\W\d_][\w'’.-]*", name)}
+    return {w for w in words if len(w) > 1 and w not in _TITLES} or {"".join(re.findall(_CJK, name))} - {""}
+
+
+def _leading_name(rest: str) -> str:
+    """The capitalised words opening `rest` ("Priya - my order broke" -> "Priya", "Mr. Tanaka," kept)."""
+    taken: list[str] = []
+    for token in rest.split():
+        word = token.strip("\"'“”‘’()[]")
+        bare = word.rstrip(",.!?;:")
+        is_title = bare.casefold().rstrip(".") in _TITLES
+        if not bare or not (bare[0].isupper() or re.search(_CJK, bare) or is_title):
+            break
+        taken.append(word if is_title else bare)
+        if (word != bare and not is_title) or len(taken) == 4:
+            break
+    return " ".join(taken)
+
+
+def _date_matches(text: str) -> list[str]:
+    """Dates in common written forms (ISO, numeric, 年月日, en/de/es/fr/pt/it month names), in text order."""
+    found = sorted((m.start(), m[0]) for pattern in _DATE_FORMS for m in pattern.finditer(text))
+    return [m for _, m in found]
+
+
+def _same_value(kind: str, found: str, value: Any) -> bool:
+    """Whether a detected mention is just a seeded (non-null) value of the record, e.g. the order date when
+    the delivery date is null, or the customer's own address when a cc address is null."""
+    if value is None or isinstance(value, bool | dict | list):
+        return False
+    if kind == "date":  # a mention without a year ("12 March") compares on day and month
+        if not (isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)):
+            return False
+        cjk = re.fullmatch(
+            r"\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*", found
+        )  # "3月12日", inside "2025年3月12日"
+        if cjk:
+            return (int(cjk[1]), int(cjk[2])) == (int(value[5:7]), int(value[8:10]))
+        return _date_stated(value, found if re.search(r"\d{4}", found) else f"{found} {value[:4]}")
+    if kind == "amount":
+        return isinstance(value, int | float) and Decimal(str(value)) in _numbers(found)
+    if kind == "currency":
+        return isinstance(value, str) and len(value) == 3 and _currency_named(value, found)
+    seeded = _squash(str(value))
+    return bool(seeded) and (_squash(found) == seeded or (kind == "name" and _squash(found) in seeded))
+
+
+def _null_found(
+    kind: str,
+    pattern: str | None,
+    text: str,
+    present: list[tuple[str, Any]] = (),
+    brands: set[str] = frozenset(),
+) -> str | None:
+    """The first mention in `text` of a field of this kind that is not one of the record's seeded values, or
+    None. Dates ignore the message's own Date header."""
+    if kind == "email":
+        matches = _customer_emails(text)
+    elif kind == "name":
+        matches = _person_names(text, brands)
+    elif kind == "date":
+        matches = _date_matches(_without_date_headers(text))
+    elif kind == "currency":
+        matches = _currency_matches(text)
+    elif kind == "amount":
+        matches = [m[0] for m in _AMOUNT.finditer(text)]
+    elif kind == "id" and pattern:
+        matches = [m[0] for m in re.finditer(pattern, text, re.IGNORECASE)]
+    else:
+        matches = []
+    same_kind = [v for k, v, _ in present if k == kind]  # an email handle never excuses a signed first name
+    if kind == "name":  # "Dr. Priya R. Nair" and "Nair, Priya" are the seeded "Priya Nair" ...
+        return next(  # ... but seeded first + last names never excuse a null full name: one value at a time
+            (
+                m
+                for m in matches
+                if not any(_name_words(m) and _name_words(m) <= _name_words(str(v)) for v in same_kind)
+            ),
+            None,
+        )
+    return next((m for m in matches if not any(_same_value(kind, m, v) for v in same_kind)), None)
+
+
+def _brands(site: CallSite) -> set[str]:
+    """Words the call's own prompt capitalises (the product, the desk): not a customer's name."""
+    texts = [site.template.system or "", site.template.user] if site.template else []
+    words = {w.casefold() for t in texts for w in re.findall(r"[^\W\d_]+", t) if any(c.isupper() for c in w)}
+    return words | {
+        p for p in re.findall(r"[a-z]+", site.file.lower()) if p not in ("py", "src", "app", "lib")
+    }
+
+
 def record_problem(
     site: CallSite, recipes: list[Recipe], seed: Seed | None, record: dict[str, Any]
 ) -> str | None:
@@ -1159,7 +1901,9 @@ def record_problem(
     every input-determined value of the seed (anywhere, earlier tool results included) and show the earlier
     tool results the policy requires; and what the person writes (the record's plain-value fields) must not
     give the answer away: no expected label/enum value as "Label: value" or in quotes, no tool or label
-    identifier verbatim, no value of an argument the input should not decide."""
+    identifier verbatim, no value of an argument the input should not decide. A field the seed sets to
+    null must not be detectable anywhere (see _null_found): an email address, a sender's name, a date
+    outside the Date header, a currency, an amount with a currency, an id shaped like the schema's example."""
     try:
         variables, _ = render(site, recipes, record)
     except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
@@ -1187,6 +1931,22 @@ def record_problem(
     problems += [
         f"states a value no input should decide ({v!r})" for v in seed.undetermined if _given_away(written, v)
     ]
+    seeded_names = [(v, key) for k, v, key in seed.present if k == "name"]
+    brands = _brands(site) if seed.absent or seeded_names else set()
+    for name, kind, pattern in seed.absent:
+        found = _null_found(kind, pattern, everything, seed.present, brands)
+        if found:
+            problems.append(f"states {name} although it is null ({found!r})")
+    if seeded_names:  # cs_03:015: "my name is Chloé Dubois" ... signed "Miguel Garcia"
+        seeded_words = set().union(*(_name_words(str(v)) for v, _ in seeded_names))
+        others = [
+            n
+            for n in _person_names(_own_text(everything), brands, _SENDER_SOURCES)
+            if _name_words(n) and not _name_words(n) <= seeded_words  # every word from the seeded names
+        ]
+        if others:
+            fields = ", ".join(key for _, key in seeded_names)
+            problems.append(f"names another person ({others[0]!r}) besides the seeded {fields}")
     return "; ".join(problems) or None
 
 
@@ -1268,8 +2028,13 @@ class _Writer:
         if kind == "json_extraction":
             rules.append(
                 "Every non-null value of the expected JSON must be stated in the record (it may be "
-                "phrased or formatted differently, e.g. a local date format); a null field must not be "
-                "stated or inferable."
+                "phrased or formatted differently, e.g. a local date format). A field that is null must "
+                "not appear ANYWHERE in the record: not in headers (From, To, Subject), signatures, "
+                "greetings, sign-offs or quoted text. For example: no email address when the email is "
+                "null, not even a first name when the name is null, no currency code, symbol or name when "
+                "the currency is null, no order number when the order id is null. A Date: header is when "
+                "the message was sent, never a value of the record: write a non-null date in the body, and "
+                "write no date in the body when the date is null."
             )
         if kind == "tool_call":
             rules.append(
