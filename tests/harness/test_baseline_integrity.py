@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from offramp import sandbox
 from offramp.agents import case_gen as cg
 from offramp.evals import baselines as b
 from offramp.schemas import ScanResult
@@ -25,7 +26,11 @@ def prepared(tmp_path_factory) -> Path:
     repo = tmp_path_factory.mktemp("integrity") / "repo"
     shutil.copytree(CASSETTES / "minirepo", repo)
     scan = ScanResult.model_validate_json((CASSETTES / "minirepo.scan.json").read_text())
-    cg.prepare_repo(repo, scan, TFClient(cache_dir=CASSETTES, live=False), target=8, adversarial=2, seed=0)
+    with pytest.MonkeyPatch.context() as mp:  # the oracle runs on this machine, as conftest.target_code_here
+        mp.setattr(sandbox, "docker_available", lambda: False)
+        mp.setenv(sandbox.LOCAL_OPT_IN, "1")
+        client = TFClient(cache_dir=CASSETTES, live=False)
+        cg.prepare_repo(repo, scan, client, target=8, adversarial=2, seed=0)
     return repo / "evals"
 
 

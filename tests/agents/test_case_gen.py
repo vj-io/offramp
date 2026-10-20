@@ -18,6 +18,7 @@ from offramp.tf import FakeLLM, TFClient
 HERE = Path(__file__).resolve().parents[1] / "fixtures" / "cassettes" / "case_gen"
 MINIREPO = HERE / "minirepo"
 SUPER_MODEL, ULTRA_MODEL = "nvidia/nemotron-3-super-120b-a12b", "nvidia/Nemotron-3-Ultra-550b-a55b"
+pytestmark = pytest.mark.usefixtures("target_code_here")  # schemas and oracles run on this machine
 
 
 def minirepo(tmp_path) -> tuple[Path, ScanResult]:

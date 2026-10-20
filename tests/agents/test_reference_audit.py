@@ -30,6 +30,7 @@ CASSETTES = ROOT / "tests" / "fixtures" / "cassettes"
 NOW = datetime(2026, 10, 19, tzinfo=UTC)
 SONNET = b.CLAUDE_CODE_REFERENCE
 LABELS = ["billing", "shipping", "other"]
+pytestmark = pytest.mark.usefixtures("target_code_here")  # prepare_repo runs the oracle on this machine
 
 
 def triage_site(sid="cs_01") -> CallSite:

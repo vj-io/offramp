@@ -24,7 +24,10 @@ site's own code does (placeholder names come from expressions, e.g. `request_pla
 so they are mapped explicitly: by exact/suffix/len_ names when unambiguous, else by one Super call that is
 checked by rendering every fixture). Synthetic records render through the same recipes as real fixtures.
 
-Target-repo code (Pydantic schemas, oracles) runs in the target's own environment, in a subprocess.
+Target-repo code (Pydantic schemas, oracles) runs in the Docker sandbox (offramp.sandbox: the target's
+dependencies installed at image build time, then network off, no host environment, the repo mounted
+read-only). Without Docker it runs on this machine only under OFFRAMP_ALLOW_LOCAL_SANDBOX=1, in the target's
+own environment with no Offramp secret in it; without either it does not run (_run_in_repo).
 """
 
 from __future__ import annotations
@@ -52,6 +55,7 @@ from pydantic import BaseModel
 from offramp.evals import baselines
 from offramp.evals.scorers import score_case
 from offramp.evals.scorers.json_schema import _infer_schema
+from offramp.sandbox import LOCAL_OPT_IN, Sandbox
 from offramp.schemas import (
     BaselineResult,
     CallSite,
@@ -71,6 +75,11 @@ BATCH = 8  # records written per LLM call
 RUN_TIMEOUT_S = 60  # one run of target code (schema import, oracle)
 SETUP_TIMEOUT_S = 600  # building the target's environment the first time
 NEEDS_RUNTIME_CAPTURE = "NEEDS_RUNTIME_CAPTURE"
+NO_TARGET_SANDBOX = (
+    "target code not run: Offramp imports the target repo's Pydantic schemas and runs its oracles only in "
+    f"the network-off Docker sandbox, and Docker is unavailable. Start Docker, or set {LOCAL_OPT_IN}=1 to "
+    "run them on this machine (not isolated: only for repos you trust)"
+)
 
 EXPECTED_KIND = {
     "classification": "label",
@@ -216,10 +225,29 @@ def _target_python(repo: Path) -> tuple[list[str], dict[str, str]]:
 
 
 def _run_in_repo(repo: Path, code: str, *args: str, stdin: str | None = None) -> str:
-    """Run `python -B -c code` in the target repo's own environment (see _target_python); cwd is the repo, so
-    its packages import. Raises on failure or timeout (RUN_TIMEOUT_S; the env setup gets SETUP_TIMEOUT_S)."""
-    command, env = _target_python(repo)
-    return _run([*command, "-B", "-c", code, *args], repo, stdin=stdin, env=env)
+    """Stdout of `python -B -c code *args` run against the target repo, with cwd at its root (so relative
+    paths in `args` work in both places below):
+
+    - Docker: in the sandbox, its import roots inside the repo on sys.path (a local path source outside the
+      repo is not mounted, so it does not import);
+    - else, only under OFFRAMP_ALLOW_LOCAL_SANDBOX=1: on this machine, in the target's own environment (see
+      _target_python; the env setup gets SETUP_TIMEOUT_S);
+    - else nothing runs: RuntimeError(NO_TARGET_SANDBOX).
+
+    Raises CalledProcessError on failure, TimeoutExpired after RUN_TIMEOUT_S on this machine."""
+    repo = repo.resolve()
+    box = Sandbox(repo, timeout_s=RUN_TIMEOUT_S)
+    if box.mode == "none":
+        raise RuntimeError(NO_TARGET_SANDBOX)
+    if box.mode == "local":
+        command, env = _target_python(repo)
+        return _run([*command, "-B", "-c", code, *args], repo, stdin=stdin, env=env)
+    roots = [str(PurePosixPath("/repo", r.relative_to(repo).as_posix())) for r in _import_roots(repo)
+             if r.is_relative_to(repo)]  # fmt: skip
+    status, out, err = box.python(f"import sys\nsys.path[:0] = {roots!r}\n{code}", *args, stdin=stdin)
+    if status:
+        raise subprocess.CalledProcessError(status, ["python", "-c", "<code>", *args], out, err)
+    return out
 
 
 _SCHEMA_CODE = """
@@ -278,8 +306,9 @@ def _marker_names(site: CallSite) -> list[str]:
 def resolved_schemas(site: CallSite, repo_path: str | Path) -> dict[str, dict[str, Any]]:
     """{ClassName: model_json_schema()} for every `<pydantic:ClassName>` marker in the site's template.
 
-    Imports the site's module in the target repo's environment (subprocess, 60 s timeout). Names that cannot
-    be resolved are absent from the result; it never raises. Also the input the Adapter Agent takes (Task 6).
+    Imports the site's module where _run_in_repo runs target code (60 s timeout). Names that cannot be
+    resolved are absent from the result; it raises only when target code may not run at all
+    (RuntimeError(NO_TARGET_SANDBOX)). Also the input the Adapter Agent takes (Task 6).
     """
     names = _marker_names(site)
     if not names:
@@ -2153,7 +2182,8 @@ class OracleError(RuntimeError):
 
 def _oracle(repo: Path, path: Path, request: dict[str, Any]) -> Any:
     try:
-        return json.loads(_run_in_repo(repo, _ORACLE_CODE, str(path.resolve()), stdin=json.dumps(request)))
+        where = path.resolve().relative_to(repo.resolve()).as_posix()  # cwd is the repo, here or in Docker
+        return json.loads(_run_in_repo(repo, _ORACLE_CODE, where, stdin=json.dumps(request)))
     except subprocess.CalledProcessError as e:
         raise OracleError(f"oracle {path.name} failed: {(e.stderr or '').strip()[-500:]}") from e
     except (OSError, subprocess.SubprocessError, ValueError) as e:

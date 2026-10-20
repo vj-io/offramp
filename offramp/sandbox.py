@@ -7,12 +7,15 @@ privilege escalation, the copy mounted read-only, under a 10-minute cap. It gets
 Without Docker, mode "local" runs the checks as a `uv run` subprocess, only on machines that opt in with
 OFFRAMP_ALLOW_LOCAL_SANDBOX=1 (developer laptops). It is not isolated, but its environment is minimal: no
 provider keys or tokens. Otherwise mode is "none" and nothing runs: the caller reports "no sandbox".
+
+The same sandbox runs the target code the case generator needs (`python`: Pydantic schema imports, oracles).
 """
 
 import hashlib
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -100,6 +103,12 @@ class Sandbox:
             return 1, NO_SANDBOX
         return self._run(["python", "-"], self._deadline(), stdin=script)
 
+    def python(self, code: str, *args: str, stdin: str | None = None) -> tuple[int, str, str]:
+        """`python -B -c code *args` in the repo, isolated as the checks are: (exit code, stdout, stderr)."""
+        if self.mode == "none":
+            return 1, "", NO_SANDBOX
+        return self._exec(["python", "-B", "-c", code, *args], self._deadline(), stdin)
+
     def formatted(self) -> bool:
         """Whether the repo already keeps `ruff format` clean (then patched files are formatted too)."""
         return self._run(["ruff", "format", "--no-cache", "--check", "."], self._deadline())[0] == 0
@@ -145,15 +154,19 @@ class Sandbox:
     def _run(
         self, cmd: list[str], deadline: float, stdin: str | None = None, stderr: bool = True
     ) -> tuple[int, str]:
+        code, out, err = self._exec(cmd, deadline, stdin)
+        return code, out + (err if stderr else "")
+
+    def _exec(self, cmd: list[str], deadline: float, stdin: str | None = None) -> tuple[int, str, str]:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return 124, f"sandbox time cap of {self.timeout_s}s reached"
+            return 124, "", f"sandbox time cap of {self.timeout_s}s reached"
         name = f"offramp-sbx-{uuid.uuid4().hex[:12]}"
         if self.mode == "docker":
             try:
                 image = self._ensure_image()
             except (RuntimeError, subprocess.TimeoutExpired) as e:  # no image, no check: report, never crash
-                return 1, str(e)
+                return 1, "", str(e)
             user = ["--user", f"{os.getuid()}:{os.getgid()}"] if hasattr(os, "getuid") else []
             full = ["docker", "run", "--rm", "-i", "--name", name, *DOCKER_LIMITS, *user,
                     "-v", f"{self.repo}:/repo:ro", "-w", "/repo", image, *cmd]  # fmt: skip
@@ -163,7 +176,7 @@ class Sandbox:
             full = ["uv", "run", "--directory", str(self.repo), *frozen, *cmd]
             env = self._local_env()
         else:
-            return 1, NO_SANDBOX
+            return 1, "", NO_SANDBOX
         try:
             p = subprocess.run(
                 full, input=stdin or "", capture_output=True, text=True, timeout=remaining, env=env
@@ -171,8 +184,8 @@ class Sandbox:
         except subprocess.TimeoutExpired:
             if self.mode == "docker":
                 subprocess.run(["docker", "rm", "-f", name], capture_output=True)
-            return 124, f"sandbox time cap of {self.timeout_s}s reached running {' '.join(cmd)}"
-        return p.returncode, p.stdout + (p.stderr if stderr else "")
+            return 124, "", f"sandbox time cap of {self.timeout_s}s reached running {' '.join(cmd)[:200]}"
+        return p.returncode, p.stdout, p.stderr
 
     def _ensure_image(self) -> str:
         """Image with the repo's dependencies (network on at build time only), cached by dependency hash."""
@@ -188,18 +201,16 @@ class Sandbox:
             digest.update(f.encode() + b"\0" + (self.repo / f).read_bytes())
         tag = f"offramp-sandbox:{digest.hexdigest()[:16]}"
         if subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode != 0:
-            ctx = self.repo.parent / f"{self.repo.name}-image"
-            shutil.rmtree(ctx, ignore_errors=True)
-            ctx.mkdir(parents=True)
-            for f in present:
-                shutil.copy2(self.repo / f, ctx / f)
-            (ctx / "Dockerfile").write_text(dockerfile)
-            p = subprocess.run(
-                ["docker", "build", "-q", "-t", tag, str(ctx)],
-                capture_output=True,
-                text=True,
-                timeout=BUILD_TIMEOUT_S,
-            )
+            with tempfile.TemporaryDirectory(prefix="offramp-image-") as ctx:  # never beside a local checkout
+                for f in present:
+                    shutil.copy2(self.repo / f, Path(ctx) / f)
+                (Path(ctx) / "Dockerfile").write_text(dockerfile)
+                p = subprocess.run(
+                    ["docker", "build", "-q", "-t", tag, ctx],
+                    capture_output=True,
+                    text=True,
+                    timeout=BUILD_TIMEOUT_S,
+                )
             if p.returncode != 0:
                 raise RuntimeError(f"sandbox image build failed:\n{(p.stdout + p.stderr)[-OUTPUT_TAIL:]}")
         self._image = tag

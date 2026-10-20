@@ -96,7 +96,7 @@ What did not work smoothly is written up, with evidence, in [docs/FEEDBACK.md](d
 - **LangSmith** (when `LANGSMITH_API_KEY` is set) traces every Token Factory call under `offramp-<run_id>` and keeps each site's cases and references as a dataset, with experiments per tier and split. The recorded run's six public LangSmith links are in the evidence section of its pull request.
 - **Tendem** (by Toloka): `scripts/audit_references.py` builds human-audit tasks for flagged references and ingests the verdicts; each paid task needs explicit approval of its quoted price.
 - **Toloka** has no API on its current platform, so it is not integrated.
-- **Docker** runs the target repo's own `ruff check` and `pytest` on every patch, with the network off and 2 CPUs.
+- **Docker** runs the target repo's own `ruff check` and `pytest` on every patch, and the Pydantic models and oracles Offramp reads from it, with the network off and 2 CPUs (see [Security model](#security-model)).
 - **Hosting.** The dashboard is on Vercel's free tier and plays the replay in the browser. The API is not hosted: `make demo` runs it locally, and live runs need your own keys.
 
 ## How parity is measured
@@ -168,6 +168,12 @@ make install
 | `*_FALLBACK` (Nebius, Tavily, LangSmith, Tendem) | Second key, used for the rest of the process when the primary is rejected or out of credit; the switch is logged without the key |
 
 `.env` is gitignored, keys are read server-side only, and CI scans the full history with gitleaks.
+
+### Security model
+
+- **What runs where.** Offramp runs code from the repo it is given in three places: the repo's own `ruff` and `pytest` on each patch, the Pydantic models it imports to read their JSON schemas, and the oracles in `evals/reference/`. All three run in the Docker sandbox (`offramp/sandbox.py`). The repo's dependencies are installed when the sandbox image is built, inside Docker; the code then runs with the network off, the repo mounted read-only, no capabilities, and none of this machine's environment variables. Everything else (scanning, Token Factory calls, scoring, the PR) runs in the Offramp process and only reads the repo.
+- **What never sees keys.** Target code never gets a Token Factory, Tavily, LangSmith or GitHub key: the container receives no host environment. Run events are scrubbed of the value of every variable whose name holds KEY, TOKEN, SECRET or PASSWORD before they are stored.
+- **Opt-ins.** Without Docker, target code runs only when `OFFRAMP_ALLOW_LOCAL_SANDBOX=1`, as a subprocess on this machine whose environment holds no key or token. That is not isolation: the code runs as you, with your files and your network, so use it only on repos you trust. Without Docker and without the opt-in nothing from the target repo runs: `offramp run` and `offramp prepare` stop with a message saying so when a site needs a schema or an oracle, and the patch stage sends its sites to manual review ("no sandbox").
 
 ```bash
 uv run offramp scan <path>                     # list closed-LLM call sites (no model calls)
