@@ -83,6 +83,7 @@ Python, FastAPI, Pydantic, SQLModel, OpenAI Python SDK, Nebius Token Factory, NV
 
 - **Hosted demo, no login and no keys:** open <https://offramp-seven.vercel.app> and click "Watch demo run (replay)", or go straight to <https://offramp-seven.vercel.app/runs/demo?replay=demo>. The replay of the recorded run plays in about 15 seconds; then click "Open the report", or open <https://offramp-seven.vercel.app/runs/demo/report?replay=demo>.
 - **The pull request the run opened:** <https://github.com/vj-io/offramp-demo-app/pull/1>.
+- **Your own repo, no key:** paste a public GitHub URL at <https://offramp-seven.vercel.app/scan>, or run `uvx --from git+https://github.com/vj-io/offramp offramp scan .` in a checkout (needs uv). Both list the call sites, their call shapes and the list-price ratio to Nemotron Lightning, without importing or running the code. Measuring parity takes a full run with your own Token Factory key.
 - **Locally,** with Python 3.12+ and uv, Node 20.9+ and pnpm, make and curl:
 
   ```bash

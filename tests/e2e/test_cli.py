@@ -22,7 +22,7 @@ def triage(ticket):
 
 def test_scan_prints_the_call_sites_without_model_calls(tmp_path, capsys):
     (tmp_path / "app.py").write_text(APP)
-    assert cli.main(["scan", str(tmp_path)]) == 0
+    assert cli.main(["scan", str(tmp_path), "--json"]) == 0
     scan = json.loads(capsys.readouterr().out)
     assert [(s["id"], s["file"], s["source_model"]) for s in scan["sites"]] == [
         ("cs_01", "app.py", "gpt-4o-mini")

@@ -2,11 +2,14 @@ import type { CSSProperties } from "react";
 import Link from "next/link";
 import { Note, Swipe, TIER_HL } from "@/components/doodle";
 import { TIER_NAME } from "@/lib/format";
+import { isLocalApi, SCAN_CLI } from "@/lib/scan";
 import { TIER_ORDER } from "@/lib/types";
 import { NewRunForm } from "./new-run-form";
 
 const demoRepo = process.env.OFFRAMP_DEMO_REPO ?? "vj-io/offramp-demo-app";
 const demoRepoUrl = demoRepo.startsWith("http") ? demoRepo : `https://github.com/${demoRepo}`;
+// The run form posts to the API, which only a local build has; the hosted build offers the keyless scan instead.
+const localApi = isLocalApi(process.env.NEXT_PUBLIC_API_URL);
 
 export default function NewRunPage() {
   return (
@@ -46,10 +49,29 @@ export default function NewRunPage() {
         </div>
       </section>
 
-      <Note note="var(--note-plain)" tilt={0.6} as="section" className="p-6 pt-7 sm:p-8">
-        <h2 className="mb-5 text-3xl font-extrabold tracking-tight">Start a run</h2>
-        <NewRunForm demoRepoUrl={demoRepoUrl} />
-      </Note>
+      {localApi ? (
+        <Note note="var(--note-plain)" tilt={0.6} as="section" className="p-6 pt-7 sm:p-8">
+          <h2 className="mb-5 text-3xl font-extrabold tracking-tight">Start a run</h2>
+          <NewRunForm demoRepoUrl={demoRepoUrl} />
+        </Note>
+      ) : (
+        <Note note="var(--note-plain)" tilt={0.6} as="section" className="flex min-w-0 flex-col gap-4 p-6 pt-7 sm:p-8">
+          <h2 className="text-3xl font-extrabold tracking-tight">Try it on your repo</h2>
+          <p className="text-lg leading-relaxed">
+            Paste a public GitHub repo and see every OpenAI and Anthropic call Offramp would test, with its list-price
+            gap to Nemotron. No key, no sign-in.
+          </p>
+          <Link href="/scan" className="sketch self-start bg-ink px-5 py-2.5 font-hand text-2xl text-paper hover:opacity-90">
+            Scan a repo
+          </Link>
+          <p className="font-hand text-lg text-muted">Or on your machine, same scan:</p>
+          <code className="block overflow-x-auto bg-paper px-3 py-2 font-mono text-xs whitespace-nowrap">{SCAN_CLI}</code>
+          <p className="font-hand text-lg leading-snug text-muted">
+            A full run measures parity with your own Token Factory key:{" "}
+            <code className="font-mono text-xs text-ink">uv run offramp run &lt;repo&gt;</code>
+          </p>
+        </Note>
+      )}
     </div>
   );
 }

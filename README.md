@@ -6,6 +6,14 @@ Built for the Nebius x NVIDIA Global AI Hackathon, track *Coding and Agentic Eng
 
 **Live demo, no login and no keys:** <https://offramp-seven.vercel.app>. The replay of the recorded run is at [/runs/demo?replay=demo](https://offramp-seven.vercel.app/runs/demo?replay=demo) and its report at [/runs/demo/report?replay=demo](https://offramp-seven.vercel.app/runs/demo/report?replay=demo). The pull request that run opened: [vj-io/offramp-demo-app#1](https://github.com/vj-io/offramp-demo-app/pull/1). Measured outcome: [Results](#results).
 
+**Try it on your own repo, no key:** paste a public GitHub URL at [/scan](https://offramp-seven.vercel.app/scan), or run this in a checkout (needs [uv](https://docs.astral.sh/uv/)):
+
+```bash
+uvx --from git+https://github.com/vj-io/offramp offramp scan .
+```
+
+Both list every OpenAI, Anthropic, LiteLLM and LangChain call site with its call shape and the list-price ratio of its model to Nemotron 3.5 Lightning. They read the code and never import or run it, and make no model call. Only a full run, with your own Token Factory key, measures parity.
+
 ## Judges' path: no keys needed
 
 Prerequisites: Python 3.12+ with [uv](https://docs.astral.sh/uv/), Node 20.9+ with [pnpm](https://pnpm.io/), `make`, `curl`.
@@ -97,7 +105,7 @@ What did not work smoothly is written up, with evidence, in [docs/FEEDBACK.md](d
 - **Tendem** (by Toloka): `scripts/audit_references.py` builds human-audit tasks for flagged references and ingests the verdicts; each paid task needs explicit approval of its quoted price.
 - **Toloka** has no API on its current platform, so it is not integrated.
 - **Docker** runs the target repo's own `ruff check` and `pytest` on every patch, and the Pydantic models and oracles Offramp reads from it, with the network off and 2 CPUs (see [Security model](#security-model)).
-- **Hosting.** The dashboard is on Vercel's free tier and plays the replay in the browser. The API is not hosted: `make demo` runs it locally, and live runs need your own keys.
+- **Hosting.** The dashboard is on Vercel's free tier and plays the replay in the browser. The same project serves `POST /api/scan`, a Python function that downloads a public repo's tarball and runs the static scanner on it (`web/api/scan.py`; it imports a copy of the scanner modules that `make vendor-scan` writes to `web/pyvendor`, and a test fails if the copy drifts from `offramp/`). The API is not hosted: `make demo` runs it locally, and live runs need your own keys.
 
 ## How parity is measured
 
@@ -181,7 +189,7 @@ make install
 - **Opt-ins.** Without Docker, target code runs only when `OFFRAMP_ALLOW_LOCAL_SANDBOX=1`, as a subprocess on this machine whose environment holds no key or token. That is not isolation: the code runs as you, with your files and your network, so use it only on repos you trust. Without Docker and without the opt-in nothing from the target repo runs: `offramp run` and `offramp prepare` stop with a message saying so when a site needs a schema or an oracle, and the patch stage sends its sites to manual review ("no sandbox"). The API starts runs only with `OFFRAMP_ALLOW_LIVE_RUNS=1` and has no authentication, so bind it to localhost.
 
 ```bash
-uv run offramp scan <path>                     # list closed-LLM call sites (no model calls)
+uv run offramp scan <path> [--json]            # call-site table, no key and no model calls; --json for the full scan
 uv run offramp prepare <path>                  # generate cases and references into the target repo's evals/
 uv run offramp run <repo> [--no-pr] [--cache-only]
 uv run offramp serve                           # the API

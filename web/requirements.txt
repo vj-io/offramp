@@ -1,0 +1,3 @@
+# /api/scan (web/api/scan.py): what the vendored scanner in web/pyvendor imports
+pydantic>=2.7
+pyyaml>=6

@@ -13,15 +13,18 @@ import operator
 import os
 import re
 import string
+import time
 from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from pydantic import BaseModel, Field
 
 from offramp.schemas import CallSite, Contract, PromptTemplate, ScanResult, Tier
-from offramp.tf.client import LLM
+
+if TYPE_CHECKING:  # the static scan imports only pydantic and the schemas, so /api/scan can vendor it
+    from offramp.tf.client import LLM
 
 EXPR = "<expr>"  # a value the scanner could not resolve statically
 PARAM_KEYS = (
@@ -68,12 +71,15 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------- scan
 
 
-def scan_repo(path: str | Path) -> ScanResult:
-    """Every closed-LLM call site under `path`. Deterministic, no LLM."""
+def scan_repo(path: str | Path, deadline: float | None = None) -> ScanResult:
+    """Every closed-LLM call site under `path`. Deterministic, no LLM. Raises TimeoutError once
+    time.monotonic() passes `deadline`."""
     root = Path(path)
     found: list[CallSite] = []
     warnings: list[str] = []
     for file in _py_files(root):
+        if deadline is not None and time.monotonic() > deadline:
+            raise TimeoutError(f"scan of {path} passed its deadline")
         rel = file.relative_to(root).as_posix()
         if not file.resolve().is_relative_to(root.resolve()):  # its code would go out as a site's context
             warnings.append(f"skipped {rel}: a symlink to outside the repository")
