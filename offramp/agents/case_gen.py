@@ -371,11 +371,12 @@ def resolve_pydantic_markers(site: CallSite, repo_path: str | Path) -> CallSite:
 
 def discover_fixtures(repo_path: str | Path) -> dict[str, list[dict[str, Any]]]:
     """Fixture sets under tests/fixtures/: a JSON list of objects is one set (key: its relative path); a
-    directory of text files (.eml/.txt/.md) is one set (key: "dir/") of records {"id": stem, "text": ...}."""
-    root = Path(repo_path) / "tests" / "fixtures"
+    directory of text files (.eml/.txt/.md) is one set (key: "dir/") of records {"id": stem, "text": ...}.
+    A file that resolves outside the repo (a symlink) is not read: its records would become eval inputs."""
+    root, inside = Path(repo_path) / "tests" / "fixtures", Path(repo_path).resolve()
     out: dict[str, list[dict[str, Any]]] = {}
     for path in sorted(root.rglob("*")) if root.is_dir() else []:
-        if not path.is_file():
+        if not path.is_file() or not path.resolve().is_relative_to(inside):
             continue
         if path.suffix == ".json":
             try:

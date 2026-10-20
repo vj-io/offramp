@@ -268,6 +268,26 @@ def test_fixtures_are_discovered_as_records(tmp_path):
     assert fixtures["tickets.json"][1]["subject"] == "Wo ist mein Paket?"
 
 
+def test_fixtures_that_resolve_outside_the_repo_are_not_read(tmp_path):
+    """A fixture's records become eval inputs: sent to Token Factory, written to evals/cases, uploaded to
+    LangSmith. A link out of the repo must not bring a host file along (as the scanner skips such links)."""
+    repo, _ = minirepo(tmp_path)
+    outside, fixtures_dir = tmp_path / "outside", repo / "tests" / "fixtures"
+    outside.mkdir()
+    (outside / "leak.json").write_text('[{"subject": "canary-outside", "body": "x"}]')
+    (outside / "note.txt").write_text("canary-outside")
+    (fixtures_dir / "leak.json").symlink_to(outside / "leak.json")
+    (fixtures_dir / "emails" / "leak.eml").symlink_to(outside / "note.txt")
+    (fixtures_dir / "linked").symlink_to(outside, target_is_directory=True)
+    (fixtures_dir / "alias.json").symlink_to(fixtures_dir / "tickets.json")  # stays inside: read as before
+
+    fixtures = cg.discover_fixtures(repo)
+
+    assert "canary" not in json.dumps(fixtures)
+    assert set(fixtures) == {"agent_steps.json", "alias.json", "emails/", "refunds.json", "threads.json",
+                             "tickets.json"}  # fmt: skip
+
+
 def test_exact_and_suffix_names_map_without_an_llm(tmp_path):
     repo, scan = minirepo(tmp_path)
     fixtures, llm = cg.discover_fixtures(repo), FakeLLM()
