@@ -127,3 +127,16 @@ def test_no_sites_says_so(tmp_path):
     assert "No OpenAI, Anthropic, LiteLLM or LangChain call sites found" in scan_table.render(
         scan_repo(tmp_path)
     )
+
+
+def test_non_text_system_parameter_does_not_break_the_shape(tmp_path):
+    # Anthropic system blocks (a list) with messages built at runtime: no prompt text to read
+    (tmp_path / "app.py").write_text(
+        "from anthropic import Anthropic\n\nclaude = Anthropic()\n\n\ndef ask(history):\n"
+        "    return claude.messages.create(\n"
+        '        model="claude-haiku-4-5", max_tokens=64, messages=history,\n'
+        '        system=[{"type": "text", "text": "Classify the ticket."}],\n'
+        "    )\n"
+    )
+    [row] = scan_table.table(scan_repo(tmp_path))["rows"]
+    assert (row["shape"], row["shape_guessed"]) == ("unknown", False)

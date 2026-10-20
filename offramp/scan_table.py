@@ -44,9 +44,9 @@ def _shape(site: CallSite) -> tuple[str, bool]:
     if fmt and not (isinstance(fmt, dict) and fmt.get("type") == "text"):
         return "JSON", False
     t = site.template
-    text = "\n".join(filter(None, [t.system, t.user] if t else [p.get("system"), p.get("instructions")]))
-    text = text if isinstance(text, str) else ""
-    if not text or text == EXPR:
+    parts = [t.system, t.user] if t else [p.get("system"), p.get("instructions")]
+    text = "\n".join(x for x in parts if isinstance(x, str) and x != EXPR)  # not system blocks (a list)
+    if not text:
         return "unknown", False
     if JSON_ASK.search(text):
         return "JSON", True

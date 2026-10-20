@@ -80,6 +80,7 @@ export function ScanForm({ demoRepoUrl }: { demoRepoUrl: string }) {
 function ScanTable({ result }: { result: ScanResult }) {
   const name = result.repo.replace("https://github.com/", "");
   const at = result.commit ?? result.ref;
+  const shown = result.commit ? result.commit.slice(0, 7) : result.ref;
   const fileUrl = (file: string, line: number) => `${result.repo}/blob/${at}/${file}#L${line}`;
   const ref = result.reference;
   const tier = ref.tier.charAt(0).toUpperCase() + ref.tier.slice(1);
@@ -90,7 +91,7 @@ function ScanTable({ result }: { result: ScanResult }) {
       <div className="flex flex-col gap-2">
         <h2 className="text-2xl font-extrabold tracking-tight">No call sites found in {name}.</h2>
         <p className="font-hand text-lg leading-snug">
-          Read {result.python_files} Python files at <span className="font-mono text-sm">{at.slice(0, 7)}</span> and found
+          Read {result.python_files} Python files at <span className="font-mono text-sm">{shown}</span> and found
           no OpenAI, Anthropic, LiteLLM or LangChain call. Calls in notebooks, or made through a wrapper defined in
           another package, are not detected.
         </p>
@@ -108,7 +109,7 @@ function ScanTable({ result }: { result: ScanResult }) {
         </a>
       </h2>
       <p className="font-hand text-lg text-muted">
-        {result.python_files} Python files read at <span className="font-mono text-sm">{at.slice(0, 7)}</span>. The code
+        {result.python_files} Python files read at <span className="font-mono text-sm">{shown}</span>. The code
         was not run.
       </p>
       <div role="region" tabIndex={0} aria-label="Call sites, scrolls sideways" className="overflow-x-auto pb-2">
