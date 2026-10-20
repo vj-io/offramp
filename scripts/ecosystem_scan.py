@@ -271,10 +271,10 @@ def markdown(report: dict[str, Any]) -> str:
         "Limits: the scan finds direct calls through the OpenAI, Anthropic, LiteLLM and LangChain "
         "clients. It does not count a client passed in from a file that never imports its SDK, a "
         "call through an alias of the method (`completion = client.chat.completions.create`), "
-        "structured-output `.parse()` calls, the pre-1.0 `openai.ChatCompletion` API, or "
-        "notebooks, so these numbers are a lower bound. A repo whose calls all go through another "
-        "library (LlamaIndex, its own SDK) shows 0 sites. No issues or pull requests were opened "
-        "on these repos.",
+        "structured-output `.parse()` calls, the pre-1.0 `openai.ChatCompletion` API, LangChain's "
+        "`init_chat_model` factory, or notebooks, so these numbers are a lower bound. A repo whose "
+        "calls all go through another library (LlamaIndex, its own SDK) shows 0 sites. No issues or "
+        "pull requests were opened on these repos.",
         "",
     ]
     return "\n".join(lines)
