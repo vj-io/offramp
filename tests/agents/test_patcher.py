@@ -31,6 +31,7 @@ from offramp.agents.patcher import (
     _apply,
     _map_reply,
     _prepare,
+    _repair,
     _rewrite_call,
     _summary,
     add_fixtures,
@@ -55,10 +56,10 @@ from offramp.agents.patcher import (
     unify_twins,
     wrap_long_strings,
 )
-from offramp.agents.pr_writer import is_test_path
+from offramp.agents.pr_writer import is_test_path, manual_reason
 from offramp.agents.translate import build_request, system_message
 from offramp.sandbox import CheckResult, Sandbox, docker_available
-from offramp.schemas import Adapter, AdapterSpec, CallSite, EvalCase, RunConfig, Tier, Verdict
+from offramp.schemas import Adapter, AdapterSpec, CallSite, EvalCase, PatchFailure, RunConfig, Tier, Verdict
 from offramp.tf import BudgetExceeded, FakeLLM, TFClient, get_tier
 
 BUILD = build_request
@@ -318,6 +319,7 @@ def test_a_red_baseline_downgrades_every_migration_names_the_step_and_changes_no
 
     assert [v.decision for v in result.verdicts] == ["MANUAL_REVIEW", "KEEP_CLOSED", "MANUAL_REVIEW"]
     assert step in verdict(result, "cs_01").reason
+    assert verdict(result, "cs_03").patch_failure == PatchFailure(kind="repo_red")
     assert result.files == {}
 
 
@@ -332,6 +334,13 @@ def test_an_empty_or_malformed_reply_is_asked_again_without_another_check():
 
     reason = verdict(result, "cs_01").reason
     assert reason.startswith("the reply holds no complete edit block; last failure: repo checks failed")
+    assert verdict(result, "cs_01").patch_failure == PatchFailure(
+        kind="no_edit_block", last="checks_failed", tries=1 + REPAIRS
+    )  # every reply was malformed: what failed is Offramp's changes alone
+    assert manual_reason(verdict(result, "cs_01"))[0] == (
+        "The model's last reply had no complete edit, so nothing was applied; with Offramp's changes alone, "
+        "this repo's checks fail."
+    )
     assert reason.endswith("FAILED tests/test_tinyapp.py::x")  # the checks' own failure is kept
     assert [c["tier"] for c in llm.calls[:3]] == [Tier.SUPER, Tier.ULTRA, Tier.ULTRA]
     assert len(boxes[0].checks) == 5  # untouched, base, greet alone (red); shout alone (red), its try
@@ -357,8 +366,12 @@ def test_no_accepted_migration_means_no_client_module():
         ),
         ([Edit(path="tinyapp/greet.py", search="max_tokens=32,", replace="max_tokens=64,")], "read-only"),
         ([Edit(path="tinyapp/greet.py", search=".strip()", replace="")], "read-only"),
+        (
+            [Edit(path=TESTS, search="def test_motto_returns_the_reply():", replace="def x(:")],
+            "does not parse",
+        ),
     ],
-    ids=["search-missing", "file-not-allowed", "path-escape", "test-removed", "request", "module"],
+    ids=["search-missing", "file-not-allowed", "path-escape", "test-removed", "request", "module", "syntax"],
 )
 def test_patches_that_break_the_adapter_spec_or_the_rules_are_rejected(edits, problem):
     llm = patcher_llm(PatchEdits(edits=edits), PatchEdits(edits=edits), migrate("tinyapp/shout.py"))
@@ -368,6 +381,11 @@ def test_patches_that_break_the_adapter_spec_or_the_rules_are_rejected(edits, pr
     greet = verdict(result, "cs_01")
     assert greet.decision == "MANUAL_REVIEW"
     assert problem in greet.reason
+    kinds = {"not found": "search_miss", "not editable": "not_editable", "removes tests": "deletes_tests",
+             "read-only": "locked_file", "does not parse": "does_not_parse"}  # fmt: skip
+    f = greet.patch_failure  # recorded where it happened: the repeated patch ended it, its refusal came first
+    assert (f.kind, f.last, f.tries, f.model_edit) == ("no_change", kinds[problem], 2, True)
+    assert f.files == [edits[0].path] and manual_reason(greet)[1] == greet.reason
     assert "tinyapp/greet.py" not in result.files
     assert verdict(result, "cs_03").decision == "MIGRATE"
 
@@ -379,6 +397,45 @@ def test_budget_exhaustion_downgrades_instead_of_crashing():
 
     assert verdict(result, "cs_01").decision == "MANUAL_REVIEW"
     assert "output token cap" in verdict(result, "cs_01").reason
+
+
+def test_a_budget_stop_reads_as_one_and_never_blames_an_edit_the_model_did_not_make():
+    """Review probe (I2): every budget stop carries a last failure; before any reply it is Offramp's own."""
+    llm = patcher_llm(BudgetExceeded("token cap reached"), migrate(SHOUT))
+
+    greet = verdict(run(llm), "cs_01")
+
+    assert greet.reason.startswith("patch not composed: token cap reached; last failure: repo checks failed")
+    assert greet.patch_failure == PatchFailure(kind="budget_stop", last="checks_failed", tries=0)
+    assert manual_reason(greet) == (
+        "The run's model budget ran out before the model replied at this site's patch; with Offramp's "
+        "changes alone, this repo's checks fail.",
+        greet.reason,
+    )
+    after_one = patcher_llm(migrate(GREET, extra=[BREAK_GREET]), BudgetExceeded("x"), migrate(SHOUT))
+    greet = verdict(run(after_one, results=[True, True, False]), "cs_01")
+    assert manual_reason(greet)[0] == (
+        "The run's model budget ran out after 1 try at this site's patch; with the model's test edits "
+        "applied, this repo's checks still failed."
+    )
+
+
+def test_check_output_that_reads_like_a_patch_rule_is_never_taken_for_one():
+    """Review probe (I2): a pytest line saying "'create' is read-only" is check output, not a locked file."""
+    output = "FAILED tests/test_tinyapp.py::x - AttributeError: 'Completions' object attribute 'create' is "
+    output += "read-only"
+    llm = patcher_llm(migrate(GREET), migrate(GREET), migrate(SHOUT))
+
+    greet = verdict(run(llm, results=[True, True, False], output=output), "cs_01")
+
+    assert "'create' is read-only" in greet.reason
+    assert (greet.patch_failure.kind, greet.patch_failure.last) == ("no_change", "checks_failed")
+    sentence, raw = manual_reason(greet)
+    assert sentence == (
+        "The model's last repair repeated an edit it had already tried; with the model's test edits applied, "
+        "this repo's checks still failed."
+    )
+    assert raw == greet.reason
 
 
 def test_patcher_call_is_super_with_thinking_off_and_shows_the_exact_request():
@@ -626,9 +683,11 @@ def test_record_demo_patches():
     print({v.site_id: (v.decision, v.reason) for v in result.verdicts})
 
 
-def test_demo_patches_keep_the_demo_repo_green():
+def test_demo_patches_keep_the_demo_repo_green(unrecorded_patcher_calls_stop):
     """Task 12's MIGRATE set, recorded live (Super). Each site is checked alone against the same base, then
-    all green ones together; the outcome below is what the recording produced (see the task-10 report)."""
+    all green ones together; the outcome below is what the recording produced (see the task-10 report).
+    Task 18 changed the repair turn after a deleted test: cs_05's Ultra repair is not recorded for it yet, so
+    the replay stops cs_05 there, with the recorded first try's failure kept."""
     result = run_demo(live=False)
 
     assert result.client_path == (None if not result.combined else "helphub/offramp_client.py")
@@ -643,6 +702,11 @@ def test_demo_patches_keep_the_demo_repo_green():
     for path, text in result.files.items():  # E501 never reaches the PR
         assert max(map(len, text.splitlines()), default=0) <= 100, path
     assert DEMO_OUTCOME == ({s: result.alone[s] for s in sorted(result.alone)}, result.combined)
+    assert verdict(result, "cs_05").reason == (
+        "patch not composed: no recording of this patcher call; last failure: patch rejected (patch rules): "
+        "patch removes tests from tests/test_call_sites.py: "
+        "['test_openai_reasoning_site_follows_the_o3_parameter_rules']"
+    )
 
 
 def test_edit_blocks_round_trip_with_python_escapes_and_empty_replacements():
@@ -1034,6 +1098,9 @@ def test_a_repair_that_repeats_the_failed_patch_stops_without_another_check():
     assert verdict(result, "cs_01").reason.startswith(
         "repair produced no change; last failure: repo checks failed"
     )
+    assert verdict(result, "cs_01").patch_failure == PatchFailure(
+        kind="no_change", last="checks_failed", tries=2, model_edit=True
+    )
     assert len(boxes[0].checks) == 6  # untouched, base, greet alone + one try, shout alone + its try
     repair = llm.calls[1]
     assert repair["max_tokens"] > llm.calls[0]["max_tokens"] and repair["reasoning"] == "off"
@@ -1102,6 +1169,7 @@ def test_a_site_green_alone_but_not_together_is_dropped_from_the_combined_tree()
     assert result.combined_failure.startswith("repo checks failed on the merged patches")
     shout = verdict(result, "cs_03")
     assert shout.decision == "MANUAL_REVIEW" and "green alone, but not together with cs_01" in shout.reason
+    assert shout.patch_failure == PatchFailure(kind="not_together")
     assert "tinyapp/shout.py" not in result.files and verdict(result, "cs_01").decision == "MIGRATE"
     assert "# try" not in result.files[TESTS]  # the failed repair is not in the tree
 
@@ -1604,12 +1672,14 @@ def test_a_long_block_copied_with_a_slip_lands_only_its_intended_changes():
     assert 'assert reply.sources == ["returns"]\n' in files["t.py"]  # the real assertion is intact
     assert f'== "{LIGHTNING}"' in files["t.py"] and '["messages"][-1]' in files["t.py"]
     gone = intended.replace("    assert reply.sources\n", "")  # the slip's own line removed: a conflict
-    assert "not found" in _apply([Edit(path="t.py", search=slip, replace=gone)], {"t.py": SOURCES_TEST})[0]
+    assert (
+        "not found" in _apply([Edit(path="t.py", search=slip, replace=gone)], {"t.py": SOURCES_TEST})[0].text
+    )
     short = Edit(path="t.py", search='    reply = x\n    assert reply.sources == ["returns"]', replace="x")
-    assert "not found" in _apply([short], {"t.py": SOURCES_TEST})[0]  # a short block must match exactly
+    assert "not found" in _apply([short], {"t.py": SOURCES_TEST})[0].text  # a short block must match exactly
     twice = {"t.py": SOURCES_TEST + "\n\n" + SOURCES_TEST.replace("test_request_contract", "test_again")}
     lone = Edit(path="t.py", search=slip.replace("def test_request_contract():", ""), replace="x")
-    assert "not found" in _apply([lone], twice)[0]  # more than one place: never guess
+    assert "not found" in _apply([lone], twice)[0].text  # more than one place: never guess
 
 
 def test_a_repair_keeps_the_previous_edits_of_files_it_leaves_out():
@@ -1959,6 +2029,9 @@ def test_a_probe_mismatch_drops_the_site_before_any_model_call():
     assert reason.startswith(
         "patch not composed: Offramp's own rewrite was run and for case cs_01:001, it sends `messages`"
     )
+    assert manual_reason(verdict(result, "cs_01"))[0] == (
+        "Offramp's own rewrite does not send the request that passed the evaluation."
+    )
 
 
 def test_a_keep_closed_site_in_a_symlinked_module_is_skipped_not_fatal():
@@ -2216,6 +2289,10 @@ SHAPES = {
         [Edit(path="tinyapp/test_words.py", search='GREETING = "Greet"', replace='GREETING = "Insult"')],
         module=PLANT.replace(VERBS_LINE, "from tinyapp.test_words import GREETING\n\nVERBS = [GREETING]\n"),
         extra={"tinyapp/test_words.py": WORDS}),
+    "whole-file-test-path-module-shipped-code-imports": shape(  # a whole-file block: the same two layers
+        [Edit(path="tinyapp/test_words.py", search="", replace='GREETING = "Insult"\n', whole=True)],
+        module=PLANT.replace(VERBS_LINE, "from tinyapp.test_words import GREETING\n\nVERBS = [GREETING]\n"),
+        extra={"tinyapp/test_words.py": WORDS}),
     # re-review 3, F2: after the evaluated call (a later request changed, or a second one sent)
     "f2-alias": after_call('    v = VERBS\n    v[0] = "Insult"\n'),
     "f2-comprehension-shadow": after_call('    _ = [VERBS for VERBS in ()]\n    VERBS[0] = "Insult"\n'),
@@ -2257,6 +2334,7 @@ def test_every_shape_that_changed_a_request_is_refused_with_the_probe_off(shape,
     greet = verdict(result, "cs_01")
     assert greet.decision == "MANUAL_REVIEW"
     assert f"{edits[0].path} {LOCKED if locked else CHANGED}" in greet.reason
+    assert greet.patch_failure.last == ("locked_file" if locked else "backstop")
     for e in edits:  # the planted edit is nowhere in what ships
         shipped = result.files.get(e.path) or (repo / e.path).read_text()
         assert e.replace not in shipped if e.replace.strip() else e.search in shipped  # removed: still in
@@ -2298,6 +2376,7 @@ def test_the_backstop_on_the_merged_tree_drops_a_changed_site_with_every_site_wh
 
     assert result.alone == {"cs_01": True, "cs_03": True} and result.combined == []
     assert f"on the merged tree: {SHOUT} {CHANGED}" in verdict(result, "cs_03").reason
+    assert verdict(result, "cs_03").patch_failure == PatchFailure(kind="merged_drift")
     reads = "its patch edits tinyapp/greet.py, which cs_03's request reads"
     assert reads in verdict(result, "cs_01").reason
     assert all("rude" not in text for text in result.files.values()) and SHOUT not in result.files
@@ -2461,3 +2540,151 @@ def test_a_test_edit_reading_a_constant_offramp_wrote_gets_its_import():
     assert verdict(result, "cs_01").decision == "MIGRATE"
     assert "from tinyapp.greet import NEMOTRON_FEW_SHOT\n" in result.files[TESTS]
     assert "from tinyapp.greet import NEMOTRON_FEW_SHOT" not in result.files[SHOUT]
+
+
+# ---------------------------------------------------------------- repairs that name the problem; format slips
+
+
+def test_a_repair_after_a_deleted_test_names_it_and_asks_for_a_rewrite_never_a_deletion():
+    gone = Edit(path=TESTS, search="def test_greet_strips_the_reply():", replace="def _skipped():")
+    llm = patcher_llm(PatchEdits(edits=[gone]), migrate(GREET), migrate(SHOUT))
+
+    result = run(llm)
+
+    repair = llm.calls[1]["messages"][-1]["content"]
+    assert repair.startswith(  # the refusal itself stays
+        f"Your edits were not accepted: patch rejected (patch rules): patch removes tests from {TESTS}: "
+        "['test_greet_strips_the_reply']"
+    )
+    assert f"`{TESTS}::test_greet_strips_the_reply`" in repair
+    assert "Never delete a test" in repair and "rewrite" in repair and "new Nemotron request" in repair
+    assert "WHOLE FILE" not in repair  # no SEARCH miss: no whole-file offer
+    assert verdict(result, "cs_01").decision == "MIGRATE"
+
+
+def test_a_repair_after_a_search_miss_offers_the_whole_test_file():
+    miss = Edit(path=TESTS, search="no such text", replace="x")
+    llm = patcher_llm(PatchEdits(edits=[miss]), migrate(GREET), migrate(SHOUT))
+
+    run(llm)
+
+    repair = llm.calls[1]["messages"][-1]["content"]
+    assert f"search text not found in {TESTS}" in repair
+    assert f"`{TESTS}`" in repair.split("search text not found")[1]
+    assert f"FILE: {TESTS}\n<<<<<<< WHOLE FILE\n" in repair and "\n>>>>>>> WHOLE FILE" in repair
+    assert "Never delete a test" not in repair
+
+
+def test_the_repair_offers_a_whole_file_only_for_test_files_under_300_lines():
+    short, long = "def test_a():\n    pass\n", "x = 1\n" * 300
+    shown = {"tests/test_a.py": short, "tests/test_long.py": long, "app/mod.py": short}
+
+    def offered(path):
+        return "WHOLE FILE" in _repair(
+            f"patch rejected (patch rules): search text not found in {path}: 'x'", shown
+        )
+
+    assert offered("tests/test_a.py")
+    assert not offered("tests/test_long.py") and not offered("app/mod.py") and not offered("tests/unseen.py")
+    nested = (
+        "the reply holds no complete edit block; last failure: patch rejected (patch rules): search text not "
+        "found in tests/test_a.py (an earlier block already changed these lines: merge the two): 'x'"
+    )
+    assert "`tests/test_a.py`" in _repair(nested, shown)  # a miss in the last checked try counts too
+
+
+def test_the_two_format_slips_seen_live_parse_and_content_is_not_loosened():
+    block = "<<<<<<< SEARCH\nx = 1\n=======\nx = 2\n"
+    files_line = "FILES: a.py\n" + block + "=======\n>>>>>>> REPLACE\nNOTES: n"  # cs_01's repair, live
+    bare = (
+        "FILE: a.py\n" + block + "=======\nREPLACE\n"  # cs_03's repairs, live: a bare REPLACE
+        "FILE: b.py\n<<<<<<< SEARCH\ny = 1\n=======\nREPLACE_ME = 2\n>>>>>>> REPLACE\nNOTES: n"
+    )
+
+    assert [(e.path, e.search, e.replace) for e in parse_edits(files_line).edits] == [
+        ("a.py", "x = 1", "x = 2")
+    ]
+    assert [(e.path, e.search, e.replace) for e in parse_edits(bare).edits] == [
+        ("a.py", "x = 1", "x = 2"),  # the bare marker closes its own block, never the next one's
+        ("b.py", "y = 1", "REPLACE_ME = 2"),  # a line that only starts with REPLACE is content
+    ]
+    near = Edit(path="t.py", search="x  = 1", replace="x = 2")  # the SEARCH text still matches exactly
+    assert "not found" in _apply([near], {"t.py": "x = 1\n"})[0].text
+
+
+@pytest.mark.parametrize(
+    "replace",
+    [
+        "MSG = '''\nREPLACE\n'''",  # a REPLACE line inside a string (review P1)
+        "Title\n=======",  # a final `=======` line: an RST underline (review P2)
+        # a nested WHOLE FILE block after a REPLACE line (P3)
+        "DOC = '''\nREPLACE\n<<<<<<< WHOLE FILE\nz = 3\n>>>>>>> WHOLE FILE\n'''",
+    ],
+    ids=["replace-line", "final-separator-line", "nested-whole-file"],
+)
+def test_a_strictly_valid_block_parses_exactly_as_before_whatever_its_content(replace):
+    text = f"FILE: a.py\n<<<<<<< SEARCH\nx = 1\n=======\n{replace}\n>>>>>>> REPLACE\nNOTES: n"
+
+    assert parse_edits(text).edits == [Edit(path="a.py", search="x = 1", replace=replace)]
+
+
+def test_a_whole_file_block_round_trips_and_replaces_a_short_test_file():
+    text = (TINY / TESTS).read_text().replace("def test_motto", "# whole file\ndef test_motto")
+    whole = Edit(path=TESTS, search="", replace=text, whole=True)
+    assert parse_edits(edits_text(PatchEdits(edits=[whole], notes="n"))).edits == [whole]
+    llm = patcher_llm(PatchEdits(edits=[whole]), migrate(SHOUT))
+
+    result = run(llm)
+
+    assert verdict(result, "cs_01").decision == "MIGRATE"
+    assert "# whole file" in result.files[TESTS]
+
+
+@pytest.mark.parametrize(
+    ("path", "lines", "problem"),
+    [
+        ("tests/test_long.py", 300, "has 300 lines: give SEARCH/REPLACE blocks"),
+        ("app/mod.py", 3, "a whole-file block is for test files only"),
+        ("tests/test_locked.py", 3, "is read-only"),
+        ("tests/unseen.py", 3, "is not editable for this site"),
+    ],
+)
+def test_whole_file_blocks_are_refused_outside_short_unlocked_test_files(path, lines, problem):
+    files = {p: "x = 1\n" * lines for p in ("tests/test_long.py", "app/mod.py", "tests/test_locked.py")}
+    whole = Edit(path=path, search="", replace="y = 2\n", whole=True)
+
+    assert problem in _apply([whole], files, frozenset({"tests/test_locked.py"}))[0].text
+
+
+def test_a_whole_file_block_that_drops_a_test_is_refused_like_a_search_block():
+    text = (TINY / TESTS).read_text().split("def test_greet_strips_the_reply")[0]
+    whole = Edit(path=TESTS, search="", replace=text, whole=True)
+    llm = patcher_llm(PatchEdits(edits=[whole]), PatchEdits(edits=[whole]), migrate(SHOUT))
+
+    result = run(llm)
+
+    assert "patch removes tests from tests/test_tinyapp.py" in verdict(result, "cs_01").reason
+    assert verdict(result, "cs_01").decision == "MANUAL_REVIEW"
+
+
+def test_a_merge_conflict_is_recorded_as_one_not_as_a_check_failure():
+    first = Edit(
+        path=TESTS,
+        search="from types import SimpleNamespace",
+        replace="from types import SimpleNamespace  # a",
+    )
+    second = Edit(
+        path=TESTS,
+        search="from types import SimpleNamespace",
+        replace="from types import SimpleNamespace  # b",
+    )
+    llm = patcher_llm(migrate(GREET, extra=[first]), migrate(SHOUT, extra=[second]))
+
+    shout = verdict(run(llm), "cs_03")
+
+    assert shout.reason == f"green alone, but its patch conflicts with another site's in {TESTS}"
+    assert shout.patch_failure == PatchFailure(kind="merge_conflict", files=[TESTS])
+    assert manual_reason(shout)[0] == (
+        "Its patch passes this repo's checks on its own, but it conflicts with another migrated site's "
+        f"patch in `{TESTS}`."
+    )

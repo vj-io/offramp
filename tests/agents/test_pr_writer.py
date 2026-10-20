@@ -43,11 +43,11 @@ def test_prose_comes_from_super_with_thinking_off():
 
 
 def test_prose_that_states_a_number_is_dropped():
-    keep = "The cs_02 call to claude-sonnet-4-5 becomes a Nemotron 3 Super call; `next_action` is unchanged."
+    keep = "The cs_05 planner stays on o3; try Nemotron 3 Ultra with gpt-4o-style few-shot next."
     prose = PRProse(
         summary="This cuts the LLM bill by 99%.",
         sites=[
-            SiteNote(site_id="cs_02", note=keep),
+            SiteNote(site_id="cs_05", note=keep),
             SiteNote(site_id="cs_03", note="Parity 96.4% on holdout."),
             SiteNote(site_id="cs_04", note="Answers are 3x faster."),
         ],
@@ -95,12 +95,19 @@ def test_pr_prose_replays_from_cassette():
 
 def test_a_decision_label_echoed_at_the_start_of_a_note_is_dropped():
     llm = FakeLLM().add(
-        "pr_writer", PRProse(sites=[SiteNote(site_id="cs_02", note="MIGRATE - Reads tool_calls.")])
+        "pr_writer", PRProse(sites=[SiteNote(site_id="cs_05", note="KEEP_CLOSED - Distil the arithmetic.")])
     )
 
     body = write_pr(ctx(), llm).body
 
-    assert "Nemotron 3 Super. Reads tool_calls." in body and "MIGRATE -" not in body
+    assert " Distil the arithmetic." in body and "KEEP_CLOSED -" not in body
+
+
+def test_only_a_kept_site_carries_model_prose():
+    notes = [SiteNote(site_id=s, note=f"Prose for {s}.") for s in ("cs_02", "cs_05")]  # migrated, kept
+    body = write_pr(ctx(), FakeLLM().add("pr_writer", PRProse(sites=notes))).body
+
+    assert "Prose for cs_05." in body and "Prose for cs_02." not in body
 
 
 @pytest.mark.parametrize(

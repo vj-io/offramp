@@ -127,7 +127,10 @@ def test_record_demo_run(tmp_path, monkeypatch):
     print({k: (v["decision"], v["reason"]) for k, v in verdicts(log).items()})
 
 
-def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch):
+def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch, unrecorded_patcher_calls_stop):
+    """Task 18 changed the patcher's repair turn after a deleted test, so cs_05's Ultra repair is not recorded
+    for it yet: the replay stops cs_05 there (see the fixture), with its recorded first try's failure kept.
+    The free-text per-case floor (holdout only) changes nothing here: no recorded holdout case is below 3."""
     log = run_demo(tmp_path, monkeypatch, live=False)
     snap = pipeline.snapshot(log.run_id, log.events)
 
@@ -150,8 +153,9 @@ def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch):
         "cs_06": [("MIGRATE", "lightning")],
     }
     assert found["cs_05"]["reason"] == (
-        "repair produced no change; last failure: patch rejected (patch rules): patch removes tests from "
-        "tests/test_call_sites.py: ['test_openai_reasoning_site_follows_the_o3_parameter_rules']"
+        "patch not composed: no recording of this patcher call; last failure: patch rejected (patch rules): "
+        "patch removes tests from tests/test_call_sites.py: "
+        "['test_openai_reasoning_site_follows_the_o3_parameter_rules']"
     )
     # cs_04's and cs_06's patches passed the demo repo's own ruff + pytest, alone and together
     patch = json.loads((log.dir / "patch.json").read_text())
@@ -170,6 +174,8 @@ def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch):
     }
 
     body = pipeline.report(log.dir, log.run_id, log.events)["pr_body_markdown"]
+    if os.environ.get("UPDATE_SNAPSHOTS"):  # after an intended template change, offline; review the diff
+        SNAPSHOT.write_text(body)
     assert body == SNAPSHOT.read_text()
     for site_id, v in found.items():  # every verdict is in the PR, with the number it was decided on
         assert site_id in body

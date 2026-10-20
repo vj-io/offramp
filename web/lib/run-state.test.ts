@@ -22,6 +22,7 @@ import {
   referencesText,
   stageLabel,
   thresholdFor,
+  weakReferencesText,
 } from "./format";
 import { STAGE_ORDER, type CaseSummary, type RunEvent, type Verdict } from "./types";
 
@@ -303,6 +304,14 @@ describe("evidence text", () => {
     );
     expect(closedByConstructionText(final.verdicts.cs_05)).toBeNull(); // compared: the row shows instead
     expect(closedByConstructionText(final.verdicts.cs_01)).toBeNull(); // no closed model at all
+  });
+  it("names each free-text reference the judge scored below 3, kept in the evaluation (reference QA)", () => {
+    const weak: Verdict = { ...final.verdicts.cs_01, weak_references: { "cs_06:020": 1, "cs_06:011": 2.5 } };
+    expect(weakReferencesText(weak)).toBe(
+      "reference judged weak: cs_06:011, 2.5/5; cs_06:020, 1/5 (below 3; kept in the evaluation)",
+    );
+    expect(weakReferencesText(final.verdicts.cs_01)).toBeNull(); // older recordings carry no field
+    expect(weakReferencesText({ ...final.verdicts.cs_01, weak_references: {} })).toBeNull();
   });
   it("links only http(s) URLs in notes", () => {
     expect(linkParts("est. (see https://example.com/p, fetched) or openai.com/x")).toEqual([

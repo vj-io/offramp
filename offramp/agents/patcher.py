@@ -11,7 +11,7 @@ Per run, on a sandbox copy of the target repo:
    evaluated. Offramp's code writes the call (the evaluated request as written-out keyword arguments), maps
    the reply, rewires callers and provider fakes; a call or a reply it cannot rewrite is a manual review.
    Code that ships is code-only: Nemotron 3 Super (role `patcher`) edits only the tests and fakes that pin
-   the old provider, as search/replace edits;
+   the old provider, as search/replace edits (or a short test file whole, offered after a SEARCH miss);
 3. every patch is checked: the backstop (each file that ships as code, on disk, AST-identical to what
    Offramp's code wrote; no new ones), no removed tests; the repo's ruff + pytest in the sandbox; and, where
    an eval case can drive it, the probe (the migrated function, run there, must send exactly build_request's
@@ -36,7 +36,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from pydantic import BaseModel, Field
 
@@ -44,7 +44,17 @@ from offramp.agents.pr_writer import TIER_NAMES, is_test_path, threshold
 from offramp.agents.translate import UnresolvedCallSite, build_request
 from offramp.evals.baselines import load_cases
 from offramp.sandbox import NO_SANDBOX, CheckResult, Sandbox
-from offramp.schemas import Adapter, AdapterSpec, CallSite, EvalCase, RunConfig, Tier, Verdict
+from offramp.schemas import (
+    Adapter,
+    AdapterSpec,
+    CallSite,
+    EvalCase,
+    PatchFailure,
+    PatchFailureKind,
+    RunConfig,
+    Tier,
+    Verdict,
+)
 from offramp.tf.budget import BudgetExceeded
 from offramp.tf.client import LLM, _merge, plan_structured
 from offramp.tf.tiers import get_tier, reasoning_params
@@ -57,6 +67,18 @@ REPAIR = """Your edits were not accepted: {failure}
 Reply with SEARCH/REPLACE edit blocks only, no analysis or explanation, then the NOTES line. Each file you \
 name is taken as shown in my first message with your new blocks applied, so give every block that file \
 needs, not only the fix; a file you do not name keeps your previous edits. Begin with `FILE:`."""
+DELETED = """Your patch deletes {tests}. Never delete a test: keep each one under its name and rewrite it \
+so it asserts the new Nemotron request (the model ID, keyword arguments and message layout Offramp now \
+sends) where it pinned the old provider's."""
+WHOLE_FILE_LINES = 300  # a test file shorter than this may come back whole (offered after a SEARCH miss)
+READ_ONLY = "is read-only: it ships as Offramp's code wrote it; edit only tests and fakes"
+WHOLE = """Your SEARCH text did not match exactly one place in {files}. Instead of SEARCH/REPLACE blocks, \
+you may give such a file whole, as shown in my first message with all your changes, in one block:
+FILE: {path}
+<<<<<<< WHOLE FILE
+every line of the new file
+>>>>>>> WHOLE FILE
+Every test in it stays: rewritten where it pins the old provider, never deleted."""
 ROOT_CLIENT = ("offramp/client.py", "offramp.client")  # when the sites are not inside one package
 TEMPLATE = Path(__file__).parents[1] / "templates" / "client.py.tmpl"
 NOT_COPIED = (".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", ".tox",
@@ -75,14 +97,28 @@ AUTO_IMPORTS = {
 }
 # pytest's built-in fixtures: a patched test may use one without requesting it; added like an import.
 PYTEST_FIXTURES = ("monkeypatch", "capsys", "capfd", "caplog", "tmp_path", "tmp_path_factory")
-_FILE = re.compile(r"^FILE: *`?([^`\s]+)`?[ \t]*$", re.M)
-_BLOCK = re.compile(r"^<{7} SEARCH\n(.*?)\n={7}\n(.*?)>{7} REPLACE", re.S | re.M)
+# `FILES:` is a slip seen live: read only as a fallback (parse_edits)
+_FILE = re.compile(r"^(FILES?): *`?([^`\s]+)`?[ \t]*$", re.M)
+_OPENER = re.compile(r"^<{7} (?:SEARCH|WHOLE FILE)$", re.M)
+_BOUND = re.compile(r"^(?:<{7} SEARCH$|FILES?:)", re.M)  # a SEARCH block's own text ends before these
+_WHOLE = r"|<{7} WHOLE FILE\n(?P<whole>.*?)^>{7} WHOLE FILE[ \t]*$"
+_STRICT = re.compile(
+    r"<{7} SEARCH\n(?P<search>.*?)\n={7}\n(?P<replace>.*?)>{7} REPLACE" + _WHOLE, re.S | re.M
+)
+# Format slips seen live, read only for a block that does not parse strictly: a bare `REPLACE` closing line,
+# and a second `=======` line right before the closing marker. The SEARCH text is never loosened.
+_TOLERANT = re.compile(
+    r"<{7} SEARCH\n(?P<search>.*?)\n={7}\n(?P<replace>.*?)(?:^={7}\n)?(?:>{7} REPLACE|^REPLACE[ \t]*$)"
+    + _WHOLE,
+    re.S | re.M,
+)
 
 
 class Edit(BaseModel):
     path: str
     search: str
     replace: str
+    whole: bool = False  # `replace` is the whole new file (test files under WHOLE_FILE_LINES only)
 
 
 class PatchEdits(BaseModel):
@@ -92,15 +128,38 @@ class PatchEdits(BaseModel):
 
 def parse_edits(text: str) -> PatchEdits:
     """The patcher replies in plain SEARCH/REPLACE blocks: code inside JSON strings needs every Python escape
-    escaped again, and the model dropped some of them (a recorded run broke 3 of 5 patches that way)."""
-    files = [(m.start(), m.group(1)) for m in _FILE.finditer(text)]
-    edits = []
-    for block in _BLOCK.finditer(text):  # a block without its own FILE line belongs to the previous file
-        path = next((p for at, p in reversed(files) if at < block.start()), None)
-        search, replace = block.group(1), block.group(2)
-        if path:
+    escaped again, and the model dropped some of them (a recorded run broke 3 of 5 patches that way).
+
+    Each block is read strictly first, exactly as before any slip was tolerated. Only a block that does not
+    parse strictly (its file line is `FILES:`, or no `>>>>>>> REPLACE` closes it before the next SEARCH block
+    or file line) is read with the tolerant closers; when that fails too, the strict reading stands."""
+    files = [(m.start(), m[1], m[2]) for m in _FILE.finditer(text)]
+    edits, at = [], 0
+    while opener := _OPENER.search(text, at):
+        start = opener.start()  # a block without its own file line belongs to the previous file
+        label, path = next(((k, p) for pos, k, p in reversed(files) if pos < start), (None, None))
+        bound = b.start() if (b := _BOUND.search(text, opener.end())) else len(text)
+        block = _STRICT.match(text, start)
+        if label != "FILE" or block is None or block.end() > bound:
+            tolerant = _TOLERANT.match(text, start)
+            if tolerant is not None and tolerant.end() <= bound:
+                block = tolerant
+            elif label != "FILE":
+                block = None
+        if block is None or path is None:
+            at = opener.end()
+            continue
+        at = block.end()
+        if block["whole"] is not None:
+            edits.append(Edit(path=path, search="", replace=block["whole"], whole=True))
+        else:
+            replace = block["replace"]
             edits.append(
-                Edit(path=path, search=search, replace=replace[:-1] if replace.endswith("\n") else replace)
+                Edit(
+                    path=path,
+                    search=block["search"],
+                    replace=replace[:-1] if replace.endswith("\n") else replace,
+                )
             )
     notes = re.search(r"^NOTES:(.*)$", text, re.M)
     return PatchEdits(edits=edits, notes=notes.group(1).strip() if notes else "")
@@ -109,10 +168,20 @@ def parse_edits(text: str) -> PatchEdits:
 def edits_text(patch: PatchEdits) -> str:
     """Inverse of parse_edits (the reply format, as shown to the model)."""
     blocks = [
-        f"FILE: {e.path}\n<<<<<<< SEARCH\n{e.search}\n=======\n{e.replace}\n>>>>>>> REPLACE"
+        f"FILE: {e.path}\n<<<<<<< WHOLE FILE\n{e.replace.removesuffix('\n')}\n>>>>>>> WHOLE FILE"
+        if e.whole
+        else f"FILE: {e.path}\n<<<<<<< SEARCH\n{e.search}\n=======\n{e.replace}\n>>>>>>> REPLACE"
         for e in patch.edits
     ]
     return "\n\n".join([*blocks, f"NOTES: {patch.notes}"])
+
+
+class Problem(NamedTuple):
+    """One patch-rule refusal: its kind, the message the repair and the verdict reason get, and its file."""
+
+    kind: PatchFailureKind
+    text: str
+    file: str
 
 
 class Unsupported(ValueError):
@@ -694,7 +763,29 @@ def _near(text: str, search: str) -> tuple[int, int] | None:
     return start, start + len("\n".join(have[runs[0] : runs[0] + n]))
 
 
-def _apply(edits: list[Edit], files: dict[str, str], locked: frozenset[str] = frozenset()) -> list[str]:
+def _repair(failure: str, editable: dict[str, str]) -> str:
+    """The repair turn: the last failure, plus what to do about the two that a bare retry repeated live: each
+    test the patch deleted, named, to be rewritten; after a SEARCH miss, the short test files it missed in
+    offered whole. `failure` may carry the last checked try's failure ("...; last failure: ...")."""
+    text = REPAIR.format(failure=failure)
+    removed = re.findall(r"patch removes tests from (\S+): \[([^\]]*)\]", failure)
+    deleted = [f"`{path}::{name}`" for path, names in removed for name in re.findall(r"'(\w+)'", names)]
+    if deleted:
+        text += "\n\n" + DELETED.format(tests=", ".join(deleted))
+    misses = re.findall(r"search text (?:not found|found \d+ times) in (\S+?)(?::| \()", failure)
+    missed = sorted(
+        {
+            p
+            for p in misses
+            if p in editable and is_test_path(p) and len(editable[p].splitlines()) < WHOLE_FILE_LINES
+        }
+    )
+    if missed:
+        text += "\n\n" + WHOLE.format(files=", ".join(f"`{p}`" for p in missed), path=missed[0])
+    return text
+
+
+def _apply(edits: list[Edit], files: dict[str, str], locked: frozenset[str] = frozenset()) -> list[Problem]:
     """Apply the edit blocks in order; `locked` files (code that ships) are shown but read-only."""
     shown = dict(files)
     seen = set()
@@ -703,7 +794,26 @@ def _apply(edits: list[Edit], files: dict[str, str], locked: frozenset[str] = fr
             continue
         seen.add((e.path, e.search, e.replace))
         if e.path not in files:
-            return [f"{e.path} is not editable for this site"]
+            return [Problem("not_editable", f"{e.path} is not editable for this site", e.path)]
+        if e.whole:  # the same checks follow as for a block: no test removed, then the backstop
+            lines = len(shown[e.path].splitlines())
+            if e.path in locked:
+                return [Problem("locked_file", f"{e.path} {READ_ONLY}", e.path)]
+            if not is_test_path(e.path):
+                return [
+                    Problem("not_editable", f"{e.path}: a whole-file block is for test files only", e.path)
+                ]
+            if lines >= WHOLE_FILE_LINES:
+                why = f"a whole-file block is for test files under {WHOLE_FILE_LINES} lines"
+                return [
+                    Problem(
+                        "not_editable",
+                        f"{e.path} has {lines} lines: give SEARCH/REPLACE blocks ({why})",
+                        e.path,
+                    )
+                ]
+            files[e.path] = e.replace
+            continue
         n = files[e.path].count(e.search) if e.search else 0
         elsewhere = [p for p in files if p != e.path and e.search and files[p].count(e.search) == 1]
         if (
@@ -712,7 +822,7 @@ def _apply(edits: list[Edit], files: dict[str, str], locked: frozenset[str] = fr
             e = e.model_copy(update={"path": elsewhere[0]})
             n = 1
         if e.path in locked:
-            return [f"{e.path} is read-only: it ships as Offramp's code wrote it; edit only tests and fakes"]
+            return [Problem("locked_file", f"{e.path} {READ_ONLY}", e.path)]
         near = _near(files[e.path], e.search) if n == 0 and e.search not in shown[e.path] else None
         # a slip in copying a long block still names one place; only the model's intended changes (its SEARCH
         # to its REPLACE) land there, never its mis-copied lines over the file's real ones
@@ -726,9 +836,9 @@ def _apply(edits: list[Edit], files: dict[str, str], locked: frozenset[str] = fr
                 if e.search and (e.search in shown[e.path])
                 else ""
             )
+            where = "not found" if n == 0 else f"found {n} times"
             return [
-                f"search text {'not found' if n == 0 else f'found {n} times'} in {e.path}{hint}: "
-                f"{e.search[:80]!r}"
+                Problem("search_miss", f"search text {where} in {e.path}{hint}: {e.search[:80]!r}", e.path)
             ]
         files[e.path] = files[e.path].replace(e.search, e.replace, 1)
     return []
@@ -1891,9 +2001,10 @@ def _settle(box: Sandbox, repo: Path, paths: list[str], before: dict[str, str], 
 
 def _attempt(
     job: _Job, edits: list[Edit], repo: Path, box: Sandbox, formatted: bool, write
-) -> tuple[str | None, dict]:
+) -> tuple[str | None, dict, PatchFailure | None]:
     """Apply one set of edits to the base, check it alone, then put the base back. (None, the site's patched
-    files) when the repo is green with it and its code is the code Offramp wrote; else (why not, {})."""
+    files, None) when the repo is green with it and its code is the code Offramp wrote; else (why not, {}, the
+    failure's kind and the files it names)."""
     new = dict(job.shown)
     locked = frozenset(p for p in new if p in job.reference) if job.locked else frozenset()
     problems = _apply(edits, new, locked)
@@ -1904,12 +2015,20 @@ def _attempt(
                 if is_test_path(path):  # a test may read the constants Offramp wrote, imported like any other
                     new[path] = add_fixtures(add_imports(new[path], job.client_module, job.constants))
         except SyntaxError as e:
-            problems.append(f"{path} does not parse: {e.msg} (line {e.lineno})")
+            problems.append(
+                Problem("does_not_parse", f"{path} does not parse: {e.msg} (line {e.lineno})", path)
+            )
+    deleted = []
     for path in new if not problems else []:
         if is_test_path(path) and (gone := _test_names(job.shown[path]) - _test_names(new[path])):
-            problems.append(f"patch removes tests from {path}: {sorted(gone)}")
+            problems.append(
+                Problem("deletes_tests", f"patch removes tests from {path}: {sorted(gone)}", path)
+            )
+            deleted += [f"{path}::{name}" for name in sorted(gone)]
     if problems:
-        return f"patch rejected (patch rules): {'; '.join(problems)}", {}
+        files = list(dict.fromkeys(p.file for p in problems))
+        rejected = PatchFailure(kind=problems[0].kind, files=files, tests=deleted)
+        return f"patch rejected (patch rules): {'; '.join(p.text for p in problems)}", {}, rejected
     changed = [p for p in new if new[p] != job.before[p]]
     for p in changed:
         write(p, new[p])
@@ -1922,12 +2041,21 @@ def _attempt(
     for p in changed:  # every site is checked against the same base
         (repo / p).write_text(job.before[p])
     if off:
-        return f"the patch changes code that ships (only tests may change): {'; '.join(off.values())}", {}
+        text = f"the patch changes code that ships (only tests may change): {'; '.join(off.values())}"
+        return text, {}, PatchFailure(kind="backstop", files=sorted(off))
     if why:
-        return f"the patched code does not send the evaluated request: {why}", {}
+        return (
+            f"the patched code does not send the evaluated request: {why}",
+            {},
+            PatchFailure(kind="probe_mismatch"),
+        )
     if result.ok:
-        return None, patched
-    return f"repo checks failed on the patch ({result.mode}): {_summary(result.output)}", {}
+        return None, patched, None
+    return (
+        f"repo checks failed on the patch ({result.mode}): {_summary(result.output)}",
+        {},
+        PatchFailure(kind="checks_failed"),
+    )
 
 
 def compose_patches(
@@ -1982,12 +2110,13 @@ def compose_patches(
     box = sandbox_factory(repo)
     to_migrate = sorted((v for v in verdicts if v.decision == "MIGRATE"), key=lambda v: v.site_id)
 
-    def downgrade(v: Verdict, reason: str) -> None:
-        decided[v.site_id] = v.model_copy(update={"decision": "MANUAL_REVIEW", "reason": reason})
+    def downgrade(v: Verdict, reason: str, failure: PatchFailure | None = None) -> None:
+        update = {"decision": "MANUAL_REVIEW", "reason": reason, "patch_failure": failure}
+        decided[v.site_id] = v.model_copy(update=update)
 
-    def stop(reason: str) -> PatchResult:  # nothing can be validated: no site is patched, no file changes
+    def stop(reason: str, failure: PatchFailure | None = None) -> PatchResult:  # nothing patched or changed
         for v in to_migrate:
-            downgrade(v, reason)
+            downgrade(v, reason, failure)
         verdicts_out = [decided.get(v.site_id, v) for v in verdicts]
         return PatchResult(files={}, diffs={}, site_files={}, verdicts=verdicts_out, adapters=adapters,
                            sandbox_mode=box.mode, warnings=warnings)  # fmt: skip
@@ -1997,7 +2126,8 @@ def compose_patches(
     untouched = box.check()
     if not untouched.ok:
         return stop(
-            f"repo checks fail on the untouched repo ({untouched.mode}): {_summary(untouched.output)}"
+            f"repo checks fail on the untouched repo ({untouched.mode}): {_summary(untouched.output)}",
+            PatchFailure(kind="repo_red"),
         )
 
     client_at = client_location(repo, [by_id[v.site_id].file for v in to_migrate if v.site_id in by_id])
@@ -2027,7 +2157,8 @@ def compose_patches(
     if not base.ok:
         return stop(
             f"repo checks fail after adding Offramp's client module ({client_at[0]}) and kept-site comments "
-            f"({base.mode}): {_summary(base.output)}"
+            f"({base.mode}): {_summary(base.output)}",
+            PatchFailure(kind="repo_red"),
         )
     formatted = box.formatted()  # the repo keeps `ruff format` clean: so do the patches
 
@@ -2189,12 +2320,14 @@ def compose_patches(
         job = _Job(local, shown, before, {**base_code, **code}, client_module=client_at[1], width=width,
                    constants=imports, locked=locked, verify=probe)  # fmt: skip
         # Offramp's own changes alone: green needs no model call; red shows the model what fails
-        failure, patched = _attempt(job, [], repo, box, formatted, write)
-        if failure and failure.startswith("the patched code does not send"):  # the model may not touch it
+        failure, patched, last = _attempt(job, [], repo, box, formatted, write)
+        if last is not None and last.kind == "probe_mismatch":  # the model may not touch it
             why = f"Offramp's own rewrite was run and {failure.partition(': ')[2]}"
-            downgrade(v, f"patch not composed: {why}")
+            downgrade(v, f"patch not composed: {why}", last)
             continue
         tried, checked, applied = [[]], failure, []  # tries; what the last said; the last checked one's edits
+        ended: PatchFailureKind | None = None  # how the loop ended when not on a checked try's failure
+        replies = 0  # the model's replies for this site
         calls = (_call_text(original, local), _call_text(code[site.file], local))
         read_only = {p for p in shown if p in job.reference} if locked else set()
         prompt = _prompt(local, tier, shown, read_only, client, client_at, width, calls, done, failure)
@@ -2213,32 +2346,39 @@ def compose_patches(
                 )
             except BudgetExceeded as e:
                 failure = f"patch not composed: {e}" + (f"; last failure: {failure}" if failure else "")
+                ended = "budget_stop"
                 break
+            replies += 1
             edits = parse_edits(res.output.text or "").edits
             if not edits:  # empty or malformed: ask again, no check needed
                 failure = "the reply holds no complete edit block" + (
                     f"; last failure: {checked}" if checked else ""
                 )
+                ended = "no_edit_block"
             else:
                 named = {e.path for e in edits}
                 edits += [e for e in applied if e.path not in named]  # the last checked try's, kept as is
                 if edits in tried:  # a patch already tried (A-B-A too): the sandbox would say the same again
                     failure = f"repair produced no change; last failure: {failure}"
+                    ended = "no_change"
                     break
                 tried.append(edits)
-                failure, patched = _attempt(job, edits, repo, box, formatted, write)
-                checked = failure
-                if failure and failure.startswith("repo checks failed"):  # it applied: a repair builds on it
+                failure, patched, found = _attempt(job, edits, repo, box, formatted, write)
+                checked, ended = failure, None
+                last = found.model_copy(update={"model_edit": True}) if found else last
+                if found and found.kind == "checks_failed":  # it applied: a repair builds on it
                     applied = edits
                 if failure is None:
                     break
+            repair = _repair(failure, {p: t for p, t in shown.items() if p not in read_only})
             messages = [
                 *messages,
                 {"role": "assistant", "content": res.output.text or ""},
-                {"role": "user", "content": REPAIR.format(failure=failure)},
+                {"role": "user", "content": repair},
             ]
         if failure is not None:
-            downgrade(v, failure)
+            outer = {"kind": ended, "last": last.kind} if ended else {}
+            downgrade(v, failure, last.model_copy(update={**outer, "tries": replies}))
             continue
         alone[v.site_id] = True
         unpruned = dict(patched)  # the version the check passed: the fallback if pruning breaks it
@@ -2267,9 +2407,8 @@ def compose_patches(
             trial = dict(merged)
             for path, text in versions[sid].items():
                 if (m := merge_onto(base_files[path], trial.get(path, base_files[path]), text)) is None:
-                    downgrade(
-                        by_verdict[sid], f"green alone, but its patch conflicts with another site's in {path}"
-                    )
+                    why = f"green alone, but its patch conflicts with another site's in {path}"
+                    downgrade(by_verdict[sid], why, PatchFailure(kind="merge_conflict", files=[path]))
                     break
                 trial[path] = m
             else:
@@ -2363,7 +2502,7 @@ def compose_patches(
                     return [], f"combined repair produced no change; last failure: {checked}"
                 tried.append(edits)
                 new = dict(shown)
-                problems = _apply(edits, new, read_only)
+                problems = [p.text for p in _apply(edits, new, read_only)]
                 gone = {p: _test_names(shown[p]) - _test_names(new[p]) for p in new if is_test_path(p)}
                 problems += [f"patch removes tests from {p}: {sorted(g)}" for p, g in gone.items() if g]
                 for p in sorted(editable) if not problems else []:
@@ -2389,8 +2528,9 @@ def compose_patches(
                     for p in changed:
                         write(p, shown[p])
                     applied = edits
+            repair = _repair(failure, {p: shown[p] for p in editable})
             messages = [*messages, {"role": "assistant", "content": res.output.text or ""},
-                        {"role": "user", "content": REPAIR.format(failure=failure)}]  # fmt: skip
+                        {"role": "user", "content": repair}]  # fmt: skip
         return [], failure
 
     merged, combined = merge([v.site_id for v in to_migrate if v.site_id in versions])
@@ -2404,7 +2544,7 @@ def compose_patches(
             break
         drop = culprits(off, combined)  # never repaired: only code may change an evaluated call
         for sid, why in drop.items():
-            downgrade(by_verdict[sid], f"green alone, but {why}")
+            downgrade(by_verdict[sid], f"green alone, but {why}", PatchFailure(kind="merged_drift"))
         for path in merged:
             write(path, base_files[path])
         merged, combined = merge([sid for sid in combined if sid not in drop])
@@ -2440,7 +2580,8 @@ def compose_patches(
                     if off
                     else f" ({result.mode}): {_summary(output)}"
                 )
-                downgrade(by_verdict[sid], f"green alone, but {alongside}{why}")
+                kind = "merged_drift" if off else "not_together"
+                downgrade(by_verdict[sid], f"green alone, but {alongside}{why}", PatchFailure(kind=kind))
         combined = kept
     for sid in combined:  # what ships: each site's own change against the base
         diffs[sid] = adapters[sid].patch = _diff(befores[sid], versions[sid])

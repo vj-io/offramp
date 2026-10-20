@@ -137,7 +137,7 @@ def run_tier(
         for s, r in zip(scores, results, strict=True)
     ]
 
-    passed, score = site_pass(contract.task_type, scores, thresholds, reference_mean)
+    passed, score = site_pass(contract.task_type, scores, thresholds, reference_mean, split=split)
     result = TierResult(
         site_id=site.id,
         tier=tier,
@@ -242,6 +242,7 @@ def _judge_scores(
                 score=s.candidate,
                 detail=s.detail,
                 error_category=s.error_category or (None if passed else LOW_SCORE),
+                reference_score=s.reference,
             )
         )
     return scores, judged.reference_mean
