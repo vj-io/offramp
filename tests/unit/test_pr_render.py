@@ -66,7 +66,7 @@ def test_title_counts_migrated_sites_and_estimates_the_saving_from_verdicts():
     assert title == (
         f"Offramp: migrate {len(migrated)}/{len(c.verdicts)} LLM call sites to Nemotron on Nebius Token "
         "Factory "
-        f"(est. −{round(100 * (1 - after / before))}% cost)"
+        f"(est. −{round(100 * (1 - after / before))}% cost on those {len(migrated)})"
     )
 
 

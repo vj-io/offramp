@@ -198,7 +198,8 @@ def _title(verdicts: list[Verdict]) -> str:
         change = round(
             100 * (1 - sum(v.cost_after_per_1k for v in priced) / sum(v.cost_before_per_1k for v in priced))
         )
-        title += f" (est. −{change}% cost)" if change >= 0 else f" (est. +{-change}% cost)"
+        scope = f"cost on those {len(priced)}"  # the migrated sites only; the report headline covers all
+        title += f" (est. −{change}% {scope})" if change >= 0 else f" (est. +{-change}% {scope})"
     return title
 
 
