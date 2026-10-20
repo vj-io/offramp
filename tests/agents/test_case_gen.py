@@ -18,6 +18,7 @@ from offramp.tf import FakeLLM, TFClient
 HERE = Path(__file__).resolve().parents[1] / "fixtures" / "cassettes" / "case_gen"
 MINIREPO = HERE / "minirepo"
 SUPER_MODEL, ULTRA_MODEL = "nvidia/nemotron-3-super-120b-a12b", "nvidia/Nemotron-3-Ultra-550b-a55b"
+pytestmark = pytest.mark.usefixtures("target_code_here")  # schemas and oracles run on this machine
 
 
 def minirepo(tmp_path) -> tuple[Path, ScanResult]:
@@ -265,6 +266,26 @@ def test_fixtures_are_discovered_as_records(tmp_path):
     assert set(fixtures) == {"agent_steps.json", "emails/", "refunds.json", "threads.json", "tickets.json"}
     assert fixtures["emails/"][0]["id"] == "001-damaged" and "SH-5120" in fixtures["emails/"][0]["text"]
     assert fixtures["tickets.json"][1]["subject"] == "Wo ist mein Paket?"
+
+
+def test_fixtures_that_resolve_outside_the_repo_are_not_read(tmp_path):
+    """A fixture's records become eval inputs: sent to Token Factory, written to evals/cases, uploaded to
+    LangSmith. A link out of the repo must not bring a host file along (as the scanner skips such links)."""
+    repo, _ = minirepo(tmp_path)
+    outside, fixtures_dir = tmp_path / "outside", repo / "tests" / "fixtures"
+    outside.mkdir()
+    (outside / "leak.json").write_text('[{"subject": "canary-outside", "body": "x"}]')
+    (outside / "note.txt").write_text("canary-outside")
+    (fixtures_dir / "leak.json").symlink_to(outside / "leak.json")
+    (fixtures_dir / "emails" / "leak.eml").symlink_to(outside / "note.txt")
+    (fixtures_dir / "linked").symlink_to(outside, target_is_directory=True)
+    (fixtures_dir / "alias.json").symlink_to(fixtures_dir / "tickets.json")  # stays inside: read as before
+
+    fixtures = cg.discover_fixtures(repo)
+
+    assert "canary" not in json.dumps(fixtures)
+    assert set(fixtures) == {"agent_steps.json", "alias.json", "emails/", "refunds.json", "threads.json",
+                             "tickets.json"}  # fmt: skip
 
 
 def test_exact_and_suffix_names_map_without_an_llm(tmp_path):

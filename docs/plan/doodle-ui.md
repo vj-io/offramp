@@ -4,7 +4,7 @@ User-chosen look: the brag-styles `doodle` set ("a hand-drawn pitch deck come al
 responsive web app. This file is the binding visual spec for `web/`; it overrides the PRD's "dark mode default"
 (the user asked for this look explicitly).
 
-Source set: `/Users/mac/.claude/plugins/cache/brag-scaled/brag-scaled/0.8.0-scaled/skills/brag-styles/sets/doodle/`
+Source set: `skills/brag-styles/sets/doodle/` in the brag-scaled plugin (0.8.0-scaled)
 (`set.md`, `frames/f1-f4.webp` for composition, `ref/engine.html` for hand-drawn path generators — lift the
 helpers, never its copy; all words and numbers come from Offramp).
 

@@ -79,6 +79,25 @@ def test_run_refuses_credentials_in_the_repo_url(tmp_path, monkeypatch, capsys):
     assert "GITHUB_TOKEN" in capsys.readouterr().err and not (tmp_path / "runs").exists()
 
 
+@pytest.mark.parametrize(("argv", "live"), [([], True), (["--cache-only"], False)])
+def test_resume_honours_cache_only(tmp_path, monkeypatch, argv, live):
+    """`--resume <id> --cache-only` on a run started live replays the cache: the Token Factory client and the
+    pipeline's own live switches (Tavily price lookup, the eval matrix) are all off."""
+    monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path))
+    log = pipeline.new_run(RunConfig(repo_url="https://github.com/acme/tiny", live=True), tmp_path)
+    seen = {}
+
+    class Resumed(pipeline.Pipeline):
+        def execute(self):
+            seen.update(client=self.client.live, config=self.config.live)
+            return Stage.DONE
+
+    monkeypatch.setattr(pipeline, "Pipeline", Resumed)
+
+    assert cli.main(["run", "--resume", log.run_id, *argv]) == 0
+    assert seen == {"client": live, "config": live}
+
+
 def test_resume_continues_the_stored_run(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path))
     log = finished_run(tmp_path)  # finished: resuming it is a no-op that reports DONE

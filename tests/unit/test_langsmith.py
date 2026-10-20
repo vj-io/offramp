@@ -513,6 +513,21 @@ def test_share_link_shares_the_runs_dataset_and_returns_the_public_url(clients):
     assert clients.named("share_dataset") == [((), {"dataset_name": "offramp-r1-cs_01"})]
 
 
+def test_dataset_url_is_the_private_url_and_shares_nothing(clients):
+    langsmith.upload_dataset(SITE, [case(1)], [reference(1)], run_id="r1")
+    assert langsmith.dataset_url(SITE, run_id="r1") == "https://smith.test/datasets/offramp-r1-cs_01"
+    assert clients.named("share_dataset") == []
+
+
+@pytest.mark.parametrize(("value", "public"), [(None, False), ("true", False), ("0", False), ("1", True)])
+def test_public_links_need_the_exact_opt_in(monkeypatch, value, public):
+    if value is None:
+        monkeypatch.delenv(langsmith.PUBLIC_OPT_IN, raising=False)
+    else:
+        monkeypatch.setenv(langsmith.PUBLIC_OPT_IN, value)
+    assert langsmith.public_links() is public
+
+
 # ------------------------------------------------------------------ telemetry never fails a run
 
 

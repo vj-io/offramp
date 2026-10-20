@@ -12,7 +12,8 @@ A run lives in OFFRAMP_DATA_DIR/runs/<run_id>/:
     repo/                   the clone (a local path is read in place and never written to)
     clone.json scan.json cases.json adapters.json matrix.json verdicts.json patch.json pr.json
                             one artifact per step, written when the step has finished
-    evals/results/<site>.json  per site: verdict, the adapter it ended on, every TierResult (case scores kept)
+    evals/results/<site>.json  per site: verdict (the final decision, after the patch stage), eval_verdict
+                            (the eval stage's), the adapter it ended on, every TierResult (case scores kept)
     report.json             {snapshot, pr_body_markdown, free_text_arg_exemptions}, written at the end
 A step whose artifact exists is loaded instead of run, so `execute()` on an interrupted or failed run picks up
 after its last finished step; routing resumes per site, and a PR is never opened twice.
@@ -109,6 +110,18 @@ def _write_json(path: Path, value: Any) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(value, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(path)  # an artifact is either absent or complete: it marks its step finished
+
+
+def write_results(directory: Path, routes: dict[str, dict[str, Any]], verdicts: list[dict[str, Any]]) -> None:
+    """evals/results/<site>.json under `directory`, with the decision the run ended on: `verdict` is the final
+    one (`verdicts`: after the patch stage, which moves a MIGRATE whose patch fails to MANUAL_REVIEW),
+    `eval_verdict` the eval stage's. `routes`: the eval stage's results, or files this wrote (idempotent)."""
+    final = {v["site_id"]: v for v in verdicts}
+    for site_id, result in routes.items():
+        evaluated = result.get("eval_verdict", result["verdict"])
+        out = {"site": result["site"], "verdict": final.get(site_id, evaluated), "eval_verdict": evaluated}
+        out |= {k: v for k, v in result.items() if k not in out}
+        _write_json(directory / "evals" / "results" / f"{site_id}.json", out)
 
 
 # ---------------------------------------------------------------- event log
@@ -360,14 +373,13 @@ def snapshot(run_id: str, events: Iterable[RunEvent]) -> RunSnapshot:
 
 
 def report(directory: Path, run_id: str, events: Iterable[RunEvent]) -> dict[str, Any]:
-    """GET /api/runs/{id}/report and report.json: snapshot, PR body, free-text tool-argument exemptions."""
-    pr = directory / "pr.json"
-    cases = directory / "cases.json"
-    return {
-        "snapshot": snapshot(run_id, events).model_dump(mode="json"),
-        "pr_body_markdown": json.loads(pr.read_text())["body"] if pr.exists() else None,
-        "free_text_arg_exemptions": json.loads(cases.read_text())["free_text_args"] if cases.exists() else {},
-    }
+    """GET /api/runs/{id}/report and report.json: snapshot, PR body, free-text tool-argument exemptions;
+    scrubbed like the events."""
+    pr, cases = directory / "pr.json", directory / "cases.json"
+    body = json.loads(pr.read_text())["body"] if pr.exists() else None
+    free = json.loads(cases.read_text())["free_text_args"] if cases.exists() else {}
+    snap = snapshot(run_id, events).model_dump(mode="json")
+    return scrub({"snapshot": snap, "pr_body_markdown": body, "free_text_arg_exemptions": free})
 
 
 # ---------------------------------------------------------------- the run
@@ -417,10 +429,14 @@ class Pipeline:
         route: Callable[..., Any] | None = None,
         patch: Callable[..., Any] | None = None,
         pr: Callable[..., dict[str, Any]] | None = None,
+        live: bool | None = None,
     ):
+        """`live` overrides the stored config's (a live run resumed cache-only)."""
         config = log.config
         if config is None:
             raise ValueError(f"run {log.run_id} has no QUEUED event with its config")
+        if live is not None:
+            config = config.model_copy(update={"live": live})
         self.log, self.config, self.client, self.dir = log, config, client, log.dir
         self.budget: Budget = getattr(client, "budget", None) or Budget()
         self._restore_budget()
@@ -470,6 +486,7 @@ class Pipeline:
         routes = self._routes(chat, adapters, stopped, evals, scan["schemas"])
         verdicts = self._artifact("verdicts.json", lambda: self._verdicts(chat, routes))
         patch = self._artifact("patch.json", lambda: self._patch(repo, chat, verdicts, routes))
+        write_results(self.dir, routes, patch["verdicts"])
         self._artifact("pr.json", lambda: self._pr(repo, chat, patch, routes, evals, cases))
         self._finish(chat, cases, patch)
 
@@ -695,7 +712,8 @@ class Pipeline:
         schemas: dict[str, Any],
     ) -> dict[str, dict[str, Any]]:
         """Route each site (Task 9) to its verdict. evals/results/<site>.json is written per site, so a
-        resumed run routes only the sites it had not finished. Verdicts are announced together at VERDICTS."""
+        resumed run routes only the sites it had not finished (write_results adds the final verdict after the
+        patch stage). Verdicts are announced together at VERDICTS."""
         out = {}
         for site in chat:
             path = self.dir / "evals" / "results" / f"{site.id}.json"
@@ -873,7 +891,9 @@ def write_and_open_pr(
     tier_results = [TierResult.model_validate(r) for s in sites for r in routes[s.id]["tier_results"]]
     adapters = {k: r["adapter"] for k, r in routes.items() if r["adapter"]} | patch.get("adapters", {})
     shared = [s for s in sites if s.id in cases["summaries"]]  # the sites whose dataset was uploaded
-    links = {s.id: url for s in shared if (url := langsmith.share_link(s, run_id=run_id))}
+    public = langsmith.public_links()  # a share link publishes the target's prompts and inputs: opt-in only
+    link = langsmith.share_link if public else langsmith.dataset_url
+    links = {s.id: url for s in shared if (url := link(s, run_id=run_id))}
     ctx = PRContext(
         run_id=run_id,
         repo=repo,
@@ -887,6 +907,7 @@ def write_and_open_pr(
         audit={k: v["audit"] for k, v in cases["summaries"].items()},
         free_text_args=cases["free_text_args"],
         langsmith_links=links,
+        langsmith_public=public,
         site_files=patch.get("site_files", {}),
         sandbox=patch.get("sandbox_mode"),
         client_path=patch.get("client_path"),
@@ -895,9 +916,9 @@ def write_and_open_pr(
         combined_repair=patch.get("combined_repair", []),
     )
     draft = write_pr(ctx, client)
-    files, title, body = patch["files"], draft.title, draft.body
+    files, title, body = patch["files"], scrub(draft.title), scrub(draft.body)  # reasons carry sandbox output
     url = github.open_pr(repo, run_id=run_id, files=files, title=title, body=body) if open_pr else None
-    return {"title": draft.title, "body": draft.body, "url": url}
+    return {"title": title, "body": body, "url": url}
 
 
 def default_price_lookup(config: RunConfig, client: LLM) -> Callable[[str], Any]:
@@ -908,9 +929,11 @@ def default_price_lookup(config: RunConfig, client: LLM) -> Callable[[str], Any]
     return lambda model: lookup_source_model(model, llm=client)
 
 
-def execute_run(log: RunLog, *, cache_dir: str | Path | None = None) -> Stage:
-    """Execute (or resume) the run in `log` with a Token Factory client built from its config."""
+def execute_run(log: RunLog, *, cache_dir: str | Path | None = None, cache_only: bool = False) -> Stage:
+    """Execute (or resume) the run in `log` with a Token Factory client built from its config. `cache_only`
+    replays the response cache even when the run was started live (`offramp run --resume ID --cache-only`)."""
     if log.config is None:
         raise ValueError(f"run {log.run_id} has no QUEUED event with its config")
-    client = TFClient(cache_dir=cache_dir, live=log.config.live, budget=Budget())
-    return Pipeline(log, client, cache_dir=cache_dir).execute()
+    live = log.config.live and not cache_only
+    client = TFClient(cache_dir=cache_dir, live=live, budget=Budget())
+    return Pipeline(log, client, cache_dir=cache_dir, live=live).execute()

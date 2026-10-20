@@ -11,8 +11,10 @@ Runs wait on a queue that one background thread works through, so the per-run ca
 runs never race for the same credit. A replay (Global Constraint 14) never calls Token Factory: a thread
 appends the recorded events at 4x speed, each recorded gap capped at 1.5 s first. POST /api/runs is rate
 limited per IP (OFFRAMP_RATE_LIMIT_PER_MIN, default 30); CORS allows OFFRAMP_WEB_ORIGIN (comma-separated,
-default http://localhost:3000). A live run imports the target repo's code on this host, so the API starts one
-only when OFFRAMP_ALLOW_LIVE_RUNS=1 (403 otherwise); replays and cache-only runs need no opt-in.
+default http://localhost:3000). Any run, cache-only too, clones the repo it is given, runs its code in the
+sandbox and can open a PR with this server's GitHub token, so the API starts one only when
+OFFRAMP_ALLOW_LIVE_RUNS=1 (403 otherwise); replays need no opt-in. The API has no authentication: publish it
+on localhost only.
 """
 
 from __future__ import annotations
@@ -45,9 +47,10 @@ NO_RECORDING = (
 )
 LIVE_OPT_IN = "OFFRAMP_ALLOW_LIVE_RUNS"
 LIVE_REFUSED = (
-    "live runs are off on this server: a live run imports the target repo's code here and spends Token "
-    "Factory credit. Watch the replay (?replay=demo), start a cache-only run (live=false), or set "
-    "OFFRAMP_ALLOW_LIVE_RUNS=1 on a server you trust with the repos it is given."
+    "runs are off on this server: a run, cache-only too, clones the repo it is given, runs its code and can "
+    "open a pull request with this server's GitHub token, and a live run spends Token Factory credit. Watch "
+    "the replay (?replay=demo), or set OFFRAMP_ALLOW_LIVE_RUNS=1 on a server you trust with the repos it is "
+    "given."
 )
 DEFAULT_ORIGIN = "http://localhost:3000"
 POLL_S = 0.2  # how often an event stream looks for new events
@@ -229,7 +232,7 @@ def create_app(
             raise HTTPException(422, "the body must be a RunConfig")
         if problem := config_problem(config):
             raise HTTPException(422, problem)
-        if config.live and os.environ.get(LIVE_OPT_IN) != "1":
+        if os.environ.get(LIVE_OPT_IN) != "1":
             raise HTTPException(403, LIVE_REFUSED)
         if config.live and not tf_configured():
             raise HTTPException(503, "Token Factory is not configured on this server; watch the replay")

@@ -486,6 +486,45 @@ def test_a_patch_that_fails_reannounces_the_site_as_manual_review(tmp_path):
     assert any(e.payload.get("message") == "patch: dropped a symlink" for e in log.events if e.type == "log")
     with Session(engine) as s:
         assert [v.decision for v in s.exec(select(db.Verdict))] == ["MANUAL_REVIEW"]
+    # the per-site results file carries the decision the run ended on, and the eval stage's beside it
+    result = pipeline.json.loads((log.dir / "evals" / "results" / "cs_01.json").read_text())
+    assert (
+        result["verdict"]["decision"] == "MANUAL_REVIEW"
+        and result["verdict"]["reason"] == "repo tests failed"
+    )
+    assert result["eval_verdict"]["decision"] == "MIGRATE" and result["tier_results"]
+
+
+def test_results_files_written_from_a_finished_runs_artifacts_are_unchanged_by_a_rewrite(tmp_path):
+    routes = {
+        "cs_01": {
+            "site": {"id": "cs_01"},
+            "verdict": {"site_id": "cs_01", "decision": "MIGRATE"},
+            "adapter": None,
+            "tier_results": [{"tier": "lightning"}],
+        },
+        "cs_02": {
+            "site": {"id": "cs_02"},
+            "verdict": {"site_id": "cs_02", "decision": "KEEP_CLOSED"},
+            "adapter": None,
+            "tier_results": [],
+        },
+    }
+    final = [
+        {"site_id": "cs_01", "decision": "MANUAL_REVIEW"},
+        {"site_id": "cs_02", "decision": "KEEP_CLOSED"},
+    ]
+
+    pipeline.write_results(tmp_path, routes, final)
+    first = {p.name: p.read_text() for p in (tmp_path / "evals" / "results").iterdir()}
+    again = {k: pipeline.json.loads(v) for k, v in first.items()}
+    pipeline.write_results(tmp_path, {k.removesuffix(".json"): v for k, v in again.items()}, final)
+
+    assert {p.name: p.read_text() for p in (tmp_path / "evals" / "results").iterdir()} == first  # idempotent
+    cs_01 = again["cs_01.json"]
+    assert list(cs_01) == ["site", "verdict", "eval_verdict", "adapter", "tier_results"]
+    assert (cs_01["verdict"]["decision"], cs_01["eval_verdict"]["decision"]) == ("MANUAL_REVIEW", "MIGRATE")
+    assert again["cs_02.json"]["verdict"] == again["cs_02.json"]["eval_verdict"]
 
 
 @pytest.mark.parametrize("live", [True, False])
@@ -538,6 +577,41 @@ def test_the_pr_writer_renders_the_body_from_the_run_and_opens_the_pr(tmp_path, 
     assert [e.payload["title"] for e in log.events if e.type == "pr"] == [opened["title"]]
 
 
+@pytest.mark.parametrize("public", [False, True])
+def test_langsmith_links_are_private_unless_the_run_opts_in_to_public_ones(tmp_path, monkeypatch, public):
+    """A public share link exposes the target's prompts and inputs to anyone with it: only on
+    OFFRAMP_LANGSMITH_PUBLIC=1. Otherwise the PR and report carry the dataset's private URL."""
+    if public:
+        monkeypatch.setenv("OFFRAMP_LANGSMITH_PUBLIC", "1")
+    else:
+        monkeypatch.delenv("OFFRAMP_LANGSMITH_PUBLIC", raising=False)
+    calls = []
+
+    def link(kind):
+        def get(site, *, run_id):
+            calls.append((kind, site.id, run_id))
+            return f"https://smith.test/{kind}/{site.id}"
+
+        return get
+
+    monkeypatch.setattr(pipeline.langsmith, "share_link", link("public"))
+    monkeypatch.setattr(pipeline.langsmith, "dataset_url", link("private"))
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo, open_pr=False)
+    llm = llm_for_full_run(*split_counts(repo)).add("pr_writer", {"summary": "", "sites": []})
+
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=Recorder().eval_matrix, patch=Recorder().patch).execute()
+        == Stage.DONE
+    )
+
+    body = pipeline.report(log.dir, log.run_id, log.events)["pr_body_markdown"]
+    kind = "public" if public else "private"
+    assert calls == [(kind, "cs_01", log.run_id)]  # never a share link without the opt-in
+    label = "public, read-only" if public else "private: members of the LangSmith workspace only"
+    assert f"LangSmith ({label}): [cs_01](https://smith.test/{kind}/cs_01)" in body
+
+
 def test_a_pr_for_a_repo_that_is_not_on_github_is_a_run_error(tmp_path):
     repo = make_repo(tmp_path)
     git(repo, "remote", "remove", "origin")
@@ -571,6 +645,38 @@ def test_secrets_never_reach_events_the_event_file_or_sqlite(tmp_path, monkeypat
     for secret in ("tvly-live-secret-123", "lsv2-fallback-secret", "ghp_secret_456789", "x:y@"):
         assert secret not in stored
     assert "https://***@github.com/acme/tiny" in stored and "for key ***" in stored
+
+
+def test_secrets_never_leave_in_the_pr_body_or_the_report(tmp_path, monkeypatch):
+    """Verdict reasons carry sandbox output tails into the PR body: it is scrubbed before GitHub gets it, and
+    pr.json and the report with it."""
+    monkeypatch.setenv("SOME_SERVICE_TOKEN", "not-a-real-secret-value")
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo)
+    opened = {}
+
+    def leaky_patch(repo, sites, verdicts, adapters, llm, work_dir, *, config):
+        why = "repo checks failed: env SOME_SERVICE_TOKEN=not-a-real-secret-value"
+        down = [v.model_copy(update={"decision": "MANUAL_REVIEW", "reason": why}) for v in verdicts]
+        return FakePatch(files={"app/triage.py": "# patched\n"}, verdicts=down, adapters=adapters)
+
+    def open_pr(repo, *, run_id, files, title, body, **kw):
+        opened.update(title=title, body=body)
+        return "https://github.com/acme/tiny/pull/9"
+
+    monkeypatch.setattr(pipeline.github, "open_pr", open_pr)
+    llm = llm_for_full_run(*split_counts(repo)).add("pr_writer", {"summary": "", "sites": []})
+    stage = pipeline.Pipeline(log, llm, eval_matrix=Recorder().eval_matrix, patch=leaky_patch).execute()
+
+    assert stage == Stage.DONE and "SOME_SERVICE_TOKEN=***" in opened["body"]
+    left = [opened["body"], (log.dir / "pr.json").read_text(), (log.dir / "report.json").read_text()]
+    left.append(pipeline.json.dumps(pipeline.report(log.dir, log.run_id, log.events)))
+    assert not [text for text in left if "not-a-real-secret-value" in text]
+    # a pr.json written before bodies were scrubbed: the report scrubs it on the way out
+    (log.dir / "pr.json").write_text(
+        pipeline.json.dumps({"body": "SOME_SERVICE_TOKEN=not-a-real-secret-value"})
+    )
+    assert pipeline.report(log.dir, log.run_id, log.events)["pr_body_markdown"] == "SOME_SERVICE_TOKEN=***"
 
 
 def test_the_run_budget_survives_a_resume(tmp_path):

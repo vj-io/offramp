@@ -93,10 +93,10 @@ What did not work smoothly is written up, with evidence, in [docs/FEEDBACK.md](d
 
 - **Nebius AI Cloud Serverless Jobs** are an optional home for the eval matrix (`offramp/evals/serverless_job`, image `Dockerfile.eval`), submitted with the `nebius` CLI when `NEBIUS_PROJECT_ID` is set and the CLI is installed. That path is built and tested against a fake `nebius` CLI, but it has not been run on a live AI Cloud account (the Token Factory balance cannot fund jobs, see [docs/FEEDBACK.md](docs/FEEDBACK.md)); by default the same matrix runs on an in-process worker with the same output format. AI Cloud billing needs a payment card and a $25 top-up, and this project spends only granted credits, so no job ran on Nebius: every run, the recorded one included, ran its 18-cell matrix on the local worker.
 - **Tavily** looks up each source model's published price and deprecation notices at run time. The price feeds the "before" cost, shown as an estimate with its source URL and date; a deprecation notice becomes a sunset-risk badge. A price is accepted only if it is printed on the cited page next to that model's name, otherwise the run falls back to `offramp/evals/pricing.yaml` and says so. In the recorded run, the source-model price for 4 of the 6 sites came from the Tavily lookup and for 2 (`gpt-4o`, `o3`) from the price file, and Tavily found the `claude-sonnet-4-5` retirement notice (30 November 2026) behind the sunset-risk badge on cs_02 and cs_03. Lookups are cached per day: the recorded run read the 2026-10-20 results that run 3 had fetched.
-- **LangSmith** (when `LANGSMITH_API_KEY` is set) traces every Token Factory call under `offramp-<run_id>` and keeps each site's cases and references as a dataset, with experiments per tier and split. The recorded run's six public LangSmith links are in the evidence section of its pull request.
+- **LangSmith** (when `LANGSMITH_API_KEY` is set) traces every Token Factory call under `offramp-<run_id>` and keeps each site's cases and references as a dataset, with experiments per tier and split. The recorded run's six public LangSmith links are in the evidence section of its pull request. A run shares nothing by default: the report and the PR link each dataset by its private URL, which opens only for members of your LangSmith workspace, and public share links are made only when `OFFRAMP_LANGSMITH_PUBLIC=1` (the recorded run predates this switch).
 - **Tendem** (by Toloka): `scripts/audit_references.py` builds human-audit tasks for flagged references and ingests the verdicts; each paid task needs explicit approval of its quoted price.
 - **Toloka** has no API on its current platform, so it is not integrated.
-- **Docker** runs the target repo's own `ruff check` and `pytest` on every patch, with the network off and 2 CPUs.
+- **Docker** runs the target repo's own `ruff check` and `pytest` on every patch, and the Pydantic models and oracles Offramp reads from it, with the network off and 2 CPUs (see [Security model](#security-model)).
 - **Hosting.** The dashboard is on Vercel's free tier and plays the replay in the browser. The API is not hosted: `make demo` runs it locally, and live runs need your own keys.
 
 ## How parity is measured
@@ -109,6 +109,7 @@ No OpenAI or Anthropic key was available for the demo, so the source models' own
 - `reference:human`: written or verified by a person (Tendem), optional.
 
 Pass rules per site, tier and split, as the fraction of passing cases: JSON extraction needs 100% schema-valid and 95% field match; classification 95% label agreement; tool call 95% (tool name and normalised arguments; arguments that are free text are checked for presence, not wording, and the PR says which); reasoning 90% final-answer match; free text needs a judge mean of at least 4.0 and, when a reference exists, within 0.3 of the reference mean. Thresholds are configurable per run. The final verdict uses the holdout split only. Cost "before" is an estimate (published price times tokens measured on the Token Factory call for the same prompt); latency "before" is not measured and shown as "-".
+Those measured tokens include Nemotron's reasoning tokens where the evaluated adapter had reasoning on, which raises "before": in the recorded run that is cs_05 only (its Lightning adapter reasons), a manual-review site, so it sits on both sides of the all-sites cost figure and outside the migrated-sites one.
 
 ## Results
 
@@ -159,15 +160,25 @@ make install
 | `NEBIUS_API_KEY` | Token Factory key. Required for live runs, not for replay or tests |
 | `NEBIUS_BASE_URL` | Defaults to `https://api.tokenfactory.nebius.com/v1` |
 | `OFFRAMP_MODEL_LIGHTNING`, `OFFRAMP_MODEL_SUPER`, `OFFRAMP_MODEL_ULTRA` | Tier to model id overrides |
-| `GITHUB_TOKEN`, `OFFRAMP_DEMO_REPO` | Opening the PR (fine-grained token, contents and pull requests on the target repo only); `vj-io/offramp-demo-app` is the demo target |
+| `GITHUB_TOKEN` | Opening the PR (fine-grained token, contents and pull requests on the target repo only); without it, the local `gh auth token` |
+| `OFFRAMP_DEMO_REPO` | The repo the dashboard's "Use demo repo" button fills in, read when the web app is built (default `vj-io/offramp-demo-app`); it has no effect on opening PRs |
 | `TAVILY_API_KEY` | Price and deprecation lookup; without it prices come from `pricing.yaml` |
-| `LANGSMITH_API_KEY`, `LANGSMITH_TRACING`, `LANGSMITH_PROJECT` | Tracing and datasets |
-| `TENDEM_API_KEY` | Human audit of references |
+| `LANGSMITH_API_KEY`, `LANGSMITH_TRACING` | Datasets and experiments with the key; traces too when `LANGSMITH_TRACING=true` |
+| `LANGSMITH_PROJECT` | LangSmith's own default project, for traces made outside a run (`offramp prepare`); `offramp run` traces each run to its own project, `offramp-<run_id>` |
+| `OFFRAMP_LANGSMITH_PUBLIC` | `1` makes the report and PR link public, read-only LangSmith share links of each site's dataset (its prompts, inputs and references). Unset, nothing is shared and the links are the datasets' private URLs |
+| `TENDEM_API_KEY` | Not read by Offramp's code: `scripts/audit_references.py` writes the human-audit task and reads the verdicts back as files, and posting the task to Tendem is a manual step |
 | `NEBIUS_PROJECT_ID`, `OFFRAMP_EVAL_IMAGE` | Submit the eval matrix as a Serverless Job instead of running it locally (needs an AI Cloud account) |
-| `OFFRAMP_DATA_DIR`, `OFFRAMP_RATE_LIMIT_PER_MIN`, `OFFRAMP_WEB_ORIGIN`, `OFFRAMP_ALLOW_LIVE_RUNS` | API data directory, rate limit on `POST /api/runs`, allowed web origin for CORS, opt-in for live runs through the API (off by default) |
-| `*_FALLBACK` (Nebius, Tavily, LangSmith, Tendem) | Second key, used for the rest of the process when the primary is rejected or out of credit; the switch is logged without the key |
+| `OFFRAMP_DATA_DIR`, `OFFRAMP_RATE_LIMIT_PER_MIN`, `OFFRAMP_WEB_ORIGIN`, `OFFRAMP_ALLOW_LIVE_RUNS` | API data directory, rate limit on `POST /api/runs`, allowed web origin for CORS, opt-in for any run through the API, cache-only or live (off by default; replays need none) |
+| `OFFRAMP_ALLOW_LOCAL_SANDBOX` | `1` lets target-repo code run on this machine when Docker is unavailable: not isolated, for repos you trust (see [Security model](#security-model)) |
+| `*_FALLBACK` (Nebius, Tavily, LangSmith) | Second key, used for the rest of the process when the primary is rejected or out of credit; the switch is logged without the key |
 
 `.env` is gitignored, keys are read server-side only, and CI scans the full history with gitleaks.
+
+### Security model
+
+- **What runs where.** Offramp runs code from the repo it is given in three places: the repo's own `ruff` and `pytest` on each patch, the Pydantic models it imports to read their JSON schemas, and the oracles in `evals/reference/`. All three run in the Docker sandbox (`offramp/sandbox.py`). The repo's dependencies are installed when the sandbox image is built, inside Docker; the code then runs with the network off, the repo mounted read-only, no capabilities, and none of this machine's environment variables. Everything else (scanning, Token Factory calls, scoring, the PR) runs in the Offramp process and only reads the repo.
+- **What never sees keys.** Target code never gets a Token Factory, Tavily, LangSmith or GitHub key: the container receives no host environment. Run events, the PR body and the report are scrubbed of the value of every variable whose name holds KEY, TOKEN, SECRET or PASSWORD before they are stored or sent. LangSmith datasets hold the target's prompts and inputs, and stay private unless `OFFRAMP_LANGSMITH_PUBLIC=1`.
+- **Opt-ins.** Without Docker, target code runs only when `OFFRAMP_ALLOW_LOCAL_SANDBOX=1`, as a subprocess on this machine whose environment holds no key or token. That is not isolation: the code runs as you, with your files and your network, so use it only on repos you trust. Without Docker and without the opt-in nothing from the target repo runs: `offramp run` and `offramp prepare` stop with a message saying so when a site needs a schema or an oracle, and the patch stage sends its sites to manual review ("no sandbox"). The API starts runs only with `OFFRAMP_ALLOW_LIVE_RUNS=1` and has no authentication, so bind it to localhost.
 
 ```bash
 uv run offramp scan <path>                     # list closed-LLM call sites (no model calls)
@@ -181,7 +192,7 @@ The API contract the dashboard depends on:
 
 | Endpoint | |
 |---|---|
-| `POST /api/runs` | Body is the run config; returns `{"run_id"}`. `?replay=demo` starts a replay with no Token Factory calls. A live run (`"live": true`) answers 403 unless the server sets `OFFRAMP_ALLOW_LIVE_RUNS=1`, because it imports the target repo's code on that host; cache-only runs and replays are always allowed. Repo URLs must be `https://` with no credentials (422). 30 requests per minute per IP |
+| `POST /api/runs` | Body is the run config; returns `{"run_id"}`. `?replay=demo` starts a replay with no Token Factory calls. Every run, cache-only (`"live": false`) included, answers 403 unless the server sets `OFFRAMP_ALLOW_LIVE_RUNS=1`, because a run clones the repo it is given, runs its code in the sandbox and can open a pull request with the server's GitHub token; replays are always allowed. Repo URLs must be `https://` with no credentials (422). 30 requests per minute per IP |
 | `GET /api/runs/{id}` | Snapshot: stage, sites, tier results, verdicts, case summaries, totals, artifacts |
 | `GET /api/runs/{id}/events` | Server-sent events, resumable with `Last-Event-ID` |
 | `GET /api/runs/{id}/report` | JSON download of the snapshot and the PR body |
@@ -191,10 +202,10 @@ The API contract the dashboard depends on:
 
 ```bash
 docker build -t offramp-api .
-docker run --rm -p 8000:8000 -v offramp-data:/data --env-file .env offramp-api
+docker run --rm -p 127.0.0.1:8000:8000 -v offramp-data:/data --env-file .env offramp-api
 ```
 
-The image serves the API only; the dashboard in `web/` deploys separately. `Dockerfile.eval` is the Serverless Job image.
+The image serves the API only; the dashboard in `web/` deploys separately. The API has no authentication and serves every run on its disk, so publish it on localhost only, as above. `Dockerfile.eval` is the Serverless Job image.
 
 ## Development
 
@@ -206,7 +217,7 @@ make live       # delete the recorded cassettes, then re-record them against Tok
 
 - Python 3.12, `uv`, ruff; tests under `tests/{unit,agents,harness,integration,e2e}`. Tests marked `live` run only with `--live`.
 - CI (`.github/workflows/ci.yml`): ruff, pytest with `--cov=offramp --cov-fail-under=70`, web test, lint and build, gitleaks over the full history, and a Docker build of the API image.
-- A nightly workflow re-records the cassettes against Token Factory and opens an issue when the answers stop satisfying the parsers. It runs only when the repository has a `NEBIUS_API_KEY` secret.
+- A live-check workflow (`.github/workflows/nightly-live.yml`) re-records the cassettes against Token Factory and opens an issue when the answers stop satisfying the parsers. Every run spends Token Factory credit, so it runs only when started by hand (`workflow_dispatch`), never on a schedule, and only when the repository has a `NEBIUS_API_KEY` secret.
 
 ```
 offramp/

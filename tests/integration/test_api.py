@@ -278,15 +278,21 @@ def test_bad_configs_are_refused(make_client, change, problem):
     assert r.status_code == 422 and problem in r.json()["detail"]
 
 
-def test_live_runs_are_refused_unless_the_server_opts_in(make_client, monkeypatch):
-    """A live run imports the target repo's code on this host: the API runs one only when the operator says so
-    (OFFRAMP_ALLOW_LIVE_RUNS=1). Replays and cache-only runs stay open."""
+@pytest.mark.parametrize("live", [True, False])
+def test_runs_are_refused_unless_the_server_opts_in(make_client, monkeypatch, tmp_path, live):
+    """Any run, cache-only too, clones the repo it is given, runs its code in the sandbox and can open a PR
+    with the server's GitHub token: the API starts one only when the operator says so
+    (OFFRAMP_ALLOW_LIVE_RUNS=1). Replays stay open."""
     monkeypatch.setenv("NEBIUS_API_KEY", "k")
-    r = make_client().post("/api/runs", json={**CONFIG, "live": True})
+    started = []
+    client = make_client(execute=started.append)
+    r = client.post("/api/runs", json={**CONFIG, "live": live})
     assert r.status_code == 403 and "OFFRAMP_ALLOW_LIVE_RUNS=1" in r.json()["detail"]
     monkeypatch.setenv("OFFRAMP_ALLOW_LIVE_RUNS", "true")  # only the exact value 1 opens it
-    assert make_client().post("/api/runs", json={**CONFIG, "live": True}).status_code == 403
-    assert make_client().post("/api/runs", json=CONFIG).status_code == 200  # cache-only (live=False)
+    assert client.post("/api/runs", json={**CONFIG, "live": live}).status_code == 403
+    assert started == [] and not client.app.state.logs and not list((tmp_path / "data" / "runs").glob("*"))
+    monkeypatch.setenv("OFFRAMP_ALLOW_LIVE_RUNS", "1")
+    assert client.post("/api/runs", json={**CONFIG, "live": live}).status_code == 200
 
 
 def test_a_live_run_needs_token_factory(make_client, monkeypatch):
@@ -298,7 +304,8 @@ def test_a_live_run_needs_token_factory(make_client, monkeypatch):
     assert make_client().post("/api/runs").status_code == 422  # no body, no replay
 
 
-def test_a_queued_run_executes_on_the_worker_and_streams_live(make_client):
+def test_a_queued_run_executes_on_the_worker_and_streams_live(make_client, monkeypatch):
+    monkeypatch.setenv("OFFRAMP_ALLOW_LIVE_RUNS", "1")
     seen = {}
     release = threading.Event()
 
@@ -327,7 +334,9 @@ def test_a_queued_run_executes_on_the_worker_and_streams_live(make_client):
     assert (client.app.state.logs[run_id].dir / "events.jsonl").exists()
 
 
-def test_a_crash_outside_the_pipeline_still_ends_the_stream_with_an_error(make_client):
+def test_a_crash_outside_the_pipeline_still_ends_the_stream_with_an_error(make_client, monkeypatch):
+    monkeypatch.setenv("OFFRAMP_ALLOW_LIVE_RUNS", "1")
+
     def execute(log):
         raise RuntimeError("worker fell over")
 

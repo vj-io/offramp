@@ -8,6 +8,8 @@ LANGSMITH_API_KEY_FALLBACK once (Global Constraint 28).
 What lands in LangSmith for a run `r1`: the traces of every Token Factory call in project `offramp-r1`
 (`run_project`), one dataset `offramp-r1-<site>` per call site holding its cases and references
 (`upload_dataset`), and one experiment `offramp-r1-<site>-<tier>-<split>` per evaluation (`log_experiment`).
+All of it is private to the key's workspace: the report and PR link each dataset by its private URL
+(`dataset_url`), and make it public (`share_link`) only when OFFRAMP_LANGSMITH_PUBLIC=1.
 """
 
 import contextlib
@@ -24,6 +26,7 @@ from offramp.schemas import BaselineResult, CallSite, CandidateResult, CaseScore
 log = logging.getLogger(__name__)
 
 TRACE_TIMEOUT_MS = (2_000, 5_000)  # connect, read: for the background trace uploads
+PUBLIC_OPT_IN = "OFFRAMP_LANGSMITH_PUBLIC"  # 1: the report and PR link public share links of the datasets
 
 
 class CaseResult(NamedTuple):
@@ -238,6 +241,19 @@ def log_experiment(
         return project.url
 
     return _call("log_experiment", go)
+
+
+def public_links() -> bool:
+    """Whether this run may publish its datasets (OFFRAMP_LANGSMITH_PUBLIC=1): they hold the target's prompts
+    and inputs, so a run shares nothing unless the operator says so."""
+    return os.environ.get(PUBLIC_OPT_IN) == "1"
+
+
+def dataset_url(site: CallSite, *, run_id: str) -> str | None:
+    """Private URL of the site's dataset (see upload_dataset): it opens for members of the key's workspace."""
+    return _call(
+        "dataset_url", lambda client: client.read_dataset(dataset_name=dataset_name(run_id, site.id)).url
+    )
 
 
 def share_link(site: CallSite, *, run_id: str) -> str | None:

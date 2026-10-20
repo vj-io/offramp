@@ -78,7 +78,8 @@ class PRContext(BaseModel):
     )  # site_id -> {BaselineResult.model: n}
     audit: dict[str, ReferenceAudit] = Field(default_factory=dict)  # evals/audit.json (GC18)
     free_text_args: dict[str, list[str]] = Field(default_factory=dict)  # site_id -> ["tool.arg", ...]
-    langsmith_links: dict[str, str] = Field(default_factory=dict)  # "project" / site_id -> share URL
+    langsmith_links: dict[str, str] = Field(default_factory=dict)  # "project" / site_id -> dataset URL
+    langsmith_public: bool = False  # the links are public share links (OFFRAMP_LANGSMITH_PUBLIC=1)
     site_files: dict[str, list[str]] = Field(default_factory=dict)  # PatchResult.site_files
     sandbox: str | None = None  # PatchResult.sandbox_mode: "docker" | "local"
     client_path: str | None = None  # PatchResult.client_path: where the Token Factory client module lives
@@ -418,7 +419,12 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         out += [f"- {v.site_id}: {v.sunset_risk}" for v in sunset]
     if ctx.langsmith_links:
         keys = sorted(ctx.langsmith_links, key=lambda k: (k != "project", k))
-        out += ["", "LangSmith: " + " · ".join(f"[{k}]({ctx.langsmith_links[k]})" for k in keys)]
+        scope = (
+            "public, read-only"
+            if ctx.langsmith_public
+            else "private: members of the LangSmith workspace only"
+        )
+        out += ["", f"LangSmith ({scope}): " + " · ".join(f"[{k}]({ctx.langsmith_links[k]})" for k in keys)]
     out.append("")
 
     for v in verdicts:
