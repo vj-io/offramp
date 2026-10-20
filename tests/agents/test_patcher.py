@@ -18,6 +18,7 @@ from offramp import sandbox as sandbox_module
 from offramp.agents.patcher import (
     Edit,
     PatchEdits,
+    _rewrite_call,
     _summary,
     add_fixtures,
     add_imports,
@@ -29,8 +30,10 @@ from offramp.agents.patcher import (
     keep_comment,
     line_length,
     merge_onto,
+    mirror_fakes,
     parse_edits,
     py_literal,
+    rewrite_callers,
     wrap_long_strings,
 )
 from offramp.agents.translate import build_request
@@ -140,19 +143,16 @@ def tiny_adapters(**spec_over) -> dict[str, Adapter]:
     }
 
 
-GOOD_CALL = (
-    f'model="{LIGHTNING}",\n'
-    "        max_tokens=32,\n"
-    "        temperature=0.0,\n"
-    '        extra_body={"chat_template_kwargs": {"enable_thinking": False}},'
-)
+SPLAT = "**NEMOTRON_REQUEST"  # the call is rewritten by code to create(**NEMOTRON_REQUEST, messages=[...])
 
 
-def migrate(path: str, call: str = GOOD_CALL, extra: list[Edit] = ()) -> PatchEdits:
-    return PatchEdits(
-        edits=[Edit(path=path, search='model="gpt-4o-mini",\n        max_tokens=32,', replace=call), *extra],
-        notes="moved to Lightning",
-    )
+def migrate(path: str, extra: list[Edit] = ()) -> PatchEdits:
+    """A patcher reply for a tiny-repo site: the code rewrote the call already, only `extra` edits remain."""
+    return PatchEdits(edits=[*extra], notes="nothing else to change")
+
+
+def request_edit(path: str, search: str, replace: str) -> list[Edit]:
+    return [Edit(path=path, search=search, replace=replace)]
 
 
 def patcher_llm(*replies) -> FakeLLM:
@@ -201,7 +201,7 @@ def test_migrates_passing_sites_and_comments_kept_ones():
         "tinyapp/shout.py",
     }
     assert result.client_path == "tinyapp/offramp_client.py"
-    assert f'model="{LIGHTNING}"' in result.files["tinyapp/greet.py"]
+    assert SPLAT in result.files["tinyapp/greet.py"] and LIGHTNING in result.files["tinyapp/greet.py"]
     assert (
         "    # offramp: kept on o3 — parity 60.0% < 95%\n    response = client"
         in result.files["tinyapp/motto.py"]
@@ -269,9 +269,9 @@ def test_a_red_baseline_downgrades_every_migration_names_the_step_and_changes_no
 
 
 def test_no_accepted_migration_means_no_client_module():
-    llm = patcher_llm(*[PatchEdits(edits=[])] * 4)  # two sites, each a try and a repair round
+    llm = patcher_llm(*[PatchEdits(edits=[])] * 4)  # two sites, each a try and an identical repair
 
-    result = run(llm)
+    result = run(llm, results=[True, True, False, False])
 
     assert set(result.files) == {"tinyapp/motto.py"}
 
@@ -292,17 +292,26 @@ def test_no_accepted_migration_means_no_client_module():
             ],
             "removes tests",
         ),
+        (request_edit("tinyapp/greet.py", '"max_tokens": 32,', '"max_tokens": 64,'), "evaluated request"),
+        (request_edit("tinyapp/greet.py", '"temperature": 0.0,', '"temperature": 0.7,'), "evaluated request"),
         (
-            migrate("tinyapp/greet.py", GOOD_CALL.replace("max_tokens=32", "max_tokens=64")).edits,
-            "max_tokens",
+            request_edit("tinyapp/greet.py", '"enable_thinking": False', '"enable_thinking": True'),
+            "evaluated request",
         ),
         (
-            migrate("tinyapp/greet.py", GOOD_CALL.replace("temperature=0.0", "temperature=0.7")).edits,
-            "temperature",
+            request_edit("tinyapp/greet.py", f'"model": "{LIGHTNING}",', '"model": "gpt-4o-mini",'),
+            "evaluated request",
         ),
-        (migrate("tinyapp/greet.py", GOOD_CALL.replace("False", "True")).edits, "extra_body"),
-        (migrate("tinyapp/greet.py", GOOD_CALL.replace(LIGHTNING, "gpt-4o-mini")).edits, "model"),
-        (migrate("tinyapp/greet.py", GOOD_CALL + "\n        top_p=0.5,").edits, "top_p"),
+        (
+            request_edit(
+                "tinyapp/greet.py", "**NEMOTRON_REQUEST,", "**NEMOTRON_REQUEST,\n        top_p=0.5,"
+            ),
+            "the call must be exactly",
+        ),  # fmt: skip
+        (
+            request_edit("tinyapp/greet.py", "**NEMOTRON_REQUEST,", f'model="{LIGHTNING}", max_tokens=32,'),
+            "the call must be exactly",
+        ),  # fmt: skip
         (
             [
                 Edit(
@@ -325,6 +334,7 @@ def test_no_accepted_migration_means_no_client_module():
         "thinking",
         "model",
         "extra-kwarg",
+        "explicit-kwargs",
         "system-prompt",
     ],
 )
@@ -368,8 +378,9 @@ def test_patcher_call_is_super_with_thinking_off_and_shows_the_exact_request():
     )
     assert first["response_model"] is None  # plain edit blocks, not code inside JSON strings
     prompt = first["messages"][-1]["content"]
-    assert f'model="{LIGHTNING}"' in prompt and "max_tokens=32" in prompt
-    assert 'extra_body={"chat_template_kwargs": {"enable_thinking": False}}' in prompt
+    assert "create(**NEMOTRON_REQUEST, messages=[...])" in prompt and "already rewritten" in prompt
+    assert f'"model": "{LIGHTNING}"' in prompt and '"max_tokens": 32' in prompt
+    assert '"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}' in prompt
     assert "### tinyapp/greet.py (editable)" in prompt and "### tests/test_tinyapp.py (editable)" in prompt
     assert "### tinyapp/offramp_client.py (read-only)" in prompt
     second = llm.calls[1]["messages"][-1]["content"]  # each site is patched against the same base
@@ -403,16 +414,16 @@ def test_adapter_constants_are_written_into_the_file_before_the_call():
     source = prompt.split("### tinyapp/greet.py (editable)\n```python\n")[1].split("```")[0]
     module = ast.parse(source)
     consts = {n.targets[0].id: ast.literal_eval(n.value) for n in module.body if isinstance(n, ast.Assign)}
-    assert consts["NEMOTRON_TOOLS"] == tools
+    assert consts["NEMOTRON_REQUEST"]["tools"] == tools  # one constant holds every evaluated parameter
+    assert consts["NEMOTRON_REQUEST"]["tool_choice"] == "auto"  # Lightning: build_request's swap
     assert consts["NEMOTRON_FEW_SHOT"] == few
     assert (
         consts["GREET_SYSTEM_PROMPT"] == "You write one-line greetings. Never use emoji."
     )  # replaced in place
-    assert source.index("NEMOTRON_TOOLS =") < source.index("def greet")
+    assert source.index("NEMOTRON_REQUEST =") < source.index("def greet")
+    assert "*NEMOTRON_FEW_SHOT," in source and SPLAT in source  # the call itself is rewritten by code
     assert max(len(line) for line in source.splitlines()) <= 100
-    assert (
-        "tools=NEMOTRON_TOOLS" in prompt and 'tool_choice="auto"' in prompt
-    )  # Lightning: build_request swap
+    assert '"tool_choice": "auto"' in prompt
 
 
 # ---------------------------------------------------------------- helpers
@@ -508,7 +519,7 @@ def test_call_parameters_come_from_build_request():
     run(llm, adapters=adapters, build=build)
 
     prompt = llm.calls[0]["messages"][-1]["content"]
-    assert "max_tokens=2032" in prompt and 'tool_choice="auto"' in prompt
+    assert '"max_tokens": 2032' in prompt and '"tool_choice": "auto"' in prompt
 
 
 def test_keep_comment_format():
@@ -530,7 +541,7 @@ def test_keep_comment_format():
 # ---------------------------------------------------------------- demo repo on cassettes
 
 
-DEMO_OUTCOME = ({"cs_04": True, "cs_05": False, "cs_06": False}, ["cs_04"])  # recorded live, 2026-10-20
+DEMO_OUTCOME = ({"cs_04": False, "cs_05": False, "cs_06": False}, [])  # recorded live (Task 10c), 2026-10-20
 CS05_SUFFIX = (
     "\n\nReply with the final refund amount in the customer's currency alone on the last line as "
     "`ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator)."
@@ -595,7 +606,8 @@ def test_demo_patches_keep_the_demo_repo_green():
     all green ones together; the outcome below is what the recording produced (see the task-10 report)."""
     result = run_demo(live=False)
 
-    assert result.client_path == "helphub/offramp_client.py" and result.warnings == []
+    assert result.client_path == (None if not result.combined else "helphub/offramp_client.py")
+    assert result.warnings == []
     assert set(result.alone) == {"cs_04", "cs_05", "cs_06"}
     assert set(result.combined) <= {sid for sid, ok in result.alone.items() if ok}
     for v in result.verdicts:
@@ -638,10 +650,8 @@ def test_a_failed_try_gets_one_repair_round_that_sees_the_failure():
 
 
 def test_a_block_overlapping_an_earlier_one_is_explained():
-    first = Edit(path="tinyapp/greet.py", search='model="gpt-4o-mini",', replace=f'model="{LIGHTNING}",')
-    overlap = Edit(
-        path="tinyapp/greet.py", search='model="gpt-4o-mini",\n        max_tokens=32,', replace="x"
-    )
+    first = Edit(path="tinyapp/greet.py", search='"max_tokens": 32,', replace='"max_tokens": 32,  # a')
+    overlap = Edit(path="tinyapp/greet.py", search='"max_tokens": 32,\n    "temperature"', replace="x")
     bad = PatchEdits(edits=[first, overlap])
     llm = patcher_llm(bad, bad, migrate("tinyapp/shout.py"))
 
@@ -651,7 +661,7 @@ def test_a_block_overlapping_an_earlier_one_is_explained():
 
 
 def test_a_repeated_edit_is_applied_once():
-    edit = Edit(path="tinyapp/greet.py", search="max_tokens=32,", replace="max_tokens=32,  # same")
+    edit = Edit(path="tinyapp/greet.py", search='"max_tokens": 32,', replace='"max_tokens": 32,  # same')
     llm = patcher_llm(
         PatchEdits(edits=[*migrate("tinyapp/greet.py").edits, edit, edit]), migrate("tinyapp/shout.py")
     )
@@ -802,15 +812,14 @@ def test_a_block_without_its_own_file_line_belongs_to_the_previous_file():
 
 
 def test_a_block_labelled_with_the_wrong_file_applies_where_its_text_is_unique():
-    wrong = Edit(
-        path="tests/test_tinyapp.py", search='model="gpt-4o-mini",\n        max_tokens=32,', replace=GOOD_CALL
-    )
+    text = 'or "").strip()\n'  # only in greet.py; the reply labels it with the test file
+    wrong = Edit(path="tests/test_tinyapp.py", search=text, replace='or "").strip()  # relabelled\n')
     llm = patcher_llm(PatchEdits(edits=[wrong]), migrate("tinyapp/shout.py"))
 
     result = run(llm)
 
     assert verdict(result, "cs_01").decision == "MIGRATE"
-    assert f'model="{LIGHTNING}"' in result.files["tinyapp/greet.py"]
+    assert "# relabelled" in result.files["tinyapp/greet.py"]
 
 
 def test_failure_summaries_are_stable_across_runs():
@@ -965,12 +974,9 @@ def test_each_site_is_patched_alone_then_all_together():
     result = run(llm, sandboxes=boxes)
 
     combined = boxes[0].checks[-1]
-    assert (
-        f'model="{LIGHTNING}"' in combined["tinyapp/greet.py"]
-        and f'model="{LIGHTNING}"' in combined["tinyapp/shout.py"]
-    )
+    assert SPLAT in combined["tinyapp/greet.py"] and SPLAT in combined["tinyapp/shout.py"]
     assert combined["tests/test_tinyapp.py"].count("# both sites") == 1
-    assert f'model="{LIGHTNING}"' not in boxes[0].checks[3]["tinyapp/greet.py"]  # shout was checked alone
+    assert SPLAT not in boxes[0].checks[3]["tinyapp/greet.py"]  # shout was checked alone
     assert result.alone == {"cs_01": True, "cs_03": True} and result.combined == ["cs_01", "cs_03"]
     assert result.files["tests/test_tinyapp.py"].count("# both sites") == 1
 
@@ -1099,3 +1105,157 @@ def test_a_module_name_that_might_be_the_fixture_is_never_shadowed(module_bindin
     source = f"{module_binding}\n\ndef test_x():\n    assert tmp_path\n"
 
     assert add_fixtures(source) == source
+
+
+def test_repairs_run_on_ultra_with_thinking_off():
+    breaking = migrate(
+        "tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace="")]
+    )
+    llm = patcher_llm(breaking, migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"))
+
+    run(llm, results=[True, True, False, True, True])
+
+    assert [(c["tier"], c["reasoning"]) for c in llm.calls] == [
+        (Tier.SUPER, "off"), (Tier.ULTRA, "off"), (Tier.SUPER, "off")]  # fmt: skip
+
+
+OPENAI_SITE = """def triage(client, subject):
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        temperature=0,
+        max_tokens=16,
+        messages=[
+            {"role": "system", "content": PROMPT},
+            {"role": "user", "content": f"Subject: {subject}"},
+        ],
+    )
+    return response.choices[0].message.content
+"""
+ANTHROPIC_SITE = """def step(client, text):
+    response = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=512,
+        system=PROMPT,
+        tools=TOOLS,
+        tool_choice={"type": "any"},
+        messages=[{"role": "user", "content": (f"Customer: {text}\\n" "Choose.")}],
+    )
+    return response.content
+"""
+
+
+def _site(function):
+    return CallSite(id="cs_09", file="m.py", lines=[2, 10], sdk="openai", call="c", function=function,
+                    prompt_source="fstring")  # fmt: skip
+
+
+@pytest.mark.parametrize(("source", "function"), [(OPENAI_SITE, "triage"), (ANTHROPIC_SITE, "step")])
+def test_the_call_is_rewritten_by_code_to_the_evaluated_request(source, function):
+    constants = {
+        "request": "NEMOTRON_REQUEST",
+        "few_shot": "NEMOTRON_FEW_SHOT",
+        "suffix": "NEMOTRON_USER_SUFFIX",
+    }
+
+    out = _rewrite_call(source, _site(function), constants, "PROMPT")
+
+    call = next(n for n in ast.walk(ast.parse(out)) if isinstance(n, ast.Call) and n.keywords)
+    assert ast.unparse(call.func).endswith("chat.completions.create") and "messages.create" not in out
+    assert [k.arg for k in call.keywords] == [None, "messages"] and call.keywords[
+        0
+    ].value.id == "NEMOTRON_REQUEST"
+    first, few, user = call.keywords[1].value.elts
+    assert (
+        ast.unparse(first) == "{'role': 'system', 'content': PROMPT}"
+        and ast.unparse(few) == "*NEMOTRON_FEW_SHOT"
+    )
+    assert ast.unparse(user.values[1]).endswith("+ NEMOTRON_USER_SUFFIX")
+    for gone in ("model=", "max_tokens=", "temperature=", "tools=", "tool_choice=", "system="):
+        assert gone not in out
+
+
+def test_a_call_whose_messages_are_built_elsewhere_is_left_to_the_model():
+    source = "def f(client, msgs):\n    return client.chat.completions.create(model='m', messages=msgs)\n"
+
+    assert _rewrite_call(source, _site("f"), {"request": "NEMOTRON_REQUEST"}, None) is None
+
+
+@pytest.mark.parametrize(
+    "literal", ['"a string that fits on its own line"', 'f"Subject: {s}, thirty-odd characters"']
+)
+def test_a_literal_that_fits_alone_moves_to_its_own_line(literal):
+    """cs_01's live patch: a test assert ran to 101 columns although its string itself was short."""
+    check = f"call['messages'][1]['content'] == {literal} and call['n'] == 123456"
+    source = f"def test_x(s, call):\n    assert {check}\n"
+
+    wrapped = wrap_long_strings(source, {2}, 88)
+
+    assert ast.dump(ast.parse(wrapped)) == ast.dump(ast.parse(source))
+    assert max(map(len, wrapped.splitlines())) <= 88
+
+
+CALLER = """from openai import OpenAI
+
+from helphub.inbox.triage import triage_ticket
+
+COMMANDS = {
+    "triage": lambda c: triage_ticket(OpenAI(), c["subject"], c["body"]),
+    "search": lambda c: search_kb(OpenAI(), c["q"]),
+}
+"""
+
+
+def test_callers_pass_the_token_factory_client_to_the_migrated_function_only():
+    out = rewrite_callers(CALLER, "triage_ticket", "helphub.offramp_client")
+
+    assert 'triage_ticket(token_factory_client(), c["subject"], c["body"])' in out
+    assert 'search_kb(OpenAI(), c["q"])' in out  # other functions keep their client
+    assert "from helphub.offramp_client import token_factory_client" in out
+    assert rewrite_callers(out, "triage_ticket", "helphub.offramp_client") == out
+
+
+def test_tests_that_fake_the_openai_constructor_fake_the_token_factory_client_too():
+    source = (
+        "def test_runs(monkeypatch, capsys):\n"
+        '    monkeypatch.setattr(cli, "OpenAI", lambda: FakeOpenAI(reply))\n'
+        '    monkeypatch.setattr(cli, "Anthropic", lambda: FakeAnthropic())\n'
+        '    monkeypatch.setattr(other, "OpenAI", lambda: FakeOpenAI(reply))\n'
+    )
+
+    out = mirror_fakes(source, {"cli"})
+
+    assert (
+        out.splitlines()[2]
+        == '    monkeypatch.setattr(cli, "token_factory_client", lambda: FakeOpenAI(reply))'
+    )
+    assert 'other, "token_factory_client"' not in out  # not a module whose code was changed
+    assert mirror_fakes(out, {"cli"}) == out
+
+
+def test_a_patch_that_changes_the_migrated_functions_parameters_is_rejected():
+    """cs_01's live try dropped `client` from triage_ticket and built a client inside: callers broke."""
+    drop = Edit(
+        path="tinyapp/greet.py",
+        search="def greet(client, name: str) -> str:",
+        replace="def greet(name: str) -> str:",
+    )
+    llm = patcher_llm(PatchEdits(edits=[drop]), PatchEdits(edits=[drop]), migrate("tinyapp/shout.py"))
+
+    reason = verdict(run(llm), "cs_01").reason
+
+    assert "signature of `greet` changed" in reason
+
+
+def test_a_repair_stopped_by_the_budget_keeps_the_first_failure_in_the_reason():
+    breaking = migrate(
+        "tinyapp/greet.py", extra=[Edit(path="tinyapp/greet.py", search=".strip()", replace="")]
+    )
+    llm = patcher_llm(
+        breaking, BudgetExceeded("Ultra agent call cap reached (0)"), migrate("tinyapp/shout.py")
+    )
+
+    reason = verdict(run(llm, results=[True, True, False, True]), "cs_01").reason
+
+    assert reason.startswith(
+        "patch not composed: Ultra agent call cap reached (0); last failure: repo checks failed"
+    )

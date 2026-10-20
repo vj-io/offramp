@@ -53,8 +53,6 @@ The files are unchanged from my first message. Reply with SEARCH/REPLACE edit bl
 explanation: a complete new set (all blocks, not only the fix), then the NOTES line. Begin with `FILE:`."""
 ROOT_CLIENT = ("offramp/client.py", "offramp.client")  # when the sites are not inside one package
 TEMPLATE = Path(__file__).parents[1] / "templates" / "client.py.tmpl"
-TIER_CONSTANTS = {Tier.LIGHTNING: "LIGHTNING", Tier.SUPER: "SUPER", Tier.ULTRA: "ULTRA"}
-REQUEST_KWARGS = ("max_tokens", "temperature", "tools", "tool_choice", "response_format", "extra_body")
 IGNORE = shutil.ignore_patterns(
     ".git",
     ".venv",
@@ -347,8 +345,10 @@ def _module_values(tree: ast.Module) -> dict[str, Any]:
 
 
 def _prepare(source: str, site: CallSite, spec: AdapterSpec, params: dict[str, Any], width: int):
-    """Write the adapter's large literals into the site's module. Returns (source, constants, system_name):
-    constants maps request keyword / "few_shot" -> constant name; system_name holds the system prompt."""
+    """Write the evaluated request into the site's module, mechanically. Returns (source, constants,
+    system_name, rewritten): constants maps "request" (every call parameter: model, max_tokens, temperature,
+    extra_body, response_format, tools, tool_choice), "few_shot", "prefix", "suffix" -> constant name;
+    system_name holds the system prompt; rewritten: the call is already `create(**REQUEST, messages=...)`."""
     tree = ast.parse(source)
     taken = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | set(_module_values(tree))
 
@@ -379,18 +379,99 @@ def _prepare(source: str, site: CallSite, spec: AdapterSpec, params: dict[str, A
         blocks.append(f"{system_name} = {prompt_literal(spec.system_prompt, width, len(system_name) + 3)}")
     for key, base, value in [
         ("few_shot", "NEMOTRON_FEW_SHOT", spec.few_shot or None),
-        ("tools", "NEMOTRON_TOOLS", params.get("tools")),
-        ("response_format", "NEMOTRON_RESPONSE_FORMAT", params.get("response_format")),
+        ("prefix", "NEMOTRON_USER_PREFIX", spec.user_prefix or None),
+        ("suffix", "NEMOTRON_USER_SUFFIX", spec.user_suffix or None),
+        ("request", "NEMOTRON_REQUEST", params),  # the evaluated call parameters, all of them
     ]:
         if value is not None:
             constants[key] = name(base)
             blocks.append(f"{constants[key]} = {py_literal(value, 0, width, len(constants[key]) + 3)}")
-    if blocks:
-        top = _top_node(tree, site)
-        at = min([top.lineno, *(d.lineno for d in getattr(top, "decorator_list", []))]) - 1
-        lines = source.splitlines(keepends=True)
-        source = "".join(lines[:at]) + "\n\n".join(blocks) + "\n\n\n" + "".join(lines[at:])
-    return source, constants, system_name
+    top = _top_node(tree, site)
+    at = min([top.lineno, *(d.lineno for d in getattr(top, "decorator_list", []))]) - 1
+    lines = source.splitlines(keepends=True)
+    source = "".join(lines[:at]) + "\n\n".join(blocks) + "\n\n\n" + "".join(lines[at:])
+    rewritten = _rewrite_call(source, site, constants, system_name)
+    return (rewritten or source), constants, system_name, rewritten is not None
+
+
+def _offset(lines: list[str], lineno: int, col: int) -> int:
+    """Character offset of an AST (line, UTF-8 byte column) position."""
+    return sum(map(len, lines[: lineno - 1])) + len(lines[lineno - 1].encode()[:col].decode())
+
+
+def _role(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Dict):
+        for k, v in zip(node.keys, node.values, strict=True):
+            if isinstance(k, ast.Constant) and k.value == "role" and isinstance(v, ast.Constant):
+                return v.value
+    return None
+
+
+def _rewrite_call(
+    source: str, site: CallSite, constants: dict[str, str], system_name: str | None
+) -> str | None:
+    """The site's call rewritten to `<client>.chat.completions.create(**REQUEST, messages=[system, *few-shot,
+    ...the call's own messages, the last user content wrapped in prefix/suffix])`, from an OpenAI
+    `chat.completions.create` or an Anthropic `messages.create` (its `system=` becomes the first message).
+    None when the call is not a single call with a literal `messages=[...]` list: the model then writes it."""
+    tree = ast.parse(source)
+    scope = next((n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+                  and n.name == site.function), tree)  # fmt: skip
+    kinds = ("chat.completions.create", "messages.create")
+    calls = [c for c in ast.walk(scope) if isinstance(c, ast.Call) and _call_name(c.func).endswith(kinds)]
+    if len(calls) != 1 or calls[0].args:
+        return None
+    call = calls[0]
+    kw = {k.arg: k.value for k in call.keywords}
+    messages = kw.get("messages")
+    if None in kw or not isinstance(messages, ast.List):
+        return None
+    anthropic = not _call_name(call.func).endswith("chat.completions.create")
+    receiver = call.func.value.value if anthropic else call.func.value.value.value
+
+    def seg(node: ast.AST) -> str:
+        return ast.get_source_segment(source, node)
+
+    items = list(messages.elts)
+    head = []
+    if items and _role(items[0]) == "system":
+        old = items.pop(0)
+        head.append(f'{{"role": "system", "content": {system_name}}}' if system_name else seg(old))
+    elif system_name:
+        head.append(f'{{"role": "system", "content": {system_name}}}')
+    elif anthropic and "system" in kw:
+        head.append(f'{{"role": "system", "content": {seg(kw["system"])}}}')
+    if "few_shot" in constants:
+        head.append(f"*{constants['few_shot']}")
+    body = [seg(e) for e in items]
+    if "prefix" in constants or "suffix" in constants:
+        users = [k for k, e in enumerate(items) if _role(e) == "user"]
+        if not users:
+            return None
+        last = items[users[-1]]
+        keys = [k.value if isinstance(k, ast.Constant) else None for k in last.keys]
+        if sorted(map(str, keys)) != ["content", "role"]:
+            return None
+        content = f"({seg(last.values[keys.index('content')])})"
+        if "prefix" in constants:
+            content = f"{constants['prefix']} + {content}"
+        if "suffix" in constants:
+            content = f"{content} + {constants['suffix']}"
+        body[users[-1]] = f'{{"role": "user", "content": {content}}}'
+    lines = source.splitlines(keepends=True)
+    start = _offset(lines, call.lineno, call.col_offset)
+    end = _offset(lines, call.end_lineno, call.end_col_offset)
+    indent = re.match(r"[ \t]*", lines[call.lineno - 1]).group(0)
+    i1, i2 = indent + "    ", indent + "        "
+    entries = "".join(f"{i2}{x},\n" for x in [*head, *body])
+    text = (f"{seg(receiver)}.chat.completions.create(\n{i1}**{constants['request']},\n{i1}messages=[\n"
+            f"{entries}{i1}],\n{indent})")  # fmt: skip
+    rewritten = source[:start] + text + source[end:]
+    try:
+        ast.parse(rewritten)
+    except SyntaxError:
+        return None
+    return rewritten
 
 
 def _top_node(tree: ast.Module, site: CallSite) -> ast.stmt:
@@ -518,6 +599,77 @@ def add_fixtures(source: str) -> str:
     return "".join(lines)
 
 
+OLD_CLIENTS = ("OpenAI", "Anthropic")
+
+
+def rewrite_callers(source: str, function: str, client: str) -> str:
+    """In a caller module: an `OpenAI()` / `Anthropic()` built right in a call of the migrated function
+    becomes `token_factory_client()` (imported from `client`). Calls of other functions keep their client."""
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    spans = []
+    for call in ast.walk(tree):
+        if (
+            not isinstance(call, ast.Call)
+            or getattr(call.func, "id", getattr(call.func, "attr", None)) != function
+        ):
+            continue
+        for arg in [*call.args, *(k.value for k in call.keywords)]:
+            if (isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name) and arg.func.id in OLD_CLIENTS
+                    and not arg.args and not arg.keywords):  # fmt: skip
+                spans.append(
+                    (
+                        _offset(lines, arg.lineno, arg.col_offset),
+                        _offset(lines, arg.end_lineno, arg.end_col_offset),
+                    )
+                )
+    if not spans:
+        return source
+    for start, end in sorted(spans, reverse=True):
+        source = source[:start] + "token_factory_client()" + source[end:]
+    return add_imports(source, client)
+
+
+def mirror_fakes(source: str, modules: set[str]) -> str:
+    """In a test: `monkeypatch.setattr(<module>, "OpenAI", <fake>)` for a module whose code now builds
+    `token_factory_client()` gets a twin for `token_factory_client`, with the same fake. Only for OpenAI-SDK
+    sites: the Token Factory client is an OpenAI client, so the repo's OpenAI fake fits it as it is."""
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    setattrs = [c for c in ast.walk(tree) if isinstance(c, ast.Call) and len(c.args) == 3
+                and ast.unparse(c.func).endswith("monkeypatch.setattr")]  # fmt: skip
+    present = {
+        (ast.unparse(c.args[0]), c.args[1].value) for c in setattrs if isinstance(c.args[1], ast.Constant)
+    }
+    inserts = []
+    for stmt in ast.walk(tree):
+        if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)):
+            continue
+        call = stmt.value
+        if (ast.unparse(call.func).endswith("monkeypatch.setattr") and len(call.args) == 3
+                and isinstance(call.args[0], ast.Name) and call.args[0].id in modules
+                and isinstance(call.args[1], ast.Constant) and call.args[1].value == "OpenAI"
+                and (call.args[0].id, "token_factory_client") not in present):  # fmt: skip
+            head = ast.get_source_segment(source, call.func)
+            fake = ast.get_source_segment(source, call.args[2])
+            indent = re.match(r"[ \t]*", lines[stmt.lineno - 1]).group(0)
+            inserts.append(
+                (stmt.end_lineno, f'{indent}{head}({call.args[0].id}, "token_factory_client", {fake})\n')
+            )
+    for row, text in sorted(inserts, reverse=True):
+        lines.insert(row, text)
+    return "".join(lines)
+
+
+def _signature(source: str, function: str | None) -> str | None:
+    """The parameter names of `function` in `source` (None when it is not found)."""
+    for n in ast.walk(ast.parse(source)):
+        if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef) and n.name == function:
+            a = n.args
+            return ", ".join(x.arg for x in [*a.posonlyargs, *a.args, *a.kwonlyargs])
+    return None
+
+
 def _test_names(source: str) -> set[str]:
     return {
         n.name
@@ -535,15 +687,10 @@ def _call_name(node: ast.expr) -> str:
 
 
 def conformance(
-    source: str,
-    site: CallSite,
-    tier: Tier,
-    params: dict[str, Any],
-    constants: dict[str, str],
-    system_name: str | None,
-    spec: AdapterSpec,
+    source: str, site: CallSite, params: dict[str, Any], constants: dict[str, str], system_name: str | None
 ) -> list[str]:
-    """Problems with the patched site file: its call must carry exactly the adapter's request."""
+    """Problems with the patched site file: the call must be `create(**REQUEST, messages=[...])`, REQUEST must
+    still hold exactly the evaluated parameters, and the prompt constants must be used."""
     tree = ast.parse(source)
     scope = next(
         (
@@ -560,47 +707,24 @@ def conformance(
         return [f"the old messages.create call is still in {where}"]
     if len(tf) != 1:
         return [f"expected one chat.completions.create call in {where}, found {len(tf)}"]
-    kw = {k.arg: k.value for k in tf[0].keywords}
-    if None in kw:
-        return ["the call unpacks **kwargs; pass the adapter's arguments explicitly"]
-    problems = [
-        f"unexpected keyword argument {k}" for k in kw if k not in {"model", "messages", *REQUEST_KWARGS}
-    ]
-    module = _module_values(tree)
-
-    def value(node: ast.expr) -> Any:
-        try:
-            return ast.literal_eval(node)
-        except ValueError:
-            return module.get(node.id, "<unresolved>") if isinstance(node, ast.Name) else "<unresolved>"
-
-    model = kw.get("model")
-    named = model is not None and TIER_CONSTANTS[tier] in (
-        getattr(model, "id", None),
-        getattr(model, "attr", None),
-    )
-    if not (named or (model is not None and value(model) == params["model"])):
-        problems.append(f"model must be {params['model']!r}")
-    if "messages" not in kw:
-        problems.append("messages missing")
-    for key in REQUEST_KWARGS:
-        expected = params.get(key)
-        if expected is None:
-            if key in kw:
-                problems.append(f"{key} is not part of the adapter's request")
-        elif key not in kw:
-            problems.append(f"{key} missing (adapter: {_flat(expected)[:120]})")
-        elif value(kw[key]) != expected:
-            problems.append(f"{key} = {_flat(value(kw[key]))[:120]}, adapter: {_flat(expected)[:120]}")
+    request = constants["request"]
+    splats = [k.value for k in tf[0].keywords if k.arg is None]
+    named = {k.arg for k in tf[0].keywords if k.arg}
+    problems = []
+    if tf[0].args or named != {"messages"} or len(splats) != 1 or getattr(splats[0], "id", None) != request:
+        problems.append(f"the call must be exactly create(**{request}, messages=[...]), nothing else")
+    if _module_values(tree).get(request) != params:
+        problems.append(f"{request} must hold exactly the evaluated request: {_flat(params)[:200]}")
     used = {n.id for n in ast.walk(scope) if isinstance(n, ast.Name)}
-    if system_name and system_name not in used:
-        problems.append(f"system prompt constant {system_name} is not used in {where}")
-    if "few_shot" in constants and constants["few_shot"] not in used:
-        problems.append(f"few-shot constant {constants['few_shot']} is not used in {where}")
-    texts = [n.value for n in ast.walk(scope) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
-    for label, piece in (("user prefix", spec.user_prefix), ("user suffix", spec.user_suffix)):
-        if piece and not any(piece in t for t in texts):
-            problems.append(f"{label} {piece!r} is not in {where}")
+    named_constants = (
+        ("system prompt", system_name),
+        ("few-shot", constants.get("few_shot")),
+        ("user prefix", constants.get("prefix")),
+        ("user suffix", constants.get("suffix")),
+    )
+    for label, const in named_constants:
+        if const and const not in used:
+            problems.append(f"{label} constant {const} is not used in {where}")
     return problems
 
 
@@ -674,13 +798,14 @@ the result of the previous ones; never repeat a block. Only files marked (editab
 Rules:
 1. Keep every function's name, parameters and return value. Only the type of an injected client parameter \
 may change, to `OpenAI` (from openai).
-2. The call passes exactly the keyword arguments under "Required request", using the constants named there \
-(they are already defined in the file): no other arguments, no **kwargs.
+2. The call is `client.chat.completions.create(**NEMOTRON_REQUEST, messages=[...])` as described under "The \
+call"; NEMOTRON_REQUEST and the other NEMOTRON_* constants are already in the file. Keep them and that call \
+exactly as they are; never pass the parameters any other way.
 3. Read the reply the OpenAI way: text is `response.choices[0].message.content` (may be None); tool calls \
 are `response.choices[0].message.tool_calls or []`, each with `.function.name` and `.function.arguments` \
 (a JSON string: json.loads it). Map them onto exactly what the function returned before.
 4. Code in this repo that constructs the old SDK client to call this function must pass \
-`token_factory_client()` (imported from the client module named under "Required request") instead. \
+`token_factory_client()` (imported from the client module named under "The call") instead. \
 Tests that replaced that constructor in such a module with a fake must replace `token_factory_client` \
 there instead: check the editable tests for such patches, since one left on the old constructor makes the \
 code call the real client.
@@ -688,12 +813,17 @@ code call the real client.
 SDK keyword arguments, message layout, checks of the call's source such as `"X" in ast.unparse(call)`) \
 and the repo's provider fakes: extend its existing OpenAI-style fake helper when it cannot yet return what \
 the new code reads (e.g. tool calls), building real openai response objects the way the helper already \
-does, instead of writing ad-hoc fake classes inside tests. Never weaken a behavioural or parsing \
-assertion: expected return values and parsing checks stay exactly as they are. Never delete or rename a \
-test.
+does, instead of writing ad-hoc fake classes inside tests. The system prompt is now the first message: \
+a test that read the user message as `messages[0]` reads it as `messages[-1]`, asserting the same \
+things. A test that requires literal keyword arguments at every call site (no `**` unpacking, a literal \
+`model=`) must accept this migrated call's `**NEMOTRON_REQUEST` and read the model from \
+`NEMOTRON_REQUEST["model"]`; keep the check as it is for every other call site. Never weaken a \
+behavioural or parsing assertion: expected return values and parsing checks stay exactly as they are. \
+Never delete or rename a test.
 6. Add the imports your code needs and remove the ones it leaves unused (import order is fixed \
 automatically afterwards).
-7. Keep lines within the repo's line length."""
+7. Keep lines within the repo's line length.
+8. If nothing besides the call needs to change, reply with only the NOTES line."""
 
 
 def _prompt(
@@ -707,12 +837,10 @@ def _prompt(
     client: str,
     client_at: tuple[str, str],
     width: int,
+    rewritten: bool,
+    done: list[str],
 ) -> str:
-    args = [f'    model="{params["model"]}",', "    messages=[...],  # see below"]
-    for key in REQUEST_KWARGS:
-        if key in params:
-            shown = constants.get(key) or py_literal(params[key], 4, width, 5 + len(key))
-            args.append(f"    {key}={shown},")
+    request = constants["request"]
     messages = [
         f'{{"role": "system", "content": {system_name}}}'
         if system_name
@@ -723,13 +851,29 @@ def _prompt(
         messages.append(f"*{constants['few_shot']}")
     last = "the user message(s) the code sends today"
     wraps = [
-        f"{_str(text)} {how}"
-        for text, how in ((spec.user_prefix, "prepended"), (spec.user_suffix, "appended"))
-        if text
+        f"{constants[k]} {how}"
+        for k, how in (("prefix", "prepended"), ("suffix", "appended"))
+        if k in constants
     ]
     if wraps:
         last += f", with {' and '.join(wraps)} to the content of the last one"
     messages.append(last)
+    if rewritten:
+        call = [
+            f"The call in `{site.file}` is already rewritten to "
+            f"`client.chat.completions.create(**{request}, messages=[...])`. {request} (defined in the file) "
+            f"holds every evaluated parameter: {_flat(params)[:400]}. Keep that call and the constants as "
+            "they are.",
+        ]
+    else:
+        call = [
+            f"Rewrite the call in `{site.file}` to exactly `client.chat.completions.create(**{request}, "
+            f"messages=[...])`: {request} (defined in the file) holds every evaluated parameter, nothing "
+            "else is passed.",
+        ]
+    args = [*call, "messages, in this order:", *(f"{i}. {m}" for i, m in enumerate(messages, 1))]
+    if done:
+        args += ["", "Already changed by Offramp (keep these):", *(f"- {d}" for d in done)]
     task = site.contract.task_type if site.contract else "unknown"
     lines = [
         f"## Call site {site.id}",
@@ -737,12 +881,8 @@ def _prompt(
         f"`{site.call}` on `{site.source_model}` ({task}). Target: {TIER_NAMES[tier]} on Token "
         "Factory.",
         "",
-        "## Required request",
-        "client.chat.completions.create(",
+        "## The call",
         *args,
-        ")",
-        "messages, in this order:",
-        *(f"{i}. {m}" for i, m in enumerate(messages, 1)),
         "",
         f"Token Factory client: `from {client_at[1]} import token_factory_client` (module shown below).",
         f"Repo ruff line length: {width}.",
@@ -827,7 +967,7 @@ def _fstring_pieces(segment: str, room: int) -> list[str] | None:
             cur = word
         else:
             cur += word
-    return [*pieces, literal(cur)] if pieces else None
+    return [*pieces, literal(cur)]
 
 
 def _literals(source: str) -> list[tuple[int, int, int, bool]]:
@@ -892,10 +1032,10 @@ def wrap_long_strings(source: str, lines: set[int], width: int) -> str:
         if segment.lstrip("rRuU")[:1] in "'\"":  # plain string: re-render from its value
             value = ast.literal_eval(segment)
             chunks = _chunks(value, width - len(lead)) if isinstance(value, str) else []
-            pieces = [_str(c) for c in chunks] if len(chunks) > 1 else None
+            pieces = [_str(c) for c in chunks]
         else:
             pieces = _fstring_pieces(segment, width - len(lead))
-        if not pieces:
+        if not pieces or (joined and len(pieces) < 2):  # a lone literal may just move to its own line
             continue
         if joined:  # already inside brackets, next to other pieces: more adjacent pieces
             split = f"\n{lead}".join(pieces)
@@ -986,6 +1126,7 @@ class _Job:
     before: dict[str, str]  # on disk before the site's patch: the base every site is patched against
     client_module: str  # import path of the Token Factory client module
     width: int  # the target's ruff line length
+    rewritten: bool  # the call is already `create(**REQUEST, messages=[...])`: no edit may be needed
 
 
 def _wrap(job: _Job, path: str, text: str) -> str:
@@ -1000,7 +1141,7 @@ def _attempt(
     """Apply one reply to the base, check it alone, then put the base back. (None, the site's patched files)
     when the repo is green with it; else (why not, {})."""
     patch = parse_edits(reply)
-    if not patch.edits:
+    if not patch.edits and not job.rewritten:
         return "the reply holds no edit blocks", {}
     new = dict(job.editable)
     problems = _apply(patch.edits, new)
@@ -1016,8 +1157,13 @@ def _attempt(
         for path in new:
             if is_test_path(path) and (gone := _test_names(job.editable[path]) - _test_names(new[path])):
                 problems.append(f"patch removes tests from {path}: {sorted(gone)}")
-        problems += conformance(new[job.site.file], job.site, job.tier, job.params, job.constants,
-                                job.system_name, job.spec)  # fmt: skip
+        problems += conformance(new[job.site.file], job.site, job.params, job.constants, job.system_name)
+        if (was := _signature(job.editable[job.site.file], job.site.function)) != (
+            now := _signature(new[job.site.file], job.site.function)
+        ):
+            problems.append(
+                f"the signature of `{job.site.function}` changed ({was} -> {now}): keep every parameter"
+            )
     if problems:
         return f"patch rejected (adapter spec or patch rules): {'; '.join(problems)}", {}
     changed = [p for p in new if new[p] != job.before[p]]
@@ -1138,14 +1284,39 @@ def compose_patches(
             why = "evaluated as json_object plus a validation repair retry, which a patch cannot reproduce"
             downgrade(v, f"patch not composed: the adapter was {why}")
             continue
-        prepared, constants, system_name = _prepare(read(site.file), site, adapter.spec, params, width)
+        prepared, constants, system_name, rewritten = _prepare(
+            read(site.file), site, adapter.spec, params, width
+        )
         context = _context(repo, site, client_at[0])
         editable = {p: (prepared if p == site.file else read(p)) for p in context}
+        for p in context:  # mechanical: callers hand the migrated function a Token Factory client
+            if p != site.file and not is_test_path(p) and site.function and p.endswith(".py"):
+                editable[p] = rewrite_callers(editable[p], site.function, client_at[1])
+        changed_callers = {Path(p).stem for p in context if p != site.file and editable[p] != read(p)}
+        done = [f"`{p}` passes `token_factory_client()` to `{site.function}`" for p in context
+                if p != site.file and not is_test_path(p) and editable[p] != read(p)]  # fmt: skip
+        if site.sdk == "openai" and changed_callers:  # same SDK: the repo's OpenAI fakes fit as they are
+            for p in context:
+                if is_test_path(p) and p.endswith(".py"):
+                    editable[p] = mirror_fakes(editable[p], changed_callers)
+                    if editable[p] != read(p):
+                        done.append(f"`{p}` also fakes `token_factory_client` where it faked `OpenAI`")
         before = {p: read(p) for p in editable}
         job = _Job(site, tier, adapter.spec, params, constants, system_name, editable, before,
-                   client_module=client_at[1], width=width)  # fmt: skip
+                   client_module=client_at[1], width=width, rewritten=rewritten)  # fmt: skip
         prompt = _prompt(
-            site, tier, adapter.spec, params, constants, system_name, editable, client, client_at, width
+            site,
+            tier,
+            adapter.spec,
+            params,
+            constants,
+            system_name,
+            editable,
+            client,
+            client_at,
+            width,
+            rewritten,
+            done,
         )
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
         failure, patched, tried = None, {}, []
@@ -1153,14 +1324,16 @@ def compose_patches(
             try:
                 res = llm.chat(
                     role=ROLE,
-                    tier=Tier.SUPER,
+                    tier=Tier.ULTRA
+                    if attempt
+                    else Tier.SUPER,  # repairs on Ultra (Task 10c; PRD §6.11: Super)
                     messages=messages,
                     max_tokens=REPAIR_MAX_TOKENS if attempt else MAX_TOKENS,
                     temperature=0.0,
                     reasoning="off",  # GC25; recorded with thinking on, 2 of 5 replies hit the token cap
                 )
             except BudgetExceeded as e:
-                failure = f"patch not composed: {e}"
+                failure = f"patch not composed: {e}" + (f"; last failure: {failure}" if failure else "")
                 break
             edits = parse_edits(res.output.text or "").edits
             if edits in tried:  # a patch already tried (A-B-A too): the sandbox would say the same again

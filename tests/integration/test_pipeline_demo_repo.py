@@ -38,10 +38,11 @@ DEMO_COMMIT = "8d76134"  # offramp-demo-app: six call sites + the refund oracle
 DEMO_ORIGIN = "https://github.com/vj-io/offramp-demo-app.git"  # the PR names this repo, as a real run does
 RUN_ID = "test-demo-run"
 # Recorded live 2026-10-20 on the fixture dataset ($0.47 of Token Factory credit). cs_01-03 reached no parity
-# on any tier; cs_04-06 reached it on Lightning. Patch stage re-recorded with the Task 10b patcher (each site
-# patched alone against the same base, long strings wrapped, up to two repair rounds): cs_04's patch is green
-# and ships; cs_05's third try searched for a function signature that does not exist, and cs_06's repair
-# repeated its failed patch, so both need a manual review.
+# on any tier; cs_04-06 reached it on Lightning. Patch stage re-recorded with the Task 10c patcher (the call
+# rewritten by code to create(**NEMOTRON_REQUEST, messages=[...]), repairs on Ultra): no patch is green. The
+# demo repo's own tests/test_call_sites.py asserts "no **kwargs unpacking at a call site", which the ruled
+# splat breaks for every migrated site, and neither Super nor Ultra rewrote that check (see the task-10
+# report, Task 10c), so cs_04-06 need a manual review.
 # The fixture's seed references are NOT audited, and some are known to be wrong: cs_01:009 (a pricing and
 # charge question labelled `general`; every tier answers `billing`, which is right) and both cs_03 holdout
 # references (cs_03:005 takes the email's Date header as order_date, cs_03:009 leaves customer_email null
@@ -53,7 +54,7 @@ RECORDED = {
     "cs_01": "KEEP_CLOSED",
     "cs_02": "KEEP_CLOSED",
     "cs_03": "KEEP_CLOSED",
-    "cs_04": "MIGRATE",
+    "cs_04": "MANUAL_REVIEW",
     "cs_05": "MANUAL_REVIEW",
     "cs_06": "MANUAL_REVIEW",
 }
@@ -137,21 +138,20 @@ def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch):
         assert v["best_tier"] == "lightning" and v["parity_pct"] < 95
         assert f"parity vs reference {v['parity_pct']:.1f}% < 95%" in v["reason"]
     # cs_05, the reasoning canary, reached parity on Lightning here (12 of 12 oracle answers), so routing
-    # said MIGRATE; its patch then failed (the wrap now clears the old E501; the repairs did not converge),
-    # and the site was re-announced for review
+    # said MIGRATE; its patch then failed the demo repo's own tests (its scanner-shape test forbids the
+    # **NEMOTRON_REQUEST splat), and the site was re-announced for review
     routed = [e.payload for e in log.events if e.type == "verdict" and e.call_site_id == "cs_05"]
     assert [(v["decision"], v["tier"]) for v in routed] == [
         ("MIGRATE", "lightning"),
         ("MANUAL_REVIEW", "lightning"),
     ]
-    assert routed[-1]["reason"].startswith(
-        "patch rejected (adapter spec or patch rules): search text not found"
-    )
-    # cs_04's patch passed the demo repo's own ruff + pytest in Docker; it is the only one in the PR's files
+    assert "no **kwargs unpacking at a call site" in routed[-1]["reason"]
+    # no migration patch passed the demo repo's own ruff + pytest: only kept-site comments are in the files
     patch = json.loads((log.dir / "patch.json").read_text())
-    assert found["cs_04"]["tier"] == "lightning"
-    assert (patch["alone"], patch["combined"]) == ({"cs_04": True, "cs_05": False, "cs_06": False}, ["cs_04"])
-    assert "helphub/qa/rag_answer.py" in patch["files"] and "helphub/refunds/plan.py" not in patch["files"]
+    assert (patch["alone"], patch["combined"]) == ({"cs_04": False, "cs_05": False, "cs_06": False}, [])
+    assert (
+        "helphub/qa/rag_answer.py" not in patch["files"] and "helphub/refunds/plan.py" not in patch["files"]
+    )
     assert snap.totals.sites == 6 and snap.totals.cases == sum(c.dev + c.holdout for c in snap.case_summaries)
     # cache-only: every response came from the cassettes, nothing was spent
     assert (snap.totals.tokens_in, snap.totals.tokens_out, snap.totals.tf_spend_usd) == (0, 0, 0.0)

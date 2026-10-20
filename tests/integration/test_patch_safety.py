@@ -148,9 +148,8 @@ def test_a_symlink_to_a_host_file_never_reaches_the_sandbox_or_a_reason():
 def test_a_patch_with_an_over_long_string_is_wrapped_and_passes_ruff():
     """The model writes a long f-string on one line; ruff E501 would fail it. The wrap keeps its value."""
     long = "Greet {name} warmly in one short sentence, mention the weather only if it is sunny, no emoji."
-    call = migrate("tinyapp/greet.py").edits[0]
     content = Edit(path="tinyapp/greet.py", search='f"Greet {name}."', replace=f'f"{long} {long}"')
-    llm = patcher_llm(PatchEdits(edits=[call, content]), migrate("tinyapp/shout.py"))
+    llm = patcher_llm(PatchEdits(edits=[content]), migrate("tinyapp/shout.py"))
 
     result = compose_patches(TINY, tiny_sites(), tiny_verdicts(), tiny_adapters(), llm, work_dir("e501"),
                              config=RunConfig(repo_url="x"), build_request=BUILD)  # fmt: skip
