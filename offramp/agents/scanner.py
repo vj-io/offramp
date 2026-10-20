@@ -75,6 +75,9 @@ def scan_repo(path: str | Path) -> ScanResult:
     warnings: list[str] = []
     for file in _py_files(root):
         rel = file.relative_to(root).as_posix()
+        if not file.resolve().is_relative_to(root.resolve()):  # its code would go out as a site's context
+            warnings.append(f"skipped {rel}: a symlink to outside the repository")
+            continue
         try:
             source = file.read_bytes()
         except OSError as exc:  # unreadable, or a broken symlink named *.py

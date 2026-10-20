@@ -351,6 +351,22 @@ def test_walk_skips_tests_hidden_venv_and_unparseable(tmp_path):
     assert scan.warnings == ["skipped app/broken.py: not parseable as Python 3.12 (SyntaxError)"]
 
 
+def test_a_py_symlink_that_leaves_the_repo_is_not_read(tmp_path):
+    """Its code would reach Token Factory, LangSmith and the run's events as the call site's context."""
+    repo, outside = tmp_path / "repo", tmp_path / "elsewhere" / "private.py"
+    (repo / "app").mkdir(parents=True)
+    outside.parent.mkdir()
+    outside.write_text(OPENAI_FILE)
+    (repo / "app" / "main.py").write_text(OPENAI_FILE)
+    (repo / "app" / "alias.py").symlink_to(repo / "app" / "main.py")  # stays inside: read as before
+    (repo / "app" / "linked.py").symlink_to(outside)
+
+    scan = scan_repo(repo)
+
+    assert sorted(s.file for s in scan.sites) == ["app/alias.py", "app/main.py"]
+    assert scan.warnings == ["skipped app/linked.py: a symlink to outside the repository"]
+
+
 def test_client_tracking_rejects_wrong_sdk_and_accepts_inline_constructor(tmp_path):
     (tmp_path / "a.py").write_text(
         "import anthropic\nfrom openai import OpenAI\n"
