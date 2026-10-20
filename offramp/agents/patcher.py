@@ -9,20 +9,19 @@ Per run, on a sandbox copy of the target repo:
 2. for each MIGRATE site, against that same base (so no site depends on another's patch): the request
    parameters come from `build_request` (Task 6, the function the eval runner used), so what ships is what was
    evaluated. Offramp's code writes the call (the evaluated request as written-out keyword arguments), maps
-   the reply when it can, rewires callers and provider fakes; Nemotron 3 Super (role `patcher`) then edits the
-   tests that pin the old provider (and maps the reply when code could not), as search/replace edits;
-3. every edit is checked: the fence (non-test code: everything but the allowed function bodies stays
-   AST-identical), conformance (the call carries exactly the evaluated parameters), no removed tests; then
-   the repo's ruff + pytest in the sandbox, and the probe (the migrated function, run there with an eval
-   case, must send exactly build_request's request). Up to two repair rounds (Ultra). Any failure: the site
-   becomes MANUAL_REVIEW;
-4. the sites green alone are merged in site order and checked together, every evaluated call again too: a
-   site whose call changed drops with every site whose patch edited code it reads; a red check gets one
-   combined repair (tests and fakes only), then sites are added one at a time (MANUAL_REVIEW if dropped).
+   the reply, rewires callers and provider fakes; a call or a reply it cannot rewrite is a manual review.
+   Code that ships is code-only: Nemotron 3 Super (role `patcher`) edits only the tests and fakes that pin
+   the old provider, as search/replace edits;
+3. every patch is checked: the backstop (each file that ships as code, on disk, AST-identical to what
+   Offramp's code wrote; no new ones), no removed tests; the repo's ruff + pytest in the sandbox; and, where
+   an eval case can drive it, the probe (the migrated function, run there, must send exactly build_request's
+   request). Up to two repair rounds (Ultra). Any failure: the site becomes MANUAL_REVIEW;
+4. the sites green alone are merged in site order and checked together, the backstop and the probe again
+   too: a site whose code changed drops with every site whose patch edited code it reads; a red check gets
+   one combined repair (tests and fakes only), then sites are added one at a time (MANUAL_REVIEW if dropped).
 """
 
 import ast
-import copy
 import difflib
 import io
 import json
@@ -60,19 +59,9 @@ name is taken as shown in my first message with your new blocks applied, so give
 needs, not only the fix; a file you do not name keeps your previous edits. Begin with `FILE:`."""
 ROOT_CLIENT = ("offramp/client.py", "offramp.client")  # when the sites are not inside one package
 TEMPLATE = Path(__file__).parents[1] / "templates" / "client.py.tmpl"
-IGNORE = shutil.ignore_patterns(
-    ".git",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".mypy_cache",
-    ".tox",
-    "node_modules",
-    ".env",
-    ".env.*",
-)
+NOT_COPIED = (".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", ".tox",
+              "node_modules")  # fmt: skip
+IGNORE = shutil.ignore_patterns(*NOT_COPIED, ".env", ".env.*")
 SKIP_PARTS = {".git", ".venv", "venv", "__pycache__", "node_modules", "offramp"}
 
 BuildRequest = Callable[[AdapterSpec, EvalCase, Tier], dict[str, Any]]
@@ -136,6 +125,9 @@ class Unsupported(ValueError):
 TRANSLATED_KWARGS = {"model", "messages", "system", "tools", "tool_choice", "response_format", "max_tokens",
                      "max_completion_tokens", "temperature", "reasoning_effort", "stream"}  # fmt: skip
 CARRIED_KWARGS = ("timeout", "extra_headers")
+
+
+UNCHANGED = "the code Offramp wrote, unchanged"  # how a shipped site's request was checked, when not run
 
 
 class PatchResult(BaseModel):
@@ -703,7 +695,7 @@ def _near(text: str, search: str) -> tuple[int, int] | None:
 
 
 def _apply(edits: list[Edit], files: dict[str, str], locked: frozenset[str] = frozenset()) -> list[str]:
-    """Apply the edit blocks in order; `locked` files are shown but read-only."""
+    """Apply the edit blocks in order; `locked` files (code that ships) are shown but read-only."""
     shown = dict(files)
     seen = set()
     for e in edits:
@@ -720,7 +712,7 @@ def _apply(edits: list[Edit], files: dict[str, str], locked: frozenset[str] = fr
             e = e.model_copy(update={"path": elsewhere[0]})
             n = 1
         if e.path in locked:
-            return [f"{e.path} is migrated by Offramp and read-only: edit only the tests and fakes"]
+            return [f"{e.path} is read-only: it ships as Offramp's code wrote it; edit only tests and fakes"]
         near = _near(files[e.path], e.search) if n == 0 and e.search not in shown[e.path] else None
         # a slip in copying a long block still names one place; only the model's intended changes (its SEARCH
         # to its REPLACE) land there, never its mis-copied lines over the file's real ones
@@ -761,13 +753,14 @@ def _bound(tree: ast.Module) -> set[str]:
     return bound
 
 
-def add_imports(source: str, client: str) -> str:
-    """Import AUTO_IMPORTS names the module uses but never binds (after its last top-level import); `client`
-    is the module path of the Token Factory client."""
+def add_imports(source: str, client: str, extra: dict[str, str] | None = None) -> str:
+    """Import AUTO_IMPORTS names (and `extra`'s, name -> import line) the module uses but never binds, after
+    its last top-level import; `client` is the module path of the Token Factory client."""
     tree = ast.parse(source)
     bound = _bound(tree)
     used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
-    missing = [line.format(client=client) for name, line in AUTO_IMPORTS.items() if name in used - bound]
+    known = {**{name: line.format(client=client) for name, line in AUTO_IMPORTS.items()}, **(extra or {})}
+    missing = [line for name, line in known.items() if name in used - bound]
     if not missing:
         return source
     imports = [n for n in tree.body if isinstance(n, ast.Import | ast.ImportFrom)]
@@ -1136,16 +1129,6 @@ def convert_fakes(source: str, client: str) -> str:
     return add_imports("".join(lines), client)
 
 
-def _signature(source: str, site: CallSite) -> str | None:
-    """The parameter names of the site's function in `source` (None when it is not found)."""
-    n = _function(ast.parse(source), site) if site.function else None
-    return (
-        None
-        if n is None
-        else ", ".join(x.arg for x in [*n.args.posonlyargs, *n.args.args, *n.args.kwonlyargs])
-    )
-
-
 def _drift_text(off: dict[str, list[str]]) -> str:
     return "; ".join(f"{sid}: {', '.join(problems)}" for sid, problems in off.items())
 
@@ -1176,114 +1159,79 @@ def _call_name(node: ast.expr) -> str:
     return ".".join(reversed(parts))
 
 
-# ---------------------------------------------------------------- the fence (non-test code)
-
-FORBIDDEN_NAMES = {
-    "globals",
-    "vars",
-    "setattr",
-    "delattr",
-    "exec",
-    "eval",
-    "compile",
-    "__import__",
-    "importlib",
-}
-MUTATORS = {"append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse", "update",
-            "setdefault", "popitem", "add", "discard", "__setitem__", "__delitem__"}  # fmt: skip
-
-
-def _skeleton(tree: ast.Module) -> tuple[str, dict[str, set[str]]]:
-    """The module with every function body blanked and its top-level imports set aside: (what must stay
-    AST-identical, {import statement: the names it binds})."""
-    tree = copy.deepcopy(tree)
-    for n in ast.walk(tree):
-        if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef):
-            n.body = [ast.Pass()]
-    imports = {ast.dump(n): {(a.asname or a.name).split(".")[0] for a in n.names}
-               for n in tree.body if isinstance(n, ast.Import | ast.ImportFrom)}  # fmt: skip
-    tree.body = [n for n in tree.body if not isinstance(n, ast.Import | ast.ImportFrom)]
-    return ast.dump(tree), imports
+# ---------------------------------------------------------------- the backstop (code that ships)
 
 
 def _root(node: ast.AST) -> str | None:
-    """The name an assignment target or call receiver ultimately writes into: `X` of `X[0].a`."""
+    """The name a call receiver ultimately reads from: `X` of `X[0].a`."""
     while isinstance(node, ast.Attribute | ast.Subscript | ast.Starred | ast.Call):
         node = node.func if isinstance(node, ast.Call) else node.value
     return node.id if isinstance(node, ast.Name) else None
 
 
-def _body_problems(stmts: list[ast.stmt], fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
-    """What an edited function body may not do: reach outside the function. Locals are the names the function
-    binds itself (its parameters are the caller's objects, so they are not)."""
-    params = {a.arg for a in [*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs, fn.args.vararg,
-                              fn.args.kwarg] if a}  # fmt: skip
-    local = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)} - params
-    problems = []
-    for node in (n for st in stmts for n in ast.walk(st)):
-        if isinstance(node, ast.Global | ast.Nonlocal):
-            problems.append(f"declares {', '.join(node.names)} {type(node).__name__.lower()}")
-        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in FORBIDDEN_NAMES:
-            problems.append(f"uses `{node.id}`")
-        targets = (node.targets if isinstance(node, ast.Assign | ast.Delete)
-                   else [node.target] if isinstance(node, ast.AugAssign | ast.AnnAssign) else [])  # fmt: skip
-        for t in (
-            e for target in targets for e in ast.walk(target) if isinstance(e, ast.Attribute | ast.Subscript)
-        ):
-            if (root := _root(t)) not in local:
-                problems.append(f"writes into `{root}`, which is not local to it")
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in MUTATORS:
-            if (root := _root(node.func.value)) not in local:
-                problems.append(
-                    f"calls `{root}.{node.func.attr}(...)`, which changes something not local to it"
-                )
-    return list(dict.fromkeys(problems))
+def _py_files(repo: Path) -> list[Path]:
+    """The copy's .py files, outside the folders a copy leaves out (e.g. the `.venv` a local check makes)."""
+    return [f for f in repo.rglob("*.py") if not set(NOT_COPIED) & set(f.relative_to(repo).parts[:-1])]
 
 
-def fence(before: str, after: str, path: str, allowed: dict[str, int]) -> list[str]:
-    """Problems with an edit to a non-test module. Frozen: every module- and class-level statement, every
-    function's signature, defaults and decorators, and every function body except those in `allowed`
-    (qualified name -> index of the first body statement that may change). Imports may be added, and unused
-    ones removed (as the repo's ruff does)."""
-    try:
-        old, new = ast.parse(before), ast.parse(after)
-    except SyntaxError as e:
-        return [f"{path} does not parse: {e.msg} (line {e.lineno})"]
-    (old_frame, old_imports), (new_frame, new_imports) = _skeleton(old), _skeleton(new)
-    problems = []
-    if old_frame != new_frame:
-        frozen = (
-            "a module- or class-level statement, or a function's signature, defaults or decorators changed"
-        )
-        problems.append(f"{path}: only function bodies may change (and imports be added): {frozen}")
-    used = {n.id for n in ast.walk(new) if isinstance(n, ast.Name)}
-    if [i for i, names in old_imports.items() if i not in new_imports and names & used]:
-        problems.append(f"{path}: an import that is still used was removed")
-    old_defs = dict(_defs(old))
-    for name, fn in _defs(new):
-        was = old_defs.get(name)
-        if was is None or ast.dump(ast.Module(fn.body, [])) == ast.dump(ast.Module(was.body, [])):
+def shipped_code(repo: Path) -> dict[str, str]:
+    """Every file of the copy that ships as code -> its text: each non-test .py file (for a link, the file it
+    points to), and each test-path file one of them imports, directly or through another (with the packages'
+    `__init__.py` Python runs first). The model may edit none of them."""
+    root, real = repo.resolve(), {}
+    for f in _py_files(repo):
+        target = f.resolve()
+        if target.is_file() and target.is_relative_to(root):
+            real[f.relative_to(repo).as_posix()] = target.relative_to(root).as_posix()
+    regular = set(real.values())
+    todo, out = [real[p] for p in real if not is_test_path(p)], {}
+    while todo:
+        p = todo.pop()
+        if p in out:
             continue
-        start = allowed.get(name)
-        if start is None:
-            problems.append(f"{path}: the body of `{name}` may not change")
-        elif ast.dump(ast.Module(fn.body[:start], [])) != ast.dump(ast.Module(was.body[:start], [])):
-            problems.append(f"{path}: in `{name}`, the statement holding the evaluated call and everything "
-                            "before it must stay as Offramp wrote them")  # fmt: skip
-        else:
-            seen = {ast.dump(st) for st in was.body[start:]}
-            added = [st for st in fn.body[start:] if ast.dump(st) not in seen]
-            problems += [f"{path}: `{name}` {p}" for p in _body_problems(added, fn)]
-    return problems
+        out[p] = (repo / p).read_text()
+        for q in _imported_files(out[p], p, regular):
+            parts = q.split("/")[:-1]
+            packages = ("/".join([*parts[:k], "__init__.py"]) for k in range(1, len(parts) + 1))
+            todo += [q, *(i for i in packages if i in regular)]
+    return out
 
 
-def call_statement_index(source: str, site: CallSite) -> int | None:
-    """Index, in the site function's body, of the statement holding its LLM call (None: no single call)."""
-    fn = _function(ast.parse(source), site) if site.function else None
-    calls = _calls(fn) if fn else []
-    if len(calls) != 1:
-        return None
-    return next(i for i, st in enumerate(fn.body) if any(n is calls[0] for n in ast.walk(st)))
+def _same_code(a: str | None, b: str | None) -> bool:
+    if a == b:
+        return True
+    try:
+        return a is not None and b is not None and ast.dump(ast.parse(a)) == ast.dump(ast.parse(b))
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return False
+
+
+def backstop(repo: Path, reference: dict[str, str | None]) -> dict[str, str]:
+    """Every file that ships as code, as it is on disk, against `reference` (the tree Offramp's code wrote):
+    path -> why it is not that tree (its AST differs, it is new, it is gone). The disk is compared, not the
+    model's edits, so whatever wrote the file (an edit, a formatter, a test run) is caught."""
+    paths = {f.relative_to(repo).as_posix(): f for f in _py_files(repo)}
+    present = {p for p, f in paths.items() if f.is_file() and not f.is_symlink() and not is_test_path(p)}
+    out = {}
+    for p in sorted(present | set(reference)):
+        now = (repo / p).read_text(errors="replace") if (repo / p).is_file() else None
+        if p not in reference:
+            out[p] = f"{p} is a new file outside the tests"
+        elif now is None:
+            out[p] = f"{p} was removed"
+        elif not _same_code(now, reference[p]):
+            out[p] = f"{p} is not the code Offramp wrote"
+    return out
+
+
+def _restore(repo: Path, reference: dict[str, str | None], paths) -> None:
+    """Put the files the backstop flagged back as `reference` has them; a new one is removed."""
+    for p in paths:
+        f = repo / p
+        f.unlink(missing_ok=True)  # first: never written through a link a test run may have left there
+        if reference.get(p) is not None:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(reference[p])
 
 
 def source_carried(source: str, site: CallSite) -> dict[str, ast.expr]:
@@ -1485,7 +1433,8 @@ def conformance(
 
 
 def _context(repo: Path, site: CallSite, client_path: str) -> list[str]:
-    """Editable files for one site: its module, callers of its function, tests touching them, test helpers."""
+    """Files shown for one site: its module and the callers of its function, then the tests touching them and
+    their helpers. Only test files are editable: the code that ships is read-only context (see `_attempt`)."""
     files = sorted(
         p.relative_to(repo)
         for p in repo.rglob("*.py")
@@ -1532,10 +1481,11 @@ def _context(repo: Path, site: CallSite, client_path: str) -> list[str]:
 SYSTEM = """Offramp migrates one LLM call site of a Python repository to NVIDIA Nemotron on Nebius Token \
 Factory, which is OpenAI-compatible: the call becomes `client.chat.completions.create(...)` on an \
 `openai.OpenAI` client, sending a request Offramp measured to reach parity. Offramp's code has already \
-rewritten what it could (see "The call" and "Already changed by Offramp"). You make the rest of the \
-repository fit, keeping its ruff and tests green.
+rewritten the call, how its reply is read, and the callers (see "The call" and "Already changed by \
+Offramp"); that code is final. You update the tests and their fakes so the repository's ruff and tests \
+stay green.
 
-Reply with edit blocks only, then one NOTES line:
+Reply with edit blocks only, no analysis or explanation, then one NOTES line. Begin with `FILE:`.
 
 FILE: path/of/file.py
 <<<<<<< SEARCH
@@ -1551,31 +1501,24 @@ as shown (same indentation, same escapes), with enough lines to be unique. Block
 the result of the previous ones; never repeat a block. Only files marked (editable); no new files.
 
 Rules:
-1. Files marked (read-only) are final: never edit them. When the migrated module is read-only, edit only \
-the tests and their fakes.
-2. Never change the request: the call's keyword arguments, their values and its messages stay exactly as \
-Offramp wrote them. Keep every function's name, parameters and return value.
-3. Only when the migrated module is editable: make the code send exactly the request under "The call" \
-(written-out keyword arguments, no ** unpacking) and read the reply the OpenAI way: text is \
-`response.choices[0].message.content` (may be None); tool calls are \
-`response.choices[0].message.tool_calls or []`, each with `.function.name` and `.function.arguments` (a \
-JSON string: json.loads it). Map them onto exactly what the function returned before.
-4. Code that builds the old SDK client to call the migrated function passes `token_factory_client()` \
-instead, and a test that replaced that constructor with a fake replaces `token_factory_client` the same \
-way (Offramp did this where the client is built inside the call).
-5. Tests: update what pins the old provider for THIS call site so it asserts the new request: the model ID, \
+1. Only test files are editable: tests, their fakes and test helpers, marked (editable). The migrated \
+module, its callers and every other file marked (read-only) are final as Offramp's code wrote them: never \
+edit them. An edit to one is rejected.
+2. A test that replaced the old SDK client's constructor with a fake replaces `token_factory_client` the \
+same way (Offramp did this where it could).
+3. Tests: update what pins the old provider for THIS call site so it asserts the new request: the model ID, \
 SDK keyword arguments (`system=`, `max_completion_tokens`, a `tool_choice` or `tools` value, parameter \
 rules of the old model), the message layout, and checks of the call's source (tables of call sites, \
 `ast` checks of keyword arguments). Every other call site keeps its old pins. The system prompt is now the \
 first message: a test that read the user message as `messages[0]` reads it as `messages[-1]`, asserting \
 the same things. Never weaken a behavioural or parsing assertion: expected return values and parsing \
 checks stay exactly as they are. Never delete or rename a test.
-6. Fakes: when a provider fake still cannot answer `chat.completions.create` the way the new code reads \
+4. Fakes: when a provider fake still cannot answer `chat.completions.create` the way the new code reads \
 it, extend the repo's existing fake helper, building real openai response objects the way it already \
 does, instead of writing ad-hoc fake classes inside tests.
-7. Add the imports your code needs and remove the ones it leaves unused (import order is fixed \
+5. Add the imports your test code needs and remove the ones it leaves unused (import order is fixed \
 automatically afterwards). Keep lines within the repo's line length.
-8. When "What fails now" lists failing checks, your edits must make every one of them pass."""
+6. When "What fails now" lists failing checks, your edits must make every one of them pass."""
 
 
 def _call_text(source: str, site: CallSite) -> str | None:
@@ -1593,52 +1536,20 @@ def _call_text(source: str, site: CallSite) -> str | None:
 def _prompt(
     site: CallSite,
     tier: Tier,
-    params: dict[str, Any],
-    constants: dict[str, str],
-    system_name: str | None,
     files: dict[str, str],
+    read_only: set[str],
     client: str,
     client_at: tuple[str, str],
     width: int,
     calls: tuple[str | None, str | None],
-    fixed: bool,
     done: list[str],
     failing: str | None = None,
 ) -> str:
     before, now = calls
-    if fixed:
-        call = [
-            f"`{site.file}` is migrated by Offramp and read-only: `{site.function}` now sends the evaluated "
-            "request with written-out keyword arguments and reads the reply the OpenAI way.",
-        ]
-    elif now != before:
-        call = [
-            f"Offramp rewrote the call in `{site.file}` (below; keep it exactly). Map how `{site.function}` "
-            "reads the reply onto the OpenAI shape (rule 3).",
-        ]
-    else:
-        messages = [
-            f'{{"role": "system", "content": {system_name}}}'
-            if system_name
-            else "the system prompt the code sends today, as the first message (an Anthropic `system=` "
-            'argument becomes {"role": "system", "content": ...})'
-        ]
-        if "few_shot" in constants:
-            messages.append(f"*{constants['few_shot']}")
-        last = "the user message(s) the code sends today"
-        wraps = [f"{constants[k]} {how}" for k, how in (("prefix", "prepended"), ("suffix", "appended"))
-                 if k in constants]  # fmt: skip
-        if wraps:
-            last += f", with {' and '.join(wraps)} to the content of the last one"
-        messages.append(last)
-        written = ", ".join(f"{k}={constants.get(k) or _flat(v)}" for k, v in params.items())
-        call = [
-            f"Rewrite the call in `{site.file}` to `client.chat.completions.create({written}, "
-            "messages=[...])`, these keyword arguments written out exactly, nothing else passed; the "
-            "NEMOTRON_* constants are defined in the file.",
-            "messages, in this order:",
-            *(f"{i}. {m}" for i, m in enumerate(messages, 1)),
-        ]
+    call = [
+        f"`{site.file}` is migrated by Offramp and read-only: `{site.function}` now sends the evaluated "
+        "request with written-out keyword arguments and reads the reply the OpenAI way.",
+    ]
     if before:
         call += ["", "Before (what the tests pin today):", "```python", before, "```"]
     if now and now != before:
@@ -1669,7 +1580,7 @@ def _prompt(
         "```",
     ]
     for path, text in files.items():
-        mode = "read-only" if fixed and path == site.file else "editable"
+        mode = "read-only" if path in read_only else "editable"
         lines += [f"### {path} ({mode})", "```python", text.rstrip("\n"), "```"]
     return "\n".join(lines) + "\n"
 
@@ -1948,23 +1859,16 @@ def client_module() -> str:
 
 @dataclass
 class _Job:
-    """One MIGRATE site being patched: what the edits must achieve and the files they may touch."""
+    """One MIGRATE site being patched: the files shown to the model and the code that must ship as written."""
 
     site: CallSite
-    tier: Tier
-    spec: AdapterSpec
-    params: dict[str, Any]
-    constants: dict[str, str]
-    system_name: str | None
-    editable: dict[str, str]  # as shown to the patcher (the site's module with the adapter's constants)
+    shown: dict[str, str]  # path -> text as shown to the patcher: the code Offramp wrote, then the tests
     before: dict[str, str]  # on disk before the site's patch: the base every site is patched against
+    reference: dict[str, str]  # every file that ships as code, as Offramp's code wrote it: read-only
     client_module: str  # import path of the Token Factory client module
     width: int  # the target's ruff line length
-    rewritten: bool  # the call already sends the request: no edit may be needed
-    fixed: bool  # the site's module is final (call and reply rewritten by code): the model edits tests only
-    allowed: dict[str, int] = field(default_factory=dict)  # function -> first body statement it may change
-    fence: bool = True  # the fence on non-test code (switched off only to test the probe alone)
-    carried: dict[str, str] = field(default_factory=dict)  # transport options of the source call -> their AST
+    constants: dict[str, str] = field(default_factory=dict)  # Offramp's NEMOTRON_* name -> its import line
+    locked: bool = True  # shipped code read-only to the model (switched off only to test the backstop alone)
     verify: Callable[[], str | None] | None = None  # the probe: why the patched call is not the evaluated one
 
 
@@ -1989,51 +1893,36 @@ def _attempt(
     job: _Job, edits: list[Edit], repo: Path, box: Sandbox, formatted: bool, write
 ) -> tuple[str | None, dict]:
     """Apply one set of edits to the base, check it alone, then put the base back. (None, the site's patched
-    files) when the repo is green with it; else (why not, {})."""
-    if not edits and not job.rewritten:
-        return "the reply holds no edit blocks", {}
-    new = dict(job.editable)
-    problems = _apply(edits, new, frozenset([job.site.file] if job.fixed else []))
+    files) when the repo is green with it and its code is the code Offramp wrote; else (why not, {})."""
+    new = dict(job.shown)
+    locked = frozenset(p for p in new if p in job.reference) if job.locked else frozenset()
+    problems = _apply(edits, new, locked)
     for path in new if not problems else []:
         try:
-            if new[path] != job.editable[path]:
+            if new[path] != job.shown[path]:
                 new[path] = add_imports(new[path], job.client_module)
-                if is_test_path(path):
-                    new[path] = add_fixtures(new[path])
+                if is_test_path(path):  # a test may read the constants Offramp wrote, imported like any other
+                    new[path] = add_fixtures(add_imports(new[path], job.client_module, job.constants))
         except SyntaxError as e:
             problems.append(f"{path} does not parse: {e.msg} (line {e.lineno})")
-    if not problems:
-        for path in new:
-            if is_test_path(path) and (gone := _test_names(job.editable[path]) - _test_names(new[path])):
-                problems.append(f"patch removes tests from {path}: {sorted(gone)}")
-        problems += conformance(
-            new[job.site.file], job.site, job.params, job.constants, job.system_name, job.carried
-        )
-        for path in new if job.fence else []:  # non-test code: only the bodies Offramp allows may change
-            if not is_test_path(path) and path.endswith(".py") and new[path] != job.editable[path]:
-                allowed = job.allowed if path == job.site.file else {}
-                problems += fence(job.editable[path], new[path], path, allowed)
-        if job.rewritten and _call_text(new[job.site.file], job.site) != _call_text(
-            job.editable[job.site.file], job.site
-        ):
-            problems.append(f"the call Offramp wrote in `{job.site.function}` must stay exactly as it is")
-        if (was := _signature(job.editable[job.site.file], job.site)) != (
-            now := _signature(new[job.site.file], job.site)
-        ):
-            problems.append(
-                f"the signature of `{job.site.function}` changed ({was} -> {now}): keep every parameter"
-            )
+    for path in new if not problems else []:
+        if is_test_path(path) and (gone := _test_names(job.shown[path]) - _test_names(new[path])):
+            problems.append(f"patch removes tests from {path}: {sorted(gone)}")
     if problems:
-        return f"patch rejected (adapter spec or patch rules): {'; '.join(problems)}", {}
+        return f"patch rejected (patch rules): {'; '.join(problems)}", {}
     changed = [p for p in new if new[p] != job.before[p]]
     for p in changed:
         write(p, new[p])
     _settle(box, repo, changed, job.before, job.width, formatted)
     result: CheckResult = box.check()
     why = job.verify() if result.ok and job.verify else None  # run while the patch is on disk
+    off = backstop(repo, job.reference)  # after the run: whatever wrote code, an edit or a test, is caught
     patched = {p: (repo / p).read_text() for p in changed}
+    _restore(repo, job.reference, off)
     for p in changed:  # every site is checked against the same base
         (repo / p).write_text(job.before[p])
+    if off:
+        return f"the patch changes code that ships (only tests may change): {'; '.join(off.values())}", {}
     if why:
         return f"the patched code does not send the evaluated request: {why}", {}
     if result.ok:
@@ -2052,8 +1941,8 @@ def compose_patches(
     config: RunConfig,
     sandbox_factory: Callable[[Path], Sandbox] = Sandbox,
     build_request: BuildRequest = build_request,
-    fenced: bool = True,  # the fence on non-test code; tests switch one layer off to prove the other alone
-    probed: bool = True,  # the probe in the sandbox
+    locked: bool = True,  # shipped code read-only to the model; off only to prove the backstop alone in tests
+    probed: bool = True,  # the probe in the sandbox; tests switch it off likewise
 ) -> PatchResult:
     repo = Path(work_dir) / "repo"
     shutil.rmtree(repo, ignore_errors=True)
@@ -2142,6 +2031,7 @@ def compose_patches(
         )
     formatted = box.formatted()  # the repo keeps `ruff format` clean: so do the patches
 
+    base_code = shipped_code(repo)  # the base's code (client module and kept-site comments in): read-only
     qual_of: dict[str, CallSite] = {}  # MIGRATE site -> the site with its function's qualified name
     for v in to_migrate:
         site = by_id.get(v.site_id)
@@ -2150,7 +2040,6 @@ def compose_patches(
             qual_of[v.site_id] = site.model_copy(update={"function": qual})
     carried_of: dict[str, dict[str, str]] = {}  # site -> the source call's transport options -> their AST
     carried_values: dict[str, dict[str, Any]] = {}  # site -> those whose value is a literal
-    rewritten_of: dict[str, bool] = {}
     probes: dict[str, tuple[dict[str, Any], dict[str, Any], str] | None] = {}  # site -> (job, expected, case)
     verification: dict[str, str] = {}  # site -> how its shipped request was checked
 
@@ -2181,16 +2070,13 @@ def compose_patches(
 
     def verify(sids: list[str]) -> dict[str, str]:
         """Run each site's migrated function in the sandbox and compare what it sends with the evaluated
-        request: site -> why not (absent when it matches, or when a rewritten call cannot be run)."""
+        request: site -> why not (absent when it matches, or when the probe cannot run it)."""
         jobs = {sid: probes[sid] for sid in sids if probes.get(sid)}
         found = run_probe(box, [job for job, _, _ in jobs.values()])
         out = {}
         for sid, (_, expected, case_id) in jobs.items():
             if "request" not in found[sid]:
-                if not rewritten_of[sid]:
-                    out[sid] = f"its call could not be run with case {case_id}: {found[sid]['error']}"
-                else:
-                    verification[sid] = f"fence only (the probe could not run it: {found[sid]['error']})"
+                verification[sid] = f"{UNCHANGED}; the probe could not run it: {found[sid]['error']}"
                 continue
             literal = carried_values[sid]  # transport options compared by value when they are literals
             got = {k: v for k, v in found[sid]["request"].items() if k not in carried_of[sid] or k in literal}
@@ -2207,7 +2093,7 @@ def compose_patches(
     reach: dict[str, set[str]] = {}  # site -> what its tests name to reach the migrated function
     raw: dict[str, dict[str, str]] = {}  # site -> its patched files as checked alone, before pruning
     befores: dict[str, dict[str, str]] = {}  # site -> its files before its patch
-    evaluated: dict[str, tuple] = {}  # site -> (site, params, constants, system name, the call Offramp wrote)
+    code_of: dict[str, dict[str, str]] = {}  # site -> the code files Offramp's code changed, as written
     site_twins: dict[str, dict[str, set[str]]] = {}  # site -> test file -> the fake lines mirror_fakes added
     alone: dict[str, bool] = {}
     for v in to_migrate:
@@ -2244,77 +2130,76 @@ def compose_patches(
         except Unsupported as e:
             downgrade(v, f"patch not composed: {e}")
             continue
-        (repo / site.file).write_text(add_imports(prepared, client_at[1]))
-        _settle(box, repo, [site.file], {site.file: original}, width, formatted)  # shown as it will ship
-        prepared = read(site.file)
-        (repo / site.file).write_text(original)
-        carried = source_carried(original, local)
-        carried_of[site.id] = {k: ast.dump(node) for k, node in carried.items()}
-        carried_values[site.id] = {k: v for k, node in carried.items() if (v := _literal(node)) is not ...}
-        probes[site.id], unprobed = probe_job(site.id, local, original, adapter.spec, tier)
-        rewritten_of[site.id] = rewritten
-        if not rewritten and probes[site.id] is None:  # the model would write the call: it must be run
-            why = (
-                f"the call the model would write cannot be checked by running `{local.function}`: {unprobed}"
-            )
-            downgrade(v, f"patch not composed: Offramp cannot write this call itself, and {why}")
+        if not rewritten:  # code that ships is code-only: a call the model writes is never shipped
+            downgrade(v, "Offramp could not rewrite this call; a model-written call is not shipped")
+            continue
+        if not fixed:
+            downgrade(v, "Offramp could not map how this call's reply is read; a model-written mapping is "
+                         "not shipped")  # fmt: skip
             continue
         context = _context(repo, site, client_at[0])
-        editable = {p: (prepared if p == site.file else read(p)) for p in context}
+        code = {site.file: add_imports(prepared, client_at[1])}  # what ships for it: Offramp's code only
         for p in context:  # mechanical: callers hand the migrated function a Token Factory client
-            if p != site.file and not is_test_path(p) and site.function and p.endswith(".py"):
-                editable[p] = rewrite_callers(editable[p], site.function, client_at[1])
-        changed_callers = {Path(p).stem for p in context if p != site.file and editable[p] != read(p)}
-        done = [f"`{p}` passes `token_factory_client()` to `{site.function}`" for p in context
-                if p != site.file and not is_test_path(p) and editable[p] != read(p)]  # fmt: skip
+            if p != site.file and not is_test_path(p) and site.function:
+                if (caller := rewrite_callers(read(p), site.function, client_at[1])) != read(p):
+                    code[p] = caller
+        base = {p: read(p) for p in code}
+        for p, text in code.items():
+            (repo / p).write_text(text)
+        _settle(box, repo, list(code), base, width, formatted)  # tidied as it will ship, and shown so
+        code = {p: read(p) for p in code}
+        for p, text in base.items():
+            (repo / p).write_text(text)
+        carried = source_carried(original, local)
+        carried_of[site.id] = {k: ast.dump(node) for k, node in carried.items()}
+        literal = {k: _literal(node) for k, node in carried.items()}
+        carried_values[site.id] = {k: x for k, x in literal.items() if x is not ...}
+        problems = conformance(code[site.file], local, params, constants, system_name, carried_of[site.id])
+        if problems:
+            why = f"Offramp's own rewrite does not carry the evaluated request: {'; '.join(problems)}"
+            downgrade(v, f"patch not composed: {why}")
+            continue
+        probes[site.id], unprobed = probe_job(site.id, local, original, adapter.spec, tier)
+        if unprobed and probed:
+            verification[site.id] = f"{UNCHANGED}; not probed: {unprobed}"
+        shown = {p: code[p] if p in code else read(p) for p in context}
+        changed_callers = {Path(p).stem for p in code if p != site.file}
+        done = [f"`{p}` passes `token_factory_client()` to `{site.function}`" for p in code if p != site.file]
         old = "OpenAI" if site.sdk == "openai" else "Anthropic"
-        handles = {site.function or ""}.union(*(reach_handles(editable[p], site.function) for p in context
-                                                if p != site.file and editable[p] != read(p)))  # fmt: skip
+        handles = {site.function or ""}.union(
+            *(reach_handles(code[p], site.function) for p in code if p != site.file)
+        )
         reach[v.site_id] = handles
         twins: dict[str, set[str]] = {}  # test file -> the fake lines mirror_fakes added
         for p in context:  # mechanical: the repo's provider fakes answer the Token Factory client's call
-            if not (is_test_path(p) and p.endswith(".py")):
+            if not is_test_path(p) or p in base_code:  # a test file shipped code imports stays as it is
                 continue
-            if (
-                site.sdk == "anthropic"
-                and (converted := convert_fakes(editable[p], client_at[1])) != editable[p]
-            ):
-                editable[p] = converted
+            if site.sdk == "anthropic" and (converted := convert_fakes(shown[p], client_at[1])) != shown[p]:
+                shown[p] = converted
                 done.append(f"`{p}`: its Anthropic fake also answers `chat.completions.create`, with the "
                             "same canned blocks as an OpenAI chat completion")  # fmt: skip
-            if (
-                changed_callers
-                and (mirrored := mirror_fakes(editable[p], changed_callers, old)) != editable[p]
-            ):
-                twins[p] = set(mirrored.splitlines(keepends=True)) - set(
-                    editable[p].splitlines(keepends=True)
-                )
-                editable[p] = mirrored
+            if changed_callers and (mirrored := mirror_fakes(shown[p], changed_callers, old)) != shown[p]:
+                twins[p] = set(mirrored.splitlines(keepends=True)) - set(shown[p].splitlines(keepends=True))
+                shown[p] = mirrored
                 done.append(f"`{p}` also fakes `token_factory_client` where it faked `{old}`")
-        before = {p: read(p) for p in editable}
-        at = call_statement_index(prepared, local)  # rewritten: the reply's handling after it may change
-        allowed = {local.function: 0} if not rewritten else {local.function: at + 1} if at is not None else {}
-        job = _Job(local, tier, adapter.spec, params, constants, system_name, editable, before,
-                   client_module=client_at[1], width=width, rewritten=rewritten, fixed=fixed,
-                   allowed=allowed, fence=fenced, carried=carried_of[site.id],
-                   verify=(lambda sid=site.id: verify([sid]).get(sid)) if probed else None)  # fmt: skip
-        failure, patched, tried = None, {}, []
-        if (
-            rewritten
-        ):  # Offramp's own changes alone: green needs no model call; red shows the model what fails
-            failure, patched = _attempt(job, [], repo, box, formatted, write)
-            tried.append([])
-            if failure and failure.startswith("the patched code does not send"):  # the model may not touch it
-                downgrade(
-                    v, f"patch not composed: Offramp's own rewrite was run and {failure.partition(': ')[2]}"
-                )
-                continue
-        checked, applied = failure, []  # what the last try said; the edits of the last try that was checked
-        calls = (_call_text(read(site.file), local), _call_text(prepared, local))
-        prompt = _prompt(local, tier, params, constants, system_name, editable, client, client_at, width,
-                         calls, fixed, done, failure)  # fmt: skip
+        before = {p: read(p) for p in shown}
+        probe = (lambda sid=site.id: verify([sid]).get(sid)) if probed else None
+        names = [*constants.values(), *([system_name] if (system_name or "").startswith("NEMOTRON_") else [])]
+        imports = {name: f"from {_module_name(site.file)} import {name}" for name in names}
+        job = _Job(local, shown, before, {**base_code, **code}, client_module=client_at[1], width=width,
+                   constants=imports, locked=locked, verify=probe)  # fmt: skip
+        # Offramp's own changes alone: green needs no model call; red shows the model what fails
+        failure, patched = _attempt(job, [], repo, box, formatted, write)
+        if failure and failure.startswith("the patched code does not send"):  # the model may not touch it
+            why = f"Offramp's own rewrite was run and {failure.partition(': ')[2]}"
+            downgrade(v, f"patch not composed: {why}")
+            continue
+        tried, checked, applied = [[]], failure, []  # tries; what the last said; the last checked one's edits
+        calls = (_call_text(original, local), _call_text(code[site.file], local))
+        read_only = {p for p in shown if p in job.reference} if locked else set()
+        prompt = _prompt(local, tier, shown, read_only, client, client_at, width, calls, done, failure)
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
-        for attempt in range(1 + REPAIRS if failure or not rewritten else 0):
+        for attempt in range(1 + REPAIRS if failure else 0):
             try:
                 res = llm.chat(
                     role=ROLE,
@@ -2330,7 +2215,7 @@ def compose_patches(
                 failure = f"patch not composed: {e}" + (f"; last failure: {failure}" if failure else "")
                 break
             edits = parse_edits(res.output.text or "").edits
-            if not edits and (attempt or rewritten):  # empty or malformed: ask again, no check needed
+            if not edits:  # empty or malformed: ask again, no check needed
                 failure = "the reply holds no complete edit block" + (
                     f"; last failure: {checked}" if checked else ""
                 )
@@ -2367,13 +2252,7 @@ def compose_patches(
         raw[v.site_id] = unpruned
         site_twins[v.site_id] = twins
         befores[v.site_id] = job.before
-        evaluated[v.site_id] = (
-            local,
-            params,
-            constants,
-            system_name,
-            _call_text(prepared, local) if rewritten else None,
-        )
+        code_of[v.site_id] = code
 
     # all green-alone patches together, in site order (disk is at the base again)
     base_files = {p: read(p) for files_ in versions.values() for p in files_}
@@ -2402,38 +2281,39 @@ def compose_patches(
                 unified.add(path)
         return merged, taken
 
-    def drift(
-        sids: list[str],
-    ) -> dict[str, list[str]]:  # the backstop: every evaluated call, as it is on disk
-        out = {}
+    def drift(sids: list[str]) -> dict[str, list[str]]:
+        """The backstop and the probe on the merged tree, as it is on disk: site -> why its code or its
+        request is not what was evaluated."""
+        reference: dict[str, str | None] = dict(base_code)  # the merged tree as Offramp's code wrote it
         for sid in sids:
-            local_, params_, constants_, system_, call_ = evaluated[sid]
-            text = read(local_.file) or ""
-            problems = conformance(text, local_, params_, constants_, system_, carried_of[sid])
-            if call_ is not None and _call_text(text, local_) != call_:
-                problems.append(f"the call Offramp wrote in `{local_.function}` changed")
-            if problems:
-                out[sid] = problems
+            for path, text in code_of[sid].items():
+                was = reference.get(path)
+                reference[path] = None if was is None else merge_onto(base_code[path], was, text)
+        out: dict[str, list[str]] = {}
+        for path, why in backstop(repo, reference).items():
+            for sid in [s for s in sids if path in code_of[s] or path in versions[s]] or sids:
+                out.setdefault(sid, []).append(why)
         for sid, why in (verify([sid for sid in sids if sid not in out]) if probed else {}).items():
             out[sid] = [f"the merged code does not send the evaluated request: {why}"]
         return out
 
     def culprits(off: dict[str, list[str]], sids: list[str]) -> dict[str, str]:
-        """Each site whose request changed on the merged tree, and every site whose patch edited a non-test
-        module that request reads (the site's own module, or one it imports): site -> why it drops."""
+        """Each site whose code or request changed on the merged tree, and every site whose patch edited a
+        non-test module that site reads (its own module, or one it imports): site -> why it drops."""
         out = {}
         for b, problems in off.items():
-            out[b] = f"its evaluated call changed on the merged tree: {'; '.join(problems)}"
+            out[b] = f"its code or its evaluated call changed on the merged tree: {'; '.join(problems)}"
             module = by_id[b].file
             reads = {module} | _imported_files(read(module) or "", module, tracked)
             for a in sids:
                 touched = sorted(p for p in versions[a] if p in reads and not is_test_path(p))
                 if a != b and touched and a not in off:
                     out.setdefault(a, f"its patch edits {', '.join(touched)}, which {b}'s request reads, "
-                                      f"and {b}'s request changed on the merged tree")  # fmt: skip
+                                      f"and {b}'s code or request changed on the merged tree")  # fmt: skip
         return out
 
     def place(files: dict[str, str]) -> None:  # a tree on disk; a unified test formatted like the repo
+        _restore(repo, base_code, backstop(repo, base_code))  # code at the base first: a check may write it
         for path, text in files.items():
             write(path, text)
         if formatted and (tidy := [p for p in files if p in unified]):
@@ -2446,8 +2326,8 @@ def compose_patches(
         failing = _failing_tests(output)  # the target repo's output: every path in it is untrusted
         modules = {s.file for s in sites}  # call-site modules stay read-only in every layout, flat included
 
-        def fake_or_test(path: str) -> bool:
-            return path in tracked and is_test_path(path) and path not in modules
+        def fake_or_test(path: str) -> bool:  # a test file no shipped code imports
+            return path in tracked and is_test_path(path) and path not in modules and path not in base_code
 
         editable = {f for f, _ in failing if fake_or_test(f)}
         warnings.extend(f"combined repair: ignored {f} from the check output: not a tracked test or fake file"
@@ -2463,7 +2343,7 @@ def compose_patches(
         if not editable:  # nothing it may change (a ruff-only or collection failure): no call
             return [], f"{failure} (no failing test or fake the combined repair may edit)"
         shown = {p: read(p) for p in [*merged, *sorted(editable - set(merged))]}
-        locked = frozenset(set(shown) - editable)
+        read_only = frozenset(set(shown) - editable) if locked else frozenset()
         prompt = _together_prompt([by_id[sid] for sid in combined], reach, failure, shown, editable, width)
         messages = [{"role": "system", "content": TOGETHER}, {"role": "user", "content": prompt}]
         tried, checked, applied = [[]], failure, []
@@ -2483,7 +2363,7 @@ def compose_patches(
                     return [], f"combined repair produced no change; last failure: {checked}"
                 tried.append(edits)
                 new = dict(shown)
-                problems = _apply(edits, new, locked)
+                problems = _apply(edits, new, read_only)
                 gone = {p: _test_names(shown[p]) - _test_names(new[p]) for p in new if is_test_path(p)}
                 problems += [f"patch removes tests from {p}: {sorted(g)}" for p, g in gone.items() if g]
                 for p in sorted(editable) if not problems else []:
@@ -2501,7 +2381,7 @@ def compose_patches(
                     result = box.check()
                     if result.ok and not (off := drift(combined)):
                         return changed, None
-                    if result.ok:  # backstop: the merged tree may not change an evaluated call
+                    if result.ok:  # the backstop and the probe: the merged tree may not change shipped code
                         result = CheckResult(ok=False, mode=result.mode, output=_drift_text(off))
                     failure = checked = (
                         f"repo checks failed on the merged patches ({result.mode}): {_summary(result.output)}"
@@ -2556,7 +2436,7 @@ def compose_patches(
                 alongside = f"not together with {others}" if kept else "not on the merged tree"
                 output = result.output or (together.output if together else "")
                 why = (
-                    f": its evaluated call changed: {_drift_text(off)}"
+                    f": its code or its evaluated call changed: {_drift_text(off)}"
                     if off
                     else f" ({result.mode}): {_summary(output)}"
                 )
@@ -2587,9 +2467,6 @@ def compose_patches(
         combined=combined,
         combined_repair=repaired,
         combined_failure=together_failure,
-        verification={
-            sid: verification.get(sid, "fence only (no eval case drives it)" if probed else "fence only")
-            for sid in combined
-        },
+        verification={sid: verification.get(sid, UNCHANGED) for sid in combined},
         warnings=warnings,
     )
