@@ -266,6 +266,33 @@ def test_a_kept_row_says_the_bar_its_verdict_missed(site_id, gate, cell):
     assert f"| **NOT MIGRATED** | {cell} |" in row
 
 
+def test_a_budget_stopped_site_says_so_and_claims_no_parity():
+    """Review T19 R2-m3: not "below 95%"."""
+    c = ctx()
+    stop = {
+        "decision": "KEEP_CLOSED",
+        "tier": None,
+        "model": None,
+        "parity_pct": None,
+        "failed_gate": "budget",
+    }
+    c.verdicts = [v.model_copy(update=stop) if v.site_id == "cs_01" else v for v in c.verdicts]
+    row = next(ln for ln in render_pr(c).body.splitlines() if ln.startswith("| cs_01 "))
+    assert "| **NOT MIGRATED** | not measured: the run's budget stopped it |" in row and "95%" not in row
+
+
+@pytest.mark.parametrize("site_id", ["cs_05", "cs_06"])
+def test_a_kept_verdict_recorded_without_its_gate_states_figures_and_no_comparison(site_id):
+    """Review T19 R2-m3: a verdict from before failed_gate (a legacy "dev never passed" row read "100.0% <
+    95%")."""
+    c = ctx()
+    legacy = {"decision": "KEEP_CLOSED", "tier": None, "model": None, "failed_gate": None}
+    c.verdicts = [v.model_copy(update=legacy) if v.site_id == site_id else v for v in c.verdicts]
+    row = next(ln for ln in render_pr(c).body.splitlines() if ln.startswith(f"| {site_id} "))
+    cell = row.split(" | ")[5]
+    assert "<" not in cell and "below" not in cell and "dev" not in cell and "%" in cell
+
+
 def test_a_retirement_date_already_past_says_retired():
     body = render_pr(ctx(today=date(2026, 12, 1))).body
     assert "**Claude Sonnet 4.5 retired on 30 Nov 2026: cs_02, cs_03.**" in body

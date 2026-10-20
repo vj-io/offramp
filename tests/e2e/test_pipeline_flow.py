@@ -443,6 +443,7 @@ def test_a_budget_stop_keeps_the_site_closed_without_a_comparison(tmp_path):
     (verdict,) = [e.payload for e in log.events if e.type == "verdict"]
     assert verdict["decision"] == "KEEP_CLOSED" and verdict["parity_pct"] is None
     assert verdict["reason"] == "budget: Ultra agent call cap reached (40)"
+    assert verdict["failed_gate"] == "budget"
     assert stub.matrices == []  # nothing to evaluate
     assert pipeline.snapshot(log.run_id, log.events).totals.kept_closed == 1
 

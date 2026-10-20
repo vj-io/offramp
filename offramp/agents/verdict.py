@@ -111,9 +111,9 @@ def pricing_yaml_price(model: str) -> SourceModelInfo:
     return _from_yaml(model, datetime.now(UTC), "offline run, Tavily not asked", None)
 
 
-def stopped(site: CallSite, decision: Decision, reason: str) -> Verdict:
-    """A verdict without a measured comparison: budget stops (KEEP_CLOSED) and MANUAL_REVIEW."""
-    return Verdict(site_id=site.id, decision=decision, reason=reason)
+def stopped(site: CallSite, decision: Decision, reason: str, gate: Gate | None = None) -> Verdict:
+    """A verdict without a measured comparison: budget stops (KEEP_CLOSED, gate "budget"), MANUAL_REVIEW."""
+    return Verdict(site_id=site.id, decision=decision, reason=reason, failed_gate=gate)
 
 
 def closed_reference_parity(

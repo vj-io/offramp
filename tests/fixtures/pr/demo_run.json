@@ -417,7 +417,8 @@
         "reason": "parity vs reference 71.4% < 90%: multi-step proration with tiered seats still drifts by cents after 3 adapter iterations on Ultra.",
         "holdout_cases": 7,
         "holdout_passed": 5,
-        "parity_lower_pct": 35.8
+        "parity_lower_pct": 35.8,
+        "failed_gate": "threshold"
       },
       {
         "site_id": "cs_06",

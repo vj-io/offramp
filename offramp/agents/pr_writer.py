@@ -208,18 +208,18 @@ _MISSED = {  # Verdict.failed_gate -> what the kept row says after its figures
 
 
 def _kept(v: Verdict, site: CallSite | None, bar: str) -> str:
-    """A kept site's parity cell, saying only the bar the verdict records as missed (failed_gate): free text's
+    """A kept site's parity cell, saying only why the verdict records it was kept (failed_gate): free text's
     judge figures are compared with their own bars, never with a share. A verdict recorded without the gate
-    states its figures, and the share's bar when it is not free text."""
+    states its figures and no comparison; one never measured says so."""
+    if v.failed_gate == "budget":
+        return "not measured: the run's budget stopped it"
     if v.parity_pct is None:
-        return f"below {bar}"
+        return "not measured"
     free_text = _task(site) == "free_text"
     text = _parity(v, site, failed=free_text and v.failed_gate in ("judge_mean", "case_floor"))
     if v.failed_gate in _MISSED:
         return text + _MISSED[v.failed_gate]
-    if v.failed_gate == "threshold" or (v.failed_gate is None and not free_text):
-        return f"{text} < {bar}"
-    return text
+    return f"{text} < {bar}" if v.failed_gate == "threshold" else text
 
 
 def _urgency(v: Verdict) -> tuple:

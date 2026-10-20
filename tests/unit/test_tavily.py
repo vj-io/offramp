@@ -696,6 +696,37 @@ def test_a_comparison_table_on_the_model_page_never_ships_another_models_price(t
     assert "nor do the vendor's own pages read through Tavily Extract" in info.note
 
 
+@pytest.mark.parametrize("unit", ["1M tokens", "MTok"])
+def test_a_comparison_table_with_units_never_ships_another_models_price(tmp_path, unit):
+    """Review T19 N3, end to end: the column table with a unit after each amount."""
+    table = (
+        f"| | GPT-4o mini | GPT-4o |\n| Input | $0.15 / {unit} | $2.50 / {unit} |\n"
+        f"| Output | $0.60 / {unit} | $10.00 / {unit} |"
+    )
+    info, _, _ = gpt_4o(tmp_path, extracted((GPT_4O_PAGE, table), (OPENAI_PRICES, PRICE_LIST_TEXT)))
+    assert (info.via, info.input_usd_per_m, info.output_usd_per_m) == ("pricing.yaml", 2.5, 10.0)
+
+
+VERIFIED_PAGES = Path(__file__).parents[1] / "fixtures" / "tavily_verified_pages.json"
+
+
+def test_every_recorded_page_gives_exactly_what_it_gave_before_t19():
+    """All 100 recorded result pages through _price_quote: the same price and quote on the ones that verified,
+    nothing on the rest (tests/fixtures/tavily_verified_pages.json, written from 1b06922)."""
+    expected = json.loads(VERIFIED_PAGES.read_text())["verified"]
+    pages = 0
+    for model in MODELS:
+        results = json.loads((FIXTURES / f"{model}.json").read_text())["response"]["results"]
+        got = [
+            {"result": i, "url": r["url"].strip(), "price": list(hit[0]), "quote": hit[1]}
+            for i, r in enumerate(results)
+            if (hit := tavily._price_quote(model, r["url"].strip(), r["content"]))
+        ]
+        assert got == expected[model], model
+        pages += len(results)
+    assert pages == 100
+
+
 RECORDED_VERIFIED = {  # pages of each recording that verify, and the one price they verify (unchanged by T19)
     "gpt-4o-mini": (3, {(0.15, 0.6)}),
     "gpt-4o": (0, set()),
@@ -907,6 +938,13 @@ SONNET = "claude-sonnet-4-5"
             date(2026, 11, 30),
         ),
         ("Claude Sonnet 4.5 retirement was announced on August 1, 2026.", SONNET, None),
+        # review T19 R2-m1: a deprecation taking effect is not the retirement
+        (
+            "Claude Sonnet 4.5 is deprecated, effective August 1, 2026, and retires on November 30, 2026.",
+            SONNET,
+            date(2026, 11, 30),
+        ),
+        ("Claude Sonnet 4.5 is deprecated, effective August 1, 2026.", SONNET, None),
     ],
 )
 def test_the_retirement_date_is_the_one_the_notice_gives_this_model(notice, model, retires):
@@ -1329,6 +1367,27 @@ def test_batch_and_cached_amounts_are_not_the_standard_price(page, expected):
         ("| | GPT-4.1 | GPT-4o |\n| Input | $2.00 | $2.50 |\n| Output | $8.00 | $10.00 |", None),
         ("GPT-4o\nInput $2.50 $2.00\nOutput $10.00 $8.00", None),  # the same columns, unpiped
         ("GPT-4o\nInput $2.50 Cached input $1.25 Output $10.00", (2.5, 10.0)),  # a label after each amount
+        # review T19 N3: the same tables with a unit after each amount, as both vendors print them
+        (
+            "| | GPT-4o mini | GPT-4o |\n| Input | $0.15 / 1M tokens | $2.50 / 1M tokens |\n"
+            "| Output | $0.60 / 1M tokens | $10.00 / 1M tokens |",
+            None,
+        ),
+        (
+            "| | GPT-4o mini | GPT-4o |\n| Input | $0.15 / MTok | $2.50 / MTok |\n"
+            "| Output | $0.60 / MTok | $10.00 / MTok |",
+            None,
+        ),
+        # single-model layouts still verify: a label word before every next amount, or the line ends first
+        ("GPT-4o\nInput: $2.50 / 1M tokens Output: $10.00 / 1M tokens Cached input: $1.25", (2.5, 10.0)),
+        ("GPT-4o\nInput pricing\n:   $2.50/ MTok\n\nOutput pricing\n:   $10/ MTok", (2.5, 10.0)),
+        (
+            "GPT-4o\nInput\n\n$2.50\n\nCached input\n\n$1.25\n\nOutput\n\n$10.00\n\nGPT-4.1\n$2.00",
+            (2.5, 10.0),
+        ),
+        # review T19 R2-m2: a batch heading on the line above the pair does not confirm it either
+        ("GPT-4o\nBatch API price\nInput $1.25\nOutput $5.00\nBatch\n$1.25 / $5.00", None),
+        ("GPT-4o\nBatch API price\nInput $1.25\nOutput $5.00\nCached\n\n$1.25•$5.00", None),
         # review T19 R1-m3: a batch-labelled pair does not confirm a pair after a bare batch heading
         ("GPT-4o\nBatch API price\nInput $1.25\nOutput $5.00\nBatch: $1.25 / $5.00", None),
         ("GPT-4o\nBatch API price\nInput $1.25\nOutput $5.00\nCached batch $1.25•$5.00", None),

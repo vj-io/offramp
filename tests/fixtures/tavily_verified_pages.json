@@ -1,0 +1,166 @@
+{
+  "_note": "What _price_quote returns for every recorded result page that verifies (all others verify nothing), as of 1b06922 (identical at 7e4e665 and c44648d per the T19 re-reviews). Regenerate only for an intended verifier change, and review the diff.",
+  "verified": {
+    "gpt-4o-mini": [
+      {
+        "result": 1,
+        "url": "https://developers.openai.com/api/docs/models/gpt-4o-mini",
+        "price": [
+          0.15,
+          0.6
+        ],
+        "quote": "Input $0.15 Cached input $0.075 Output $0.60"
+      },
+      {
+        "result": 2,
+        "url": "https://developers.openai.com/api/docs/models/gpt-4o-mini?v=20260928",
+        "price": [
+          0.15,
+          0.6
+        ],
+        "quote": "Input $0.15 Cached input $0.075 Output $0.60"
+      },
+      {
+        "result": 3,
+        "url": "https://developers.openai.com/docs/models/gpt-4o-mini",
+        "price": [
+          0.15,
+          0.6
+        ],
+        "quote": "Input $0.15 Cached input $0.075 Output $0.60"
+      }
+    ],
+    "gpt-4o": [],
+    "o3": [],
+    "claude-sonnet-4-5": [
+      {
+        "result": 0,
+        "url": "https://platform.claude.com/docs/en/models/sonnet-4-5",
+        "price": [
+          3.0,
+          15.0
+        ],
+        "quote": "Input pricing : $3/ MTok Output pricing : $15"
+      },
+      {
+        "result": 1,
+        "url": "https://platform.claude.com/docs/en/models/sonnet-4-5/overview",
+        "price": [
+          3.0,
+          15.0
+        ],
+        "quote": "Input pricing : $3/ MTok Output pricing : $15"
+      }
+    ],
+    "claude-haiku-4-5": [
+      {
+        "result": 0,
+        "url": "https://docs.claude.com/docs/en/models/haiku-4-5/overview",
+        "price": [
+          1.0,
+          5.0
+        ],
+        "quote": "| Claude Haiku 4.5This modelLegacy | 200K | 64K | $1 / $5 | Extended | \u2014 | Feb 2025"
+      },
+      {
+        "result": 1,
+        "url": "https://docs.claude.com/en/docs/models/haiku-4-5/overview",
+        "price": [
+          1.0,
+          5.0
+        ],
+        "quote": "Input pricing : $1/ MTok Output pricing : $5"
+      },
+      {
+        "result": 2,
+        "url": "https://platform.claude.com/docs/en/models/haiku-4-5",
+        "price": [
+          1.0,
+          5.0
+        ],
+        "quote": "Input pricing : $1/ MTok Output pricing : $5"
+      },
+      {
+        "result": 3,
+        "url": "http://platform.claude.com/docs/en/models/haiku-4-5/overview",
+        "price": [
+          1.0,
+          5.0
+        ],
+        "quote": "Input pricing : $1/ MTok Output pricing : $5"
+      },
+      {
+        "result": 4,
+        "url": "https://docs.anthropic.com/docs/en/models/haiku-4-5/overview",
+        "price": [
+          1.0,
+          5.0
+        ],
+        "quote": "Input pricing : $1/ MTok Output pricing : $5"
+      },
+      {
+        "result": 5,
+        "url": "https://docs.anthropic.com/en/docs/models/haiku-4-5/overview",
+        "price": [
+          1.0,
+          5.0
+        ],
+        "quote": "Input pricing : $1/ MTok Output pricing : $5"
+      },
+      {
+        "result": 6,
+        "url": "https://console.anthropic.com/docs/en/models/haiku-4-5/overview",
+        "price": [
+          1.0,
+          5.0
+        ],
+        "quote": "Input pricing : $1/ MTok Output pricing : $5"
+      },
+      {
+        "result": 7,
+        "url": "https://docs.anthropic.com/en/models/haiku-4-5/overview",
+        "price": [
+          1.0,
+          5.0
+        ],
+        "quote": "Input pricing : $1/ MTok Output pricing : $5"
+      },
+      {
+        "result": 8,
+        "url": "https://docs.anthropic.com/en/docs/models/haiku-4-5",
+        "price": [
+          1.0,
+          5.0
+        ],
+        "quote": "Input pricing : $1/ MTok Output pricing : $5"
+      },
+      {
+        "result": 10,
+        "url": "https://platform.claude.com/docs/id/models/haiku-4-5/overview",
+        "price": [
+          1.0,
+          5.0
+        ],
+        "quote": "Input pricing : $1/ MTok Output pricing : $5"
+      },
+      {
+        "result": 11,
+        "url": "https://platform.claude.com/docs/ru/models/haiku-4-5/overview",
+        "price": [
+          1.0,
+          5.0
+        ],
+        "quote": "Input pricing : $1/ MTok Output pricing : $5"
+      },
+      {
+        "result": 13,
+        "url": "https://platform.claude.com/docs/zh-CN/models/haiku-4-5/overview",
+        "price": [
+          1.0,
+          5.0
+        ],
+        "quote": "Input pricing : $1/ MTok Output pricing : $5"
+      }
+    ]
+  }
+}

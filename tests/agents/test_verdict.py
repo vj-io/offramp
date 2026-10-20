@@ -979,6 +979,7 @@ def test_a_budget_stop_keeps_the_site_closed_with_the_budget_reason():
     )
     assert runner.calls == [(L, "dev", 0), (L, "dev", 1)]  # nothing after the stop
     assert out.verdict.parity_pct is None and out.adapter is None
+    assert out.verdict.failed_gate == "budget"
 
 
 def test_a_budget_stop_on_the_final_holdout_run_keeps_the_site_closed():

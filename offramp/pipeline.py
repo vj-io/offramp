@@ -664,7 +664,9 @@ class Pipeline:
             try:
                 adapters[site.id] = adapt(site, self.client, schemas.get(site.id) or None)
             except BudgetExceeded as e:
-                stopped[site.id] = Verdict(site_id=site.id, decision="KEEP_CLOSED", reason=f"budget: {e}")
+                stopped[site.id] = Verdict(
+                    site_id=site.id, decision="KEEP_CLOSED", reason=f"budget: {e}", failed_gate="budget"
+                )
         return {
             "adapters": {k: a.model_dump(mode="json") for k, a in adapters.items()},
             "stopped": {k: v.model_dump(mode="json") for k, v in stopped.items()},
