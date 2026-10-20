@@ -199,7 +199,8 @@ def markdown(report: dict[str, Any]) -> str:
         "",
         f"Offramp's static scan (`offramp scan`, the same code as the hosted /scan page) over the "
         f"{t['repos']} most-starred public Python repos on GitHub that import `openai` or "
-        f"`anthropic`, run on {report['date']} with Offramp at `{report['offramp_commit'][:7]}`. "
+        f"`anthropic`, run on {report['date']} with Offramp at `{report['offramp_commit'][:7]}` "
+        f"under Python {report['python']}. "
         "The scan reads each repo's .py files and never imports or runs them, makes no model call "
         "and needs no key. Raw data: [ecosystem-scan.json](ecosystem-scan.json). Regenerate with "
         "`uv run python scripts/ecosystem_scan.py`.",
@@ -312,6 +313,7 @@ def main(argv: list[str] | None = None) -> int:
     report = {
         "date": date.today().isoformat(),
         "offramp_commit": commit,
+        "python": sys.version.split()[0],  # ast.parse accepts this version's grammar and older
         "queries": QUERIES,
         "sunset_sources": SUNSET_SOURCES | {"as_of": SUNSET_AS_OF},
         "totals": summarize(kept),
