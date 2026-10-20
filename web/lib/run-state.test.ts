@@ -12,6 +12,7 @@ import {
   toSnapshot,
 } from "./run-state";
 import {
+  afterCells,
   auditText,
   closedByConstructionText,
   closedReferenceText,
@@ -252,6 +253,22 @@ describe("evidence text", () => {
     expect(latencyText(-30, 380)).toBe("410 ms → 380 ms");
     expect(latencyText(null, null)).toBe("—");
     expect(latencyText(40, null)).toBe("+40 ms");
+  });
+  it("after cells: only a migrated call has an after; the others show \"—\" and keep their before cost", () => {
+    const priced = { cost_before_per_1k: 39.51, cost_after_per_1k: 1.19, latency_delta_ms: null };
+    expect(afterCells({ ...priced, decision: "MIGRATE" }, 19400)).toEqual({ latency: "— → 19.4 s", cost: "$39.51 → $1.19" });
+    expect(afterCells({ ...priced, decision: "MANUAL_REVIEW" }, 19400)).toEqual({ latency: "—", cost: "$39.51 → —" });
+    expect(afterCells({ ...priced, decision: "KEEP_CLOSED" }, 19400)).toEqual({ latency: "—", cost: "$39.51 → —" });
+    expect(afterCells({ ...priced, cost_after_per_1k: null, decision: "MIGRATE" }, null).cost).toBe("$39.51, unchanged");
+  });
+  it("after cells: no before cost is \"—\" whatever the decision, even when an after is set or a field is missing", () => {
+    const noBefore = { cost_before_per_1k: null, cost_after_per_1k: 1.19, latency_delta_ms: null };
+    for (const decision of ["MIGRATE", "MANUAL_REVIEW", "KEEP_CLOSED"] as const)
+      expect(afterCells({ ...noBefore, decision }, null).cost).toBe("—");
+    expect(afterCells({ decision: "KEEP_CLOSED", cost_before_per_1k: null, cost_after_per_1k: null, latency_delta_ms: null }, null)).toEqual({ latency: "—", cost: "—" });
+    // recordings that predate a field leave it undefined
+    expect(afterCells({ decision: "MIGRATE" } as Verdict, null)).toEqual({ latency: "—", cost: "—" });
+    expect(afterCells({ decision: "MANUAL_REVIEW" } as Verdict, 412)).toEqual({ latency: "—", cost: "—" });
   });
   it("references and audit come from the case summary, and an empty audit is omitted", () => {
     const c = ofType("case_summary").find((e) => e.call_site_id === "cs_01")!.payload as unknown as CaseSummary;

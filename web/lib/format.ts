@@ -83,6 +83,28 @@ export function latencyText(deltaMs: number | null | undefined, afterP50: number
   return deltaMs != null ? signedMs(deltaMs) : "—";
 }
 
+// The two "after" cells of the evidence table. Only a migrated call has an after: the others stay on their source
+// model, so latency is "—" and cost keeps its before and shows "—" after.
+export function afterCells(
+  v: Pick<Verdict, "decision" | "latency_delta_ms" | "cost_before_per_1k" | "cost_after_per_1k">,
+  afterP50: number | null,
+): { latency: string; cost: string } {
+  const before = v.cost_before_per_1k;
+  const after = v.cost_after_per_1k;
+  const migrated = v.decision === "MIGRATE";
+  return {
+    latency: migrated ? latencyText(v.latency_delta_ms, afterP50) : "—",
+    cost:
+      before == null
+        ? "—"
+        : !migrated
+          ? `${usd(before)} → —`
+          : after != null
+            ? `${usd(before)} → ${usd(after)}`
+            : `${usd(before)}, unchanged`,
+  };
+}
+
 // "How parity was measured", labelled exactly as the run reports it; absent parts are omitted.
 // reference_methods keys are the labels the PR uses too: "reference:*" methods, and anything else is a closed
 // model whose answers stand in for references (GC27a, free text).

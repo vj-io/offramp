@@ -4,8 +4,38 @@ import type { SiteView } from "@/lib/run-state";
 import { TIER_ORDER, type RunConfig, type TaskType, type Verdict } from "@/lib/types";
 import { BrandBadges, SunsetRisk } from "./badges";
 import { checkPath, crossPath, DECISION_HL, DECISION_NOTE, InkIcon, Note, Stamp, TIER_HL, TIER_NOTE, tiltFor } from "./doodle";
+import { FilePath } from "./file-path";
 
 const mark = (m: string) => ({ "--mark": m }) as CSSProperties;
+
+// A reason can hold error text, file paths and tokens with no spaces: wrap anywhere, never widen the card.
+// Past this many characters it starts on 3 lines behind a native "more" toggle; the full text stays in the DOM.
+// The text sits outside the <summary>, so the toggle's accessible name stays short; the chip is the `group`, and
+// group-has-[details[open]] means its own <details> is open.
+const LONG_REASON = 120;
+
+function ManualReviewNote({ reason }: { reason: string }) {
+  const text = `Manual review: ${reason}`;
+  const chip = "hl-chip sketch max-w-full min-w-0 px-2.5 py-0.5 font-hand text-lg wrap-anywhere";
+  if (text.length <= LONG_REASON)
+    return (
+      <span className={chip} style={mark(DECISION_HL.MANUAL_REVIEW)}>
+        {text}
+      </span>
+    );
+  return (
+    <div className={`group ${chip}`} style={mark(DECISION_HL.MANUAL_REVIEW)}>
+      <span className="line-clamp-3 group-has-[details[open]]:line-clamp-none">{text}</span>
+      <details>
+        <summary className="cursor-pointer list-none text-base underline underline-offset-2 [&::-webkit-details-marker]:hidden">
+          <span className="group-has-[details[open]]:hidden">more</span>
+          <span className="hidden group-has-[details[open]]:inline">less</span>
+          <span className="sr-only"> of the manual review reason</span>
+        </summary>
+      </details>
+    </div>
+  );
+}
 
 export function VerdictChip({
   verdict,
@@ -34,11 +64,7 @@ export function VerdictChip({
           )}
         </>
       )}
-      {verdict.decision === "MANUAL_REVIEW" && (
-        <span className="hl-chip sketch px-2.5 py-0.5 font-hand text-lg" style={mark(DECISION_HL.MANUAL_REVIEW)}>
-          Manual review: {verdict.reason}
-        </span>
-      )}
+      {verdict.decision === "MANUAL_REVIEW" && <ManualReviewNote reason={verdict.reason} />}
       {verdict.sunset_risk && <SunsetRisk note={verdict.sunset_risk} />}
       <BrandBadges small />
     </div>
@@ -50,9 +76,9 @@ export function SiteCard({ view, index, config }: { view: SiteView; index: numbe
   const task = site.contract?.task_type;
   const note = verdict ? DECISION_NOTE[verdict.decision] : currentTier ? TIER_NOTE[currentTier] : "var(--note-plain)";
   return (
-    <Note as="li" note={note} tilt={tiltFor(index)} className="spring-in flex flex-col gap-3 p-4 pt-5">
-      <h3 className="font-mono text-sm break-all">
-        <span className="font-bold">{site.id}</span> {site.file}:{site.lines.join("–")}
+    <Note as="li" note={note} tilt={tiltFor(index)} className="spring-in flex min-w-0 flex-col gap-3 p-4 pt-5">
+      <h3 className="font-mono text-sm wrap-anywhere">
+        <span className="font-bold">{site.id}</span> <FilePath path={site.file} range={site.lines.join("–")} />
       </h3>
       <p className="font-hand text-lg leading-snug">
         {task ? TASK_NAME[task] : "unlabelled"} call, source model{" "}
