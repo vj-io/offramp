@@ -554,3 +554,46 @@ def test_recursion_error_skips_only_that_file(tmp_path, caplog):
     assert [s.file for s in scan.sites] == ["ok.py"]
     assert scan.warnings == ["skipped deep.py: nested too deeply to analyse (RecursionError)"]
     assert "deep.py" in caplog.text
+
+
+# Bugs the ecosystem scan (scripts/ecosystem_scan.py) found in public repos.
+
+STREAM_HELPERS = '''from anthropic import Anthropic
+from openai import OpenAI
+
+claude, client = Anthropic(), OpenAI()
+
+
+def reply(text):
+    msgs = [{"role": "user", "content": text}]
+    with claude.messages.stream(model="claude-sonnet-4-5", max_tokens=64, messages=msgs) as s:
+        return s.get_final_text()
+
+
+def draft(text):
+    msgs = [{"role": "user", "content": text}]
+    with client.beta.chat.completions.stream(model="gpt-4o", messages=msgs) as s:
+        return s.get_final_completion()
+
+
+def answer(text):
+    with client.responses.stream(model="gpt-4.1", input=text) as s:
+        return s.get_final_response()
+'''
+
+
+def test_sdk_streaming_helpers_are_streaming_sites(tmp_path):
+    sites = _scan_module(tmp_path, STREAM_HELPERS)
+    assert [(s.call, s.sdk, s.source_model) for s in sites] == [
+        ("claude.messages.stream", "anthropic", "claude-sonnet-4-5"),
+        ("client.beta.chat.completions.stream", "openai", "gpt-4o"),
+        ("client.responses.stream", "openai", "gpt-4.1"),
+    ]
+    for s in sites:  # the helper sends stream=True: a streaming site goes to manual review
+        assert s.params["stream"] is True and "MANUAL_REVIEW" in s.flags
+
+
+def test_invalid_escape_sequences_in_target_code_print_no_warning(tmp_path, recwarn):
+    (tmp_path / "m.py").write_text('PATTERN = "\\s+\\d"\n' + OPENAI_FILE)
+    assert [s.file for s in scan_repo(tmp_path).sites] == ["m.py"]
+    assert not [w for w in recwarn if issubclass(w.category, SyntaxWarning)]

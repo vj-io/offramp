@@ -18,6 +18,7 @@ from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
+from warnings import catch_warnings, simplefilter
 
 from pydantic import BaseModel, Field
 
@@ -53,6 +54,10 @@ METHODS = {  # attribute chain after a client -> (sdk, kind)
     ("responses", "create"): ("openai", "chat"),
     ("embeddings", "create"): ("openai", "embedding"),
     ("messages", "create"): ("anthropic", "chat"),
+    # the SDKs' streaming helpers (`with client.messages.stream(...) as s:`) send the same request, streamed
+    ("chat", "completions", "stream"): ("openai", "chat"),
+    ("responses", "stream"): ("openai", "chat"),
+    ("messages", "stream"): ("anthropic", "chat"),
 }
 MUTATORS = {
     "append", "extend", "insert", "update", "pop", "popitem", "remove", "clear", "setdefault", "add",
@@ -90,7 +95,9 @@ def scan_repo(path: str | Path, deadline: float | None = None) -> ScanResult:
             warnings.append(f"skipped {rel}: not readable ({type(exc).__name__})")
             continue
         try:
-            tree = ast.parse(source)  # bytes, so a BOM or a coding cookie is honoured
+            with catch_warnings():  # the target's invalid escapes ("\s") are not ours to report
+                simplefilter("ignore", SyntaxWarning)
+                tree = ast.parse(source)  # bytes, so a BOM or a coding cookie is honoured
         except (SyntaxError, ValueError, RecursionError) as exc:
             warnings.append(f"skipped {rel}: not parseable as Python 3.12 ({type(exc).__name__})")
             continue
@@ -388,6 +395,8 @@ class _Module:
         model_node = kw.get("model", kw.get("model_name"))
         model = None if model_node is None else self.resolve(model_node, fn)
         params = {k: self.resolve(kw[k], fn) for k in PARAM_KEYS if k in kw}
+        if isinstance(call.func, ast.Attribute) and call.func.attr == "stream":
+            params["stream"] = True  # a streaming helper: the SDK sends stream=True
         rendered = self._template(kw, fn) if kind == "chat" and sdk != "langchain" else None
         flags = []
         if params.get("stream") in (True, EXPR):
