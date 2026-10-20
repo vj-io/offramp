@@ -257,3 +257,21 @@ def test_the_audit_column_names_the_auditor():
     row = next(ln for ln in render_pr(ctx()).body.splitlines() if ln.startswith("| cs_01 | reference:seed"))
 
     assert "26 / 25 / 1 / 0 by claude-sonnet-5.5 (via Claude Code)" in row
+
+
+def test_the_merged_check_a_combined_repair_and_a_dropped_site_are_reported():
+    c = ctx(alone={"cs_02": True, "cs_03": True, "cs_04": True}, combined=["cs_02", "cs_04"],
+            combined_repair=["tests/test_cli.py"])  # fmt: skip
+    dropped = verdict(c, "cs_03").model_copy(
+        update={"decision": "MANUAL_REVIEW", "reason": "green alone, but…"}
+    )
+    c.verdicts = [dropped if v.site_id == "cs_03" else v for v in c.verdicts]
+
+    body = render_pr(c, PROSE).body
+
+    assert (
+        "- The patches green on their own (cs_02, cs_03, cs_04) were then checked merged: cs_02, cs_04 pass "
+        "this repo's checks together, after one combined repair by Nemotron 3 Ultra to `tests/test_cli.py`; "
+        "cs_03 dropped, see below." in body
+    )
+    assert "; 1 needs manual review." in body  # and "2 need manual review" for more than one

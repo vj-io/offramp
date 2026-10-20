@@ -1,6 +1,6 @@
 ## Summary
 
-Offramp evaluated 6 LLM call sites against references (69 cases, 24 in the holdout split). 2 migrated to the cheapest Nemotron tier that passed parity on the holdout split; 3 kept on the original model; 1 need manual review.
+Offramp evaluated 6 LLM call sites against references (69 cases, 24 in the holdout split). 2 migrated to the cheapest Nemotron tier that passed parity on the holdout split; 3 kept on the original model; 1 needs manual review.
 
 ## Evidence
 
@@ -19,6 +19,7 @@ Offramp evaluated 6 LLM call sites against references (69 cases, 24 in the holdo
 - **cs_04** `helphub/qa/rag_answer.py` → Nemotron 3.5 Lightning. The answer_question function now uses Nemotron 3.5 Lightning, which matched reference outputs exactly, and the change involved updating the model call while preserving the retrieval-augmented generation logic. Files: `helphub/cli.py`, `helphub/qa/rag_answer.py`. Tests updated (they pinned the old provider's request or fakes): `tests/test_call_sites.py`, `tests/test_cli.py`, `tests/test_rag_answer.py`.
 - **cs_05** `helphub/refunds/plan.py` → Nemotron 3.5 Lightning. The plan_refund function has been moved to Nemotron 3.5 Lightning, achieving full parity on held-out cases, with the reasoning process unchanged and only the underlying model replaced. Files: `helphub/cli.py`, `helphub/refunds/plan.py`. Tests updated (they pinned the old provider's request or fakes): `tests/test_call_sites.py`, `tests/test_cli.py`, `tests/test_refund_plan.py`.
 - Offramp's code rewrote each migrated call where it could (the evaluated request as written-out keyword arguments, the reply read the OpenAI way) and the callers that build its client; Nemotron 3 Super wrote the remaining edits, chiefly the tests and fakes that pinned the old provider, with up to two repair rounds on Nemotron 3 Ultra (thinking off) when this repo's checks failed.
+- The patches green on their own (cs_04, cs_05) were then checked merged: all pass this repo's checks together.
 - Each site's patch was checked with this repo's own `ruff check` and `pytest` in Docker (network off, 2 CPUs); a patch that failed them was dropped and its site marked for manual review.
 
 ## What Offramp did NOT change

@@ -132,6 +132,8 @@ class PatchResult(BaseModel):
     client_path: str | None = None  # where the Token Factory client module was added, when it was
     alone: dict[str, bool] = Field(default_factory=dict)  # MIGRATE site -> its patch passed the checks alone
     combined: list[str] = Field(default_factory=list)  # sites whose patches are in the final, checked tree
+    combined_repair: list[str] = Field(default_factory=list)  # tests and fakes the combined repair changed
+    combined_failure: str | None = None  # why the merged tree stayed red (then sites were dropped one by one)
     warnings: list[str] = Field(default_factory=list)  # e.g. symlinks dropped from the sandbox copy
 
 
@@ -816,6 +818,138 @@ def mirror_fakes(source: str, modules: set[str], old: str = "OpenAI") -> str:
     return "".join(lines)
 
 
+def reach_handles(source: str, function: str) -> set[str]:
+    """What a test names to reach `function` through this caller module: the function itself, the key of a
+    dict entry holding the call (a command table), the strings an enclosing `if` compares against (an
+    argument dispatch), or, when neither exists, the name of the function that makes the call."""
+    tree = ast.parse(source)
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+    handles = {function}
+    for call in ast.walk(tree):
+        if (
+            not isinstance(call, ast.Call)
+            or getattr(call.func, "id", getattr(call.func, "attr", None)) != function
+        ):
+            continue
+        keys, node, outer = set(), call, None
+        while node in parents:
+            parent = parents[node]
+            if isinstance(parent, ast.Dict) and node in parent.values:
+                key = parent.keys[parent.values.index(node)]
+                keys |= {key.value} if isinstance(key, ast.Constant) and isinstance(key.value, str) else set()
+            elif isinstance(parent, ast.If) and node in parent.body:
+                keys |= {c.value for c in ast.walk(parent.test)
+                         if isinstance(c, ast.Constant) and isinstance(c.value, str)}  # fmt: skip
+            elif isinstance(parent, ast.FunctionDef | ast.AsyncFunctionDef) and outer is None:
+                outer = parent.name
+            node = parent
+        handles |= keys or ({outer} if outer else set())
+    return handles
+
+
+def _twin_dumps(lines: set[str]) -> set[str]:
+    """The AST of each fake line mirror_fakes added: it survives the repo's formatter splitting the line."""
+    out = set()
+    for line in lines:
+        try:
+            node = ast.parse(line.strip()).body[0]
+        except (SyntaxError, IndexError):
+            continue
+        out |= {ast.dump(node.value)} if isinstance(node, ast.Expr) else set()
+    return out
+
+
+def _tests(tree: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    return [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+            and n.name.startswith("test")]  # fmt: skip
+
+
+def prune_twins(source: str, twins: set[str], handles: set[str]) -> str:
+    """Drop the `token_factory_client` fakes Offramp added (`twins`) from test functions that never name a
+    handle of the migrated function (see `reach_handles`): those tests do not reach it."""
+    dumps, tree, drop = _twin_dumps(twins), ast.parse(source), set()
+    for fn in _tests(tree):
+        named = {n.value for n in ast.walk(fn) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+        named |= {getattr(n, "id", None) or getattr(n, "attr", None) for n in ast.walk(fn)}
+        if (
+            named & handles
+        ):  # ponytail: a test reaching it only through a helper loses the fake; checks catch it
+            continue
+        for stmt in ast.walk(fn):
+            if isinstance(stmt, ast.Expr) and ast.dump(stmt.value) in dumps:
+                drop |= set(range(stmt.lineno, stmt.end_lineno + 1))
+    lines = source.splitlines(keepends=True)
+    return "".join(line for i, line in enumerate(lines, 1) if i not in drop)
+
+
+def _parameter_values(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, set[str]]:
+    """parameter name -> the string values a `pytest.mark.parametrize` decorator gives it."""
+    out: dict[str, set[str]] = {}
+    for d in fn.decorator_list:
+        if not (isinstance(d, ast.Call) and _call_name(d.func).endswith("parametrize") and len(d.args) >= 2):
+            continue
+        spec = d.args[0]
+        if isinstance(spec, ast.Constant):
+            names = [n.strip() for n in str(spec.value).split(",")]
+        else:
+            names = [e.value for e in getattr(spec, "elts", []) if isinstance(e, ast.Constant)]
+        for row in getattr(d.args[1], "elts", []):
+            cells = row.elts if len(names) > 1 and isinstance(row, ast.Tuple) else [row]
+            for name, cell in zip(names, cells, strict=False):
+                if isinstance(cell, ast.Constant) and isinstance(cell.value, str):
+                    out.setdefault(name, set()).add(cell.value)
+    return out
+
+
+def unify_twins(source: str, sites: list[tuple[set[str], set[str]]]) -> str:
+    """In a merged test file: a parametrised test that sets `token_factory_client` once per migrated site
+    with different fakes (Offramp's twins: the last one would serve every case) gets one setattr whose fake
+    is chosen per case, from the parameter naming each site's handle. `sites`: (twin lines, handles) per
+    site. Left as it is when no single parameter tells the sites apart."""
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    edits: list[tuple[int, int, str]] = []  # (first line, last line, replacement), 1-based
+
+    def seg(node: ast.AST) -> str:
+        return ast.get_source_segment(source, node)
+
+    for fn in _tests(tree):
+        stmts = [st for st in fn.body if isinstance(st, ast.Expr)]
+        twin_of: dict[str, ast.Expr] = {}  # a fake's AST -> the first statement setting it
+        handles_of: dict[str, set[str]] = {}  # a fake's AST -> handles of the sites that use it
+        for twins, handles in sites:
+            dumps = _twin_dumps(twins)
+            for st in (st for st in stmts if ast.dump(st.value) in dumps):
+                fake = ast.dump(st.value.args[2])
+                twin_of.setdefault(fake, st)
+                handles_of[fake] = handles_of.get(fake, set()) | handles
+        values = _parameter_values(fn)
+        arg = next((a for a, vs in values.items() if all(vs & h for h in handles_of.values())), None)
+        if len(twin_of) < 2 or arg is None:
+            continue
+        order = sorted(twin_of, key=lambda f: twin_of[f].lineno)  # the first set fake becomes the default
+        rows = []
+        for fake in order[1:]:
+            vs = [_str(v) for v in sorted(values[arg] & handles_of[fake])]
+            choices = ", ".join(vs) + ("," if len(vs) == 1 else "")
+            rows += [f"({seg(twin_of[fake].value.args[2])})", f"if {arg} in ({choices})", "else"]
+        rows.append(f"({seg(twin_of[order[0]].value.args[2])}),")
+        folded: list[str] = []
+        for row in rows:  # "else" joins the row after it
+            if folded and folded[-1] == "else":
+                folded[-1] = f"else {row}"
+            else:
+                folded.append(row)
+        call, pad = twin_of[order[0]].value, " " * twin_of[order[0]].col_offset
+        head = [f"{seg(call.func)}(", f"    {seg(call.args[0])},", f"    {seg(call.args[1])},"]
+        text = "".join(f"{pad}{row}\n" for row in [*head, *(f"    {r}" for r in folded), ")"])
+        last = max(twin_of.values(), key=lambda st: st.lineno)
+        edits += [(st.lineno, st.end_lineno, text if st is last else "") for st in twin_of.values()]
+    for first, last_line, text in sorted(edits, reverse=True):
+        lines[first - 1 : last_line] = [text] if text else []
+    return "".join(lines)
+
+
 FAKE_HELPER = '''def chat_completion_from_blocks(blocks) -> ChatCompletion:
     """Anthropic content blocks as the OpenAI chat completion that a call site
     migrated by Offramp reads: text blocks joined, tool_use blocks as tool calls."""
@@ -937,6 +1071,19 @@ def _signature(source: str, function: str | None) -> str | None:
             a = n.args
             return ", ".join(x.arg for x in [*a.posonlyargs, *a.args, *a.kwonlyargs])
     return None
+
+
+def _test_bodies_changed(before: str, after: str) -> set[str]:
+    """Names of the test functions whose code differs between two versions of a module."""
+
+    def tests(source: str) -> dict[str, str]:
+        fns = [
+            n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+        ]
+        return {n.name: ast.dump(n) for n in fns if n.name.startswith("test")}
+
+    old, new = tests(before), tests(after)
+    return {name for name in old.keys() & new.keys() if old[name] != new[name]}
 
 
 def _test_names(source: str) -> set[str]:
@@ -1195,6 +1342,57 @@ def _prompt(
     for path, text in files.items():
         mode = "read-only" if fixed and path == site.file else "editable"
         lines += [f"### {path} ({mode})", "```python", text.rstrip("\n"), "```"]
+    return "\n".join(lines) + "\n"
+
+
+TOGETHER = (
+    """Offramp migrated several LLM call sites of a Python repository to NVIDIA Nemotron on Nebius Token \
+Factory, which is OpenAI-compatible (`client.chat.completions.create`). Each site's patch passes the \
+repository's ruff and tests on its own; merged together, some tests fail. You make them pass together by \
+editing the failing tests and the fakes only.
+
+"""
+    + SYSTEM[SYSTEM.index("Reply with edit blocks only") : SYSTEM.index("Rules:")]
+    + """Rules:
+1. Files marked (read-only) are final: never edit them. In the editable test files, change only the tests \
+listed as failing, plus helpers and fakes; every other test stays exactly as it is.
+2. Keep what each site's tests assert about its own request and behaviour. Never weaken a behavioural or \
+parsing assertion; never delete or rename a test.
+3. Offramp gave each site's tests a fake for `token_factory_client`, next to the fake of that site's old \
+SDK client. Where one test now sets `token_factory_client` more than once, only the last one counts, so the \
+cases of the other SDK get the wrong fake: set it once, to the fake each case needs (for example chosen \
+from the test's own parameters), built from the repo's existing fakes.
+4. Add the imports your code needs. Keep lines within the repo's line length."""
+)
+TOGETHER_REPAIRS = 2  # Ultra calls at most for the merged tree, each shown the last failure
+
+
+def _failing_tests(output: str) -> set[tuple[str, str]]:
+    """(file, test function) of each FAILED / ERROR line in pytest output, parameters dropped."""
+    return set(re.findall(r"^(?:FAILED|ERROR) ([^\s:]+)::(?:\w+::)?(\w+)", output, re.M))
+
+
+def _together_prompt(
+    sites: list[CallSite],
+    reach: dict[str, set[str]],
+    failing: str,
+    files: dict[str, str],
+    editable: set[str],
+    width: int,
+) -> str:
+    lines = ["## The sites, each green alone"]
+    for s in sites:
+        names = ", ".join(f"`{h}`" for h in sorted(reach.get(s.id, set()) - {s.function}))
+        via = f"; tests reach it through {names}" if names else ""
+        lines.append(f"- {s.id} `{s.file}` `{s.function}`: was {s.sdk} on `{s.source_model}`, so its tests "
+                     f"fake the client with the repo's {s.sdk} fake{via}")  # fmt: skip
+    if failing.startswith("repo checks failed"):
+        failing = "this repo's checks fail:\n- " + failing.partition("): ")[2].replace(" | ", "\n- ")
+    lines += ["", "## What fails together", f"With all of them merged, {failing}", "", f"Repo ruff line "
+              f"length: {width}.", "", "## Files"]  # fmt: skip
+    for path in sorted(files, key=lambda p: p not in editable):
+        mode = "editable" if path in editable else "read-only"
+        lines += [f"### {path} ({mode})", "```python", files[path].rstrip("\n"), "```"]
     return "\n".join(lines) + "\n"
 
 
@@ -1576,6 +1774,9 @@ def compose_patches(
     formatted = box.formatted()  # the repo keeps `ruff format` clean: so do the patches
 
     versions: dict[str, dict[str, str]] = {}  # site -> its patched files, green alone
+    unchecked = False  # a green-alone patch was pruned after its check
+    reach: dict[str, set[str]] = {}  # site -> what its tests name to reach the migrated function
+    site_twins: dict[str, dict[str, set[str]]] = {}  # site -> test file -> the fake lines mirror_fakes added
     alone: dict[str, bool] = {}
     for v in to_migrate:
         site, adapter = by_id.get(v.site_id), adapters.get(v.site_id)
@@ -1610,6 +1811,10 @@ def compose_patches(
         done = [f"`{p}` passes `token_factory_client()` to `{site.function}`" for p in context
                 if p != site.file and not is_test_path(p) and editable[p] != read(p)]  # fmt: skip
         old = "OpenAI" if site.sdk == "openai" else "Anthropic"
+        handles = {site.function or ""}.union(*(reach_handles(editable[p], site.function) for p in context
+                                                if p != site.file and editable[p] != read(p)))  # fmt: skip
+        reach[v.site_id] = handles
+        twins: dict[str, set[str]] = {}  # test file -> the fake lines mirror_fakes added
         for p in context:  # mechanical: the repo's provider fakes answer the Token Factory client's call
             if not (is_test_path(p) and p.endswith(".py")):
                 continue
@@ -1624,6 +1829,9 @@ def compose_patches(
                 changed_callers
                 and (mirrored := mirror_fakes(editable[p], changed_callers, old)) != editable[p]
             ):
+                twins[p] = set(mirrored.splitlines(keepends=True)) - set(
+                    editable[p].splitlines(keepends=True)
+                )
                 editable[p] = mirrored
                 done.append(f"`{p}` also fakes `token_factory_client` where it faked `{old}`")
         before = {p: read(p) for p in editable}
@@ -1635,7 +1843,7 @@ def compose_patches(
         ):  # Offramp's own changes alone: green needs no model call; red shows the model what fails
             failure, patched = _attempt(job, [], repo, box, formatted, write)
             tried.append([])
-        checked = failure  # what the last check said
+        checked, applied = failure, []  # what the last try said; the edits of the last try that was checked
         calls = (_call_text(read(site.file), site), _call_text(prepared, site))
         prompt = _prompt(site, tier, params, constants, system_name, editable, client, client_at, width,
                          calls, fixed, done, failure)  # fmt: skip
@@ -1662,13 +1870,15 @@ def compose_patches(
                 )
             else:
                 named = {e.path for e in edits}
-                edits += [e for e in (tried[-1] if attempt else []) if e.path not in named]  # kept as is
+                edits += [e for e in applied if e.path not in named]  # the last checked try's, kept as is
                 if edits in tried:  # a patch already tried (A-B-A too): the sandbox would say the same again
                     failure = f"repair produced no change; last failure: {failure}"
                     break
                 tried.append(edits)
                 failure, patched = _attempt(job, edits, repo, box, formatted, write)
                 checked = failure
+                if failure and failure.startswith("repo checks failed"):  # it applied: a repair builds on it
+                    applied = edits
                 if failure is None:
                     break
             messages = [
@@ -1680,13 +1890,22 @@ def compose_patches(
             downgrade(v, failure)
             continue
         alone[v.site_id] = True
+        for p in set(patched) & set(twins):  # a twin in a test that never reaches the function is noise
+            pruned = prune_twins(patched[p], twins[p], handles)
+            if pruned != patched[p]:
+                patched[p], unchecked = pruned, True  # checked together below, even alone
+                if pruned == job.before[p]:
+                    del patched[p]
         versions[v.site_id] = patched
+        site_twins[v.site_id] = twins
         diffs[v.site_id] = adapters[v.site_id].patch = _diff(job.before, patched)
         site_files[v.site_id] = sorted(patched)
 
     # all green-alone patches together, in site order (disk is at the base again)
     base_files = {p: read(p) for files_ in versions.values() for p in files_}
     by_verdict = {v.site_id: v for v in to_migrate}
+
+    unified: set[str] = set()  # test files where merge() gave one fake per case to several sites' twins
 
     def merge(sids: list[str]) -> tuple[dict[str, str], list[str]]:  # (merged files, sites merged)
         merged: dict[str, str] = {}
@@ -1702,29 +1921,105 @@ def compose_patches(
                 trial[path] = m
             else:
                 merged, taken = trial, [*taken, sid]
+        for path in merged:  # sites of different SDKs faked in one test: one fake per case (Offramp's twins)
+            twins = [(site_twins[sid][path], reach[sid]) for sid in taken if path in site_twins[sid]]
+            if len(twins) > 1 and (one := unify_twins(merged[path], twins)) != merged[path]:
+                merged[path] = one
+                unified.add(path)
         return merged, taken
 
+    def place(files: dict[str, str]) -> None:  # a tree on disk; a unified test formatted like the repo
+        for path, text in files.items():
+            write(path, text)
+        if formatted and (tidy := [p for p in files if p in unified]):
+            box.tidy(tidy, format_code=True)
+
+    def repair_together(merged: dict[str, str], failure: str, output: str) -> tuple[list[str], str | None]:
+        """Up to TOGETHER_REPAIRS Ultra calls editing the failing tests and the fakes they import, the merged
+        tree shown: (files changed, None) once it is green, else ([], why not). Disk is back at `merged`
+        when it fails."""
+        failing = _failing_tests(output)
+        editable = {f for f, _ in failing if is_test_path(f) and read(f) is not None}
+        for t in list(editable):  # the test helpers (fakes) they import from their own directory
+            for node in ast.walk(ast.parse(read(t))):
+                if isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                    helper = (Path(t).parent / f"{node.module.split('.')[0]}.py").as_posix()
+                    editable |= {helper} if read(helper) is not None else set()
+        shown = {p: read(p) for p in [*merged, *sorted(editable - set(merged))]}
+        locked = frozenset(set(shown) - editable)
+        prompt = _together_prompt([by_id[sid] for sid in combined], reach, failure, shown, editable, width)
+        messages = [{"role": "system", "content": TOGETHER}, {"role": "user", "content": prompt}]
+        tried, checked, applied = [[]], failure, []
+        for _ in range(TOGETHER_REPAIRS):
+            try:
+                res = llm.chat(role=ROLE, tier=Tier.ULTRA, messages=messages, max_tokens=REPAIR_MAX_TOKENS,
+                               temperature=0.0, reasoning="off")  # fmt: skip
+            except BudgetExceeded as e:
+                return [], f"combined repair not composed: {e}; last failure: {checked}"
+            edits = parse_edits(res.output.text or "").edits
+            if not edits:
+                failure = f"the reply holds no complete edit block; last failure: {checked}"
+            else:
+                named = {e.path for e in edits}
+                edits += [e for e in applied if e.path not in named]
+                if edits in tried:
+                    return [], f"combined repair produced no change; last failure: {checked}"
+                tried.append(edits)
+                new = dict(shown)
+                problems = _apply(edits, new, locked)
+                gone = {p: _test_names(shown[p]) - _test_names(new[p]) for p in new if is_test_path(p)}
+                problems += [f"patch removes tests from {p}: {sorted(g)}" for p, g in gone.items() if g]
+                allowed = {n for _, n in failing}
+                for p in sorted(editable) if not problems else []:
+                    for name in sorted(_test_bodies_changed(shown[p], new[p]) - allowed):
+                        problems.append(f"only the failing tests may change: {p}::{name} did")
+                if problems:
+                    failure = f"patch rejected (patch rules): {'; '.join(problems)}"
+                else:
+                    changed = [p for p in new if new[p] != shown[p]]
+                    for p in changed:
+                        write(p, add_fixtures(add_imports(new[p], client_at[1])))
+                    _settle(box, repo, changed, shown, width, formatted)
+                    result = box.check()
+                    if result.ok:
+                        return changed, None
+                    failure = checked = (
+                        f"repo checks failed on the merged patches ({result.mode}): {_summary(result.output)}"
+                    )
+                    for p in changed:
+                        write(p, shown[p])
+                    applied = edits
+            messages = [*messages, {"role": "assistant", "content": res.output.text or ""},
+                        {"role": "user", "content": REPAIR.format(failure=failure)}]  # fmt: skip
+        return [], failure
+
     merged, combined = merge([v.site_id for v in to_migrate if v.site_id in versions])
-    for path, text in merged.items():
-        write(path, text)
-    if len(combined) > 1 and not (together := box.check()).ok:
+    place(merged)
+    repaired: list[str] = []
+    together_failure = None
+    if (len(combined) > 1 or unchecked) and not (together := box.check()).ok:
+        why = f"repo checks failed on the merged patches ({together.mode}): {_summary(together.output)}"
+        if len(combined) > 1:
+            repaired, together_failure = repair_together(merged, why, together.output)
+        else:
+            together_failure = why
+    if together_failure:
         for path in merged:  # one at a time: keep each site that the others can live with
             write(path, base_files[path])
         kept: list[str] = []
         for sid in combined:
             trial, _ = merge([*kept, sid])  # a superset of the kept sites' files
-            for path, text in trial.items():
-                write(path, text)
+            place(trial)
             result = box.check()
             if result.ok:
                 kept.append(sid)
                 continue
             current, _ = merge(kept)
-            for path in trial:
-                write(path, current.get(path, base_files[path]))
+            place({path: current.get(path, base_files[path]) for path in trial})
             others = ", ".join(kept) or "the base"
             why = _summary(result.output or together.output)
-            downgrade(by_verdict[sid], f"green alone, but not together with {others} ({result.mode}): {why}")
+            alongside = f"not together with {others}" if kept else "not after Offramp pruned its unused fakes"
+            downgrade(by_verdict[sid], f"green alone, but {alongside} ({result.mode}): {why}")
         combined = kept
     for sid in versions:
         if sid not in combined:
@@ -1748,5 +2043,7 @@ def compose_patches(
         client_path=client_at[0] if migrated else None,
         alone=alone,
         combined=combined,
+        combined_repair=repaired,
+        combined_failure=together_failure,
         warnings=warnings,
     )

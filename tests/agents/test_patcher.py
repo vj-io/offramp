@@ -19,6 +19,7 @@ from openai.types.chat import ChatCompletion
 from offramp import sandbox as sandbox_module
 from offramp.agents.patcher import (
     FAKE_HELPER,
+    TOGETHER,
     Edit,
     PatchEdits,
     _apply,
@@ -39,8 +40,11 @@ from offramp.agents.patcher import (
     merge_onto,
     mirror_fakes,
     parse_edits,
+    prune_twins,
     py_literal,
+    reach_handles,
     rewrite_callers,
+    unify_twins,
     wrap_long_strings,
 )
 from offramp.agents.translate import build_request
@@ -977,16 +981,54 @@ def test_each_site_is_patched_alone_then_all_together():
     assert result.files["tests/test_tinyapp.py"].count("# both sites") == 1
 
 
+def test_sites_green_alone_but_red_together_get_one_combined_repair_on_ultra():
+    fix = PatchEdits(
+        edits=[Edit(path=TESTS, search="from types import", replace="# together\nfrom types import")]
+    )
+    llm = patcher_llm(migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"), fix)
+
+    # untouched, base, greet alone, shout alone, all together (red), after the combined repair (green)
+    result = run(llm, results=[True, True, True, True, False, True])
+
+    assert result.combined == ["cs_01", "cs_03"] and result.combined_repair == [TESTS]
+    assert result.files[TESTS].startswith("# together\n") and result.combined_failure is None
+    repair = llm.calls[2]
+    assert (repair["tier"], repair["reasoning"], repair["messages"][0]["content"]) == (
+        Tier.ULTRA,
+        "off",
+        TOGETHER,
+    )
+    prompt = repair["messages"][-1]["content"]
+    assert "- cs_01 `tinyapp/greet.py` `greet`" in prompt and "With all of them merged, this repo's" in prompt
+    assert "### tinyapp/greet.py (read-only)" in prompt and f"### {TESTS} (editable)" in prompt
+
+
 def test_a_site_green_alone_but_not_together_is_dropped_from_the_combined_tree():
-    llm = patcher_llm(migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"))
+    module = PatchEdits(edits=[Edit(path="tinyapp/shout.py", search=".upper()", replace="")])
+    llm = patcher_llm(
+        migrate("tinyapp/greet.py"),
+        migrate("tinyapp/shout.py"),
+        module,
+        *[
+            PatchEdits(
+                edits=[Edit(path=TESTS, search="from types import", replace=f"# try {i}\nfrom types import")]
+            )
+            for i in (1, 2)
+        ],
+    )
 
-    # untouched, base, greet alone, shout alone, all together (red), greet (green), greet + shout (red)
-    result = run(llm, results=[True, True, True, True, False, True, False])
+    # untouched, base, greet alone, shout alone, together (red), repair 2 (red: repair 1 edits a module),
+    # then one at a time: greet (green), greet + shout (red)
+    result = run(llm, results=[True, True, True, True, False, False, True, False])
 
+    assert [c["tier"] for c in llm.calls[2:]] == [Tier.ULTRA, Tier.ULTRA]  # two combined repairs at most
+    assert "tinyapp/shout.py is migrated by Offramp and read-only" in llm.calls[3]["messages"][-1]["content"]
     assert result.alone == {"cs_01": True, "cs_03": True} and result.combined == ["cs_01"]
+    assert result.combined_failure.startswith("repo checks failed on the merged patches")
     shout = verdict(result, "cs_03")
-    assert shout.decision == "MANUAL_REVIEW" and "green alone" in shout.reason
+    assert shout.decision == "MANUAL_REVIEW" and "green alone, but not together with cs_01" in shout.reason
     assert "tinyapp/shout.py" not in result.files and verdict(result, "cs_01").decision == "MIGRATE"
+    assert "# try" not in result.files[TESTS]  # the failed repair is not in the tree
 
 
 def test_a_long_piece_of_a_multi_line_concatenation_is_split_in_place():
@@ -1469,3 +1511,90 @@ def test_a_repair_keeps_the_previous_edits_of_files_it_leaves_out():
     assert "a file you do not name keeps your previous edits" in llm.calls[1]["messages"][-1]["content"]
     assert verdict(result, "cs_01").decision == "MIGRATE" and MIGRATED in result.files["tinyapp/greet.py"]
     assert '"Hi Ana!"' in result.files[TESTS]  # the test file is the repair's own version
+
+
+DISPATCH = """COMMANDS = {"triage": lambda c: triage_ticket(token_factory_client(), c["subject"])}
+
+
+def main(argv):
+    if argv[0] == "search":
+        return search_kb(OpenAI(), argv[1])
+    elif argv[0] == "extract":
+        return extract_order(token_factory_client(), argv[1])
+
+
+def run_summary(thread):
+    return summarize_thread(token_factory_client(), thread)
+"""
+
+
+def test_a_test_reaches_a_migrated_function_through_its_command_key_or_branch():
+    assert reach_handles(DISPATCH, "triage_ticket") == {"triage_ticket", "triage"}  # a command table
+    assert reach_handles(DISPATCH, "extract_order") == {"extract_order", "extract"}  # an argument branch
+    assert reach_handles(DISPATCH, "summarize_thread") == {"summarize_thread", "run_summary"}  # a wrapper
+
+
+def test_fake_twins_stay_only_in_tests_that_reach_the_migrated_function():
+    twin = '    monkeypatch.setattr(cli, "token_factory_client", lambda: FakeOpenAI("x"))\n'
+    other = '    monkeypatch.setattr(cli, "OpenAI", lambda: FakeOpenAI("x"))\n'
+    source = (
+        '@pytest.mark.parametrize("command", ["triage", "answer"])\n'
+        f"def test_runs(monkeypatch, command):\n{other}{twin}    run([command])\n\n\n"
+        f'def test_search(monkeypatch):\n{other}{twin}    run(["search", "q"])\n'
+    )
+
+    out = prune_twins(source, {twin}, {"triage_ticket", "triage"})
+
+    assert out.count(twin) == 1 and out.index(twin) < out.index("def test_search")  # kept where reached
+    assert out.count(other) == 2  # only Offramp's own twins are ever removed
+
+
+def test_a_combined_repair_may_change_only_the_failing_tests_and_fakes():
+    """Ultra's first live combined repair rewrote the fakes and tests that were passing; the next one then
+    'fixed' a behavioural assertion it had broken."""
+    weaken = Edit(path=TESTS, search='== "Ship it"', replace='== "Ship it!"')  # test_motto: not failing
+    fix = Edit(path=TESTS, search="from types import", replace="# together\nfrom types import")
+    llm = patcher_llm(migrate("tinyapp/greet.py"), migrate("tinyapp/shout.py"), PatchEdits(edits=[weaken]),
+                      PatchEdits(edits=[fix]))  # fmt: skip
+
+    result = run(llm, results=[True, True, True, True, False, True])  # FakeSandbox fails tests/...::x
+
+    assert (
+        "only the failing tests may change: tests/test_tinyapp.py::test_motto_returns_the_reply did"
+        in (llm.calls[3]["messages"][-1]["content"])
+    )
+    assert result.combined == ["cs_01", "cs_03"] and '"Ship it!"' not in result.files[TESTS]
+
+
+CLI_TEST = """@pytest.mark.parametrize(
+    ("command", "openai_reply", "blocks"),
+    [("triage", "billing", []), ("next-step", None, ["b"]), ("summarize", None, ["s"]), ("refund", "r", [])],
+)
+def test_runs(monkeypatch, command, openai_reply, blocks):
+    monkeypatch.setattr(cli, "OpenAI", lambda: FakeOpenAI(openai_reply))
+    monkeypatch.setattr(cli, "token_factory_client", lambda: FakeOpenAI(openai_reply))
+    monkeypatch.setattr(cli, "Anthropic", lambda: FakeAnthropic(*blocks))
+    monkeypatch.setattr(
+        cli, "token_factory_client", lambda: FakeAnthropic(*blocks)
+    )
+    run([command])
+"""
+OPENAI_TWIN = '    monkeypatch.setattr(cli, "token_factory_client", lambda: FakeOpenAI(openai_reply))\n'
+ANTHROPIC_TWIN = '    monkeypatch.setattr(cli, "token_factory_client", lambda: FakeAnthropic(*blocks))\n'
+
+
+def test_twins_of_sites_from_both_sdks_become_one_fake_chosen_per_case():
+    """Run 2 (round 2): merged, the Anthropic twin served every case and the OpenAI sites' cases failed."""
+    sites = [({OPENAI_TWIN}, {"triage_ticket", "triage"}), ({ANTHROPIC_TWIN}, {"next_action", "next-step"}),
+             ({ANTHROPIC_TWIN}, {"summarize_thread", "summarize"})]  # fmt: skip
+
+    out = unify_twins(CLI_TEST, sites)
+
+    assert out.count('"token_factory_client"') == 1 and 'cli, "OpenAI"' in out and 'cli, "Anthropic"' in out
+    assert (
+        '        (lambda: FakeAnthropic(*blocks))\n        if command in ("next-step", "summarize")\n'
+        "        else (lambda: FakeOpenAI(openai_reply)),\n    )\n    run([command])\n"
+    ) in out
+    assert unify_twins(CLI_TEST, sites[:1]) == CLI_TEST  # one site's twin: nothing to choose between
+    unnamed = CLI_TEST.replace('"next-step"', '"other"').replace('"summarize"', '"other"')
+    assert unify_twins(unnamed, sites) == unnamed  # no parameter tells the sites apart: left to the repair

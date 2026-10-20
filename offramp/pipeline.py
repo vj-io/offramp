@@ -890,6 +890,9 @@ def write_and_open_pr(
         site_files=patch.get("site_files", {}),
         sandbox=patch.get("sandbox_mode"),
         client_path=patch.get("client_path"),
+        alone=patch.get("alone", {}),
+        combined=patch.get("combined", []),
+        combined_repair=patch.get("combined_repair", []),
     )
     draft = write_pr(ctx, client)
     files, title, body = patch["files"], draft.title, draft.body
