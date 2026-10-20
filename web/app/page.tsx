@@ -65,7 +65,7 @@ export default function NewRunPage() {
             Scan a repo
           </Link>
           <p className="font-hand text-lg text-muted">Or on your machine, same scan:</p>
-          <code className="block overflow-x-auto bg-paper px-3 py-2 font-mono text-xs whitespace-nowrap">{SCAN_CLI}</code>
+          <code className="block bg-paper px-3 py-2 font-mono text-xs wrap-anywhere">{SCAN_CLI}</code>
           <p className="font-hand text-lg leading-snug text-muted">
             A full run measures parity with your own Token Factory key:{" "}
             <code className="font-mono text-xs text-ink">uv run offramp run &lt;repo&gt;</code>

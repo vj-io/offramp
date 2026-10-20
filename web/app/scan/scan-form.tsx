@@ -25,7 +25,7 @@ export function ScanForm({ demoRepoUrl }: { demoRepoUrl: string }) {
 
   return (
     <div className="flex min-w-0 flex-col gap-6">
-      <form onSubmit={scan} className="flex flex-col gap-2">
+      <form onSubmit={scan} className="flex max-w-3xl flex-col gap-2">
         <label htmlFor="github-url" className="font-hand text-xl">
           Public GitHub repository
         </label>
