@@ -1,6 +1,6 @@
 # Devpost submission text
 
-Ready to paste into the Devpost form, one section per field. Every number comes from the recorded run `20261020-124700775-6cb31e` (the replay file `web/public/replay/demo-events.json`, the PR body `offramp/api/replay/demo-events.pr.md`, and `evals/results/*.json` in `vj-io/offramp-demo-app` at `76a7940`) or from the budget counters of the live runs listed in the README's [Results](../README.md#results).
+Ready to paste into the Devpost form, one section per field. Every number comes from the recorded run `20261020-124700775-6cb31e` (the replay file `web/public/replay/demo-events.json`, the PR body `offramp/api/replay/demo-events.pr.md`, and `evals/results/*.json` in `vj-io/offramp-demo-app` at `e5baa78`) or from the budget counters of the live runs listed in the README's [Results](../README.md#results).
 
 ## Project name
 
