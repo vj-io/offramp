@@ -486,6 +486,45 @@ def test_a_patch_that_fails_reannounces_the_site_as_manual_review(tmp_path):
     assert any(e.payload.get("message") == "patch: dropped a symlink" for e in log.events if e.type == "log")
     with Session(engine) as s:
         assert [v.decision for v in s.exec(select(db.Verdict))] == ["MANUAL_REVIEW"]
+    # the per-site results file carries the decision the run ended on, and the eval stage's beside it
+    result = pipeline.json.loads((log.dir / "evals" / "results" / "cs_01.json").read_text())
+    assert (
+        result["verdict"]["decision"] == "MANUAL_REVIEW"
+        and result["verdict"]["reason"] == "repo tests failed"
+    )
+    assert result["eval_verdict"]["decision"] == "MIGRATE" and result["tier_results"]
+
+
+def test_results_files_written_from_a_finished_runs_artifacts_are_unchanged_by_a_rewrite(tmp_path):
+    routes = {
+        "cs_01": {
+            "site": {"id": "cs_01"},
+            "verdict": {"site_id": "cs_01", "decision": "MIGRATE"},
+            "adapter": None,
+            "tier_results": [{"tier": "lightning"}],
+        },
+        "cs_02": {
+            "site": {"id": "cs_02"},
+            "verdict": {"site_id": "cs_02", "decision": "KEEP_CLOSED"},
+            "adapter": None,
+            "tier_results": [],
+        },
+    }
+    final = [
+        {"site_id": "cs_01", "decision": "MANUAL_REVIEW"},
+        {"site_id": "cs_02", "decision": "KEEP_CLOSED"},
+    ]
+
+    pipeline.write_results(tmp_path, routes, final)
+    first = {p.name: p.read_text() for p in (tmp_path / "evals" / "results").iterdir()}
+    again = {k: pipeline.json.loads(v) for k, v in first.items()}
+    pipeline.write_results(tmp_path, {k.removesuffix(".json"): v for k, v in again.items()}, final)
+
+    assert {p.name: p.read_text() for p in (tmp_path / "evals" / "results").iterdir()} == first  # idempotent
+    cs_01 = again["cs_01.json"]
+    assert list(cs_01) == ["site", "verdict", "eval_verdict", "adapter", "tier_results"]
+    assert (cs_01["verdict"]["decision"], cs_01["eval_verdict"]["decision"]) == ("MANUAL_REVIEW", "MIGRATE")
+    assert again["cs_02.json"]["verdict"] == again["cs_02.json"]["eval_verdict"]
 
 
 @pytest.mark.parametrize("live", [True, False])

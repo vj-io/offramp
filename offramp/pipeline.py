@@ -12,7 +12,8 @@ A run lives in OFFRAMP_DATA_DIR/runs/<run_id>/:
     repo/                   the clone (a local path is read in place and never written to)
     clone.json scan.json cases.json adapters.json matrix.json verdicts.json patch.json pr.json
                             one artifact per step, written when the step has finished
-    evals/results/<site>.json  per site: verdict, the adapter it ended on, every TierResult (case scores kept)
+    evals/results/<site>.json  per site: verdict (the final decision, after the patch stage), eval_verdict
+                            (the eval stage's), the adapter it ended on, every TierResult (case scores kept)
     report.json             {snapshot, pr_body_markdown, free_text_arg_exemptions}, written at the end
 A step whose artifact exists is loaded instead of run, so `execute()` on an interrupted or failed run picks up
 after its last finished step; routing resumes per site, and a PR is never opened twice.
@@ -109,6 +110,18 @@ def _write_json(path: Path, value: Any) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(value, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(path)  # an artifact is either absent or complete: it marks its step finished
+
+
+def write_results(directory: Path, routes: dict[str, dict[str, Any]], verdicts: list[dict[str, Any]]) -> None:
+    """evals/results/<site>.json under `directory`, with the decision the run ended on: `verdict` is the final
+    one (`verdicts`: after the patch stage, which moves a MIGRATE whose patch fails to MANUAL_REVIEW),
+    `eval_verdict` the eval stage's. `routes`: the eval stage's results, or files this wrote (idempotent)."""
+    final = {v["site_id"]: v for v in verdicts}
+    for site_id, result in routes.items():
+        evaluated = result.get("eval_verdict", result["verdict"])
+        out = {"site": result["site"], "verdict": final.get(site_id, evaluated), "eval_verdict": evaluated}
+        out |= {k: v for k, v in result.items() if k not in out}
+        _write_json(directory / "evals" / "results" / f"{site_id}.json", out)
 
 
 # ---------------------------------------------------------------- event log
@@ -470,6 +483,7 @@ class Pipeline:
         routes = self._routes(chat, adapters, stopped, evals, scan["schemas"])
         verdicts = self._artifact("verdicts.json", lambda: self._verdicts(chat, routes))
         patch = self._artifact("patch.json", lambda: self._patch(repo, chat, verdicts, routes))
+        write_results(self.dir, routes, patch["verdicts"])
         self._artifact("pr.json", lambda: self._pr(repo, chat, patch, routes, evals, cases))
         self._finish(chat, cases, patch)
 
@@ -695,7 +709,8 @@ class Pipeline:
         schemas: dict[str, Any],
     ) -> dict[str, dict[str, Any]]:
         """Route each site (Task 9) to its verdict. evals/results/<site>.json is written per site, so a
-        resumed run routes only the sites it had not finished. Verdicts are announced together at VERDICTS."""
+        resumed run routes only the sites it had not finished (write_results adds the final verdict after the
+        patch stage). Verdicts are announced together at VERDICTS."""
         out = {}
         for site in chat:
             path = self.dir / "evals" / "results" / f"{site.id}.json"
