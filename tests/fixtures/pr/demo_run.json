@@ -879,6 +879,7 @@
       "project": "https://smith.langchain.com/public/fixture-project/r",
       "cs_05": "https://smith.langchain.com/public/fixture-cs05-dev/r"
     },
+    "langsmith_public": true,
     "site_files": {},
     "sandbox": null,
     "free_text_args": {

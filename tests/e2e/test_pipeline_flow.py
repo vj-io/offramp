@@ -538,6 +538,41 @@ def test_the_pr_writer_renders_the_body_from_the_run_and_opens_the_pr(tmp_path, 
     assert [e.payload["title"] for e in log.events if e.type == "pr"] == [opened["title"]]
 
 
+@pytest.mark.parametrize("public", [False, True])
+def test_langsmith_links_are_private_unless_the_run_opts_in_to_public_ones(tmp_path, monkeypatch, public):
+    """A public share link exposes the target's prompts and inputs to anyone with it: only on
+    OFFRAMP_LANGSMITH_PUBLIC=1. Otherwise the PR and report carry the dataset's private URL."""
+    if public:
+        monkeypatch.setenv("OFFRAMP_LANGSMITH_PUBLIC", "1")
+    else:
+        monkeypatch.delenv("OFFRAMP_LANGSMITH_PUBLIC", raising=False)
+    calls = []
+
+    def link(kind):
+        def get(site, *, run_id):
+            calls.append((kind, site.id, run_id))
+            return f"https://smith.test/{kind}/{site.id}"
+
+        return get
+
+    monkeypatch.setattr(pipeline.langsmith, "share_link", link("public"))
+    monkeypatch.setattr(pipeline.langsmith, "dataset_url", link("private"))
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo, open_pr=False)
+    llm = llm_for_full_run(*split_counts(repo)).add("pr_writer", {"summary": "", "sites": []})
+
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=Recorder().eval_matrix, patch=Recorder().patch).execute()
+        == Stage.DONE
+    )
+
+    body = pipeline.report(log.dir, log.run_id, log.events)["pr_body_markdown"]
+    kind = "public" if public else "private"
+    assert calls == [(kind, "cs_01", log.run_id)]  # never a share link without the opt-in
+    label = "public, read-only" if public else "private: members of the LangSmith workspace only"
+    assert f"LangSmith ({label}): [cs_01](https://smith.test/{kind}/cs_01)" in body
+
+
 def test_a_pr_for_a_repo_that_is_not_on_github_is_a_run_error(tmp_path):
     repo = make_repo(tmp_path)
     git(repo, "remote", "remove", "origin")

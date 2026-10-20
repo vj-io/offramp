@@ -60,7 +60,7 @@ Sunset risk (source-model deprecation notices):
 - cs_02: claude-sonnet-4-5 is listed as deprecated on platform.claude.com/docs/en/about-claude/pricing
 - cs_03: claude-sonnet-4-5 is listed as deprecated on platform.claude.com/docs/en/about-claude/pricing
 
-LangSmith: [project](https://smith.langchain.com/public/fixture-project/r) · [cs_05](https://smith.langchain.com/public/fixture-cs05-dev/r)
+LangSmith (public, read-only): [project](https://smith.langchain.com/public/fixture-project/r) · [cs_05](https://smith.langchain.com/public/fixture-cs05-dev/r)
 
 <details><summary>Failing cases: cs_01 (Nemotron 3.5 Lightning, adapter v1, holdout split)</summary>
 

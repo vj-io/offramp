@@ -873,7 +873,9 @@ def write_and_open_pr(
     tier_results = [TierResult.model_validate(r) for s in sites for r in routes[s.id]["tier_results"]]
     adapters = {k: r["adapter"] for k, r in routes.items() if r["adapter"]} | patch.get("adapters", {})
     shared = [s for s in sites if s.id in cases["summaries"]]  # the sites whose dataset was uploaded
-    links = {s.id: url for s in shared if (url := langsmith.share_link(s, run_id=run_id))}
+    public = langsmith.public_links()  # a share link publishes the target's prompts and inputs: opt-in only
+    link = langsmith.share_link if public else langsmith.dataset_url
+    links = {s.id: url for s in shared if (url := link(s, run_id=run_id))}
     ctx = PRContext(
         run_id=run_id,
         repo=repo,
@@ -887,6 +889,7 @@ def write_and_open_pr(
         audit={k: v["audit"] for k, v in cases["summaries"].items()},
         free_text_args=cases["free_text_args"],
         langsmith_links=links,
+        langsmith_public=public,
         site_files=patch.get("site_files", {}),
         sandbox=patch.get("sandbox_mode"),
         client_path=patch.get("client_path"),
