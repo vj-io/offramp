@@ -52,7 +52,7 @@ from offramp.tf.tiers import get_tier, reasoning_params
 ROLE = "patcher"
 MAX_TOKENS = 8000
 REPAIR_MAX_TOKENS = 12000  # a complete second set of blocks, with room to spare (a recorded repair ran out)
-REPAIRS = 2  # tries after the first, each shown the last failure; a repeated patch stops at once
+REPAIRS = 3  # tries after the first, each shown the last failure; a repeated patch stops at once
 REPAIR = """Your edits were not accepted: {failure}
 Reply with SEARCH/REPLACE edit blocks only, no analysis or explanation, then the NOTES line. Each file you \
 name is taken as shown in my first message with your new blocks applied, so give every block that file \

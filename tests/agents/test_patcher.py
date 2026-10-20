@@ -21,6 +21,7 @@ from openai.types.chat import ChatCompletion
 from offramp import sandbox as sandbox_module
 from offramp.agents.patcher import (
     FAKE_HELPER,
+    REPAIRS,
     SYSTEM,
     TOGETHER,
     UNCHANGED,
@@ -323,7 +324,9 @@ def test_a_red_baseline_downgrades_every_migration_names_the_step_and_changes_no
 def test_an_empty_or_malformed_reply_is_asked_again_without_another_check():
     boxes = []
     malformed = "FILE: tests/test_tinyapp.py\n<<<<<<< SEARCH\nx\n=======\ny\n======="  # no REPLACE marker
-    llm = patcher_llm(PatchEdits(edits=[]), malformed, PatchEdits(edits=[]), migrate("tinyapp/shout.py"))
+    llm = patcher_llm(
+        PatchEdits(edits=[]), malformed, *[PatchEdits(edits=[])] * (REPAIRS - 1), migrate("tinyapp/shout.py")
+    )
 
     result = run(llm, sandboxes=boxes)
 
@@ -335,7 +338,7 @@ def test_an_empty_or_malformed_reply_is_asked_again_without_another_check():
 
 
 def test_no_accepted_migration_means_no_client_module():
-    llm = patcher_llm(*[PatchEdits(edits=[])] * 6)  # two sites, each a try and two repairs, all empty
+    llm = patcher_llm(*[PatchEdits(edits=[])] * (2 * (1 + REPAIRS)))  # two sites: a try + repairs, empty
 
     result = run(llm, results=[True, True, False, False])
 
@@ -429,7 +432,7 @@ def test_adapter_constants_are_written_into_the_file_before_the_call():
         few_shot=few,
         system_prompt="You write one-line greetings. Never use emoji.",
     )
-    llm = patcher_llm(*[PatchEdits(edits=[])] * 6)
+    llm = patcher_llm(*[PatchEdits(edits=[])] * (2 * (1 + REPAIRS)))
 
     run(llm, adapters=adapters)
 
@@ -536,7 +539,7 @@ def test_call_parameters_come_from_build_request():
     adapters = tiny_adapters(
         tools=[{"type": "function", "function": {"name": "f", "parameters": {}}}], tool_choice="required"
     )
-    llm = patcher_llm(*[PatchEdits(edits=[])] * 6)
+    llm = patcher_llm(*[PatchEdits(edits=[])] * (2 * (1 + REPAIRS)))
 
     run(llm, adapters=adapters, build=build)
 
