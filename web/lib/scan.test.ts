@@ -68,6 +68,8 @@ describe("scan errors", () => {
     const big = scanErrorText(413, { error: "too_large", message: "The repository archive is over 25 MB." });
     expect(big).toContain("over 25 MB");
     expect(big).toContain(SCAN_CLI);
+    const complex = `This repo is too large or complex for the free hosted scan; run \`${SCAN_CLI}\` locally.`;
+    expect(scanErrorText(413, { error: "too_large_or_complex", message: complex })).toBe(complex); // hint not repeated
   });
 
   it("explains a missing API (local dev without Vercel) and other failures", () => {

@@ -76,7 +76,9 @@ export function fileUrl(repo: string, at: string, file: string, line: number): s
 export function scanErrorText(status: number, body: unknown): string {
   const message = (body as { message?: unknown } | null)?.message;
   if (typeof message === "string" && message) {
-    return status === 413 ? `${message} Run the scan on a local checkout instead: ${SCAN_CLI}` : message;
+    return status === 413 && !message.includes(SCAN_CLI)
+      ? `${message} Run the scan on a local checkout instead: ${SCAN_CLI}`
+      : message;
   }
   if (status === 404) return `The scan API is not running here (it is a Vercel function). Run the CLI instead: ${SCAN_CLI}`;
   return `The scan failed (HTTP ${status}). Try again, or run the CLI: ${SCAN_CLI}`;
