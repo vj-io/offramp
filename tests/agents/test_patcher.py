@@ -18,6 +18,7 @@ import httpx
 import openai
 import pytest
 from openai.types.chat import ChatCompletion
+from packaging.requirements import Requirement
 
 from offramp import sandbox as sandbox_module
 from offramp.agents import patcher as patcher_module
@@ -3296,13 +3297,14 @@ def test_a_client_the_rewrite_cannot_build_the_same_way_is_refused(source, reaso
         _rewrite_call(source, _built_site(), {}, "PROMPT", ASYNC_PARAMS, 100, client=CLIENT_MODULE)
 
 
-def test_a_built_client_that_also_serves_another_call_is_left_to_manual_review():
+def test_a_built_client_that_also_serves_another_call_is_a_manual_review_that_says_so():
     source = ASYNC_GREET.replace(
         "        message = await",
         "        await client.messages.count_tokens(model='m')\n        message = await",
     )
 
-    assert _rewrite_call(source, _built_site(), {}, None, ASYNC_PARAMS, 100, client=CLIENT_MODULE) is None
+    with pytest.raises(Unsupported, match="its client `client` also serves other code in the function"):
+        _rewrite_call(source, _built_site(), {}, None, ASYNC_PARAMS, 100, client=CLIENT_MODULE)
 
 
 def test_the_async_client_module_adds_one_factory_and_leaves_the_sync_module_as_it_was():
@@ -3319,7 +3321,10 @@ def test_the_async_client_module_adds_one_factory_and_leaves_the_sync_module_as_
 
 
 def test_callers_and_fakes_of_an_async_client_get_the_async_factory():
-    caller = "def main():\n    return asyncio.run(greet(AsyncAnthropic(), 'Ana'))\n"
+    caller = (
+        "from anthropic import AsyncAnthropic\n\n\n"
+        "def main():\n    return asyncio.run(greet(AsyncAnthropic(), 'Ana'))\n"
+    )
     out = rewrite_callers(caller, "greet", CLIENT_MODULE)
     assert "greet(token_factory_async_client(), 'Ana')" in out
     assert f"from {CLIENT_MODULE} import token_factory_async_client" in out
@@ -3431,9 +3436,11 @@ SHAPES.update({
 def fake_docker(monkeypatch, fail=lambda dockerfile, cmd: None):
     """subprocess.run for the sandbox: no image cached; `docker build` fails when `fail(Dockerfile, cmd)`
     returns an error text. Returns (docker run commands, build contexts as {path: text})."""
-    runs, contexts = [], []
+    runs, contexts, real_run = [], [], subprocess.run
 
     def fake_run(cmd, **kw):
+        if cmd[0] == "git":  # which files are tracked: the real git
+            return real_run(cmd, **kw)
         if cmd[:2] == ["docker", "build"]:
             ctx = Path(cmd[-1])
             contexts.append(
@@ -3796,3 +3803,366 @@ def test_a_guarded_site_migrates_its_key_check_runs_under_the_probe_and_the_pr_l
         n.startswith("`tinyapp/greet.py:6` (at module level) still reads `ANTHROPIC_API_KEY`") for n in notes
     )
     assert any("(in `key_status`) still reads `ANTHROPIC_API_KEY`" in n for n in notes)
+
+
+# ---------------------------------------------------------------- fix round 1: I1, the client allow-list
+
+CTOR = 'client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=30.0)'
+BEDROCK = 'anthropic.AsyncAnthropicBedrock(aws_region="us-east-1")'
+LAZY = """import anthropic
+
+PROMPT = "You write one-line greetings."
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        _client = anthropic.AsyncAnthropic()
+    return _client
+
+
+async def greet(name):
+    {body}
+    return message.content[0].text
+"""
+CALL = (
+    'message = await {receiver}.messages.create(model="claude-haiku-4-5", max_tokens=32, system=PROMPT, '
+    'messages=[{{"role": "user", "content": name}}])'
+)
+CLASS_ATTRIBUTE = LAZY.replace("_client = None\n", "\n\nclass _S:\n    client = anthropic.AsyncAnthropic()\n")
+METHOD_SELF = """import anthropic
+
+PROMPT = "You write one-line greetings."
+
+
+class Greeter:
+    def __init__(self):
+        self.client = anthropic.AsyncAnthropic()
+
+    async def greet(self, name):
+        {body}
+        return message.content[0].text
+"""
+
+
+@pytest.mark.parametrize(
+    ("source", "function", "shown"),
+    [
+        (ASYNC_GREET.replace(CTOR, f"client = {BEDROCK}"), "greet",
+         BEDROCK),
+        (ASYNC_GREET.replace(CTOR, 'client = anthropic.AnthropicVertex(region="us-east5")'), "greet",
+         'anthropic.AnthropicVertex(region="us-east5")'),
+        (ASYNC_GREET.replace("import anthropic\n", "import openai\n").replace(
+            CTOR, 'client = openai.AsyncAzureOpenAI(api_version="2024-06-01")'), "greet",
+         'openai.AsyncAzureOpenAI(api_version="2024-06-01")'),
+        (LAZY.format(body="client = _get_client()\n    " + CALL.format(receiver="client")), "greet",
+         "_get_client()"),
+        (LAZY.format(body=CALL.format(receiver="_get_client()")), "greet", "_get_client()"),
+        (CLASS_ATTRIBUTE.format(body=CALL.format(receiver="_S.client")), "greet", "_S.client"),
+        (METHOD_SELF.format(body=CALL.format(receiver="self.client")), "Greeter.greet", "self.client"),
+        (ASYNC_GREET.replace(CTOR, "client = make_client()"), "greet", "make_client()"),
+    ],
+    ids=["bedrock", "vertex", "azure", "lazy-global", "lazy-global-chained", "class-attribute", "self-client",
+         "helper"],
+)  # fmt: skip
+def test_a_client_outside_the_allow_list_is_a_manual_review_and_nothing_is_rewritten(source, function, shown):
+    """Review I1: each of these was rewritten to `chat.completions.create` on the old (or another vendor's)
+    client and passed conformance. Only a parameter, or a client built in the function from exactly
+    anthropic.(Async)Anthropic / openai.(Async)OpenAI (imports resolved), is rewritten."""
+    with pytest.raises(Unsupported, match=re.escape(f"client type not recognised: `{shown}`")):
+        _rewrite_call(source, _built_site(function), {}, "PROMPT", ASYNC_PARAMS, 100, client=CLIENT_MODULE)
+
+
+def test_an_aliased_import_of_an_allowed_client_resolves_and_is_rewritten():
+    source = (
+        ASYNC_GREET.replace("        import anthropic\n\n", "")
+        .replace("import logging\n", "import logging\n\nfrom anthropic import AsyncAnthropic as Claude\n")
+        .replace(CTOR, "client = Claude(timeout=5)")
+    )
+
+    out = _prepared(source)  # conformance included
+
+    assert (
+        "client = token_factory_async_client(timeout=5)" in out and "Claude(" not in out.split("import")[-1]
+    )
+
+
+def test_an_optional_imports_none_fallback_still_resolves_to_the_allowed_client():
+    optional = (
+        "try:\n    from anthropic import AsyncAnthropic\nexcept ImportError:\n    AsyncAnthropic = None\n"
+    )
+    source = (ASYNC_GREET.replace("        import anthropic\n\n", "")
+              .replace("import logging\n", f"import logging\n\n{optional}")
+              .replace(CTOR, "client = AsyncAnthropic(timeout=5)"))  # fmt: skip
+
+    assert "client = token_factory_async_client(timeout=5)" in _prepared(source)
+
+
+@pytest.mark.parametrize(
+    "built",
+    [
+        "        async with anthropic.AsyncAnthropic() as client:\n            pass\n",
+        "        client: anthropic.AsyncAnthropic = anthropic.AsyncAnthropic()\n",
+    ],
+    ids=["with", "annotated"],
+)
+def test_a_client_built_by_with_or_an_annotated_assignment_in_the_function_is_refused(built):
+    source = ASYNC_GREET.replace(f"        {CTOR}\n", built)
+
+    with pytest.raises(Unsupported, match="built by `with`, an annotated assignment or more than once"):
+        _rewrite_call(source, _built_site(), {}, "PROMPT", ASYNC_PARAMS, 100, client=CLIENT_MODULE)
+
+
+def test_conformance_requires_the_shipped_calls_client_to_be_the_token_factory_client():
+    site = _built_site()
+    out, constants, system_name, *_ = _prepare(
+        ASYNC_GREET, site, ASYNC_SPEC, ASYNC_PARAMS, 100, client=CLIENT_MODULE
+    )
+    assert conformance(out, site, ASYNC_PARAMS, constants, system_name) == []
+
+    other = out.replace("client = token_factory_async_client(timeout=30.0)", "client = make_client()")
+
+    assert "the call's client `client` is not the Token Factory client" in conformance(
+        other, site, ASYNC_PARAMS, constants, system_name
+    )
+
+
+def test_an_unrecognised_client_ends_as_a_manual_review_with_its_reason_and_ships_nothing():
+    source = ASYNC_GREET.replace(CTOR, f"client = {BEDROCK}")
+    repo = anthropic_tiny("unrecognised-client", module=source)
+    llm = patcher_llm()  # no reply queued: nobody may be asked
+
+    result = compose_anthropic(repo, "unrecognised-client-run", llm)
+
+    greet = verdict(result, "cs_01")
+    assert greet.decision == "MANUAL_REVIEW" and llm.calls == []
+    assert greet.reason == (
+        "patch not composed: client type not recognised: "
+        '`anthropic.AsyncAnthropicBedrock(aws_region="us-east-1")`'
+    )
+    assert GREET not in result.files and verdict(result, "cs_03").decision == "MIGRATE"
+
+
+# ---------------------------------------------------------------- fix round 1: I2, a safe dependency edit
+
+PIP_COMPILE = (
+    "#\n# This file is autogenerated by pip-compile with Python 3.12\n# by the following command:\n#\n"
+    "#    pip-compile --output-file=requirements.txt requirements.in\n#\n"
+    "anthropic==0.40.0\n    # via -r requirements.in\n"
+)
+UV_COMPILE = (
+    "# This file was autogenerated by uv via the following command:\n"
+    "#    uv pip compile requirements.in -o requirements.txt\nanthropic==0.40.0\n"
+)
+
+
+def requirement_lines(text: str) -> list[str]:
+    """Each logical requirement line, read the way pip reads them (continuations joined, comments dropped)."""
+    joined = re.sub(r"\\\r?\n", "", text)
+    return [ln for ln in (re.sub(r"(^|\s)#.*$", "", x).strip() for x in joined.splitlines()) if ln]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('anthropic>=0.40 \\\n    ; python_version >= "3.9"\nhttpx\n',
+         'anthropic>=0.40 \\\n    ; python_version >= "3.9"\nopenai>=1.50\nhttpx\n'),
+        ("anthropic>=0.40  # the SDK\nhttpx", "anthropic>=0.40  # the SDK\nopenai>=1.50\nhttpx"),
+        ("anthropic>=0.40\r\nhttpx\r\n", "anthropic>=0.40\r\nopenai>=1.50\r\nhttpx\r\n"),
+    ],
+    ids=["continued-marker", "comment", "crlf"],
+)  # fmt: skip
+def test_openai_is_a_new_logical_line_after_the_sdks_whole_requirement(tmp_path, text, expected):
+    """Review I2: inserted after the physical line, `openai>=1.50` became part of a continued requirement
+    (`Trailing '\\ openai>=1.50' is not allowed`)."""
+    (tmp_path / "requirements.txt").write_bytes(text.encode())
+
+    edits, _ = declare_openai(tmp_path, {"anthropic"})
+
+    assert edits["requirements.txt"] == expected
+    lines = requirement_lines(expected)
+    assert "openai>=1.50" in lines and all(Requirement(ln) for ln in lines)  # every requirement parses
+
+
+NOT_EDITED = "so Offramp did not edit it: add"
+HASH = "sha256:" + "0" * 64
+
+
+@pytest.mark.parametrize(
+    ("files", "note"),
+    [
+        ({"requirements.txt": f"anthropic==0.40.0 \\\n    --hash={HASH}\n"},
+         f"`requirements.txt` pins hashes, {NOT_EDITED} `openai>=1.50` with its `--hash` values"),
+        ({"requirements.txt": PIP_COMPILE, "requirements.in": "anthropic\n"},
+         f"`requirements.txt` is compiled (pip-compile), {NOT_EDITED} the line `openai>=1.50` to "
+         "`requirements.in` beside `anthropic`, then recompile with "
+         "`pip-compile --output-file=requirements.txt requirements.in`"),
+        ({"requirements.txt": UV_COMPILE},
+         f"`requirements.txt` is compiled (uv), {NOT_EDITED} the line `openai>=1.50` to the file it is "
+         "compiled from beside `anthropic`, then recompile with `uv pip compile requirements.in -o "
+         "requirements.txt`"),
+        ({"requirements.txt": "anthropic==0.40.0\n", "requirements.in": "anthropic\n"},
+         f"`requirements.txt` is compiled (pip-compile), {NOT_EDITED} the line `openai>=1.50` to "
+         "`requirements.in`"),
+    ],
+    ids=["hashed", "pip-compile-with-in", "uv-compile", "sibling-in-only"],
+)  # fmt: skip
+def test_a_hashed_or_compiled_requirements_file_is_a_lockfile_and_the_pr_says_what_to_add(
+    tmp_path, files, note
+):
+    for path, text in files.items():
+        (tmp_path / path).write_text(text)
+
+    edits, notes = declare_openai(tmp_path, {"anthropic"})
+
+    assert edits == {} and any(n.startswith(note) for n in notes), notes
+
+
+def test_a_pyproject_pinning_openai_elsewhere_is_left_alone_with_a_note(tmp_path):
+    """Review Minor 1: the extra gained `openai>=1.50` beside an `openai==1.30.0` pin: `uv lock` fails."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "x"\ndependencies = ["openai==1.30.0"]\n\n'
+        '[project.optional-dependencies]\nclaude = ["anthropic"]\n'
+    )
+
+    edits, notes = declare_openai(tmp_path, {"anthropic"})
+
+    assert edits == {}
+    assert notes == [
+        "`pyproject.toml` `project.optional-dependencies.claude` declares `anthropic` but not openai, which "
+        "`project.dependencies` declares: Offramp left the file as it is (that openai pin decides); check "
+        "the migrated code's environment installs it"
+    ]
+
+
+def test_a_crlf_pyproject_and_requirements_keep_their_line_endings_in_what_ships():
+    """Review Minor 2: read_text/write_text turned CRLF into LF, so the PR rewrote every line."""
+    pyproject = TINY_PYPROJECT.replace("dependencies = []", DEPS).replace("\n", "\r\n")
+    repo = anthropic_tiny("declare-crlf", {"requirements.txt": "anthropic\r\nhttpx\r\n"})
+    (repo / "pyproject.toml").write_bytes(pyproject.encode())
+
+    result = compose_anthropic(repo, "declare-crlf-run")
+
+    assert result.files["requirements.txt"] == "anthropic\r\nopenai>=1.50\r\nhttpx\r\n"
+    assert result.files["pyproject.toml"] == pyproject.replace(
+        '"anthropic>=0.40",\r\n', '"anthropic>=0.40",\r\n    "openai>=1.50",\r\n'
+    )
+
+
+# ---------------------------------------------------------------- fix round 1: I4, tracked files only
+
+SECRETS = (".envrc", ".netrc", ".pypirc", ".secrets.toml", ".streamlit/secrets.toml", ".aws/credentials",
+           "service-account.json")  # fmt: skip  # the review's probe set
+CANARY = "canary-secret-123"
+
+
+def git_repo(repo: Path, tracked: dict[str, str]) -> Path:
+    """A git checkout holding `tracked`, plus the review's secret files: the first half git-ignored, the
+    rest merely untracked. Every secret holds CANARY."""
+    ignored = SECRETS[: len(SECRETS) // 2]
+    for path, text in {**tracked, ".gitignore": "".join(f"{p}\n" for p in ignored)}.items():
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(text)
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "init"], check=True)
+    for path in SECRETS:
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(f"TOKEN={CANARY}\n")
+    return repo
+
+
+def test_a_git_checkouts_image_takes_its_tracked_files_only(monkeypatch, tmp_path):
+    """Review I4: every git-ignored or untracked secret file but .env* reached the image, built with the
+    network on and kept in the host's Docker."""
+    monkeypatch.delenv(sandbox_module.UNTRACKED_OPT_IN)
+    repo = git_repo(tmp_path / "repo", {"pyproject.toml": "[project]\nname = 'x'\nversion = '0'\n",
+                                        "pkg/__init__.py": "VALUE = 1\n"})  # fmt: skip
+    _, contexts = fake_docker(monkeypatch)
+
+    assert Sandbox(repo, docker=True).check().ok
+
+    files = contexts[0]
+    assert "repo/pkg/__init__.py" in files and "repo/.gitignore" in files
+    assert not any(p.removeprefix("repo/") in SECRETS for p in files) and CANARY not in "".join(
+        files.values()
+    )
+
+
+def test_a_plain_directory_reaches_no_image_without_the_opt_in(monkeypatch, tmp_path):
+    monkeypatch.delenv(sandbox_module.UNTRACKED_OPT_IN)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\nversion = '0'\n")
+    _, contexts = fake_docker(monkeypatch)
+
+    result = Sandbox(tmp_path, docker=True).check()
+
+    assert not result.ok and contexts == []
+    assert (
+        "is not a git checkout: the sandbox image takes only a git repository's tracked files"
+        in result.output
+    )
+
+
+def test_the_patch_stage_copies_and_shows_the_sandbox_only_a_checkouts_tracked_files(monkeypatch):
+    """The copy is what the checks mount and the image is built from: neither may hold an untracked secret."""
+    monkeypatch.delenv(sandbox_module.UNTRACKED_OPT_IN)
+    src = work_dir("tracked-src") / "src"
+    shutil.copytree(TINY, src, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+    git_repo(src, {})
+    seen = []
+
+    def box(repo):
+        made = FakeSandbox(repo, precheck=True)
+        seen.append(made)
+        return made
+
+    result = compose_patches(src, tiny_sites(), tiny_verdicts(), tiny_adapters(), patcher_llm(),
+                             work_dir("tracked-run"), config=CONFIG, build_request=BUILD,
+                             sandbox_factory=box)  # fmt: skip
+
+    copy = SANDBOXES / "tracked-run" / "repo"
+    assert result.combined == ["cs_01", "cs_03"]
+    assert not any((copy / p).exists() for p in SECRETS) and (copy / GREET).is_file()
+    assert seen[0].files and GREET in seen[0].files and not set(SECRETS) & set(seen[0].files)
+
+
+# ---------------------------------------------------------------- fix round 1: minors
+
+
+def test_the_key_rename_stays_in_the_body_and_out_of_f_strings():
+    """Review Minor 3: an f-string's text, a decorator's argument and a parameter default changed too."""
+    source = GUARDED.replace(
+        "async def greet(name: str):\n",
+        '@requires("ANTHROPIC_API_KEY")\nasync def greet(name: str, key: str = "ANTHROPIC_API_KEY"):\n'
+        '    label = f"ANTHROPIC_API_KEY{name}"\n',
+    ).replace("import os\n", "import os\n\n\ndef requires(name):\n    return lambda f: f\n")
+
+    out = _prepared(source)
+
+    assert '@requires("ANTHROPIC_API_KEY")' in out and 'key: str = "ANTHROPIC_API_KEY"' in out
+    assert 'label = f"ANTHROPIC_API_KEY{name}"' in out
+    assert 'api_key = os.environ.get("NEBIUS_API_KEY")' in out
+
+
+def test_the_pr_names_deploy_files_unread_modules_a_replaced_client_and_anthropic_left_in_a_handler():
+    """Review Minors 4, 5 and 8: deployment config naming the old key, .py files this Python cannot parse,
+    an existing client module the run replaced, and an `except anthropic.APIError` the new client never
+    raises into."""
+    module = GUARDED.replace("    except Exception:\n", "    except anthropic.APIError:\n")
+    extra = {"render.yaml": "envVars:\n  - key: ANTHROPIC_API_KEY\n", "legacy/old.py": "print 'py2'\n",
+             "tinyapp/offramp_client.py": "OLD = 1\n"}  # fmt: skip
+    repo = anthropic_tiny("pr-notes", extra, module=module)
+
+    notes = compose_anthropic(repo, "pr-notes-run").change_notes
+
+    assert notes[0] == "`tinyapp/offramp_client.py` existed and was replaced by this run's client module"
+    deploy = "`render.yaml` mentions `ANTHROPIC_API_KEY`: wherever this repo deploys, set `NEBIUS_API_KEY`"
+    assert any(n.startswith(deploy) for n in notes)
+    assert any(
+        n.startswith("1 .py file(s) could not be parsed here") and "`legacy/old.py`" in n for n in notes
+    )
+    assert any(
+        n.startswith("`greet` (`tinyapp/greet.py`) still refers to `anthropic.APIError`") for n in notes
+    )

@@ -2,7 +2,8 @@
 
 Docker: the repo's dependencies, then the project itself (as its CI's `uv sync` installs it, editable at
 /repo), are installed into a throwaway image while the network is still on (cached per build-context hash; the
-context takes only the repo's regular files); the checks then run with no network, 2 CPUs, 2 GB, 256 pids, no
+context takes only a git checkout's tracked regular files, or a plain directory's under an explicit opt-in);
+the checks then run with no network, 2 CPUs, 2 GB, 256 pids, no
 capabilities and no privilege escalation, the copy mounted read-only over /repo (so the editable install runs
 the mounted code), under a 10-minute cap. It gets no host environment. ruff runs only when the repo configures
 it. A Python version whose image does not build falls back to the newest that does, and a project that does
@@ -34,6 +35,10 @@ BUILD_TIMEOUT_S = 900
 OUTPUT_TAIL = 4000
 DEP_FILES = ("pyproject.toml", "uv.lock", "requirements.txt", ".python-version")
 LOCAL_OPT_IN = "OFFRAMP_ALLOW_LOCAL_SANDBOX"
+# A directory that is not a git checkout goes into the sandbox image whole (minus the denylist) only under
+# this opt-in: its untracked files (.envrc, .netrc, cloud credentials) would otherwise persist in an image
+# built with the network on.
+UNTRACKED_OPT_IN = "OFFRAMP_ALLOW_UNTRACKED_SANDBOX"
 NO_SANDBOX = "no sandbox (Docker unavailable)"
 NO_LINTER = "this repo configures no ruff linter; Offramp ran its tests only"
 NOT_INSTALLED = (
@@ -67,7 +72,7 @@ RUN if [ -f pyproject.toml ]; then \\
         || uv pip install --python /opt/venv/bin/python -r requirements.txt ); \\
     fi \\
  && uv pip install --python /opt/venv/bin/python pytest ruff
-ENV PATH=/opt/venv/bin:$PATH VIRTUAL_ENV=/opt/venv PYTHONDONTWRITEBYTECODE=1 HOME=/tmp
+{openai}ENV PATH=/opt/venv/bin:$PATH VIRTUAL_ENV=/opt/venv PYTHONDONTWRITEBYTECODE=1 HOME=/tmp
 
 FROM deps AS project
 COPY repo/ ./
@@ -77,6 +82,73 @@ RUN if [ -f pyproject.toml ]; then \\
       uv pip install --python /opt/venv/bin/python -e .; \\
     fi
 """
+
+
+# When the dependencies installed a replaced SDK, the migration's own dependency edit declares openai beside
+# it, so the repo's CI installs openai after the merge: the image does too (a locked `uv sync` would not read
+# the edit). An SDK the image does not install leaves openai out, as CI would.
+OPENAI_LAYER = """RUN if ( {sdks} ) && ! /opt/venv/bin/python -c "import openai" 2>/dev/null; then \\
+      uv pip install --python /opt/venv/bin/python "{requirement}"; \\
+    fi
+"""
+# the floor Offramp's own pyproject declares; the patcher declares the same
+OPENAI_REQUIREMENT = "openai>=1.50"
+
+
+def tracked_files(repo: Path) -> list[str] | None:
+    """The tracked files of a git checkout whose top is `repo` (`git ls-files`); None for anything else,
+    including a folder inside another checkout. git gets a minimal environment (no GIT_* variable, no key) and
+    no fsmonitor hook."""
+    env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG") if k in os.environ}
+    git = ["git", "-c", "core.fsmonitor=false", "-C", str(repo)]
+    try:
+        top = subprocess.run(
+            [*git, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=30, env=env
+        )
+        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != Path(repo).resolve():
+            return None
+        out = subprocess.run([*git, "ls-files", "-z"], capture_output=True, timeout=120, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return (
+        sorted(p for p in out.stdout.decode(errors="surrogateescape").split("\0") if p)
+        if out.returncode == 0
+        else None
+    )
+
+
+def _shippable(repo: Path, path: str) -> bool:
+    """A regular file (no link, pipe or device, nothing under a link), outside the folders a copy leaves out,
+    and no .env file or folder."""
+    parts = Path(path).parts
+    if set(NOT_COPIED) & set(parts[:-1]) or any(p == ".env" or p.startswith(".env.") for p in parts):
+        return False
+    try:
+        return stat.S_ISREG(os.lstat(repo / path).st_mode) and not any(
+            (repo / Path(*parts[:k])).is_symlink() for k in range(1, len(parts))
+        )
+    except OSError:
+        return False
+
+
+def context_files(repo: Path, files: list[str] | None = None) -> list[str]:
+    """What the sandbox image may take from the repo: `files` when given (a copy made from tracked files), a
+    git checkout's tracked files, or, only under UNTRACKED_OPT_IN, every file of a plain directory; always
+    regular files only, never a .env file or a folder a copy leaves out. RuntimeError otherwise."""
+    repo = Path(repo)
+    if files is None:
+        files = tracked_files(repo)
+    if files is None:
+        if os.environ.get(UNTRACKED_OPT_IN) != "1":
+            why = f"set {UNTRACKED_OPT_IN}=1 to let a plain directory in, minus .env files"
+            raise RuntimeError(
+                f"{repo.name} is not a git checkout: the sandbox image takes only a git repository's tracked "
+                f"files ({why}); no sandbox image"
+            )
+        files = [  # os.walk never follows a linked folder
+            (Path(d) / f).relative_to(repo).as_posix() for d, _, names in os.walk(repo) for f in names
+        ]
+    return sorted(p for p in files if _shippable(repo, p))
 
 
 def configures_ruff(repo: Path) -> bool:
@@ -98,22 +170,6 @@ def configures_ruff(repo: Path) -> bool:
         f.is_file() and not f.is_symlink() and re.search(r"\bruff\b", f.read_text(errors="replace"))
         for f in ci
     )
-
-
-def _regular_only(folder: str, names: list[str]) -> set[str]:
-    """copytree's ignore: everything but regular files and folders (links, pipes, devices), the folders a
-    copy leaves out, and .env files."""
-    skip = set()
-    for name in names:
-        mode = os.lstat(os.path.join(folder, name)).st_mode
-        if (
-            name in NOT_COPIED
-            or name == ".env"
-            or name.startswith(".env.")
-            or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))
-        ):
-            skip.add(name)
-    return skip
 
 
 def docker_available() -> bool:
@@ -147,6 +203,8 @@ class Sandbox:
         self._image: str | None = None
         self.ruff = configures_ruff(self.repo)
         self.notes: list[str] = [] if self.ruff else [NO_LINTER]  # what the PR states about these checks
+        self.files: list[str] | None = None  # set by whoever copied the repo from its tracked files
+        self.sdks: set[str] = set()  # SDKs a migration replaces: see OPENAI_LAYER
 
     def check(self) -> CheckResult:
         """ruff (when the repo configures it), then pytest; the first failure ends the check. One 10-minute
@@ -283,10 +341,12 @@ class Sandbox:
                 f".python-version {version[:40]!r} is not a version such as 3.12: no sandbox image"
             )
         asked = ".".join(version.split(".")[:2])
+        files = context_files(self.repo, self.files)  # what the image may take: refused before any build
+        present = [f for f in present if f in files]  # an untracked dependency file is not the repo's
         deadline, failures = time.monotonic() + BUILD_TIMEOUT_S, []
         for python in [asked, *(p for p in PYTHONS if p != asked)]:
             try:
-                self._image = self._build(python, present, deadline)
+                self._image = self._build(python, present, files, deadline)
             except (RuntimeError, subprocess.TimeoutExpired) as e:
                 failures.append((python, str(e)))
                 if time.monotonic() < deadline:
@@ -300,15 +360,20 @@ class Sandbox:
         tried = ", ".join(python for python, _ in failures[1:])
         raise RuntimeError(failures[0][1] + (f"\n(no image built on Python {tried} either)" if tried else ""))
 
-    def _build(self, python: str, present: list[str], deadline: float) -> str:
+    def _build(self, python: str, present: list[str], files: list[str], deadline: float) -> str:
         """Build (or reuse) the image for one Python: the dependencies stage first; when only the project's
         own install fails, that stage alone, with a note. RuntimeError when the dependencies do not build."""
+        sdks = " || ".join(f'/opt/venv/bin/python -c "import {m}" 2>/dev/null' for m in sorted(self.sdks))
+        layer = OPENAI_LAYER.format(sdks=sdks, requirement=OPENAI_REQUIREMENT) if sdks else ""
         with tempfile.TemporaryDirectory(prefix="offramp-image-") as ctx:  # never beside a local checkout
             (Path(ctx) / "deps").mkdir()
             for f in present:
                 shutil.copy2(self.repo / f, Path(ctx) / "deps" / f)
-            shutil.copytree(self.repo, Path(ctx) / "repo", ignore=_regular_only)  # regular files only
-            (Path(ctx) / "Dockerfile").write_text(DOCKERFILE.format(python=python))
+            for f in files:  # tracked regular files only
+                (Path(ctx) / "repo" / f).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(self.repo / f, Path(ctx) / "repo" / f)
+            (Path(ctx) / "repo").mkdir(exist_ok=True)
+            (Path(ctx) / "Dockerfile").write_text(DOCKERFILE.format(python=python, openai=layer))
             digest = hashlib.sha256()
             for f in sorted(p for p in Path(ctx).rglob("*") if p.is_file()):
                 digest.update(f.relative_to(ctx).as_posix().encode() + b"\0" + f.read_bytes() + b"\0")
@@ -320,8 +385,11 @@ class Sandbox:
                                text=True, timeout=max(deadline - time.monotonic(), 1))  # fmt: skip
             if p.returncode != 0:
                 raise RuntimeError(f"sandbox image build failed:\n{(p.stdout + p.stderr)[-OUTPUT_TAIL:]}")
-            p = subprocess.run([*build, "-t", tag, ctx], capture_output=True, text=True,
-                               timeout=max(deadline - time.monotonic(), 1))  # fmt: skip
+            try:
+                p = subprocess.run([*build, "-t", tag, ctx], capture_output=True, text=True,
+                                   timeout=max(deadline - time.monotonic(), 1))  # fmt: skip
+            except subprocess.TimeoutExpired:  # the dependencies built: they stand without the project
+                p = subprocess.CompletedProcess([], 124)
         if p.returncode != 0:
             self.notes.append(NOT_INSTALLED)
             return f"{tag}-deps"

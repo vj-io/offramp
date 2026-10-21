@@ -3,15 +3,17 @@ the PR, judged by the target repo's own ruff + pytest in the real sandbox (Docke
 subprocess fallback when Docker is unavailable)."""
 
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from offramp import sandbox
 from offramp.agents.patcher import Edit, PatchEdits, compose_patches
 from offramp.sandbox import NO_LINTER, Sandbox, docker_available
 from offramp.schemas import RunConfig, Tier
-from offramp.tf import get_tier
+from offramp.tf import BudgetExceeded, get_tier
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "agents"))
 from test_patcher import (  # noqa: E402  (shared tiny-repo fixtures)
@@ -21,10 +23,12 @@ from test_patcher import (  # noqa: E402  (shared tiny-repo fixtures)
     GREET,
     LOCAL_IMPORT,
     RETARGETED,
+    SECRETS,
     TESTS,
     TINY,
     async_sites,
     async_tiny,
+    git_repo,
     migrate,
     patcher_llm,
     tiny_adapters,
@@ -260,3 +264,68 @@ def test_an_async_site_building_its_client_inside_migrates_with_its_sys_modules_
     assert result.verification["cs_01"] == (
         "probe: run in the sandbox with case cs_01:001, it sends the evaluated request"
     )
+
+
+def test_a_checkouts_image_holds_none_of_its_untracked_or_ignored_secrets(monkeypatch):
+    """Review I4, in Docker: the image the checks run from, read without the mount, holds the tracked files
+    and none of the review's secret files (git-ignored or merely untracked)."""
+    monkeypatch.delenv(sandbox.UNTRACKED_OPT_IN)
+    repo = git_repo(
+        work_dir("tracked-image") / "repo", {"tests/test_ok.py": "def test_ok():\n    assert True\n"}
+    )
+    box = Sandbox(repo)
+
+    assert box.check().ok
+    listing = subprocess.run(["docker", "run", "--rm", "--network", "none", box._image, "sh", "-c",
+                              f"find /repo -type f; grep -rl {CANARY} /repo || true"],
+                             capture_output=True, text=True, timeout=120).stdout  # fmt: skip
+    subprocess.run(
+        ["docker", "image", "rm", box._image, f"{box._image}-deps"], capture_output=True
+    )  # ours only
+    assert "/repo/tests/test_ok.py" in listing
+    assert CANARY not in listing and not any(f"/repo/{p}" in listing for p in SECRETS), listing
+
+
+PKG_PYPROJECT = (
+    '[project]\nname = "pkg"\nversion = "0.1.0"\nrequires-python = ">=3.12"\n'
+    'dependencies = [\n    "anthropic>=0.40",\n]\n\n'
+    '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n'
+)
+PKG_GREET = """GREET_SYSTEM_PROMPT = "You write one-line greetings."
+
+
+def greet(client, name):
+    response = client.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=32,
+        system=GREET_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": f"Greet {name}."}],
+    )
+    return response.content[0].text
+"""
+PKG_CLI = (
+    "from anthropic import Anthropic\n\nfrom pkg.greet import greet\n\n\n"
+    'def main():\n    return greet(Anthropic(), "Ana")\n'
+)
+PKG_TEST = "from pkg import cli\n\n\ndef test_main():\n    assert callable(cli.main)\n"
+
+
+def test_a_repo_whose_image_installs_the_replaced_sdk_gets_openai_too():
+    """Review I3: anthropic declared in pyproject `[project] dependencies` is in the image; the migration
+    declares openai beside it, so the repo's CI installs openai after the merge, and the image does too. The
+    rewired caller imports the client module (and openai) at module level."""
+    repo = work_dir("openai-layer") / "repo"
+    files = {"pyproject.toml": PKG_PYPROJECT, "pkg/__init__.py": "", "pkg/greet.py": PKG_GREET,
+             "pkg/cli.py": PKG_CLI, "tests/test_cli.py": PKG_TEST}  # fmt: skip
+    for path, text in files.items():
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(text)
+    site = tiny_sites()[0].model_copy(update={"file": "pkg/greet.py", "sdk": "anthropic"})
+    llm = patcher_llm(BudgetExceeded("no model in this test"))  # Offramp's changes alone must be green
+
+    work, config = work_dir("openai-layer-run"), RunConfig(repo_url="x")
+    result = compose_patches(repo, [site], [tiny_verdicts()[0]], tiny_adapters(), llm, work, config=config,
+                             build_request=BUILD)  # fmt: skip
+
+    assert result.combined == ["cs_01"], result.verdicts[0].reason
+    assert '    "openai>=1.50",\n' in result.files["pyproject.toml"] and llm.calls == []
