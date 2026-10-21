@@ -81,6 +81,8 @@ GITHUB_REPO = re.compile(r"github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?/?$")
 SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD", re.I)  # *_API_KEY(_FALLBACK), GITHUB_TOKEN, ...
 URL_USERINFO = re.compile(r"(?<=://)[^/@\s]+@")
 BUDGET_FILE = "budget.json"  # the run's Token Factory usage so far: caps hold across resumes
+# the log line for a call site the run does not evaluate; the dashboard reads it back (web/lib/offramp-tables)
+NOT_EVALUATED = "{id}: {kind} call in {file}, not evaluated (chat calls only)"
 
 
 def data_dir() -> Path:
@@ -585,7 +587,7 @@ class Pipeline:
             if s.kind == "chat":
                 self.log.emit("site", s.model_dump(mode="json"), call_site_id=s.id)
             else:
-                self._log("info", f"{s.id}: {s.kind} call in {s.file}, not evaluated (chat calls only)", s.id)
+                self._log("info", NOT_EVALUATED.format(id=s.id, kind=s.kind, file=s.file), s.id)
         result = ScanResult(repo=str(repo), sites=sites, warnings=scan.warnings)
         return {**result.model_dump(mode="json"), "schemas": schemas, "stale": stale}
 

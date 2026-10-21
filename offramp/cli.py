@@ -119,8 +119,22 @@ def serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _shipped_diffs(run_dir: Path) -> dict[str, str]:
+    """Each migrated site's unified diff as its PR commits it (patch.json), scrubbed like the events. Only
+    MIGRATE sites: a kept site's comment and a manual-review site never reach the report's diff panel.
+    scrub() knows only the secret-named variables in this shell's environment (the CLI loads no .env); the
+    diff is the code the public PR already commits."""
+    patch = run_dir / "patch.json"
+    if not patch.exists():
+        return {}
+    p = json.loads(patch.read_text())
+    migrated = {v["site_id"] for v in p["verdicts"] if v["decision"] == "MIGRATE"}
+    return pipeline.scrub({sid: d for sid, d in p.get("diffs", {}).items() if sid in migrated})
+
+
 def export_replay(args: argparse.Namespace) -> int:
-    """Both replay files (Global Constraint 14) from a finished run: the API's JSON Lines, the web's JSON."""
+    """Both replay files (Global Constraint 14) from a finished run: the API's JSON Lines, and the web's
+    JSON, {"events": [...], "diffs": {site_id: unified diff}} with each migrated site's shipped change."""
     from offramp.api.app import REPLAY_FILE, pr_body_file, replay_delays
 
     log = pipeline.RunLog(pipeline.data_dir() / "runs" / args.run_id, args.run_id)
@@ -133,7 +147,8 @@ def export_replay(args: argparse.Namespace) -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
     api_out.write_text("".join(e.model_dump_json() + "\n" for e in log.events), encoding="utf-8")
     events = [e.model_dump(mode="json") for e in log.events]
-    web_out.write_text(json.dumps(events, ensure_ascii=False) + "\n", encoding="utf-8")
+    recording = {"events": events, "diffs": _shipped_diffs(log.dir)}
+    web_out.write_text(json.dumps(recording, ensure_ascii=False) + "\n", encoding="utf-8")
     pr = log.dir / "pr.json"  # the PR body travels with the API's replay, so a replay's report shows it
     body = json.loads(pr.read_text())["body"] if pr.exists() else None
     if body:

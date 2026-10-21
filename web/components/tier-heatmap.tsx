@@ -1,10 +1,12 @@
 import type { CSSProperties } from "react";
-import { parityTint, scoreText, TIER_SHORT } from "@/lib/format";
+import { parityTint, resultBounds, scoreText, TIER_SHORT } from "@/lib/format";
 import type { SiteView } from "@/lib/run-state";
 import { TIER_ORDER, type RunConfig } from "@/lib/types";
 import { circlePath, hatchPath, Ink, TIER_HL } from "./doodle";
 
 export function TierHeatmap({ views, config }: { views: SiteView[]; config: RunConfig | null }) {
+  const withBounds = views.some((v) => TIER_ORDER.some((t) => v.perTier[t]?.parity_lower_pct != null));
+  const withReview = views.some((v) => v.verdict?.decision === "MANUAL_REVIEW");
   return (
     <div>
       <div role="region" tabIndex={0} aria-label="Tier heatmap, scrolls sideways" className="relative overflow-x-auto pb-1">
@@ -29,10 +31,16 @@ export function TierHeatmap({ views, config }: { views: SiteView[]; config: RunC
               <tr key={site.id}>
                 <th scope="row" className="pr-1 font-mono text-sm font-bold">
                   {site.id}
+                  {verdict?.decision === "MANUAL_REVIEW" && (
+                    <span className="block font-hand text-sm font-normal text-muted">
+                      <span className="sr-only">, </span>review
+                    </span>
+                  )}
                 </th>
                 {TIER_ORDER.map((t) => {
                   const r = perTier[t];
                   const chosen = verdict?.decision === "MIGRATE" && verdict.tier === t;
+                  const bounds = r && resultBounds(r, site.contract?.task_type);
                   if (!r)
                     return (
                       <td key={t} className="sketch-box h-12 border-[1.5px] border-dashed border-muted text-center font-hand text-muted">
@@ -53,6 +61,7 @@ export function TierHeatmap({ views, config }: { views: SiteView[]; config: RunC
                       <span className="relative block font-mono text-sm font-bold">
                         {scoreText(r, site.contract?.task_type)}
                       </span>
+                      {bounds && <span className="relative block font-mono text-[0.7rem] leading-tight">{bounds}</span>}
                       <span className="relative block font-hand text-sm leading-none">
                         {r.passed ? "pass" : "fail"}
                         {chosen ? ", chosen" : ""}
@@ -90,6 +99,16 @@ export function TierHeatmap({ views, config }: { views: SiteView[]; config: RunC
           </span>
           failed
         </li>
+        {withBounds && (
+          <li>
+            <span className="font-mono text-sm">4/5, ≥37%</span>: cases passing, and the 95% lower bound of that rate
+          </li>
+        )}
+        {withReview && (
+          <li>
+            <span className="text-muted">review</span>: a person finishes this site (see its card)
+          </li>
+        )}
       </ul>
     </div>
   );

@@ -146,9 +146,69 @@ export interface TierResult {
   metrics: TierMetrics;
   failing_case_ids: string[];
   case_scores?: CaseScore[]; // omitted in SSE payloads
+  // cases scored (failing_case_ids failed) and the Wilson 95% lower bound (0..100) of the share that passed;
+  // absent in recordings made before Task 19
+  cases?: number | null;
+  parity_lower_pct?: number | null;
 }
 
-// The four optional fields arrived with Amendment A; optional so older recordings still type.
+// Why the patch stage sent a MIGRATE site to manual review, recorded where it happened (Task 18).
+export type PatchFailureKind =
+  | "budget_stop"
+  | "no_edit_block"
+  | "no_change"
+  | "search_miss"
+  | "deletes_tests"
+  | "locked_file"
+  | "not_editable"
+  | "does_not_parse"
+  | "checks_failed"
+  | "backstop"
+  | "probe_mismatch"
+  | "merge_conflict"
+  | "not_together"
+  | "merged_drift"
+  | "repo_red";
+
+export interface PatchFailure {
+  kind: PatchFailureKind; // the outermost, decisive failure
+  last?: PatchFailureKind | null; // budget_stop / no_edit_block / no_change: the last checked try's
+  tries?: number; // the model's replies for this site
+  model_edit?: boolean; // the last checked try was the model's edits (else Offramp's changes alone)
+  files?: string[];
+  tests?: string[]; // deletes_tests: "path::name"
+}
+
+// Where the source model's price behind cost_before came from (Task 19): the report's Tavily panel.
+export interface PriceEvidence {
+  method: "search" | "extract (confirms table)" | "yaml fallback";
+  query?: string | null;
+  url: string;
+  quote?: string | null;
+  date: string; // YYYY-MM-DD
+  note?: string | null; // on a fallback, why (e.g. a Tavily price that disagreed with pricing.yaml)
+}
+
+export interface AfterPrice {
+  model: string;
+  input_usd_per_m: number;
+  output_usd_per_m: number;
+  via: "token_factory_api" | "pricing.yaml";
+  source: string;
+}
+
+// Why a KEEP_CLOSED verdict keeps the site (Task 19); null when passing or recorded before Task 19.
+export type Gate =
+  | "budget"
+  | "dev"
+  | "threshold"
+  | "schema"
+  | "pass_share"
+  | "judge_mean"
+  | "case_floor"
+  | "reference_margin";
+
+// The optional fields arrived after the first recordings; optional so older recordings still type.
 export interface Verdict {
   site_id: string;
   decision: Decision;
@@ -168,6 +228,17 @@ export interface Verdict {
   closed_reference_parity_pct?: number | null;
   // free text, reference QA: holdout case -> the judge's score of its reference, when below 3 (never excluded)
   weak_references?: Record<string, number>;
+  patch_failure?: PatchFailure | null;
+  // the holdout cases behind parity_pct and the Wilson 95% lower bound (0..100) of their pass rate
+  holdout_cases?: number | null;
+  holdout_passed?: number | null;
+  parity_lower_pct?: number | null;
+  judge_mean?: number | null; // free text: the judge's mean and lowest holdout case (1..5)
+  judge_min?: number | null;
+  retires_on?: string | null; // YYYY-MM-DD, from the deprecation notice in sunset_risk
+  price_evidence?: PriceEvidence | null;
+  after_price?: AfterPrice | null;
+  failed_gate?: Gate | null;
   reason: string;
 }
 
@@ -248,6 +319,13 @@ export interface RunConfig {
   live: boolean;
 }
 
+// A call site the scanner found but the run did not evaluate (an embedding call), read back from the run's log.
+export interface NotEvaluated {
+  id: string;
+  kind: string;
+  file: string;
+}
+
 // GET /api/runs/{id} (Global Constraint 13). `config` is null when the snapshot was rebuilt
 // from a recorded event log that does not carry the run config.
 export interface RunSnapshot {
@@ -261,10 +339,12 @@ export interface RunSnapshot {
   artifacts: { pr_url?: string; report_url?: string };
   // Not in GC13's snapshot yet (proposed): filled when the snapshot is rebuilt from the event log.
   case_summaries?: CaseSummary[];
+  not_evaluated?: NotEvaluated[]; // likewise, from the run's log
 }
 
-// GET /api/runs/{id}/report
+// GET /api/runs/{id}/report. `diffs`: each migrated site's shipped unified diff, in replays exported with it.
 export interface RunReport {
   snapshot: RunSnapshot;
   pr_body_markdown: string | null;
+  diffs?: Record<string, string>;
 }

@@ -1,12 +1,14 @@
 // Folds the run's SSE events (Global Constraints 12-14) into dashboard state.
 // Every id-bearing event is an upsert, and events are deduplicated by `seq`, so a reconnect that
 // replays the stream from the start, or a producer that re-emits a result, never duplicates UI.
+import { parseNotEvaluated } from "./format";
 import {
   STAGE_ORDER,
   TIER_ORDER,
   type Adapter,
   type CallSite,
   type CaseSummary,
+  type NotEvaluated,
   type RunConfig,
   type RunEvent,
   type RunReport,
@@ -32,6 +34,7 @@ export interface RunState {
   verdicts: Record<string, Verdict>;
   pr: { url: string; title: string } | null;
   totals: RunTotals | null;
+  notEvaluated: NotEvaluated[]; // calls found but not evaluated (embeddings), from the log
   events: RunEvent[];
 }
 
@@ -49,6 +52,7 @@ export const initialRunState: RunState = {
   verdicts: {},
   pr: null,
   totals: null,
+  notEvaluated: [],
   events: [],
 };
 
@@ -108,11 +112,18 @@ export function applyEvent(s: RunState, e: RunEvent): RunState {
     case "done":
       next.totals = (p.totals as RunTotals) ?? null;
       break;
+    case "log": {
+      const found = parseNotEvaluated(String(p.message ?? ""));
+      if (found && !s.notEvaluated.some((n) => n.id === found.id)) next.notEvaluated = [...s.notEvaluated, found];
+      break;
+    }
   }
   return next;
 }
 
 export const applyEvents = (s: RunState, es: RunEvent[]) => es.reduce(applyEvent, s);
+/** The replay's reducer: events fold in; "reset" starts the run over (Restart). */
+export const runReducer = (s: RunState, a: RunEvent[] | "reset") => (a === "reset" ? initialRunState : applyEvents(s, a));
 
 export type StageStatus = "done" | "current" | "pending" | "failed" | "skipped";
 
@@ -169,25 +180,46 @@ export function toSnapshot(s: RunState): RunSnapshot {
     totals: s.totals,
     artifacts: s.pr ? { pr_url: s.pr.url } : {},
     case_summaries: Object.values(s.cases),
+    not_evaluated: s.notEvaluated,
   };
 }
 
-// Global Constraint 14: 4x speed, each recorded gap capped at 1.5 s before the speed-up.
-export function replayDelays(es: RunEvent[]): number[] {
+// Global Constraint 14: each recorded gap capped at 1.5 s, then played at `speed` (4x unless the viewer picks).
+export const SPEEDS = [1, 4, 16] as const;
+export type Speed = (typeof SPEEDS)[number];
+export function replayDelays(es: RunEvent[], speed: Speed = 4): number[] {
   return es.map((e, i) =>
-    i === 0 ? 0 : Math.min(Math.max(0, Date.parse(e.ts) - Date.parse(es[i - 1].ts)), 1500) / 4,
+    i === 0 ? 0 : Math.min(Math.max(0, Date.parse(e.ts) - Date.parse(es[i - 1].ts)), 1500) / speed,
   );
 }
 
-/** Events from a replay file (array or {events}). Fixture data is refused (null), so the dev
+// The recordings a page may play (`?replay=<name>`); any other name is refused, never fetched.
+export const REPLAYS: Record<string, { file: string; policy?: string }> = {
+  demo: { file: "/replay/demo-events.json" },
+  "no-ultra": { file: "/replay/no-ultra-events.json", policy: "a team that caps spend below Ultra" },
+};
+export const replayEntry = (name: string | null) =>
+  name !== null && Object.hasOwn(REPLAYS, name) ? REPLAYS[name] : null;
+
+export interface Recording {
+  events: RunEvent[];
+  diffs: Record<string, string>; // site id -> the unified diff its PR ships (exports since Task 21)
+}
+
+/** A replay file: an event array, or {events, diffs?}. Fixture data is refused (null), so the dev
  *  fixture can never play as the recorded demo even if someone copies it to /replay/. */
-export function parseRecording(body: unknown): RunEvent[] | null {
+export function parseRecording(body: unknown): Recording | null {
   const events = Array.isArray(body) ? body : (body as { events?: unknown })?.events;
   if (!Array.isArray(events)) throw new Error("The replay file is not a recorded Offramp event log.");
   const isFixture =
     (body as { fixture?: unknown }).fixture === true ||
     events.some((e: Partial<RunEvent>) => String(e?.run_id ?? "").startsWith("fixture-"));
-  return isFixture ? null : (events as RunEvent[]);
+  if (isFixture) return null;
+  const raw = Array.isArray(body) ? {} : (body as { diffs?: unknown }).diffs;
+  const diffs = Object.fromEntries(
+    Object.entries(raw && typeof raw === "object" ? raw : {}).filter(([, d]) => typeof d === "string"),
+  ) as Record<string, string>;
+  return { events: events as RunEvent[], diffs };
 }
 
 export type RunSource = "api" | "replay" | "fixture";
@@ -196,9 +228,10 @@ export type RunSource = "api" | "replay" | "fixture";
 export const downloadPayload = (report: RunReport, source: RunSource) =>
   source === "fixture" ? { fixture: true, ...report } : report;
 
+// Any ?replay= is a replay; an unknown name is refused when it loads (replayEntry), never sent to the API.
 export function pickSource(q: URLSearchParams): RunSource {
   if (q.get("live") === "1") return "api";
-  if (q.get("replay") === "demo") return "replay";
+  if (q.get("replay") !== null) return "replay";
   if (q.get("fixture") === "dev") return "fixture";
   return "api";
 }
