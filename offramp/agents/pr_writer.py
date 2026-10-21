@@ -351,7 +351,7 @@ _ALONE = {  # the last check ran Offramp's changes alone: no edit of the model's
 }
 _ENDED = {  # how the repairs ended, said before what the last checked try showed
     "budget_stop": "The run's model budget ran out {tries} at this site's patch",
-    "provider_error": "Token Factory refused or did not answer a model request {tries} at this site's patch",
+    "provider_error": "Token Factory refused a model request {tries} at this site's patch",
     "no_edit_block": "The model's last reply had no complete edit, so nothing was applied",
     "no_change": "The model's last repair repeated an edit it had already tried",
 }

@@ -226,7 +226,7 @@ class TierResult(BaseModel):
 
 PatchFailureKind = Literal[
     "budget_stop",  # the run's model budget stopped the site's repairs
-    "provider_error",  # Token Factory refused a model request (too large, a 4xx) or did not answer it
+    "provider_error",  # Token Factory refused a model request (too large, another 4xx): this site only
     "no_edit_block",  # the model's last reply held no complete edit block, so nothing was applied
     "no_change",  # a repair repeated an edit already tried
     "search_miss",  # patch rules: a SEARCH that does not match exactly one place

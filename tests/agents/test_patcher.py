@@ -34,6 +34,7 @@ from offramp.agents.patcher import (
     PatchEdits,
     Unsupported,
     _apply,
+    _file_block,
     _map_reply,
     _prepare,
     _repair,
@@ -1943,46 +1944,203 @@ def test_a_repair_that_leaves_a_checked_block_out_is_told_it_stays_and_reports_t
     )
 
 
-TOO_BIG = openai.BadRequestError(
-    "Error code: 400",
-    response=httpx.Response(400, request=httpx.Request("POST", "https://tf.test/v1/chat/completions")),
-    body={"error": {"message": "This model's maximum context length is 131072 tokens"}},
+URL = "https://tf.test/v1/chat/completions"
+
+
+def http_error(cls, status: int, body=None):
+    return cls(
+        f"Error code: {status}",
+        response=httpx.Response(status, request=httpx.Request("POST", URL)),
+        body=body,
+    )
+
+
+TOO_BIG = http_error(
+    openai.BadRequestError, 400, {"error": {"message": "maximum context length is 131072 tokens"}}
 )
 
 
-def test_a_provider_error_fails_only_its_site_with_a_reason_built_by_offramp():
-    llm = patcher_llm(migrate(GREET, extra=[BREAK_GREET]), TOO_BIG, migrate(SHOUT))
+@pytest.mark.parametrize(
+    ("error", "why"),
+    [
+        (TOO_BIG, "was too large (HTTP 400)"),
+        (http_error(openai.UnprocessableEntityError, 422), "was refused (HTTP 422)"),
+    ],
+    ids=["too-large", "refused"],
+)
+def test_a_provider_refusal_fails_only_its_site_with_a_reason_built_by_offramp(error, why):
+    llm = patcher_llm(migrate(GREET, extra=[BREAK_GREET]), error, migrate(SHOUT))
 
     result = run(llm, results=[True, True, False, True, True])
 
     greet = verdict(result, "cs_01")
     assert greet.reason == (
-        "patch not composed: the model request was too large (HTTP 400); last failure: repo checks failed on "
-        "the patch (docker): FAILED tests/test_tinyapp.py::x"
+        f"patch not composed: the model request {why}; last failure: repo checks failed on the patch "
+        "(docker): FAILED tests/test_tinyapp.py::x"
     )
     assert greet.patch_failure == PatchFailure(kind="provider_error", last="checks_failed", tries=1,
                                                model_edit=True)  # fmt: skip
     assert manual_reason(greet)[0] == (
-        "Token Factory refused or did not answer a model request after 1 try at this site's patch; with the "
-        "model's test edits applied, this repo's checks still failed."
+        "Token Factory refused a model request after 1 try at this site's patch; with the model's test edits "
+        "applied, this repo's checks still failed."
     )
     assert verdict(result, "cs_03").decision == "MIGRATE"  # the run goes on
 
 
-def test_a_provider_error_in_the_combined_repair_fails_only_that_repair():
-    down = openai.InternalServerError(
-        "Error code: 503",
-        response=httpx.Response(503, request=httpx.Request("POST", "https://tf.test/v1/chat/completions")),
-        body=None,
-    )
-    llm = patcher_llm(migrate(GREET), migrate(SHOUT), down)
+TRANSIENT_OR_AUTH = [
+    http_error(openai.RateLimitError, 429),
+    http_error(openai.InternalServerError, 503),
+    http_error(openai.AuthenticationError, 401),
+    http_error(openai.PermissionDeniedError, 403),
+    openai.APIConnectionError(request=httpx.Request("POST", URL)),
+]
+
+
+@pytest.mark.parametrize("error", TRANSIENT_OR_AUTH, ids=["429", "503", "401", "403", "connection"])
+def test_a_transient_or_auth_provider_error_fails_the_run_so_it_can_be_resumed(error):
+    with pytest.raises(type(error)):  # per site
+        run(patcher_llm(migrate(GREET, extra=[BREAK_GREET]), error), results=[True, True, False])
+    with pytest.raises(type(error)):  # in the combined repair
+        run(patcher_llm(migrate(GREET), migrate(SHOUT), error), results=[True, True, True, True, False])
+
+
+def test_a_provider_refusal_in_the_combined_repair_fails_only_that_repair():
+    llm = patcher_llm(migrate(GREET), migrate(SHOUT), TOO_BIG)
 
     result = run(llm, results=[True, True, True, True, False, True, True])
 
     assert result.combined_failure.startswith(
-        "combined repair not composed: the model request was not answered (HTTP 503); last failure: repo"
+        "combined repair not composed: the model request was too large (HTTP 400); last failure: repo"
     )
     assert result.combined == ["cs_01", "cs_03"]  # then added one at a time: each passes with the others
+
+
+MORE = "tests/test_greet_more.py"
+MORE_TEXT = (
+    "from tinyapp.greet import greet\n\n\ndef test_greet_is_a_function():\n    assert callable(greet)\n"
+)
+PIN_MORE = Edit(path=MORE, search="def test_greet_", replace="# pinned\ndef test_greet_")
+UNPIN_MORE = Edit(path=MORE, search="# pinned\ndef test_greet_", replace="def test_greet_")  # its first text
+
+
+def two_test_files(name: str) -> Path:
+    repo = work_dir(name) / "src"
+    shutil.copytree(TINY, repo)
+    (repo / MORE).write_text(MORE_TEXT)
+    return repo
+
+
+def copies(messages: list[dict], path: str) -> list[int]:
+    """The user turns holding a copy of `path`."""
+    return [
+        i
+        for i, m in enumerate(messages)
+        if m["role"] == "user" and f"### {path} (editable)\n```" in m["content"]
+    ]
+
+
+def test_a_file_restored_to_its_first_text_is_shown_again_as_it_is_now():
+    """Re-review 1, Important: try 1 changed two test files; repair 1 restored one to its first-message text
+    (as the repair text says to drop an edit). That text had been superseded, and nothing showed it again."""
+    fix = Edit(path=TESTS, search='"hi ana!"', replace='"Hi Ana!"')
+    tries = [[*migrate(GREET).edits, PIN_MORE, BREAK_GREET], [UNPIN_MORE, REBREAK_GREET], [fix]]
+    llm = patcher_llm(*(PatchEdits(edits=t) for t in tries), migrate(SHOUT))
+    repo = two_test_files("tiny-restore")
+
+    result = run(
+        llm, results=[True, True, False, False, True, True, True], repo=repo, name="tiny-restore-run"
+    )
+
+    third = llm.calls[2]["messages"]
+    assert copies(third, MORE) == [len(third) - 1]  # one copy, in the latest turn: its first text again
+    assert _file_block(MORE, "editable", MORE_TEXT) in third[-1]["content"]
+    assert verdict(result, "cs_01").decision == "MIGRATE" and "# pinned" not in result.files.get(MORE, "")
+
+
+HELPERS = "tests/helpers.py"
+
+
+def with_a_helper(name: str) -> Path:
+    """The tiny repo, its test importing a helper: the combined repair may edit both."""
+    repo = work_dir(name) / "src"
+    shutil.copytree(TINY, repo)
+    (repo / HELPERS).write_text('GREETING = "Hi"\n')
+    (repo / TESTS).write_text("from helpers import GREETING  # noqa: F401\n" + (repo / TESTS).read_text())
+    return repo
+
+
+def test_a_combined_repair_shows_again_a_file_restored_to_its_first_text(monkeypatch):
+    monkeypatch.setattr(patcher_module, "TOGETHER_REPAIRS", 3)
+    mark = Edit(path=TESTS, search="from types import", replace="# together\nfrom types import")
+    helper = Edit(path=HELPERS, search='"Hi"', replace='"Hello"')
+    back = Edit(path=HELPERS, search='"Hello"', replace='"Hi"')  # its first text
+    remark = Edit(path=TESTS, search="# together\n", replace="# together, again\n")
+    third_reply = Edit(path=TESTS, search="again", replace="3")
+    tries = [[mark, helper], [back, remark], [third_reply]]
+    llm = patcher_llm(migrate(GREET), migrate(SHOUT), *(PatchEdits(edits=t) for t in tries))
+    repo = with_a_helper("tiny-ch")
+
+    result = run(
+        llm, results=[True, True, True, True, False, False, False, True], repo=repo, name="tiny-ch-run"
+    )
+
+    third = llm.calls[4]["messages"]
+    assert copies(third, HELPERS) == [len(third) - 1]
+    assert _file_block(HELPERS, "editable", 'GREETING = "Hi"\n') in third[-1]["content"]
+    assert result.combined_failure is None and "\n# together, 3\nfrom types import" in result.files[TESTS]
+
+
+def test_a_combined_repair_refuses_a_file_it_had_no_room_to_show(monkeypatch):
+    monkeypatch.setattr(patcher_module, "FILES_NOW_CHARS", 1)
+    mark = Edit(path=TESTS, search="from types import", replace="# together\nfrom types import")
+    helper = Edit(path=HELPERS, search='"Hi"', replace='"Hello"')
+    later = Edit(path=HELPERS, search='"Hello"', replace='"Hey"')  # HELPERS was left out: not editable
+    llm = patcher_llm(
+        migrate(GREET), migrate(SHOUT), PatchEdits(edits=[mark, helper]), PatchEdits(edits=[later])
+    )
+
+    repo = with_a_helper("tiny-cc")
+
+    result = run(
+        llm, results=[True, True, True, True, False, False, True, True, True], repo=repo, name="tiny-cc-run"
+    )
+
+    assert LEFT_OUT.format(files=f"`{HELPERS}`") in llm.calls[3]["messages"][-1]["content"]
+    assert result.combined_failure == f"patch rejected (patch rules): {HELPERS} {NOT_SHOWN}"
+
+
+def test_a_block_relabelled_to_a_file_left_out_is_refused_too(monkeypatch):
+    """Re-review 1, Minor 1: a block labelled with a shown file whose SEARCH is only in the left-out one."""
+    monkeypatch.setattr(patcher_module, "FILES_NOW_CHARS", 1)
+    sneaky = Edit(path=MORE, search='"Hi Ana"', replace='"Hi Ana!"')  # that text is in TESTS only
+    llm = patcher_llm(PatchEdits(edits=[PIN_MORE, BREAK_GREET]), PatchEdits(edits=[sneaky]),
+                      PatchEdits(edits=[UNBREAK_GREET]), migrate(SHOUT))  # fmt: skip
+
+    result = run(llm, results=[True, True, False, True, True, True], repo=two_test_files("tiny-relabel"),
+                 name="tiny-relabel-run", output=f"FAILED {MORE}::test_greet_is_a_function")  # fmt: skip
+
+    assert f"{TESTS} {NOT_SHOWN}" in llm.calls[2]["messages"][-1]["content"]
+    assert verdict(result, "cs_01").decision == "MIGRATE"
+
+
+def test_files_now_cap_edges(monkeypatch):
+    monkeypatch.setattr(patcher_module, "FILES_NOW_CHARS", 10)
+    now = {"tests/test_x.py": "x" * 50, "a/tests/test_x.py": "y" * 5, "tests/helper.py": "z" * 5}
+    stale = dict.fromkeys(now, "old")
+
+    _, again, left = _repair("FAILED a/tests/test_x.py::t", now, stale)
+    assert (again, left) == (
+        ["a/tests/test_x.py", "tests/helper.py"],
+        {"tests/test_x.py"},
+    )  # by path, not substring
+    _, again, left = _repair("FAILED tests/test_x.py::t", now, stale)
+    assert again == ["tests/test_x.py"]  # named: shown though alone past the cap; the rest left out
+    assert left == {"a/tests/test_x.py", "tests/helper.py"}
+    _, again, left = _repair("FAILED a/tests/test_x.py::t | FAILED tests/test_x.py::u", now, stale)
+    assert (again, left) == (["a/tests/test_x.py", "tests/test_x.py"], {"tests/helper.py"})  # both named
+    miss = "patch rejected (patch rules): search text not found in tests/helper.py: 'q'"
+    text, again, left = _repair(miss, now, dict(now))  # a miss in an unchanged file
+    assert (again, left) == (["tests/helper.py"], frozenset()) and "Also changed" not in text
 
 
 CLI_TEST = """@pytest.mark.parametrize(
