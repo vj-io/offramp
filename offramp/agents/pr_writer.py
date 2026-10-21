@@ -101,6 +101,9 @@ class PRContext(BaseModel):
     langsmith_public: bool = False  # the links are public share links (OFFRAMP_LANGSMITH_PUBLIC=1)
     site_files: dict[str, list[str]] = Field(default_factory=dict)  # PatchResult.site_files
     sandbox: str | None = None  # PatchResult.sandbox_mode: "docker" | "local"
+    linted: bool = True  # PatchResult.linted: the checks ran the repo's ruff too
+    sandbox_notes: list[str] = Field(default_factory=list)  # PatchResult.sandbox_notes, stated as they are
+    async_client: bool = False  # PatchResult.async_client: the client module holds token_factory_async_client
     client_path: str | None = None  # PatchResult.client_path: where the Token Factory client module lives
     alone: dict[str, bool] = Field(default_factory=dict)  # PatchResult.alone: site -> green on its own
     combined: list[str] = Field(default_factory=list)  # PatchResult.combined: sites in the checked tree
@@ -453,11 +456,18 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
             if client.endswith("/offramp_client.py")
             else "at the repository root, because the migrated call sites are not inside one package"
         )
+        asynchronous = (
+            " For the async call sites, `token_factory_async_client()` (`openai.AsyncOpenAI`): each still "
+            "`await`s its call, and a test fakes it the way it faked the old SDK client."
+            if ctx.async_client
+            else ""
+        )
         out.append(
             f"- `{client}` added {where}: OpenAI SDK client for Nebius Token Factory "
             "(`token_factory_client()`, reads `NEBIUS_API_KEY` and optional `NEBIUS_BASE_URL`) and the "
             "Nemotron tier constants `LIGHTNING`, `SUPER`, `ULTRA`. Every migrated call sends "
             "`chat_template_kwargs.enable_thinking` explicitly, since Nemotron reasons by default."
+            + asynchronous
         )
     for v in migrated:
         site = sites.get(v.site_id)
@@ -490,18 +500,20 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         out.append(
             f"- The patches green on their own ({', '.join(green)}) were then checked merged: {together}."
         )
+    checks = "`ruff check` and `pytest`" if ctx.linted else "`pytest`"
     if ctx.sandbox == "docker":
         out.append(
-            "- Each site's patch was checked with this repo's own `ruff check` and `pytest` in Docker "
+            f"- Each site's patch was checked with this repo's own {checks} in Docker "
             "(network off, 2 CPUs); a patch that failed them was dropped and its site marked for manual "
             "review."
         )
     elif ctx.sandbox:
         out.append(
-            "- Each site's patch was checked with this repo's own `ruff check` and `pytest` in a local "
+            f"- Each site's patch was checked with this repo's own {checks} in a local "
             "subprocess (Docker was unavailable, so the run was not network-isolated); a patch that failed "
             "them was dropped and its site marked for manual review."
         )
+    out += [f"- {note[0].upper()}{note[1:]}." for note in ctx.sandbox_notes if ctx.sandbox]
     if not migrated:
         out.append("- No call site was migrated.")
 

@@ -1,8 +1,12 @@
 """Run a target repo's own `ruff check` + `pytest` on a patched copy (PRD §6.8, §10).
 
-Docker: the repo's dependencies are installed into a throwaway image while the network is still on (cached per
-dependency-file hash); the checks then run with no network, 2 CPUs, 2 GB, 256 pids, no capabilities and no
-privilege escalation, the copy mounted read-only, under a 10-minute cap. It gets no host environment.
+Docker: the repo's dependencies, then the project itself (as its CI's `uv sync` installs it, editable at
+/repo), are installed into a throwaway image while the network is still on (cached per build-context hash; the
+context takes only the repo's regular files); the checks then run with no network, 2 CPUs, 2 GB, 256 pids, no
+capabilities and no privilege escalation, the copy mounted read-only over /repo (so the editable install runs
+the mounted code), under a 10-minute cap. It gets no host environment. ruff runs only when the repo configures
+it. A Python version whose image does not build falls back to the newest that does, and a project that does
+not install falls back to its dependencies alone; each fallback is recorded in `notes`.
 
 Without Docker, mode "local" runs the checks as a `uv run` subprocess, only on machines that opt in with
 OFFRAMP_ALLOW_LOCAL_SANDBOX=1 (developer laptops). It is not isolated, but its environment is minimal: no
@@ -15,9 +19,11 @@ import hashlib
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
+import tomllib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +35,14 @@ OUTPUT_TAIL = 4000
 DEP_FILES = ("pyproject.toml", "uv.lock", "requirements.txt", ".python-version")
 LOCAL_OPT_IN = "OFFRAMP_ALLOW_LOCAL_SANDBOX"
 NO_SANDBOX = "no sandbox (Docker unavailable)"
+NO_LINTER = "this repo configures no ruff linter; Offramp ran its tests only"
+NOT_INSTALLED = (
+    "this repo's own package did not install in the sandbox image, so Offramp ran its checks with its "
+    "dependencies alone"
+)
+NOT_COPIED = (".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", ".tox",
+              "node_modules")  # fmt: skip
+PYTHONS = ("3.14", "3.13", "3.12", "3.11", "3.10")  # tried newest first when the asked version does not build
 DOCKER_LIMITS = ["--network", "none", "--cpus", "2", "--memory", "2g", "--pids-limit", "256",
                  "--cap-drop", "ALL", "--security-opt", "no-new-privileges"]  # fmt: skip
 Mode = Literal["docker", "local", "none"]
@@ -38,11 +52,14 @@ CHECKS = (
     ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"],
 )
 
+# Two stages: the dependencies (cached apart from the code), then the project itself installed editable at
+# /repo, which the checks mount the patched copy over. UV_PYTHON: uv takes the image's Python whatever
+# .python-version asks for, so a fallback image can build.
 DOCKERFILE = """\
-FROM ghcr.io/astral-sh/uv:python{python}-bookworm-slim
-ENV UV_PROJECT_ENVIRONMENT=/opt/venv UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
-WORKDIR /deps
-COPY . .
+FROM ghcr.io/astral-sh/uv:python{python}-bookworm-slim AS deps
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never UV_PYTHON={python}
+WORKDIR /repo
+COPY deps/ ./
 RUN if [ -f pyproject.toml ]; then \\
       uv sync --no-install-project $( [ -f uv.lock ] && echo --frozen ); \\
     else \\
@@ -51,8 +68,52 @@ RUN if [ -f pyproject.toml ]; then \\
     fi \\
  && uv pip install --python /opt/venv/bin/python pytest ruff
 ENV PATH=/opt/venv/bin:$PATH VIRTUAL_ENV=/opt/venv PYTHONDONTWRITEBYTECODE=1 HOME=/tmp
-WORKDIR /repo
+
+FROM deps AS project
+COPY repo/ ./
+RUN if [ -f pyproject.toml ]; then \\
+      uv sync --inexact $( [ -f uv.lock ] && echo --frozen ); \\
+    elif [ -f setup.py ]; then \\
+      uv pip install --python /opt/venv/bin/python -e .; \\
+    fi
 """
+
+
+def configures_ruff(repo: Path) -> bool:
+    """Whether the repo lints with ruff: `[tool.ruff]` in pyproject.toml, a ruff.toml or .ruff.toml, or ruff
+    named in its CI workflows or pre-commit config. A linked file is never read."""
+    repo = Path(repo)
+    if any(
+        (repo / name).is_file() and not (repo / name).is_symlink() for name in ("ruff.toml", ".ruff.toml")
+    ):
+        return True
+    pyproject = repo / "pyproject.toml"
+    try:
+        if not pyproject.is_symlink() and "ruff" in tomllib.loads(pyproject.read_text()).get("tool", {}):
+            return True
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        pass
+    ci = [repo / ".pre-commit-config.yaml", *(repo / ".github" / "workflows").glob("*.y*ml")]
+    return any(
+        f.is_file() and not f.is_symlink() and re.search(r"\bruff\b", f.read_text(errors="replace"))
+        for f in ci
+    )
+
+
+def _regular_only(folder: str, names: list[str]) -> set[str]:
+    """copytree's ignore: everything but regular files and folders (links, pipes, devices), the folders a
+    copy leaves out, and .env files."""
+    skip = set()
+    for name in names:
+        mode = os.lstat(os.path.join(folder, name)).st_mode
+        if (
+            name in NOT_COPIED
+            or name == ".env"
+            or name.startswith(".env.")
+            or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))
+        ):
+            skip.add(name)
+    return skip
 
 
 def docker_available() -> bool:
@@ -84,14 +145,17 @@ class Sandbox:
         else:
             self.mode = "local" if os.environ.get(LOCAL_OPT_IN) == "1" else "none"
         self._image: str | None = None
+        self.ruff = configures_ruff(self.repo)
+        self.notes: list[str] = [] if self.ruff else [NO_LINTER]  # what the PR states about these checks
 
     def check(self) -> CheckResult:
-        """ruff, then pytest; the first failure ends the check. One 10-minute cap covers both."""
+        """ruff (when the repo configures it), then pytest; the first failure ends the check. One 10-minute
+        cap covers both."""
         if self.mode == "none":
             return CheckResult(False, "none", NO_SANDBOX)
         deadline = self._deadline()
         text = ""
-        for cmd in CHECKS:
+        for cmd in CHECKS if self.ruff else CHECKS[1:]:
             code, text = self._run(cmd, deadline)
             if code != 0:
                 return CheckResult(
@@ -112,15 +176,22 @@ class Sandbox:
         return self._exec(["python", "-B", "-c", code, *args], self._deadline(), stdin)
 
     def formatted(self) -> bool:
-        """Whether the repo already keeps `ruff format` clean (then patched files are formatted too)."""
-        return self._run(["ruff", "format", "--no-cache", "--check", "."], self._deadline())[0] == 0
+        """Whether the repo already keeps `ruff format` clean (then patched files are formatted too); never
+        for a repo that does not configure ruff."""
+        return (
+            self.ruff
+            and self._run(["ruff", "format", "--no-cache", "--check", "."], self._deadline())[0] == 0
+        )
 
     def tidy(self, paths: list[str], format_code: bool = False) -> None:
         """Mechanical clean-up of patched files with the repo's own ruff: import order and unused imports
         (I001, F401), plus `ruff format` when the repo is formatted.
 
         Files go through ruff on stdin/stdout and are written here: the mount stays read-only, and writes made
-        through a Docker Desktop bind mount were seen truncated on the host."""
+        through a Docker Desktop bind mount were seen truncated on the host. A repo that does not configure
+        ruff gets no ruff edits."""
+        if not self.ruff:
+            return
         deadline = self._deadline()
         for path in paths:
             text = (self.repo / path).read_text()
@@ -190,7 +261,9 @@ class Sandbox:
         return p.returncode, p.stdout, p.stderr
 
     def _ensure_image(self) -> str:
-        """Image with the repo's dependencies (network on at build time only), cached by dependency hash."""
+        """Image with the repo's dependencies and the project installed (network on at build time only),
+        cached by the hash of its build context. The Python .python-version asks for (3.12 without one) first;
+        when its image does not build, the newest of PYTHONS that does, with a note."""
         if self._image:
             return self._image
         # never follow a link: the repo may be a raw clone, where runs/<id>/repo/requirements.txt ->
@@ -209,23 +282,47 @@ class Sandbox:
             raise RuntimeError(
                 f".python-version {version[:40]!r} is not a version such as 3.12: no sandbox image"
             )
-        dockerfile = DOCKERFILE.format(python=".".join(version.split(".")[:2]))
-        digest = hashlib.sha256(dockerfile.encode())
-        for f in present:
-            digest.update(f.encode() + b"\0" + (self.repo / f).read_bytes())
-        tag = f"offramp-sandbox:{digest.hexdigest()[:16]}"
-        if subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode != 0:
-            with tempfile.TemporaryDirectory(prefix="offramp-image-") as ctx:  # never beside a local checkout
-                for f in present:
-                    shutil.copy2(self.repo / f, Path(ctx) / f)
-                (Path(ctx) / "Dockerfile").write_text(dockerfile)
-                p = subprocess.run(
-                    ["docker", "build", "-q", "-t", tag, ctx],
-                    capture_output=True,
-                    text=True,
-                    timeout=BUILD_TIMEOUT_S,
-                )
+        asked = ".".join(version.split(".")[:2])
+        deadline, failures = time.monotonic() + BUILD_TIMEOUT_S, []
+        for python in [asked, *(p for p in PYTHONS if p != asked)]:
+            try:
+                self._image = self._build(python, present, deadline)
+            except (RuntimeError, subprocess.TimeoutExpired) as e:
+                failures.append((python, str(e)))
+                if time.monotonic() < deadline:
+                    continue
+                break
+            if python != asked:
+                why = ".python-version asks for" if ".python-version" in present else "the default is"
+                self.notes.append(f"{why} Python {asked}, whose sandbox image did not build; Offramp ran the "
+                                  f"checks on Python {python}, the newest that built")  # fmt: skip
+            return self._image
+        tried = ", ".join(python for python, _ in failures[1:])
+        raise RuntimeError(failures[0][1] + (f"\n(no image built on Python {tried} either)" if tried else ""))
+
+    def _build(self, python: str, present: list[str], deadline: float) -> str:
+        """Build (or reuse) the image for one Python: the dependencies stage first; when only the project's
+        own install fails, that stage alone, with a note. RuntimeError when the dependencies do not build."""
+        with tempfile.TemporaryDirectory(prefix="offramp-image-") as ctx:  # never beside a local checkout
+            (Path(ctx) / "deps").mkdir()
+            for f in present:
+                shutil.copy2(self.repo / f, Path(ctx) / "deps" / f)
+            shutil.copytree(self.repo, Path(ctx) / "repo", ignore=_regular_only)  # regular files only
+            (Path(ctx) / "Dockerfile").write_text(DOCKERFILE.format(python=python))
+            digest = hashlib.sha256()
+            for f in sorted(p for p in Path(ctx).rglob("*") if p.is_file()):
+                digest.update(f.relative_to(ctx).as_posix().encode() + b"\0" + f.read_bytes() + b"\0")
+            tag = f"offramp-sandbox:{digest.hexdigest()[:16]}"
+            if subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode == 0:
+                return tag
+            build = ["docker", "build", "-q"]
+            p = subprocess.run([*build, "--target", "deps", "-t", f"{tag}-deps", ctx], capture_output=True,
+                               text=True, timeout=max(deadline - time.monotonic(), 1))  # fmt: skip
             if p.returncode != 0:
                 raise RuntimeError(f"sandbox image build failed:\n{(p.stdout + p.stderr)[-OUTPUT_TAIL:]}")
-        self._image = tag
+            p = subprocess.run([*build, "-t", tag, ctx], capture_output=True, text=True,
+                               timeout=max(deadline - time.monotonic(), 1))  # fmt: skip
+        if p.returncode != 0:
+            self.notes.append(NOT_INSTALLED)
+            return f"{tag}-deps"
         return tag

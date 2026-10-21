@@ -44,6 +44,7 @@ from offramp.agents.patcher import (
     add_imports,
     call_params,
     client_location,
+    client_module,
     compose_patches,
     conformance,
     convert_fakes,
@@ -64,7 +65,7 @@ from offramp.agents.patcher import (
 )
 from offramp.agents.pr_writer import is_test_path, manual_reason
 from offramp.agents.translate import build_request, system_message
-from offramp.sandbox import CheckResult, Sandbox, docker_available
+from offramp.sandbox import NO_LINTER, CheckResult, Sandbox, configures_ruff, docker_available
 from offramp.schemas import Adapter, AdapterSpec, CallSite, EvalCase, PatchFailure, RunConfig, Tier, Verdict
 from offramp.tf import BudgetExceeded, FakeLLM, TFClient, get_tier
 
@@ -104,11 +105,12 @@ class FakeSandbox:
     Offramp's own changes alone (a site module changed, the tests not yet) answers `precheck` and leaves
     `results` to the other checks."""
 
-    mode = "docker"
+    mode, ruff = "docker", True  # a repo that configures ruff
 
     def __init__(self, repo: Path, results: list[bool] | None = None, precheck: bool = False,
                  output: str = "FAILED tests/test_tinyapp.py::x"):  # fmt: skip
         self.repo, self.results, self.checks, self.fixed = repo, list(results or []), [], []
+        self.notes: list[str] = []
         self.output = output
         self.precheck, self.start = precheck, self._files()
 
@@ -916,7 +918,7 @@ def test_the_python_version_reaches_the_image_only_when_it_is_a_version(monkeypa
     if base is None:  # refused before any build
         assert built == [] and not result.ok and ".python-version" in result.output
     else:
-        assert built and built[0].startswith(f"FROM ghcr.io/astral-sh/uv:{base}-bookworm-slim\n")
+        assert built and built[0].startswith(f"FROM ghcr.io/astral-sh/uv:{base}-bookworm-slim AS deps\n")
 
 
 @pytest.mark.parametrize("name", ["requirements.txt", ".python-version"])
@@ -3149,3 +3151,427 @@ def test_a_merge_conflict_is_recorded_as_one_not_as_a_check_failure():
         "Its patch passes this repo's checks on its own, but it conflicts with another migrated site's "
         f"patch in `{TESTS}`."
     )
+
+
+# ---------------------------------------------------------------- Task 23: async sites, clients built inside
+
+ASYNC_GREET = '''"""Write a one-line greeting (async, its client built inside, as real apps do)."""
+
+import logging
+import os
+
+GREET_SYSTEM_PROMPT = "You write one-line greetings."
+logger = logging.getLogger(__name__)
+
+
+async def greet(name: str) -> str:
+    try:
+        import anthropic
+
+        client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=30.0)
+        message = await client.messages.create(
+            model="claude-haiku-4-5",
+            temperature=0,
+            max_tokens=32,
+            system=GREET_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": f"Greet {name}."}],
+        )
+        return message.content[0].text.strip()
+    except Exception:
+        logger.exception("greeting failed")
+        return "Hello!"
+'''
+ASYNC_PARAMS = {"model": LIGHTNING, "max_tokens": 32, "temperature": 0.0, "extra_body": THINK_OFF}
+ASYNC_SPEC = AdapterSpec(system_prompt="You write one-line greetings.", max_tokens=32, temperature=0.0)
+CLIENT_MODULE = "tinyapp.offramp_client"
+LOCAL_IMPORT = "        from tinyapp.offramp_client import token_factory_async_client\n"
+
+
+def _built_site(function="greet", sdk="anthropic"):
+    return CallSite(id="cs_01", file=GREET, lines=[1, 99], sdk=sdk, call="c", function=function,
+                    prompt_source="fstring")  # fmt: skip
+
+
+def _prepared(source, function="greet", sdk="anthropic"):
+    """Offramp's own rewrite of a site, which must carry the evaluated request exactly."""
+    site = _built_site(function, sdk)
+    out, constants, system_name, rewritten, fixed = _prepare(
+        source, site, ASYNC_SPEC, ASYNC_PARAMS, 100, client=CLIENT_MODULE
+    )
+    assert rewritten and fixed
+    assert conformance(out, site, ASYNC_PARAMS, constants, system_name) == []
+    return out
+
+
+def test_an_async_site_that_builds_its_client_inside_is_rewritten_by_code():
+    """The real shape (an app's FastAPI helpers): `import anthropic` inside the function, the client built
+    there, the call awaited, the reply read as `message.content[0].text`."""
+    out = _prepared(ASYNC_GREET)
+
+    assert LOCAL_IMPORT in out  # where `import anthropic` was: still lazy, faked the same way
+    assert "        client = token_factory_async_client(timeout=30.0)\n" in out  # the key goes, timeout stays
+    assert "        message = await client.chat.completions.create(\n" in out  # await kept
+    assert 'return (message.choices[0].message.content or "").strip()' in out
+    assert "anthropic" not in out.lower() and "messages.create" not in out
+    assert add_imports(out, CLIENT_MODULE) == out  # imported inside the function: no module-level twin
+
+
+OPENAI_BUILT = """import openai
+
+PROMPT = "You write one-line greetings."
+
+
+async def greet(name):
+    client = openai.AsyncOpenAI(max_retries=2)
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        max_tokens=32,
+        messages=[{"role": "system", "content": PROMPT}, {"role": "user", "content": f"Greet {name}."}],
+    )
+    return response.choices[0].message.content
+"""
+SYNC_BUILT = """from anthropic import Anthropic
+
+PROMPT = "You write one-line greetings."
+
+
+def greet(name):
+    client = Anthropic()
+    response = client.messages.create(
+        model="claude-haiku-4-5", max_tokens=32, system=PROMPT,
+        messages=[{"role": "user", "content": f"Greet {name}."}],
+    )
+    return response.content[0].text
+"""
+CHAINED = (SYNC_BUILT.replace("import Anthropic", "import AsyncAnthropic")
+           .replace("def greet", "async def greet").replace("    client = Anthropic()\n", "")
+           .replace("client.messages", "await AsyncAnthropic(timeout=5).messages"))  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("source", "sdk", "built"),
+    [
+        (OPENAI_BUILT, "openai", "    client = token_factory_async_client(max_retries=2)\n"),
+        (SYNC_BUILT, "anthropic", "    client = token_factory_client()\n"),
+        (CHAINED, "anthropic",
+         "    response = await token_factory_async_client(timeout=5).chat.completions.create("),
+    ],
+    ids=["async-openai-module-import", "sync-anthropic", "async-chained"],
+)  # fmt: skip
+def test_a_client_built_inside_from_a_module_level_import_is_rewritten_too(source, sdk, built):
+    out = _prepared(source, sdk=sdk)
+
+    assert built in out
+    factory = "token_factory_async_client" if "async" in built else "token_factory_client"
+    assert f"from {CLIENT_MODULE} import {factory}\n" in add_imports(out, CLIENT_MODULE)  # at module level
+
+
+MODULE_CLIENT = """import anthropic
+
+PROMPT = "You write one-line greetings."
+client = anthropic.AsyncAnthropic()
+
+
+async def greet(name):
+    message = await client.messages.create(
+        model="claude-haiku-4-5", max_tokens=32, system=PROMPT, messages=[{"role": "user", "content": name}]
+    )
+    return message.content[0].text
+"""
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        (ASYNC_GREET.replace("timeout=30.0)", 'base_url="https://proxy.example")'), "`base_url=`"),
+        (ASYNC_GREET.replace(".AsyncAnthropic(api_key=", ".Anthropic(api_key="),
+         "the sync Token Factory client"),
+        (MODULE_CLIENT, "built outside the function"),
+    ],
+    ids=["unknown-option", "sync-with-options", "module-level-client"],
+)  # fmt: skip
+def test_a_client_the_rewrite_cannot_build_the_same_way_is_refused(source, reason):
+    with pytest.raises(Unsupported, match=re.escape(reason)):
+        _rewrite_call(source, _built_site(), {}, "PROMPT", ASYNC_PARAMS, 100, client=CLIENT_MODULE)
+
+
+def test_a_built_client_that_also_serves_another_call_is_left_to_manual_review():
+    source = ASYNC_GREET.replace(
+        "        message = await",
+        "        await client.messages.count_tokens(model='m')\n        message = await",
+    )
+
+    assert _rewrite_call(source, _built_site(), {}, None, ASYNC_PARAMS, 100, client=CLIENT_MODULE) is None
+
+
+def test_the_async_client_module_adds_one_factory_and_leaves_the_sync_module_as_it_was():
+    sync, both = client_module(), client_module(asynchronous=True, module=CLIENT_MODULE)
+
+    assert "Async" not in sync  # sync-only repos ship (and prompt) exactly the module they did
+    assert both.replace("from openai import AsyncOpenAI, OpenAI", "from openai import OpenAI").startswith(
+        sync
+    )
+    factory = next(n for n in ast.parse(both).body if getattr(n, "name", "") == "token_factory_async_client")
+    assert ast.unparse(factory.returns) == "AsyncOpenAI" and factory.args.kwarg.arg == "options"
+    assert f'sys.modules["{CLIENT_MODULE}"]' in both  # how a test fakes it, as it faked the SDK
+    assert max(len(line) for line in both.splitlines()) <= 79
+
+
+def test_callers_and_fakes_of_an_async_client_get_the_async_factory():
+    caller = "def main():\n    return asyncio.run(greet(AsyncAnthropic(), 'Ana'))\n"
+    out = rewrite_callers(caller, "greet", CLIENT_MODULE)
+    assert "greet(token_factory_async_client(), 'Ana')" in out
+    assert f"from {CLIENT_MODULE} import token_factory_async_client" in out
+    test = 'def test_x(monkeypatch):\n    monkeypatch.setattr(cli, "AsyncAnthropic", lambda: Fake())\n'
+    twin = mirror_fakes(test, {"cli"}, "AsyncAnthropic", "token_factory_async_client")
+    assert '    monkeypatch.setattr(cli, "token_factory_async_client", lambda: Fake())\n' in twin
+
+
+def async_tiny(name: str) -> Path:
+    """The tiny repo with greet async, building its client inside, and tested the way the real app is: a
+    fake `anthropic` module in sys.modules whose client is an AsyncMock."""
+    repo = work_dir(name) / "src"
+    shutil.copytree(TINY, repo, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+    (repo / GREET).write_text(ASYNC_GREET)
+    tests = (repo / TESTS).read_text().replace("from tinyapp.greet import greet\n", "")
+    head, _, tail = tests.partition("def test_greet_strips_the_reply():")
+    (repo / TESTS).write_text(head + tail.split("\n\n\n", 1)[1])
+    (repo / "tests" / "test_greet.py").write_text(SYS_MODULES_TEST)
+    write_case(repo, "cs_01", {"name": "Ana"}, "You write one-line greetings.", "Greet Ana.")
+    return repo
+
+
+SYS_MODULES_TEST = """import asyncio
+from types import ModuleType, SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from tinyapp.greet import greet
+
+
+def _fake_anthropic(client):
+    module = ModuleType("anthropic")
+    module.AsyncAnthropic = MagicMock(return_value=client)
+    return module
+
+
+def test_greet_strips_the_reply(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    client = AsyncMock()
+    reply = SimpleNamespace(content=[SimpleNamespace(type="text", text="  Hi Ana! ")])
+    client.messages.create = AsyncMock(return_value=reply)
+
+    with patch.dict("sys.modules", {"anthropic": _fake_anthropic(client)}):
+        assert asyncio.run(greet("Ana")) == "Hi Ana!"
+
+    assert client.messages.create.call_args.kwargs["model"] == "claude-haiku-4-5"
+"""
+# The model's job (a test edit): retarget the fake to Offramp's client module, in the same style.
+RETARGETED = (SYS_MODULES_TEST
+              .replace('def _fake_anthropic(client):\n    module = ModuleType("anthropic")\n'
+                       "    module.AsyncAnthropic = MagicMock(return_value=client)\n",
+                       f'def _fake_client_module(client):\n    module = ModuleType("{CLIENT_MODULE}")\n'
+                       "    module.token_factory_async_client = MagicMock(return_value=client)\n")
+              .replace('reply = SimpleNamespace(content=[SimpleNamespace(type="text", text="  Hi Ana! ")])',
+                       'message = SimpleNamespace(content="  Hi Ana! ")\n'
+                       "    reply = SimpleNamespace(choices=[SimpleNamespace(message=message)])")
+              .replace("client.messages.create", "client.chat.completions.create")
+              .replace('{"anthropic": _fake_anthropic(client)}',
+                       f'{{"{CLIENT_MODULE}": _fake_client_module(client)}}')
+              .replace('"claude-haiku-4-5"', f'"{LIGHTNING}"'))  # fmt: skip
+
+
+def async_sites() -> list[CallSite]:
+    return [s.model_copy(update={"sdk": "anthropic"}) if s.id == "cs_01" else s for s in tiny_sites()]
+
+
+def test_an_async_site_migrates_end_to_end_and_the_model_is_told_how_to_fake_its_client():
+    repo = async_tiny("async-fake")
+    retarget = Edit(path="tests/test_greet.py", search="", replace=RETARGETED, whole=True)
+    llm = patcher_llm(PatchEdits(edits=[retarget]), migrate(SHOUT))
+
+    result = compose_patches(repo, async_sites(), tiny_verdicts(), tiny_adapters(), llm,
+                             work_dir("async-fake-run"), config=CONFIG, build_request=BUILD,
+                             sandbox_factory=lambda r: FakeSandbox(r, precheck=False))  # fmt: skip
+
+    assert verdict(result, "cs_01").decision == "MIGRATE" and result.async_client
+    assert (
+        "def token_factory_async_client(**options) -> AsyncOpenAI:"
+        in result.files["tinyapp/offramp_client.py"]
+    )
+    shipped = result.files[GREET]
+    assert LOCAL_IMPORT in shipped and "await client.chat.completions.create(" in shipped
+    prompt = llm.calls[0]["messages"][-1]["content"]
+    assert "import token_factory_client, token_factory_async_client`" in prompt  # both factories named
+    assert f'patch.dict("sys.modules", {{"{CLIENT_MODULE}": fake_module}})' in prompt  # how to fake it
+    assert "def token_factory_async_client(" in prompt  # the module shown is the one that ships
+    assert result.verification["cs_01"] == (
+        "probe: run in the sandbox with case cs_01:001, it sends the evaluated request"
+    )  # an async function, its client built inside, run with the recorder for that client
+
+
+ASYNC_TIMEOUT = "token_factory_async_client(timeout=30.0)"
+# An async site whose client is built inside: the client and its import ship as written. (parametrize reads
+# SHAPES at collection, after the module ran.)
+SHAPES.update({
+    "async-client-option": shape(
+        [Edit(path=GREET, search=ASYNC_TIMEOUT, replace=ASYNC_TIMEOUT.replace("30.0", "0.001"))],
+        module=ASYNC_GREET),
+    "async-client-import-rebound": shape(
+        [Edit(path=GREET, search=LOCAL_IMPORT.strip(), replace=LOCAL_IMPORT.strip().replace(
+            "import token_factory_async_client", "import token_factory_client as token_factory_async_client",
+        ))],
+        module=ASYNC_GREET),
+})  # fmt: skip
+
+
+# ---------------------------------------------------------------- Task 23: the sandbox on real repos
+
+
+def fake_docker(monkeypatch, fail=lambda dockerfile, cmd: None):
+    """subprocess.run for the sandbox: no image cached; `docker build` fails when `fail(Dockerfile, cmd)`
+    returns an error text. Returns (docker run commands, build contexts as {path: text})."""
+    runs, contexts = [], []
+
+    def fake_run(cmd, **kw):
+        if cmd[:2] == ["docker", "build"]:
+            ctx = Path(cmd[-1])
+            contexts.append(
+                {p.relative_to(ctx).as_posix(): p.read_text() for p in ctx.rglob("*") if p.is_file()}
+            )
+            error = fail(contexts[-1]["Dockerfile"], cmd)
+            return subprocess.CompletedProcess(cmd, 1 if error else 0, "", error or "")
+        if cmd[:2] == ["docker", "run"]:
+            runs.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1 if cmd[:3] == ["docker", "image", "inspect"] else 0, "", "")
+
+    monkeypatch.setattr(sandbox_module.subprocess, "run", fake_run)
+    return runs, contexts
+
+
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        ({"pyproject.toml": "[tool.ruff]\nline-length = 100\n"}, True),
+        ({"pyproject.toml": "[tool.ruff.lint]\nselect = ['E']\n"}, True),
+        ({"ruff.toml": ""}, True),
+        ({".ruff.toml": ""}, True),
+        ({".github/workflows/ci.yml": "steps:\n  - run: uv run ruff check .\n"}, True),
+        ({".pre-commit-config.yaml": "repos:\n- repo: https://github.com/astral-sh/ruff-pre-commit\n"}, True),
+        ({"pyproject.toml": "[project]\nname = 'x'\n\n[tool.pytest.ini_options]\naddopts = '-q'\n",
+          ".github/workflows/ci.yml": "steps:\n  - run: uv run pytest -v\n"}, False),
+        ({"pyproject.toml": "not toml ["}, False),
+        ({}, False),
+    ],
+)  # fmt: skip
+def test_ruff_counts_as_configured_only_where_the_repo_configures_or_runs_it(tmp_path, files, expected):
+    for path, text in files.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(text)
+
+    assert configures_ruff(tmp_path) is expected
+
+
+def test_a_linked_config_is_never_read(tmp_path):
+    outside = tmp_path / "outside.toml"
+    outside.write_text("[tool.ruff]\n")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").symlink_to(outside)
+
+    assert configures_ruff(repo) is False
+
+
+@pytest.mark.parametrize("ruff", [True, False], ids=["ruff-configured", "no-linter"])
+def test_ruff_runs_only_when_the_repo_configures_it_and_the_note_says_so(monkeypatch, tmp_path, ruff):
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'x'\nversion = '0'\n" + ("[tool.ruff]\n" * ruff)
+    )
+    (tmp_path / "a.py").write_text("import os\n")
+    runs, _ = fake_docker(monkeypatch)
+    box = Sandbox(tmp_path, docker=True)
+
+    result, formatted = box.check(), box.formatted()
+    box.tidy(["a.py"])
+
+    ruffs = [cmd for cmd in runs if "ruff" in cmd]
+    assert result.ok and any("pytest" in cmd for cmd in runs)
+    assert bool(ruffs) is ruff and (formatted is False if not ruff else True)
+    assert box.notes == ([] if ruff else [NO_LINTER])
+
+
+def test_the_image_installs_the_project_from_the_repos_regular_files_only(monkeypatch, tmp_path):
+    """The project itself is installed, as its CI does, so src layouts import; the build context still takes
+    only regular files: no link, pipe, .env file, .git or .venv."""
+    repo = tmp_path / "repo"
+    (repo / "src" / "pkg").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text("[project]\nname = 'pkg'\nversion = '0'\n")
+    (repo / "src" / "pkg" / "__init__.py").write_text("VALUE = 1\n")
+    for secret in (".env", ".env.local", ".git/config", ".venv/pyvenv.cfg", "node_modules/x.js"):
+        (repo / secret).parent.mkdir(parents=True, exist_ok=True)
+        (repo / secret).write_text("canary-secret-123")
+    (tmp_path / "outside.txt").write_text("canary-secret-123")
+    (repo / "data.txt").symlink_to(tmp_path / "outside.txt")
+    os.mkfifo(repo / "pipe")  # copying a pipe would block forever
+    _, contexts = fake_docker(monkeypatch)
+
+    Sandbox(repo, docker=True).check()
+
+    files = contexts[0]
+    assert files["repo/src/pkg/__init__.py"] == "VALUE = 1\n" and "deps/pyproject.toml" in files
+    assert not any("canary" in text for text in files.values())
+    assert not any(p.startswith("repo/") and p[5:] in ("data.txt", "pipe") for p in files)
+    dockerfile = files["Dockerfile"]
+    assert (
+        dockerfile.index("COPY deps/ ./")
+        < dockerfile.index("COPY repo/ ./")
+        < dockerfile.index("uv sync --inexact")
+    )
+    assert "--no-install-project" in dockerfile.split("COPY repo/ ./")[0]  # dependencies first, cached apart
+
+
+def test_a_project_that_does_not_install_keeps_todays_image_and_says_so(monkeypatch, tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'x'\nversion = '0'\n")
+    runs, contexts = fake_docker(
+        monkeypatch, lambda dockerfile, cmd: None if "--target" in cmd else "no version"
+    )
+    box = Sandbox(tmp_path, docker=True)
+
+    result = box.check()
+
+    assert result.ok and runs and all(cmd[cmd.index("/repo") + 1].endswith("-deps") for cmd in runs)
+    assert "this repo's own package did not install in the sandbox" in box.notes[-1]
+
+
+def test_a_python_version_that_does_not_build_falls_back_to_the_newest_that_does(monkeypatch, tmp_path):
+    (tmp_path / ".python-version").write_text("3.14\n")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'x'\nversion = '0'\nrequires-python = '>=3.11'\n"
+    )
+    tried = []
+
+    def fail(dockerfile, cmd):
+        python = re.search(r"uv:python(\S+)-bookworm", dockerfile)[1]
+        tried.append(python)
+        return "no wheel for this Python" if python == "3.14" else None
+
+    _, contexts = fake_docker(monkeypatch, fail)
+    box = Sandbox(tmp_path, docker=True)
+
+    result = box.check()
+
+    assert result.ok and tried[0] == "3.14" and set(tried[1:]) == {"3.13"}
+    assert "UV_PYTHON=3.13" in contexts[-1]["Dockerfile"]  # uv takes the image's Python, not .python-version
+    assert box.notes[-1] == (
+        ".python-version asks for Python 3.14, whose sandbox image did not build; Offramp ran the checks "
+        "on Python 3.13, the newest that built"
+    )
+
+
+def test_when_no_python_builds_the_first_failure_is_reported(monkeypatch, tmp_path):
+    fake_docker(
+        monkeypatch, lambda dockerfile, cmd: "failed on " + re.search(r"uv:python(\S+)-", dockerfile)[1]
+    )
+
+    result = Sandbox(tmp_path, docker=True).check()
+
+    assert not result.ok and "failed on 3.12" in result.output and "failed on 3.13" not in result.output

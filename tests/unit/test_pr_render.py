@@ -20,6 +20,7 @@ from offramp.agents.pr_writer import (
     reference_summary,
     render_pr,
 )
+from offramp.sandbox import NO_LINTER
 from offramp.schemas import BaselineResult, EvalCase, ModelOutput, PatchFailure, ToolCall
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "pr"
@@ -594,3 +595,25 @@ def test_a_reference_the_judge_scored_below_3_is_flagged_and_kept():
         "- cs_06: reference judged weak: cs_06:011, 2.5/5; cs_06:020, 1/5 (below 3; kept in the evaluation)."
         in section
     )
+
+
+def test_a_repo_without_ruff_is_checked_by_its_tests_only_and_the_pr_says_so():
+    body = render_pr(ctx(sandbox="docker", linted=False, sandbox_notes=[NO_LINTER])).body
+
+    assert "checked with this repo's own `pytest` in Docker" in body and "`ruff check`" not in body
+    assert "- This repo configures no ruff linter; Offramp ran its tests only." in body
+
+
+def test_a_python_fallback_and_the_async_client_are_stated():
+    note = (
+        ".python-version asks for Python 3.14, whose sandbox image did not build; Offramp ran the checks on "
+        "Python 3.13, the newest that built"
+    )
+    body = render_pr(
+        ctx(sandbox="docker", sandbox_notes=[note], async_client=True, client_path="offramp/client.py")
+    ).body
+
+    assert f"- {note}." in body
+    line = next(ln for ln in body.splitlines() if ln.startswith("- `offramp/client.py` added"))
+    assert "`token_factory_async_client()` (`openai.AsyncOpenAI`)" in line and "`await`" in line
+    assert "`token_factory_async_client()`" not in render_pr(ctx(client_path="offramp/client.py")).body
