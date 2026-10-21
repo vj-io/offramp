@@ -1141,14 +1141,52 @@ def _refusal(e: APIStatusError) -> str | None:
     return f"the model request was {'too large' if big else 'refused'} (HTTP {e.status_code})"
 
 
+def _by_name(text: str, replace: str) -> tuple[str, list[str]] | None:
+    """A test file's `text` with a REPLACE whose SEARCH matched nowhere applied by name: when the REPLACE
+    parses as a module whose top-level statements are each a def or class whose name the file has exactly
+    once at top level, or a statement the file already has (by `ast.dump`), each def replaces the file's
+    own of that name, from its first decorator line (its `def` line when the REPLACE's carries none: the
+    file's decorators stay, as a SEARCH starting at the `def` leaves them) to its end; nothing else changes.
+    (the new text, the names) or None. Live run 7, cs_01: repair 2's SEARCH quoted a test that never
+    existed, repair 3's the file's first text, each with whole tests as the REPLACE. ponytail: top level
+    only, so a method is replaced only with its whole class."""
+    have, new = _parsed(text), _parsed(replace)
+    kinds = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+    if have is None or new is None:
+        return None
+    old = {n.name: n for n in have.body if isinstance(n, kinds)}
+    tops = [n.name for n in have.body if isinstance(n, kinds)]
+    defs = [n for n in new.body if isinstance(n, kinds)]
+    names = [d.name for d in defs]
+    same = {ast.dump(n) for n in have.body}
+    if not defs or len(set(names)) < len(names) or any(tops.count(name) != 1 for name in names):
+        return None
+    if any(not isinstance(n, kinds) and ast.dump(n) not in same for n in new.body):
+        return None
+
+    def first(n: ast.AST) -> int:
+        return n.decorator_list[0].lineno if n.decorator_list else n.lineno
+
+    lines, mine = text.splitlines(keepends=True), replace.splitlines(keepends=True)
+    for d in sorted(defs, key=lambda d: old[d.name].lineno, reverse=True):
+        o = old[d.name]
+        piece = mine[first(d) - 1 : d.end_lineno]
+        piece[-1] = piece[-1].rstrip("\n") + "\n"
+        lines[(first(o) if d.decorator_list else o.lineno) - 1 : o.end_lineno] = piece
+    return "".join(lines), names
+
+
 def _apply(
     edits: list[Edit],
     files: dict[str, str],
     locked: frozenset[str] = frozenset(),
     hidden: frozenset[str] = frozenset(),
+    notes: list[str] | None = None,
 ) -> list[Problem]:
     """Apply the edit blocks in order; `locked` files (code that ships) are shown but read-only, `hidden` ones
-    (left out of the last repair turn in their current text) are not editable, whatever a block's label."""
+    (left out of the last repair turn in their current text) are not editable, whatever a block's label. A
+    block whose SEARCH matched nowhere in a test file is applied by name when its REPLACE is whole
+    definitions (`_by_name`), and `notes` says so; the checks after it are the same."""
     shown = dict(files)
     seen = set()
     for e in edits:
@@ -1195,6 +1233,18 @@ def _apply(
         merged = near and merge_onto(e.search, files[e.path][near[0] : near[1]], e.replace)
         if merged is not None and near:
             files[e.path] = files[e.path][: near[0]] + merged + files[e.path][near[1] :]
+            continue
+        named = (
+            _by_name(files[e.path], e.replace)
+            if n == 0 and e.search not in shown[e.path] and is_test_path(e.path)
+            else None
+        )  # a SEARCH an earlier block of this reply changed is a merge for the model, never a guess
+        if named is not None:
+            files[e.path] = named[0]
+            if notes is not None:
+                defs = ", ".join(f"`{x}`" for x in named[1])
+                notes.append(f"an edit to `{e.path}` was applied by function name ({defs}) after its SEARCH "
+                             "matched nowhere")  # fmt: skip
             continue
         if n != 1:
             hint = (
@@ -1449,6 +1499,55 @@ def rewrite_callers(sources: dict[str, str], site_file: str, function: str, clie
         if spans:
             out[path] = add_imports(source, client)
     return out
+
+
+def drop_orphaned_imports(before: str, after: str, sdks: set[str]) -> str:
+    """`after`, a module as Offramp's code rewrote it (a site's module, a rewired caller, alone or merged),
+    without the import names from a replaced SDK (`sdks`, by top-level module) that the rewrite orphaned:
+    read in `before` and nowhere in `after` (a name, or a string equal to it: `__all__`, a string
+    annotation). Only those names go (`from anthropic import Anthropic, APIError` keeps `APIError`); a
+    statement left with none goes whole, with the blank line below it when it stood between two (or at the
+    top). Every other line is byte-identical: an import unused before is the repo's own lint state. Live run
+    7: three Anthropic sites each rewired one `Anthropic()` in helphub/cli.py; merged, nothing read the
+    import, the repo's ruff failed (F401) and cs_06 dropped. ponytail: an import sharing its line with
+    another statement, or the only statement of a block, stays."""
+    old, new = _parsed(before), _parsed(after)
+    if old is None or new is None:
+        return after
+
+    def reads(tree: ast.Module, name: str) -> bool:
+        return any(isinstance(n, ast.Name) and n.id == name or isinstance(n, ast.Constant) and n.value == name
+                   for n in ast.walk(tree))  # fmt: skip
+
+    lines = after.splitlines(keepends=True)
+    cuts = []  # (start, end) offsets into `after`
+    for node in ast.walk(new):
+        if not isinstance(node, ast.Import | ast.ImportFrom) or getattr(node, "level", 0):
+            continue
+        frm = isinstance(node, ast.ImportFrom)
+        gone = [
+            (node.module if frm else a.name).split(".")[0] in sdks and reads(old, b) and not reads(new, b)
+            for a in node.names
+            for b in [a.asname or (a.name if frm else a.name.split(".")[0])]
+        ]
+        if all(gone):  # the whole statement, on lines of its own
+            first, last = sum(map(len, lines[: node.lineno - 1])), sum(map(len, lines[: node.end_lineno]))
+            head = after[first : _offset(lines, node.lineno, node.col_offset)]
+            tail = after[_offset(lines, node.end_lineno, node.end_col_offset) : last].strip()
+            if head.strip() or tail[:1] not in ("", "#"):  # shares its lines with another statement
+                continue
+            below = lines[node.end_lineno] if node.end_lineno < len(lines) else "x"
+            between = (node.lineno == 1 or not lines[node.lineno - 2].strip()) and not below.strip()
+            cuts.append((first, last + len(below) * between))
+            continue
+        at = [(_offset(lines, a.lineno, a.col_offset), _offset(lines, a.end_lineno, a.end_col_offset))
+              for a in node.names]  # fmt: skip
+        # each name with a comma: up to the next kept name, else from the end of the last kept one
+        for i in (i for i, g in enumerate(gone) if g):
+            cuts.append((at[i][0], at[i + 1][0]) if not all(gone[i:]) else (at[i - 1][1], at[i][1]))
+    for start, end in sorted(cuts, reverse=True):
+        after = after[:start] + after[end:]
+    return after if _parsed(after) is not None else "".join(lines)
 
 
 def mirror_fakes(
@@ -2953,6 +3052,7 @@ class _Job:
     constants: dict[str, str] = field(default_factory=dict)  # Offramp's NEMOTRON_* name -> its import line
     locked: bool = True  # shipped code read-only to the model (switched off only to test the backstop alone)
     verify: Callable[[], str | None] | None = None  # the probe: why the patched call is not the evaluated one
+    notes: list[str] = field(default_factory=list)  # edits applied by name after a SEARCH miss (`_apply`)
 
 
 def _settle(box: Sandbox, repo: Path, paths: list[str], before: dict[str, str], width: int, formatted: bool):
@@ -2993,7 +3093,7 @@ def _attempt(
     base = job.shown if base is None else base
     new = dict(base)
     locked = frozenset(p for p in new if p in job.reference) if job.locked else frozenset()
-    problems = _apply(edits, new, locked, hidden)
+    problems = _apply(edits, new, locked, hidden, job.notes)
     for path in new if not problems else []:
         try:
             if new[path] != job.shown[path]:
@@ -3296,6 +3396,7 @@ def compose_patches(
                    and (text := read(p)) is not None} | code  # fmt: skip  # the repo's code, as it would ship
         if site.function:  # mechanical: callers hand the migrated function a Token Factory client
             code |= rewrite_callers(modules, site.file, local.function, client_at[1])
+        code = {p: drop_orphaned_imports(read(p) or "", text, sdks) for p, text in code.items()}
         context += [p for p in code if p not in context]  # a caller reached through an alias is shown too
         base = {p: read(p) for p in code}
         for p, text in code.items():
@@ -3439,6 +3540,7 @@ def compose_patches(
                 {"role": "user", "content": repair},
             ]
             ledger += [_Copy(p, len(messages) - 1, base[p]) for p in again]
+        warnings.extend(f"{site.id}: {n}" for n in dict.fromkeys(job.notes))
         if failure is not None:
             outer = {"kind": ended, "last": last.kind} if ended else {}
             downgrade(v, failure, last.model_copy(update={**outer, "tries": replies}))
@@ -3476,6 +3578,8 @@ def compose_patches(
                 trial[path] = m
             else:
                 merged, taken = trial, [*taken, sid]
+        for path in {p for sid in taken for p in code_of[sid]} & set(merged):  # Offramp's code, merged
+            merged[path] = drop_orphaned_imports(base_files[path], merged[path], sdks)
         for path in merged:  # sites of different SDKs faked in one test: one fake per case (Offramp's twins)
             twins = [(site_twins[sid][path], reach[sid]) for sid in taken if path in site_twins[sid]]
             if len(twins) > 1 and (one := unify_twins(merged[path], twins)) != merged[path]:
@@ -3491,6 +3595,9 @@ def compose_patches(
             for path, text in code_of[sid].items():
                 was = reference.get(path)
                 reference[path] = None if was is None else merge_onto(base_code[path], was, text)
+        for path in {p for sid in sids for p in code_of[sid]}:  # as merge() leaves it: no orphaned SDK import
+            if reference.get(path) is not None:
+                reference[path] = drop_orphaned_imports(base_code[path], reference[path], sdks)
         out: dict[str, list[str]] = {}
         for path, why in backstop(repo, reference).items():
             for sid in [s for s in sids if path in code_of[s] or path in versions[s]] or sids:
@@ -3576,8 +3683,9 @@ def compose_patches(
                     why = f"{ALREADY} applied, and leaving one out does not drop it; last failure: {checked}"
                     return [], why
                 sent.append((base, hidden, edits))
-                new = dict(base)
-                problems = [p.text for p in _apply(fresh, new, read_only, hidden)]
+                new, notes = dict(base), []
+                problems = [p.text for p in _apply(fresh, new, read_only, hidden, notes)]
+                warnings.extend(f"combined repair: {n}" for n in notes)
                 gone = {p: _test_names(shown[p]) - _test_names(new[p]) for p in new if is_test_path(p)}
                 problems += [f"patch removes tests from {p}: {sorted(g)}" for p, g in gone.items() if g]
                 for p in sorted(editable) if not problems else []:

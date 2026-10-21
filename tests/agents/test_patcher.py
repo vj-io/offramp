@@ -51,6 +51,7 @@ from offramp.agents.patcher import (
     convert_fakes,
     copy_repo,
     declare_openai,
+    drop_orphaned_imports,
     edits_text,
     keep_comment,
     line_length,
@@ -4592,3 +4593,303 @@ def test_a_dependency_edit_the_sandbox_did_not_install_is_named_in_the_pr(tmp_pa
 
     assert len(edits) == 1
     assert [n for n in notes if " gains `openai>=1.50`; the checks " in n] == ([note] if note else [])
+
+
+# ------------------------------------------------------- Task 26: orphaned SDK imports, edits by name
+
+SDKS = {"anthropic", "openai"}
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "expected"),
+    [
+        ("from anthropic import Anthropic, APIError\n\nA = Anthropic()\nE = APIError\n",
+         "from anthropic import Anthropic, APIError\n\nA = token_factory_client()\nE = APIError\n",
+         "from anthropic import APIError\n\nA = token_factory_client()\nE = APIError\n"),
+        ("from anthropic import APIError, Anthropic\n\nA = Anthropic()\nE = APIError\n",
+         "from anthropic import APIError, Anthropic\n\nA = token_factory_client()\nE = APIError\n",
+         "from anthropic import APIError\n\nA = token_factory_client()\nE = APIError\n"),
+        ("import json\n\nimport anthropic\n\nfrom app import go\n\nA = anthropic.Anthropic()\n",
+         "import json\n\nimport anthropic\n\nfrom app import go\n\nA = token_factory_client()\n",
+         "import json\n\nfrom app import go\n\nA = token_factory_client()\n"),
+        ("import anthropic\n\nA = anthropic.Anthropic()\nE = anthropic.APIError\n",
+         "import anthropic\n\nA = token_factory_client()\nE = anthropic.APIError\n",
+         "import anthropic\n\nA = token_factory_client()\nE = anthropic.APIError\n"),
+        ("from anthropic import Anthropic as Claude\nimport os\n\nA = Claude()\n",
+         "from anthropic import Anthropic as Claude\nimport os\n\nA = token_factory_client()\n",
+         "import os\n\nA = token_factory_client()\n"),
+        ("from anthropic import Anthropic, AsyncAnthropic\n\nA = Anthropic()\n",
+         "from anthropic import Anthropic, AsyncAnthropic\n\nA = token_factory_client()\n",
+         "from anthropic import AsyncAnthropic\n\nA = token_factory_client()\n"),
+        ("from anthropic import (\n    Anthropic,\n    APIError,\n)\n\nA = Anthropic()\nE = APIError\n",
+         "from anthropic import (\n    Anthropic,\n    APIError,\n)\n\n"
+         "A = token_factory_client()\nE = APIError\n",
+         "from anthropic import (\n    APIError,\n)\n\nA = token_factory_client()\nE = APIError\n"),
+        ("from anthropic import A, B, C, D\n\nx = A, B, C, D\n",
+         "from anthropic import A, B, C, D\n\nx = A, D\n",
+         "from anthropic import A, D\n\nx = A, D\n"),
+        ("from anthropic import A, B, C\n\nx = A, B, C\n",
+         "from anthropic import A, B, C\n\nx = A\n",
+         "from anthropic import A\n\nx = A\n"),
+        ("import json\nfrom openai import OpenAI\n\nA = OpenAI(json.dumps)\n",
+         "import json\nfrom openai import OpenAI\n\nA = token_factory_client()\n",
+         "import json\n\nA = token_factory_client()\n"),
+        ("from anthropic import Anthropic\n\n__all__ = ['Anthropic']\nA = Anthropic()\n",
+         "from anthropic import Anthropic\n\n__all__ = ['Anthropic']\nA = token_factory_client()\n",
+         "from anthropic import Anthropic\n\n__all__ = ['Anthropic']\nA = token_factory_client()\n"),
+        ("from litellm import completion\n\nA = completion()\n",
+         "from litellm import completion\n\nA = token_factory_client()\n",
+         "from litellm import completion\n\nA = token_factory_client()\n"),
+    ],
+    ids=["first-of-two", "last-of-two", "module-import", "module-still-read", "alias", "unused-before-stays",
+         "parenthesized", "middle-run", "trailing-run", "non-sdk-orphan-stays", "all-entry",
+         "not-replaced-sdk"],
+)  # fmt: skip
+def test_only_the_sdk_names_offramps_rewrite_orphaned_are_dropped(before, after, expected):
+    """Live run 7: three Anthropic sites each rewired one `Anthropic()` in helphub/cli.py; merged, nothing
+    used the import and the repo's ruff failed (F401), dropping cs_06. Only a replaced SDK's name that was
+    read before the rewrite and is read nowhere after it goes; every other line stays as it was."""
+    out = drop_orphaned_imports(before, after, SDKS)
+
+    assert out == expected
+    ast.parse(out)
+
+
+ANTHROPIC_SHOUT = '''"""Turn a line of text into a headline."""
+
+SHOUT_SYSTEM_PROMPT = "You rewrite text as a short headline."
+
+
+def shout(client, text: str):
+    response = client.messages.create(
+        model="claude-haiku-4-5",
+        max_tokens=32,
+        system=SHOUT_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": f"Headline: {text}"}],
+    )
+    return "".join(b.text for b in response.content if b.type == "text")
+'''
+CLI = "tinyapp/cli.py"
+TWO_SITES_CLI = '''"""Greet and shout from the command line."""
+
+import sys
+
+from anthropic import Anthropic
+from openai import OpenAI
+
+from tinyapp.greet import greet
+from tinyapp.motto import motto
+from tinyapp.shout import shout
+
+
+def main(name=sys.argv[-1]):
+    greeting = greet(Anthropic(), name)
+    motto_line = motto(OpenAI())
+    headline = shout(Anthropic(), name)
+    return greeting, motto_line, headline
+'''
+
+
+def test_two_sites_rewiring_a_callers_last_sdk_client_drop_its_import_together_only():
+    """The demo's shape (live run 7, helphub/cli.py): two Anthropic sites handed `Anthropic()` by one caller.
+    Alone, each rewires one call and the import stays in use; together, nothing reads it, so the merged tree
+    drops it as Offramp's own code (the backstop compares against the same), every other import untouched."""
+    repo = anthropic_tiny("orphan-import", {SHOUT: ANTHROPIC_SHOUT, CLI: TWO_SITES_CLI})
+    sites = [s.model_copy(update={"sdk": "anthropic"}) if s.id != "cs_02" else s for s in tiny_sites()]
+    boxes = []
+
+    def box(r):
+        boxes.append(FakeSandbox(r, precheck=True))
+        return boxes[-1]
+
+    result = compose_patches(repo, sites, tiny_verdicts(), tiny_adapters(), patcher_llm(),
+                             work_dir("orphan-import-run"), config=CONFIG, build_request=BUILD,
+                             sandbox_factory=box)  # fmt: skip
+
+    greet_alone, shout_alone = (boxes[0].checks[i][CLI] for i in (2, 3))
+    assert "greet(token_factory_client(), name)" in greet_alone and "shout(Anthropic(), name)" in greet_alone
+    assert "greet(Anthropic(), name)" in shout_alone and "shout(token_factory_client(), name)" in shout_alone
+    assert (
+        "from anthropic import Anthropic\n" in greet_alone
+        and "from anthropic import Anthropic\n" in shout_alone
+    )
+    assert result.combined == ["cs_01", "cs_03"], [v.reason for v in result.verdicts]
+    together = result.files[CLI]
+    assert together == (
+        '"""Greet and shout from the command line."""\n\nimport sys\n\nfrom openai import OpenAI\n\n'
+        "from tinyapp.greet import greet\nfrom tinyapp.motto import motto\nfrom tinyapp.shout import shout\n"
+        "from tinyapp.offramp_client import token_factory_client\n\n\ndef main(name=sys.argv[-1]):\n"
+        "    greeting = greet(token_factory_client(), name)\n    motto_line = motto(OpenAI())\n"
+        "    headline = shout(token_factory_client(), name)\n    return greeting, motto_line, headline\n"
+    )
+
+
+def test_a_callers_only_sdk_client_rewired_alone_drops_its_import_in_the_check_alone():
+    """The same rule alone: what is checked, and shown to the model, is the tree that ships."""
+    repo = anthropic_tiny("orphan-alone", {"tinyapp/cli.py": ALIAS_CLI})
+    boxes = []
+
+    def box(r):
+        boxes.append(FakeSandbox(r, precheck=True))
+        return boxes[-1]
+
+    compose_anthropic(repo, "orphan-alone-run", box=box)
+
+    assert boxes[0].checks[2]["tinyapp/cli.py"] == (
+        "from tinyapp.greet import greet as say\n"
+        "from tinyapp.offramp_client import token_factory_client\n\n\n"
+        'def main():\n    return say(token_factory_client(), "Ana")\n'
+    )
+
+
+RUN7 = json.loads((FIXTURES / "patcher" / "run7_cs01_repairs.json").read_text())
+TRIAGE_TESTS = "tests/test_triage.py"
+ROUTED = "def test_every_fixture_ticket_is_sent_and_routed(ticket):"
+
+
+def _top_defs(source: str) -> dict[str, str]:
+    kinds = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+    return {n.name: ast.dump(n) for n in ast.parse(source).body if isinstance(n, kinds)}
+
+
+def test_run7_repair_2_whose_search_never_existed_lands_by_the_tests_name():
+    """Live run 7, cs_01, repair 2: the SEARCH quoted a version of the routing test that was never in the
+    file; its REPLACE is that whole test, rewritten. It replaces the test of that name, from its `def` line
+    (the REPLACE carries no decorator, as its SEARCH did not: the file's parametrize stays)."""
+    files = {TRIAGE_TESTS: RUN7["test_triage"]}
+    (edit,) = parse_edits(RUN7["repair_2"]).edits
+    assert edit.search not in RUN7["test_triage"]
+
+    assert _apply([edit], files) == []
+
+    head = RUN7["test_triage"].split(ROUTED)[0]
+    assert head.endswith('@pytest.mark.parametrize("ticket", TICKETS, ids=case_ids(TICKETS))\n')
+    assert files[TRIAGE_TESTS] == head + edit.replace + "\n"
+
+
+def test_run7_repair_3_whose_search_quoted_a_stale_top_lands_by_the_tests_names():
+    """Live run 7, cs_01, repair 3: the SEARCH quoted the file's first text (the pre-migration contract test
+    included); the REPLACE holds the same imports and TICKETS line and every test whole. The imports and
+    TICKETS stay as they are, and each test is the REPLACE's, by name."""
+    files = {TRIAGE_TESTS: RUN7["test_triage"]}
+    (edit,) = parse_edits(RUN7["repair_3"]).edits
+    assert edit.search not in RUN7["test_triage"]
+
+    assert _apply([edit], files) == []
+
+    now = files[TRIAGE_TESTS]
+    top = RUN7["test_triage"].split("\n\n\n@pytest.mark.parametrize(\n")[0]
+    assert now.startswith(top + "\n\n\n@pytest.mark.parametrize(\n")  # imports, TICKETS: as they were
+    assert _top_defs(now) == _top_defs(edit.replace)
+    assert '"gpt-4o-mini"' not in now and '["messages"][-1]' in now
+    assert _top_defs(now)["test_request_contract"] == _top_defs(RUN7["test_triage"])["test_request_contract"]
+
+
+BY_NAME = (
+    "import pytest\n\nX = 1\n\n\ndef test_a():\n    assert X\n\n\n"
+    "class TestB:\n    def test_b(self):\n        assert X\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("path", "source", "replace"),
+    [
+        ("tests/test_x.py", BY_NAME, "def test_c():\n    assert X"),
+        ("tests/test_x.py", f"{BY_NAME}\n\ndef test_a():\n    assert not X\n",
+         "def test_a():\n    assert X == 1"),
+        ("tests/test_x.py", BY_NAME, "X = 2\n\n\ndef test_a():\n    assert X == 2"),
+        ("tests/test_x.py", BY_NAME, "import os\n\n\ndef test_a():\n    assert os"),
+        ("tests/test_x.py", BY_NAME, "def test_b(self):\n    assert X == 1"),
+        ("tests/test_x.py", BY_NAME, "    def test_b(self):\n        assert X == 1"),
+        ("tests/test_x.py", BY_NAME, "X = 1"),
+        ("tests/test_x.py", BY_NAME, "def test_a():\n    assert X\n\n\ndef test_a():\n    assert X == 1"),
+        ("tinyapp/mod.py", BY_NAME, "def test_a():\n    assert X == 1"),
+    ],
+    ids=["name-not-in-file", "name-twice", "statement-differs", "statement-added", "a-method-alone",
+         "indented-method", "no-definition", "name-twice-in-replace", "not-a-test-file"],
+)  # fmt: skip
+def test_a_missed_search_falls_back_to_a_name_only_when_every_statement_anchors(path, source, replace):
+    files = {path: source}
+
+    problems = _apply([Edit(path=path, search="text that is nowhere", replace=replace)], files)
+
+    assert [p.kind for p in problems] == ["search_miss"] and files == {path: source}
+
+
+def test_a_search_an_earlier_block_of_the_reply_changed_is_still_a_merge_for_the_model():
+    files = {"tests/test_x.py": BY_NAME}
+    first = Edit(
+        path="tests/test_x.py", search="    assert X\n\n\nclass", replace="    assert X > 0\n\n\nclass"
+    )
+    second = Edit(
+        path="tests/test_x.py",
+        search="def test_a():\n    assert X\n",
+        replace="def test_a():\n    assert X == 1",
+    )
+
+    (problem,) = _apply([first, second], files)
+
+    assert problem.kind == "search_miss" and "an earlier block already changed these lines" in problem.text
+
+
+def test_a_missed_search_replaces_a_whole_class_by_its_name():
+    files = {"tests/test_x.py": BY_NAME}
+    replace = "X = 1\n\n\nclass TestB:\n    def test_b(self):\n        assert X == 1"
+
+    assert _apply([Edit(path="tests/test_x.py", search="nowhere", replace=replace)], files) == []
+
+    assert files["tests/test_x.py"] == BY_NAME.replace("        assert X\n", "        assert X == 1\n")
+
+
+def test_an_edit_applied_by_name_ships_and_the_run_says_how_it_was_applied():
+    fixed = 'def test_greet_strips_the_reply():\n    assert greet(FakeClient("  Hi Ana! "), "Ana")'
+    fixed += ' == "Hi Ana!"  # x'
+    miss = Edit(
+        path=TESTS, search="def test_greet_strips_the_reply():\n    assert greet(Fake)", replace=fixed
+    )
+    llm = patcher_llm(PatchEdits(edits=[miss]), migrate(SHOUT))
+
+    result = run(llm)
+
+    assert verdict(result, "cs_01").decision == "MIGRATE" and f"{fixed}\n" in result.files[TESTS]
+    assert (
+        f"cs_01: an edit to `{TESTS}` was applied by function name (`test_greet_strips_the_reply`) after its "
+        "SEARCH matched nowhere"
+    ) in result.warnings
+
+
+def test_the_combined_repair_applies_a_missed_search_by_name_too_and_says_so():
+    motto = 'def test_motto_returns_the_reply():\n    assert motto(FakeClient("Ship it"))'
+    motto += ' == "Ship it"  # together'
+    fix = PatchEdits(
+        edits=[Edit(path=TESTS, search="def test_motto_returns_the_reply():\n    pass", replace=motto)]
+    )
+    llm = patcher_llm(migrate(GREET), migrate(SHOUT), fix)
+
+    result = run(llm, results=[True, True, True, True, False, True],
+                 output="FAILED tests/test_tinyapp.py::test_motto_returns_the_reply")  # fmt: skip
+
+    assert result.combined_repair == [TESTS] and f"{motto}\n" in result.files[TESTS]
+    assert (
+        f"combined repair: an edit to `{TESTS}` was applied by function name "
+        "(`test_motto_returns_the_reply`) after its SEARCH matched nowhere"
+    ) in result.warnings
+
+
+def test_a_class_replaced_by_name_that_drops_a_test_is_still_refused():
+    repo = work_dir("by-name-drop") / "src"
+    shutil.copytree(TINY, repo, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+    more = "tests/test_greet_more.py"
+    (repo / more).write_text(
+        "from tinyapp.greet import greet\n\n\nclass TestGreet:\n    def test_a(self):\n"
+        "        assert callable(greet)\n\n    def test_b(self):\n        assert greet\n"
+    )
+    kept = "class TestGreet:\n    def test_a(self):\n        assert callable(greet)"
+    drop = Edit(path=more, search="class TestGreet:\n    pass", replace=kept)
+    llm = patcher_llm(PatchEdits(edits=[drop]), PatchEdits(edits=[drop]), migrate(SHOUT))
+
+    result = run(llm, repo=repo, name="by-name-drop-run")
+
+    greet_verdict = verdict(result, "cs_01")
+    assert greet_verdict.decision == "MANUAL_REVIEW"
+    assert f"patch removes tests from {more}: ['test_b']" in greet_verdict.reason
