@@ -344,7 +344,8 @@ export interface RunSnapshot {
   not_evaluated?: NotEvaluated[]; // likewise, from the run's log
 }
 
-// GET /api/runs/{id}/report. `diffs`: each migrated site's shipped unified diff, in replays exported with it.
+// GET /api/runs/{id}/report. `diffs`: each migrated site's shipped unified diff, in replays exported with it;
+// under "merged", what only merging the sites changed (an import their rewrites left unused together).
 export interface RunReport {
   snapshot: RunSnapshot;
   pr_body_markdown: string | null;
