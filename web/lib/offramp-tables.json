@@ -21,6 +21,7 @@
  },
  "ended": {
   "budget_stop": "The run's model budget ran out {tries} at this site's patch",
+  "provider_error": "Token Factory refused or did not answer a model request {tries} at this site's patch",
   "no_edit_block": "The model's last reply had no complete edit, so nothing was applied",
   "no_change": "The model's last repair repeated an edit it had already tried"
  },

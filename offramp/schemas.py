@@ -226,6 +226,7 @@ class TierResult(BaseModel):
 
 PatchFailureKind = Literal[
     "budget_stop",  # the run's model budget stopped the site's repairs
+    "provider_error",  # Token Factory refused a model request (too large, a 4xx) or did not answer it
     "no_edit_block",  # the model's last reply held no complete edit block, so nothing was applied
     "no_change",  # a repair repeated an edit already tried
     "search_miss",  # patch rules: a SEARCH that does not match exactly one place
@@ -248,7 +249,8 @@ class PatchFailure(BaseModel):
     sentence is built from this, never from the reason's text (which holds the target repo's check output)."""
 
     kind: PatchFailureKind  # the outermost, decisive failure
-    last: PatchFailureKind | None = None  # budget_stop / no_edit_block / no_change: the last checked try's
+    last: PatchFailureKind | None = None  # budget_stop / provider_error / no_edit_block / no_change: the last
+    # checked try's
     tries: int = 0  # the model's replies for this site
     model_edit: bool = False  # the last checked try was the model's edits (else Offramp's changes alone)
     files: list[str] = Field(default_factory=list)  # the files that failure names (Offramp's own record)

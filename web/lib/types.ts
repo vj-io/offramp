@@ -155,6 +155,7 @@ export interface TierResult {
 // Why the patch stage sent a MIGRATE site to manual review, recorded where it happened (Task 18).
 export type PatchFailureKind =
   | "budget_stop"
+  | "provider_error"
   | "no_edit_block"
   | "no_change"
   | "search_miss"
@@ -172,7 +173,7 @@ export type PatchFailureKind =
 
 export interface PatchFailure {
   kind: PatchFailureKind; // the outermost, decisive failure
-  last?: PatchFailureKind | null; // budget_stop / no_edit_block / no_change: the last checked try's
+  last?: PatchFailureKind | null; // when the repairs ended early: the last checked try's
   tries?: number; // the model's replies for this site
   model_edit?: boolean; // the last checked try was the model's edits (else Offramp's changes alone)
   files?: string[];
