@@ -57,7 +57,7 @@ from offramp.sandbox import (
     CheckResult,
     Sandbox,
     copy_repo,
-    tracked_files,
+    git_files,
 )
 from offramp.schemas import (
     Adapter,
@@ -1309,34 +1309,146 @@ def add_fixtures(source: str) -> str:
     return "".join(lines)
 
 
-def rewrite_callers(source: str, function: str, client: str) -> str:
-    """In a caller module: an `OpenAI()` / `Anthropic()` built right in a call of the migrated function
-    becomes `token_factory_client()` (an `AsyncOpenAI()` / `AsyncAnthropic()`:
-    `token_factory_async_client()`), imported from `client`. Calls of other functions keep their client."""
-    tree = ast.parse(source)
-    lines = source.splitlines(keepends=True)
-    spans = []
-    for call in ast.walk(tree):
-        if (
-            not isinstance(call, ast.Call)
-            or getattr(call.func, "id", getattr(call.func, "attr", None)) != function
-        ):
-            continue
-        for arg in [*call.args, *(k.value for k in call.keywords)]:
-            cls = _client_class(arg, tree, tree)
-            if cls in CLIENT_CLASSES and not arg.args and not arg.keywords:
-                spans.append(
-                    (
-                        _offset(lines, arg.lineno, arg.col_offset),
-                        _offset(lines, arg.end_lineno, arg.end_col_offset),
-                        CLIENT_CLASSES[cls],
+def _dotted(path: str) -> list[str]:
+    """Every dotted name a module file may be imported as: `a.b.c`, `b.c` and `c` for a/b/c.py (`a.b`, `b`
+    for a/b/__init__.py). Which folder is an import root is not known here, so every suffix counts; a module
+    elsewhere that shares one only errs toward a manual review."""
+    parts = Path(path).with_suffix("").parts
+    parts = parts[:-1] if parts[-1:] == ("__init__",) else parts
+    return [".".join(parts[i:]) for i in range(len(parts))]
+
+
+def _imported(node: ast.ImportFrom, path: str) -> str:
+    """The module a `from ... import` in the file at `path` names; a relative one resolved against the file's
+    own folder, as a dotted path from the repository root."""
+    if not node.level:
+        return node.module or ""
+    package = Path(path).parent.parts
+    return ".".join([*package[: max(len(package) - node.level + 1, 0)], *filter(None, [node.module])])
+
+
+def _parsed(source: str) -> ast.Module | None:
+    try:
+        return ast.parse(source)
+    except SyntaxError:
+        return None
+
+
+def _targets(sources: dict[str, str], site_file: str, function: str) -> set[str]:
+    """Every dotted name the site's module-level `function` is importable as: `<its module>.<function>`,
+    and `<module>.<name>` for each module that imports it as `name` (a re-export, such as a package
+    `__init__`'s `from .summarize import summarize`, or a star import), to a fixed point."""
+    targets = {f"{d}.{function}" for d in _dotted(site_file)}
+    trees = [(path, _parsed(text)) for path, text in sources.items()]
+    imports = [
+        (path, n) for path, tree in trees if tree for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+    ]
+    size = 0
+    while size != len(targets):
+        size = len(targets)
+        for path, node in imports:
+            base = _imported(node, path)
+            for a in node.names:
+                if a.name == "*":
+                    names = [t.rpartition(".")[2] for t in targets if t.rpartition(".")[0] == base]
+                else:
+                    names = [a.asname or a.name] if f"{base}.{a.name}" in targets else []
+                targets |= {f"{d}.{name}" for d in _dotted(path) for name in names}
+    return targets
+
+
+def _references(path: str, tree: ast.Module, targets: set[str], defined: str | None) -> list[ast.expr]:
+    """The expressions in a module that refer to the function `targets` names, resolved through the module's
+    imports, never by name alone: a name a `from ... import` (or a star import) binds to it, an attribute
+    chain through an imported module (`s.summarize` after `import app.summarize as s`), and its own name in
+    the module that defines it (`defined`)."""
+    names, modules = {defined} - {None}, {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                top = a.name.partition(".")[0]
+                modules[a.asname or top] = a.name if a.asname else top
+        elif isinstance(node, ast.ImportFrom):
+            base = _imported(node, path)
+            for a in node.names:
+                if a.name == "*":
+                    names |= {t.rpartition(".")[2] for t in targets if t.rpartition(".")[0] == base}
+                elif f"{base}.{a.name}" in targets:
+                    names.add(a.asname or a.name)
+                else:  # perhaps a module: `from app import summarize as s`, then `s.summarize`
+                    modules[a.asname or a.name] = f"{base}.{a.name}"
+
+    def chain(n: ast.expr) -> str | None:  # `app.summarize.summarize` for an attribute chain on a module
+        attrs = []
+        while isinstance(n, ast.Attribute):
+            attrs.append(n.attr)
+            n = n.value
+        return (
+            ".".join([modules[n.id], *reversed(attrs)])
+            if isinstance(n, ast.Name) and n.id in modules
+            else None
+        )
+
+    def refers(n: ast.AST) -> bool:
+        if isinstance(n, ast.Name):
+            return isinstance(n.ctx, ast.Load) and n.id in names
+        return isinstance(n, ast.Attribute) and chain(n) in targets
+
+    return [n for n in ast.walk(tree) if refers(n)]
+
+
+def _function_references(
+    sources: dict[str, str], site_file: str, function: str
+) -> dict[str, tuple[ast.Module | None, list[ast.expr]]]:
+    """path -> (its module, None when it does not parse; the expressions in it that refer to the site's
+    function). A module-level function's are resolved through imports (`_targets`, `_references`). A
+    method's or a nested function's, which only an object or the enclosing code reaches, are matched by
+    name (`<name>`, `x.<name>`), which errs toward a manual review."""
+    last = function.rpartition(".")[2]
+    targets = set() if "." in function else _targets(sources, site_file, function)
+
+    def by_name(n: ast.AST) -> bool:
+        if isinstance(n, ast.Name):
+            return isinstance(n.ctx, ast.Load) and n.id == last
+        return isinstance(n, ast.Attribute) and n.attr == last
+
+    out = {}
+    for path, text in sources.items():
+        tree = _parsed(text)
+        if tree is None:
+            out[path] = (None, [])
+        elif "." in function:
+            out[path] = (tree, [n for n in ast.walk(tree) if by_name(n)])
+        else:
+            out[path] = (tree, _references(path, tree, targets, function if path == site_file else None))
+    return out
+
+
+def rewrite_callers(sources: dict[str, str], site_file: str, function: str, client: str) -> dict[str, str]:
+    """In each module of `sources` (path -> source: the repo's non-test code, the site's own module
+    included): an `OpenAI()` / `Anthropic()` built right in a call of the migrated function, the call found
+    through the module's imports (aliases too, `_function_references`), becomes `token_factory_client()`
+    (an `AsyncOpenAI()` / `AsyncAnthropic()`: `token_factory_async_client()`), imported from `client`.
+    Returns the modules it changed."""
+    out = {}
+    for path, (tree, refs) in _function_references(sources, site_file, function).items():
+        heads, source, spans = {id(r) for r in refs}, sources[path], []
+        lines = source.splitlines(keepends=True)
+        for call in ast.walk(tree) if tree else ():
+            if not isinstance(call, ast.Call) or id(call.func) not in heads:
+                continue
+            for arg in [*call.args, *(k.value for k in call.keywords)]:
+                cls = _client_class(arg, tree, tree)
+                if cls in CLIENT_CLASSES and not arg.args and not arg.keywords:
+                    start = _offset(lines, arg.lineno, arg.col_offset)
+                    spans.append(
+                        (start, _offset(lines, arg.end_lineno, arg.end_col_offset), CLIENT_CLASSES[cls])
                     )
-                )
-    if not spans:
-        return source
-    for start, end, factory in sorted(spans, reverse=True):
-        source = source[:start] + f"{factory}()" + source[end:]
-    return add_imports(source, client)
+        for start, end, factory in sorted(spans, reverse=True):
+            source = source[:start] + f"{factory}()" + source[end:]
+        if spans:
+            out[path] = add_imports(source, client)
+    return out
 
 
 def mirror_fakes(
@@ -1881,29 +1993,30 @@ def _no_default(fn: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:
     return default is None or (isinstance(default, ast.Constant) and default.value is None)
 
 
-def _handed_clients(scope: ast.AST, site: CallSite, receiver: ast.expr, callers: dict[str, str]) -> list[str]:
-    """When the call's client is a parameter the function never rebinds: each place in `callers` (path ->
-    source as it ships) that calls the function without handing it a Token Factory client, as `path:line`
-    and what it hands. Only `token_factory_client()` / `token_factory_async_client(...)` written in the call
-    is known (`rewrite_callers` makes one of an inline `OpenAI()` / `Anthropic()`). A variable, an attribute,
-    a helper's result, a pass-through parameter, `*args` / `**kwargs`, an omitted argument, or a reference to
-    the function that does not call it are not."""
+def _handed_clients(
+    scope: ast.AST, site: CallSite, receiver: ast.expr, callers: dict[str, str]
+) -> list[str] | None:
+    """None unless the call's client is a parameter the function never rebinds. Then, each place in
+    `callers` (path -> source as it ships: the repo's non-test code) that does not hand the function a
+    Token Factory client, as `path:line` and what it does. Every reference to the function is found through
+    each module's imports, aliases and re-exports included (`_function_references`), and must be a call
+    handing `token_factory_client()` / `token_factory_async_client(...)` written in it (`rewrite_callers`
+    makes one of an inline `OpenAI()` / `Anthropic()`). Not known: a variable, an attribute, a helper's
+    result, a parameter passed on, `*args` / `**kwargs`, an omitted argument; the function used as a value
+    (passed, stored, wrapped); a lookup by a literal name (`getattr(m, "summarize")`, `importlib`); a module
+    `__getattr__` where the function lives. A lookup by a computed name cannot be seen (the PR says so)."""
     if not isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef) or not isinstance(receiver, ast.Name):
-        return []
+        return None
     a, name = scope.args, receiver.id
     if name not in {p.arg for p in [*a.posonlyargs, *a.args, *a.kwonlyargs]} or any(
         isinstance(n, ast.Name) and n.id == name and not isinstance(n.ctx, ast.Load) for n in ast.walk(scope)
     ):
-        return []
+        return None
     positional = [p.arg for p in [*a.posonlyargs, *a.args]]
     method = "." in (site.function or "") and "staticmethod" not in map(ast.unparse, scope.decorator_list)
-
-    # ponytail: matched by name, as `rewrite_callers` does: an unrelated `x.summarize(...)` is refused too (a
-    # needless manual review, never a pass); resolve imports if that shows up on real repos
-    def names_it(n: ast.AST) -> bool:  # `summarize` or `<anything>.summarize`
-        return (isinstance(n, ast.Name) and n.id == scope.name) or (
-            isinstance(n, ast.Attribute) and n.attr == scope.name
-        )
+    function = site.function or scope.name
+    targets = set() if "." in function else _targets(callers, site.file, function)
+    literal = {scope.name, *_dotted(site.file)}  # names a lookup by string would use
 
     def handed(call: ast.Call) -> ast.expr | str:  # the argument bound to `name`, or how it is not known
         if name in (kw := {k.arg: k.value for k in call.keywords if k.arg}):
@@ -1916,25 +2029,44 @@ def _handed_clients(scope: ast.AST, site: CallSite, receiver: ast.expr, callers:
             return call.args[at]
         return "hands it on through `**`" if any(k.arg is None for k in call.keywords) else f"omits `{name}`"
 
-    out = []
-    for path, source in sorted(callers.items()):
-        try:
-            tree = ast.parse(source)
-        except SyntaxError:
-            out.append(f"`{path}` does not parse")
+    found: list[tuple[str, int, str]] = []  # (path, line, what), sorted below
+    for path, (tree, refs) in _function_references(callers, site.file, function).items():
+        if tree is None:
+            found.append((path, 0, "does not parse"))
             continue
-        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and names_it(n.func)]
-        heads = {id(c.func) for c in calls}
-        for n in ast.walk(tree):  # handed to other code, which calls it with a client of its own
-            if names_it(n) and isinstance(n.ctx, ast.Load) and id(n) not in heads:
-                out.append(f"`{path}:{n.lineno}` refers to `{scope.name}` without calling it")
-        for call in calls:
+        calls = {id(c.func): c for c in ast.walk(tree) if isinstance(c, ast.Call)}
+        for ref in refs:
+            if (call := calls.get(id(ref))) is None:  # passed, stored or wrapped: other code calls it
+                found.append((path, ref.lineno, f"uses `{ast.unparse(ref)}` without calling it"))
+                continue
             got = handed(call)
             if isinstance(got, ast.Call) and isinstance(got.func, ast.Name) and got.func.id in FACTORIES:
                 continue
             what = got if isinstance(got, str) else f"hands `{ast.unparse(got)}`"
-            out.append(f"`{path}:{call.lineno}` {what}")
-    return out
+            found.append((path, call.lineno, f"`{ast.unparse(ref)}(...)` {what}"))
+        for call in calls.values():  # getattr(m, "summarize"), importlib.import_module("app.summarize")
+            lookup = ast.unparse(call.func).rpartition(".")[2] in ("getattr", "import_module", "__import__")
+            names = [x.value for x in call.args if isinstance(x, ast.Constant) and x.value in literal]
+            if lookup and names:
+                found.append((path, call.lineno, f"looks up `{names[0]}` by name"))
+        exports = path == site.file or any(t.rpartition(".")[0] in _dotted(path) for t in targets)
+        for node in tree.body if exports else ():
+            if isinstance(node, ast.FunctionDef) and node.name == "__getattr__":
+                what = f"defines a module `__getattr__`, which may hand out `{scope.name}` under any name"
+                found.append((path, node.lineno, what))
+    return [f"`{path}{f':{line}' if line else ''}` {what}" for path, line, what in sorted(found)]
+
+
+def _client_parameter(source: str, site: CallSite) -> bool:
+    """Whether the site's migrated call is made on a parameter of its function: its callers hand it the
+    client (`_handed_clients`)."""
+    tree = ast.parse(source)
+    fn = _function(tree, site) if site.function else None
+    calls = _calls(fn) if fn else []
+    if len(calls) != 1:
+        return False
+    receiver = calls[0].func.value.value.value  # <receiver>.chat.completions.create
+    return _handed_clients(fn, site, receiver, {}) is not None
 
 
 def _token_factory_client(receiver: ast.expr, scope: ast.AST) -> bool:
@@ -2637,10 +2769,11 @@ def declare_openai(repo: Path, sdks: set[str]) -> tuple[dict[str, str], list[str
     (`_requirements_with_openai`) or a pyproject declaration (`_pyproject_with_openai`). A file declaring
     openai anywhere already is left as it is (its own pin may conflict with the floor). Lockfiles (uv.lock,
     poetry.lock, compiled or hashed requirements) are never edited: a note says what to add and how to
-    regenerate them. Line endings are kept. Returns (path -> new text, notes for the PR, whether the repo
-    declares a replaced SDK directly)."""
+    regenerate them. Line endings are kept. Returns (path -> new text, notes for the PR, whether the file the
+    sandbox image installs declares a replaced SDK: pyproject.toml, else the root requirements.txt)."""
     sdks = sdks - {"openai"}  # a replaced openai SDK is declared already
-    edits, notes, declared = {}, [], False
+    edits, notes, declared, direct = {}, [], False, False
+    installed = repo / ("pyproject.toml" if (repo / "pyproject.toml").is_file() else "requirements.txt")
     named = ", ".join(f"`{s}`" for s in sorted(sdks))
     reqs = sorted(f for f in repo.rglob("requirements*.txt") if f.is_file() and not f.is_symlink()
                   and not set(NOT_COPIED) & set(f.relative_to(repo).parts[:-1]))  # fmt: skip
@@ -2652,7 +2785,7 @@ def declare_openai(repo: Path, sdks: set[str]) -> tuple[dict[str, str], list[str
         names = [_requirement_name(t) for *_, t in _logical_lines(text.splitlines(keepends=True))]
         if not sdks & set(names):
             continue
-        declared = True
+        declared, direct = True, direct or f == installed
         if "openai" in names:
             continue
         new, why = _requirements_with_openai(repo, f, text, sdks)
@@ -2669,6 +2802,7 @@ def declare_openai(repo: Path, sdks: set[str]) -> tuple[dict[str, str], list[str
             data, text, changed = {}, "", []
         names = {k: set(_names(v)) for k, v in _requirement_places(data).items()}
         declared |= any(sdks & n for n in names.values())
+        direct |= any(sdks & n for n in names.values())
         elsewhere = [".".join(k) for k, n in names.items() if "openai" in n]
         if changed and not elsewhere:
             edits["pyproject.toml"] = text
@@ -2690,7 +2824,7 @@ def declare_openai(repo: Path, sdks: set[str]) -> tuple[dict[str, str], list[str
         why = "since the migrated code imports it"
         notes.append(f"No requirements*.txt or pyproject.toml here declares {named}: add "
                      f"`{OPENAI_REQUIREMENT}` where this repo declares its dependencies, {why}")  # fmt: skip
-    return edits, notes, declared
+    return edits, notes, direct
 
 
 def client_module(asynchronous: bool = False, module: str = ROOT_CLIENT[1]) -> str:
@@ -2922,8 +3056,16 @@ def compose_patches(
 ) -> PatchResult:
     repo = Path(work_dir) / "repo"
     shutil.rmtree(repo, ignore_errors=True)
-    git_files = tracked_files(Path(repo_dir))  # a git checkout: only its tracked files reach the sandbox
-    warnings = copy_repo(repo_dir, repo, git_files)
+    listing = git_files(Path(repo_dir))  # a git checkout: only its tracked files reach the sandbox
+    tracked_list, filtered = listing or (None, [])
+    warnings = copy_repo(repo_dir, repo, tracked_list)
+    paths = ", ".join(f"`{p}`" for p in filtered[:10]) + (
+        f" and {len(filtered) - 10} more" * (len(filtered) > 10)
+    )
+    left_out = (  # paths only, never content
+        f"Offramp left {len(filtered)} tracked file(s) out of the sandbox, which git filters (a `filter` "
+        f"attribute, such as git-crypt's; a fresh clone holds them encrypted): {paths}"
+    )
     width = line_length(repo)
     originals: dict[str, str | None] = {}
 
@@ -2958,7 +3100,7 @@ def compose_patches(
     site_files: dict[str, list[str]] = {}
     box = sandbox_factory(repo)
     to_migrate = sorted((v for v in verdicts if v.decision == "MIGRATE"), key=lambda v: v.site_id)
-    box.files = git_files  # the copy holds those files only; a plain directory needs the sandbox's own opt-in
+    box.files = tracked_list  # the copy holds those files only; a plain directory needs the sandbox's opt-in
 
     def downgrade(v: Verdict, reason: str, failure: PatchFailure | None = None) -> None:
         update = {"decision": "MANUAL_REVIEW", "reason": reason, "patch_failure": failure}
@@ -2977,7 +3119,8 @@ def compose_patches(
     untouched = box.check()
     if not untouched.ok:
         return stop(
-            f"repo checks fail on the untouched repo ({untouched.mode}): {_summary(untouched.output)}",
+            f"repo checks fail on the untouched repo ({untouched.mode}): {_summary(untouched.output)}"
+            + (f"; {left_out}" if filtered else ""),
             PatchFailure(kind="repo_red"),
         )
 
@@ -3138,10 +3281,12 @@ def compose_patches(
             continue
         context = _context(repo, site, client_at[0])
         code = {site.file: add_imports(prepared, client_at[1])}  # what ships for it: Offramp's code only
-        for p in context:  # mechanical: callers hand the migrated function a Token Factory client
-            if p != site.file and not is_test_path(p) and site.function:
-                if (caller := rewrite_callers(read(p), site.function, client_at[1])) != read(p):
-                    code[p] = caller
+        own = code[site.file]  # before its own callers are rewired
+        modules = {p: text for p in sorted(tracked) if not is_test_path(p) and p != client_at[0]
+                   and (text := read(p)) is not None} | code  # fmt: skip  # the repo's code, as it would ship
+        if site.function:  # mechanical: callers hand the migrated function a Token Factory client
+            code |= rewrite_callers(modules, site.file, local.function, client_at[1])
+        context += [p for p in code if p not in context]  # a caller reached through an alias is shown too
         base = {p: read(p) for p in code}
         for p, text in code.items():
             (repo / p).write_text(text)
@@ -3153,7 +3298,7 @@ def compose_patches(
         carried_of[site.id] = {k: ast.dump(node) for k, node in carried.items()}
         literal = {k: _literal(node) for k, node in carried.items()}
         carried_values[site.id] = {k: x for k, x in literal.items() if x is not ...}
-        callers = {p: text for p in context if not is_test_path(p) and (text := code.get(p) or read(p))}
+        callers = modules | code  # every module that may call it, as it ships
         problems = conformance(
             code[site.file], local, params, constants, system_name, carried_of[site.id], callers
         )
@@ -3172,7 +3317,7 @@ def compose_patches(
             for p in code
             if p != site.file
         ]
-        if site.function and (note := _built_note(site, code[site.file], original, client_at[1])):
+        if site.function and (note := _built_note(site, own, original, client_at[1])):
             done.append(note)
         old = "OpenAI" if site.sdk == "openai" else "Anthropic"
         handles = {site.function or ""}.union(
@@ -3541,6 +3686,15 @@ def compose_patches(
             why = "so its Nemotron call runs when the Token Factory key is set"
             change_notes.append(f"`{site.function}` (`{site.file}`) {now}, {why}")
     change_notes += _key_reads(repo, keys)
+    handed = [
+        qual_of[sid] for sid in combined if _client_parameter(code_of[sid][by_id[sid].file], qual_of[sid])
+    ]
+    if handed:  # their callers were checked (`_handed_clients`): say how far that goes
+        names = ", ".join(f"`{s.function}`" for s in handed)
+        change_notes.append(f"{names} get{'s' * (len(handed) == 1)} the client from callers: callers were "
+                            "checked statically; dynamic lookups by computed name were not")  # fmt: skip
+    if filtered:
+        change_notes.append(left_out)
     return PatchResult(
         files=files,
         diffs=diffs,

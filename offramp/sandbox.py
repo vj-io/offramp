@@ -101,30 +101,50 @@ IGNORE = shutil.ignore_patterns(*NOT_COPIED, ".env", ".env.*")  # never copied, 
 OPENAI_REQUIREMENT = "openai>=1.50"
 
 
-def tracked_files(repo: Path) -> list[str] | None:
-    """The files git tracks under `repo`, relative to it (`git ls-files --recurse-submodules`): a checkout's,
-    an initialised submodule's included, or a monorepo subfolder's own. A file whose `filter` attribute is
-    anything but `lfs` is left out: git-crypt, transcrypt and other smudge filters leave tracked plaintext
-    secrets in an unlocked work tree. None outside any work tree, and for a folder git tracks nothing in (an
-    untracked or ignored folder inside another checkout). git gets a minimal environment (no GIT_* variable,
-    no key) and no fsmonitor hook."""
+def git_files(repo: Path) -> tuple[list[str], list[str]] | None:
+    """(the files git tracks under `repo`, relative to it; the tracked files left out as filtered). Listed by
+    `git ls-files --recurse-submodules`: a checkout's, an initialised submodule's included, or a monorepo
+    subfolder's own. A file whose `filter` attribute is anything but `lfs` is left out: git-crypt, transcrypt
+    and other smudge filters leave tracked plaintext secrets in an unlocked work tree. Each initialised
+    submodule is asked about its own files too, since its git dir's `info/attributes` counts only there. None
+    outside any work tree, and for a folder git tracks nothing in (an untracked or ignored folder inside
+    another checkout). git gets a minimal environment (no GIT_* variable, no key) and no fsmonitor hook."""
     env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG") if k in os.environ}
-    git = ["git", "-c", "core.fsmonitor=false", "-C", str(repo)]
     run = {"capture_output": True, "text": True, "errors": "surrogateescape", "timeout": 120, "env": env}
+
+    def git(where: Path, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-c", "core.fsmonitor=false", "-C", str(where), *args], input=stdin, **run
+        )
+
+    kept = ("unspecified", "unset", "lfs")  # an LFS pointer or object is no secret
     try:
-        out = subprocess.run([*git, "ls-files", "-z", "--recurse-submodules"], **run)
+        out = git(repo, "ls-files", "-z", "--recurse-submodules")
         files = sorted(p for p in out.stdout.split("\0") if p)
         if out.returncode != 0 or not files:
             return None
-        attrs = subprocess.run([*git, "check-attr", "-z", "--stdin", "filter"], input="\0".join(files), **run)
+        folders = {d for f in files for d in Path(f).parents[:-1]}  # every folder holding a file, "." aside
+        roots = {"", *(d.as_posix() for d in folders if (Path(repo) / d / ".git").exists())}  # submodules
+        filtered = set()
+        for root in sorted(roots):
+            prefix = f"{root}/" if root else ""
+            inside = [f.removeprefix(prefix) for f in files if f.startswith(prefix)]
+            attrs = git(Path(repo) / root, "check-attr", "-z", "--stdin", "filter", stdin="\0".join(inside))
+            if attrs.returncode != 0:
+                return None
+            fields = attrs.stdout.split("\0")  # path, "filter", value; repeated
+            filtered |= {
+                prefix + fields[i] for i in range(0, len(fields) - 2, 3) if fields[i + 2] not in kept
+            }
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if attrs.returncode != 0:
-        return None
-    fields = attrs.stdout.split("\0")  # path, "filter", value; repeated
-    kept = ("unspecified", "unset", "lfs")  # an LFS pointer or object is no secret
-    filtered = {fields[i] for i in range(0, len(fields) - 2, 3) if fields[i + 2] not in kept}
-    return [f for f in files if f not in filtered]
+    return [f for f in files if f not in filtered], sorted(filtered)
+
+
+def tracked_files(repo: Path) -> list[str] | None:
+    """The files `git_files` keeps; None where it lists none."""
+    listing = git_files(repo)
+    return None if listing is None else listing[0]
 
 
 def _shippable(repo: Path, path: str) -> bool:

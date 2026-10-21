@@ -1548,12 +1548,13 @@ COMMANDS = {
 
 
 def test_callers_pass_the_token_factory_client_to_the_migrated_function_only():
-    out = rewrite_callers(CALLER, "triage_ticket", "helphub.offramp_client")
+    site, client = "helphub/inbox/triage.py", "helphub.offramp_client"
+    out = rewrite_callers({"helphub/cli.py": CALLER}, site, "triage_ticket", client)["helphub/cli.py"]
 
     assert 'triage_ticket(token_factory_client(), c["subject"], c["body"])' in out
     assert 'search_kb(OpenAI(), c["q"])' in out  # other functions keep their client
     assert "from helphub.offramp_client import token_factory_client" in out
-    assert rewrite_callers(out, "triage_ticket", "helphub.offramp_client") == out
+    assert rewrite_callers({"helphub/cli.py": out}, site, "triage_ticket", client) == {}
 
 
 def test_tests_that_fake_the_openai_constructor_fake_the_token_factory_client_too():
@@ -3323,10 +3324,10 @@ def test_the_async_client_module_adds_one_factory_and_leaves_the_sync_module_as_
 
 def test_callers_and_fakes_of_an_async_client_get_the_async_factory():
     caller = (
-        "from anthropic import AsyncAnthropic\n\n\n"
+        "from anthropic import AsyncAnthropic\n\nfrom tinyapp.greet import greet\n\n\n"
         "def main():\n    return asyncio.run(greet(AsyncAnthropic(), 'Ana'))\n"
     )
-    out = rewrite_callers(caller, "greet", CLIENT_MODULE)
+    out = rewrite_callers({"tinyapp/cli.py": caller}, GREET, "greet", CLIENT_MODULE)["tinyapp/cli.py"]
     assert "greet(token_factory_async_client(), 'Ana')" in out
     assert f"from {CLIENT_MODULE} import token_factory_async_client" in out
     test = 'def test_x(monkeypatch):\n    monkeypatch.setattr(cli, "AsyncAnthropic", lambda: Fake())\n'
@@ -4224,7 +4225,7 @@ def test_conformance_names_every_caller_that_hands_the_function_an_unknown_clien
     out, constants, system_name, rewritten, _ = _prepare(
         PLANT.replace(PLANT_SIGNATURE, signature), site, ASYNC_SPEC, ASYNC_PARAMS, 100, client=CLIENT_MODULE
     )
-    handler = rewrite_callers(HANDLER, "greet", CLIENT_MODULE)
+    handler = rewrite_callers({"app.py": HANDLER}, GREET, "greet", CLIENT_MODULE)["app.py"]
     lines = [line.strip() for line in handler.splitlines()]
     at = {line[0]: n for n, line in enumerate(lines, 1) if " = greet(" in line} | {
         "return": lines.index("return [greet, a, b, c, d, e, f, g, h]") + 1
@@ -4237,15 +4238,18 @@ def test_conformance_names_every_caller_that_hands_the_function_an_unknown_clien
     assert rewritten and "c = greet(token_factory_client(), name)" in lines
     assert problems == [
         "the client `client` its callers hand `greet` is not known to be the Token Factory client: "
-        f"`app.py:{at['return']}` refers to `greet` without calling it; `app.py:{at['a']}` hands `client`; "
-        f"`app.py:{at['b']}` hands `CLIENT`; `app.py:{at['d']}` hands `svc.client`; "
-        f"`app.py:{at['e']}` hands `make_client()`; `app.py:{at['f']}` omits `client`; "
-        f"`app.py:{at['g']}` hands it on through `*`; `app.py:{at['h']}` hands it on through `**`"
+        f"`app.py:{at['a']}` `greet(...)` hands `client`; `app.py:{at['b']}` `greet(...)` hands `CLIENT`; "
+        f"`app.py:{at['d']}` `greet(...)` hands `svc.client`; "
+        f"`app.py:{at['e']}` `greet(...)` hands `make_client()`; "
+        f"`app.py:{at['f']}` `greet(...)` omits `client`; "
+        f"`app.py:{at['g']}` `greet(...)` hands it on through `*`; "
+        f"`app.py:{at['h']}` `greet(...)` hands it on through `**`; "
+        f"`app.py:{at['return']}` uses `greet` without calling it"
     ]
     inline = (
         HANDLER.split("\n\n\ndef")[0] + "\n\n\ndef main():\n    return greet(anthropic.Anthropic(), 'Ana')\n"
     )
-    rewired = rewrite_callers(inline, "greet", CLIENT_MODULE)
+    rewired = rewrite_callers({"app.py": inline}, GREET, "greet", CLIENT_MODULE)["app.py"]
     assert conformance(out, site, ASYNC_PARAMS, constants, system_name, None, {"app.py": rewired}) == []
 
 
@@ -4264,9 +4268,9 @@ def test_a_site_whose_caller_hands_it_an_old_client_is_a_manual_review_naming_th
     greet = verdict(result, "cs_01")
     assert greet.decision == "MANUAL_REVIEW" and llm.calls == []
     assert greet.reason == (
-        "patch not composed: Offramp's own rewrite does not carry the evaluated request: the client `client` "
-        "its callers hand `greet` is not known to be the Token Factory client: `tinyapp/cli.py:9` hands "
-        "`CLIENT`"
+        "patch not composed: Offramp's own rewrite does not carry the evaluated request: the client "
+        "`client` its callers hand `greet` is not known to be the Token Factory client: `tinyapp/cli.py:9` "
+        "`greet(...)` hands `CLIENT`"
     )
     assert GREET not in result.files and "tinyapp/cli.py" not in result.files
     assert verdict(result, "cs_03").decision == "MIGRATE"
@@ -4350,6 +4354,7 @@ def test_tracked_files_drop_filtered_files_and_take_submodules_and_a_monorepo_su
         ".gitattributes": "sec/** filter=git-crypt\n",
         "sec/k.env": CANARY,
         "lib.py": "",
+        "infosub.env": CANARY,
     }.items():
         (sub / path).parent.mkdir(parents=True, exist_ok=True)
         (sub / path).write_text(text)
@@ -4370,11 +4375,194 @@ def test_tracked_files_drop_filtered_files_and_take_submodules_and_a_monorepo_su
     git(repo, "commit", "-qm", "r")
     (repo / "scratch").mkdir()
     (repo / "scratch" / "notes.py").write_text(CANARY)
+    # re-review R2-m2: a filter in the submodule's own info/attributes, which only the submodule reads
+    (repo / ".git" / "modules" / "vendor" / "sub" / "info").mkdir(parents=True, exist_ok=True)
+    (repo / ".git" / "modules" / "vendor" / "sub" / "info" / "attributes").write_text(
+        "infosub.env filter=crypt\n"
+    )
 
-    assert sandbox_module.tracked_files(repo) == [
-        ".gitattributes", ".gitmodules", "big/model.bin", "pkg/__init__.py", "pkg/mod.py", "plain.txt",
-        "vendor/sub/.gitattributes", "vendor/sub/lib.py",
-    ]  # fmt: skip
+    assert sandbox_module.git_files(repo) == (
+        [".gitattributes", ".gitmodules", "big/model.bin", "pkg/__init__.py", "pkg/mod.py", "plain.txt",
+         "vendor/sub/.gitattributes", "vendor/sub/lib.py"],
+        ["odd.txt", "secrets/prod.env", "vendor/sub/infosub.env", "vendor/sub/sec/k.env"],
+    )  # fmt: skip
     assert sandbox_module.tracked_files(repo / "pkg") == ["__init__.py", "mod.py"]
     assert sandbox_module.tracked_files(repo / "scratch") is None  # nothing tracked there: a plain directory
     assert sandbox_module.tracked_files(tmp_path / "sub-src" / "sec") == []  # every file filtered
+
+
+# ---------------------------------------------------------------- fix round 3: references resolved, not named
+
+SUMMARIZE = """import asyncio
+
+import anthropic
+
+PROMPT = "P"
+
+
+async def summarize(client, text):
+    message = await client.messages.create(
+        model="claude-haiku-4-5", max_tokens=32, system=PROMPT, messages=[{"role": "user", "content": text}]
+    )
+    return message.content[0].text
+"""
+SUMMARIZE_SITE = CallSite(id="cs_01", file="app/summarize.py", lines=[8, 12], sdk="anthropic", call="c",
+                          function="summarize", prompt_source="fstring")  # fmt: skip
+GO = "\n\nasync def go(t, obj):\n    return await {call}\n"
+HEAD = "import anthropic\n{imports}\nCLIENT = anthropic.AsyncAnthropic()\n"  # line 2: the import
+
+
+def handed_problems(
+    callers: dict[str, str], site_module: str = SUMMARIZE
+) -> tuple[list[str], dict[str, str]]:
+    """Offramp's own rewrite of `summarize`, its callers rewired, then conformance with every module: (its
+    problems, the rewired modules)."""
+    spec = AdapterSpec(system_prompt="P", max_tokens=32, temperature=0.0)
+    out, constants, system_name, *_ = _prepare(
+        site_module, SUMMARIZE_SITE, spec, ASYNC_PARAMS, 100, client="app.offramp_client"
+    )
+    sources = {"app/__init__.py": "", "app/summarize.py": out, **callers}
+    rewired = rewrite_callers(sources, "app/summarize.py", "summarize", "app.offramp_client")
+    shipped = sources | rewired
+    site = shipped["app/summarize.py"]
+    return conformance(site, SUMMARIZE_SITE, ASYNC_PARAMS, constants, system_name, None, shipped), rewired
+
+
+@pytest.mark.parametrize(
+    ("caller", "shown"),
+    [
+        (HEAD.format(imports="from app.summarize import summarize as summ")
+         + GO.format(call="summ(CLIENT, t)"), "`app/cli.py:7` `summ(...)` hands `CLIENT`"),
+        (HEAD.format(imports="import app.summarize as s")
+         + GO.format(call="s.summarize(CLIENT, t)"), "`app/cli.py:7` `s.summarize(...)` hands `CLIENT`"),
+        (HEAD.format(imports="import app.summarize")
+         + GO.format(call="app.summarize.summarize(CLIENT, t)"),
+         "`app/cli.py:7` `app.summarize.summarize(...)` hands `CLIENT`"),
+        (HEAD.format(imports="from . import summarize as mod")
+         + GO.format(call="mod.summarize(CLIENT, t)"), "`app/cli.py:7` `mod.summarize(...)` hands `CLIENT`"),
+        (HEAD.format(imports="from .summarize import summarize")
+         + GO.format(call="summarize(CLIENT, t)"), "`app/cli.py:7` `summarize(...)` hands `CLIENT`"),
+        (HEAD.format(imports="import importlib")
+         + GO.format(call='getattr(importlib.import_module("app.summarize"), "summarize")(CLIENT, t)'),
+         "`app/cli.py:7` looks up `app.summarize` by name; `app/cli.py:7` looks up `summarize` by name"),
+        ("from app.summarize import summarize\nJOBS = {'summarize': summarize}\n",
+         "`app/cli.py:2` uses `summarize` without calling it"),
+    ],
+    ids=["from-import-alias", "module-alias", "dotted-module", "relative-module", "relative-function",
+         "getattr-by-name", "stored"],
+)  # fmt: skip
+def test_every_reference_to_the_function_is_resolved_through_imports_and_must_be_a_known_call(caller, shown):
+    """Re-review R2-I1: `from app.summarize import summarize as summ; await summ(CLIENT, t)` shipped, since
+    callers were matched by name. References are resolved through each module's imports now."""
+    problems, _ = handed_problems({"app/cli.py": caller})
+
+    why = "the client `client` its callers hand `summarize` is not known to be the Token Factory client"
+    assert problems == [f"{why}: {shown}"]
+
+
+def test_a_re_export_through_a_package_init_is_followed():
+    init = "from .summarize import summarize as summarise\n"
+    caller = "import anthropic\nfrom app import summarise\nCLIENT = anthropic.AsyncAnthropic()\n" + GO.format(
+        call="summarise(CLIENT, t)"
+    )
+
+    problems, _ = handed_problems({"app/__init__.py": init, "app/cli.py": caller})
+
+    assert problems and problems[0].endswith("`app/cli.py:7` `summarise(...)` hands `CLIENT`")
+
+
+def test_an_inline_client_through_an_alias_is_rewired_and_an_unrelated_attribute_call_is_no_caller():
+    """Re-review R2-I1 (`summ(anthropic.AsyncAnthropic(), t)` was left on the old client) and Concern 2
+    (`textlib.summarize(t)` refused the site, and the reason named the wrong expression)."""
+    caller = "import anthropic\nimport textlib\nfrom app.summarize import summarize as summ\n" + GO.format(
+        call="summ(anthropic.AsyncAnthropic(), textlib.summarize(t)) or obj.summarize()"
+    )
+
+    problems, rewired = handed_problems({"app/cli.py": caller})
+
+    assert problems == []
+    assert (
+        "summ(token_factory_async_client(), textlib.summarize(t)) or obj.summarize()" in rewired["app/cli.py"]
+    )
+    assert "from app.offramp_client import token_factory_async_client" in rewired["app/cli.py"]
+
+
+def test_the_sites_own_module_rewires_an_inline_client_and_refuses_a_module_getattr():
+    """Re-review R2-m3: an inline client in the module's own `__main__` block sent the site to review. And a
+    module `__getattr__` can hand the function out under any name."""
+    run = 'print(asyncio.run(summarize(anthropic.AsyncAnthropic(), "x")))'
+    main = SUMMARIZE + f'\n\nif __name__ == "__main__":\n    {run}\n'
+    problems, rewired = handed_problems({}, main)
+
+    assert problems == []
+    assert 'asyncio.run(summarize(token_factory_async_client(), "x"))' in rewired["app/summarize.py"]
+
+    lookup = SUMMARIZE + "\n\ndef __getattr__(name):\n    return summarize\n"
+    problems, _ = handed_problems({}, lookup)
+
+    assert "defines a module `__getattr__`, which may hand out `summarize` under any name" in problems[0]
+
+
+ALIAS_CLI = (
+    "from anthropic import Anthropic\n\nfrom tinyapp.greet import greet as say\n\n\n"
+    'def main():\n    return say(Anthropic(), "Ana")\n'
+)
+
+
+def test_an_aliased_caller_ships_rewired_and_the_pr_says_how_far_the_caller_check_goes():
+    repo = anthropic_tiny("alias-caller", {"tinyapp/cli.py": ALIAS_CLI})
+
+    result = compose_anthropic(repo, "alias-caller-run")
+
+    assert verdict(result, "cs_01").decision == "MIGRATE", verdict(result, "cs_01").reason
+    assert 'return say(token_factory_client(), "Ana")' in result.files["tinyapp/cli.py"]
+    assert (
+        "`greet`, `shout` get the client from callers: callers were checked statically; dynamic lookups by "
+        "computed name were not"
+    ) in result.change_notes
+
+
+def test_files_left_out_as_filtered_are_listed_in_the_pr_and_where_the_untouched_repo_is_red(monkeypatch):
+    """Re-review Concern 3: a git-crypt file was dropped silently, so a test importing it went red with no
+    word on why."""
+    monkeypatch.delenv(sandbox_module.UNTRACKED_OPT_IN)
+    listed = (
+        "Offramp left 1 tracked file(s) out of the sandbox, which git filters (a `filter` attribute, such as "
+        "git-crypt's; a fresh clone holds them encrypted): `secrets/prod.env`"
+    )
+    for red in (False, True):
+        src = work_dir(f"filtered-{red}") / "src"
+        shutil.copytree(TINY, src, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+        git_repo(src, {})
+
+        def box(r, ok=not red):
+            return FakeSandbox(r, [ok], precheck=True)
+
+        result = compose_patches(src, tiny_sites(), tiny_verdicts(), tiny_adapters(), patcher_llm(),
+                                 work_dir(f"filtered-{red}-run"), config=CONFIG, build_request=BUILD,
+                                 sandbox_factory=box)  # fmt: skip
+
+        if red:
+            assert verdict(result, "cs_01").reason.endswith(f"; {listed}")
+        else:
+            assert result.combined == ["cs_01", "cs_03"] and listed in result.change_notes
+            assert CANARY not in "".join(result.change_notes)  # paths only, never content
+
+
+@pytest.mark.parametrize(
+    ("files", "direct"),
+    [
+        ({"examples/requirements.txt": "anthropic\n"}, False),
+        ({"requirements.txt": "anthropic\n"}, True),
+        ({"pyproject.toml": "[project]\nname = 'x'\n", "requirements.txt": "anthropic\n"}, False),
+        ({"pyproject.toml": "[project]\nname = 'x'\ndependencies = ['anthropic']\n"}, True),
+    ],
+    ids=["example-folder", "root-requirements", "requirements-beside-a-pyproject", "pyproject"],
+)
+def test_only_the_declaration_the_image_installs_is_a_direct_one(tmp_path, files, direct):
+    """Re-review nit: `examples/requirements.txt` declaring anthropic added the openai layer."""
+    for path, text in files.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(text)
+
+    assert declare_openai(tmp_path, {"anthropic"})[2] is direct
