@@ -51,6 +51,7 @@ from offramp.agents.patcher import (
     convert_fakes,
     copy_repo,
     declare_openai,
+    drop_dead_patches,
     drop_orphaned_imports,
     edits_text,
     keep_comment,
@@ -4893,3 +4894,230 @@ def test_a_class_replaced_by_name_that_drops_a_test_is_still_refused():
     greet_verdict = verdict(result, "cs_01")
     assert greet_verdict.decision == "MANUAL_REVIEW"
     assert f"patch removes tests from {more}: ['test_b']" in greet_verdict.reason
+
+
+# --------------------------------------------------- Task 26 round 2: patches of a name the rewrite dropped
+
+DEAD = """import pytest
+from fakes import FakeAnthropic, FakeOpenAI
+
+from helphub import cli
+
+
+@pytest.mark.parametrize("command", ["triage", "next-step"])
+def test_runs_a_fixture_case(monkeypatch, command):
+    monkeypatch.setattr(cli, "OpenAI", lambda: FakeOpenAI("billing"))
+    monkeypatch.setattr(cli, "Anthropic", lambda: FakeAnthropic())
+    monkeypatch.setattr(
+        cli,
+        "token_factory_client",
+        (lambda: FakeAnthropic()) if command in ("next-step",) else (lambda: FakeOpenAI("billing")),
+    )
+
+    assert cli.main([command]) == 0
+
+
+def test_extract_reads_an_email_file(monkeypatch):
+    monkeypatch.setattr(cli, "Anthropic", lambda: FakeAnthropic())
+    monkeypatch.setattr(cli, "token_factory_client", lambda: FakeAnthropic())
+
+    assert cli.main(["extract"]) == 0
+
+
+def test_search_lists_matching_articles(monkeypatch):
+    monkeypatch.setattr(cli, "OpenAI", lambda: FakeOpenAI())
+
+    assert cli.main(["search"]) == 0
+"""
+ANTHROPIC_PATCH = '    monkeypatch.setattr(cli, "Anthropic", lambda: FakeAnthropic())\n'
+OPENAI_TWINNED = '    monkeypatch.setattr(cli, "OpenAI", lambda: FakeOpenAI("billing"))\n'
+
+
+@pytest.mark.parametrize(
+    ("dropped", "gone", "counts"),
+    [
+        ({"helphub/cli.py": {"Anthropic"}}, [ANTHROPIC_PATCH, ANTHROPIC_PATCH], {"helphub.cli.Anthropic": 2}),
+        ({"helphub/cli.py": {"OpenAI"}}, [OPENAI_TWINNED], {"helphub.cli.OpenAI": 1}),
+        ({"helphub/other.py": {"Anthropic"}}, [], {}),
+    ],
+    ids=["run7-test-cli", "no-twin-stays", "another-module"],
+)
+def test_a_patch_of_a_name_the_rewrite_removed_goes_where_its_twin_patches_the_client(dropped, gone, counts):
+    """Live run 7 replayed with the import fix: tests/test_cli.py patched `cli.Anthropic` (lines 36 and 46)
+    beside the `token_factory_client` twin mirror_fakes added; with every Anthropic caller in cli.py rewired
+    the import was gone and monkeypatch raised. Only a patch of a dropped name on that module goes, and only
+    in a test that patches the client twin; `cli.OpenAI` (not dropped) and a patch with no twin stay."""
+    expected = DEAD
+    for line in gone:
+        expected = expected.replace(line, "", 1)
+
+    assert drop_dead_patches(DEAD, "tests/test_cli.py", dropped) == (expected, counts)
+
+
+@pytest.mark.parametrize(
+    ("imports", "removed"),
+    [
+        ("from helphub import cli as app\n", True),
+        ("import helphub.cli as app\n", True),
+        ("from tools import cli as app\n", False),
+        ("from helphub import cli\napp = cli\n", False),
+    ],
+    ids=["from-alias", "module-alias", "another-package", "a-name-not-an-import"],
+)
+def test_the_patched_module_is_resolved_through_the_test_files_imports(imports, removed):
+    source = (
+        DEAD.replace("from helphub import cli\n", imports)
+        .replace("(cli,", "(app,")
+        .replace("\n        cli,\n", "\n        app,\n")
+    )
+
+    out, counts = drop_dead_patches(source, "tests/test_cli.py", {"helphub/cli.py": {"Anthropic"}})
+
+    assert (out == source.replace(ANTHROPIC_PATCH.replace("(cli,", "(app,"), "")) is removed
+    assert (out == source) is not removed and bool(counts) is removed
+
+
+FORMS = """from unittest import mock
+from unittest.mock import patch
+
+import helphub.cli
+
+FAKE = object()
+
+
+@patch("helphub.cli.token_factory_client", new=FAKE)
+@patch("helphub.cli.Anthropic", new=FAKE)
+def test_decorated():
+    assert helphub.cli
+
+
+@mock.patch.object(helphub.cli, "token_factory_client", FAKE)
+@mock.patch.object(helphub.cli, "Anthropic", FAKE)
+def test_decorated_object():
+    assert helphub.cli
+
+
+def test_strings(monkeypatch):
+    monkeypatch.setattr("helphub.cli.Anthropic", FAKE)
+    monkeypatch.setattr("helphub.cli.token_factory_client", FAKE)
+    patch("helphub.cli.Anthropic", FAKE).start()
+    patch.object(helphub.cli, "Anthropic", FAKE).start()
+    assert helphub.cli
+
+
+@patch("helphub.cli.token_factory_client")
+@patch("helphub.cli.Anthropic")
+def test_injected(anthropic, client):
+    assert anthropic and client
+
+
+def test_with(monkeypatch):
+    monkeypatch.setattr(helphub.cli, "token_factory_client", FAKE)
+    with patch("helphub.cli.Anthropic", FAKE):
+        assert helphub.cli
+
+
+def test_not_a_patch(monkeypatch):
+    monkeypatch.setattr(helphub.cli, "token_factory_client", FAKE)
+    registry.object(helphub.cli, "Anthropic", FAKE)
+    assert FAKE
+
+
+@patch.object(helphub.cli, "token_factory_client")
+@patch.object(helphub.cli, "Anthropic")
+def test_injected_object(anthropic, client):
+    assert anthropic and client
+
+
+def test_branch_and_shared_line(monkeypatch):
+    monkeypatch.setattr(helphub.cli, "token_factory_client", FAKE)
+    if FAKE:
+        monkeypatch.setattr(helphub.cli, "Anthropic", FAKE)
+    monkeypatch.setattr(helphub.cli, "Anthropic", FAKE); assert FAKE
+"""
+
+
+def test_string_object_and_decorator_patches_go_but_an_injecting_decorator_or_a_with_block_stays():
+    gone = [
+        '@patch("helphub.cli.Anthropic", new=FAKE)\n',
+        '@mock.patch.object(helphub.cli, "Anthropic", FAKE)\n',
+        '    monkeypatch.setattr("helphub.cli.Anthropic", FAKE)\n',
+        '    patch("helphub.cli.Anthropic", FAKE).start()\n',
+        '    patch.object(helphub.cli, "Anthropic", FAKE).start()\n',
+    ]
+    expected = FORMS
+    for line in gone:
+        expected = expected.replace(line, "", 1)
+
+    out, counts = drop_dead_patches(FORMS, "tests/test_forms.py", {"helphub/cli.py": {"Anthropic"}})
+
+    assert out == expected and counts == {"helphub.cli.Anthropic": 5}
+    assert '@patch("helphub.cli.Anthropic")\n' in out and 'with patch("helphub.cli.Anthropic", FAKE):' in out
+    assert (
+        '    if FAKE:\n        monkeypatch.setattr(helphub.cli, "Anthropic", FAKE)\n' in out
+    )  # alone in its block
+    assert 'monkeypatch.setattr(helphub.cli, "Anthropic", FAKE); assert FAKE\n' in out  # shares its line
+    assert '    registry.object(helphub.cli, "Anthropic", FAKE)\n' in out  # `.object` of something else
+    assert '@patch.object(helphub.cli, "Anthropic")\n' in out  # it hands the test a mock
+
+
+DEAD_CLI_TEST = """from tinyapp import cli
+
+
+def test_main_runs(monkeypatch):
+    monkeypatch.setattr(cli, "OpenAI", lambda: None)
+    monkeypatch.setattr(cli, "Anthropic", lambda: None)
+    assert callable(cli.main)
+"""
+
+
+def test_the_merged_tree_drops_the_tests_patch_of_the_import_it_dropped_and_says_so():
+    """The demo's shape end to end: two Anthropic sites behind one caller, whose test patches `cli.Anthropic`.
+    Alone, each site keeps the import, so the patch stays beside its twin; merged, the import goes, and so
+    does the patch."""
+    repo = anthropic_tiny(
+        "dead-patch", {SHOUT: ANTHROPIC_SHOUT, CLI: TWO_SITES_CLI, "tests/test_cli.py": DEAD_CLI_TEST}
+    )
+    sites = [s.model_copy(update={"sdk": "anthropic"}) if s.id != "cs_02" else s for s in tiny_sites()]
+    boxes = []
+
+    def box(r):
+        boxes.append(FakeSandbox(r, precheck=True))
+        return boxes[-1]
+
+    result = compose_patches(repo, sites, tiny_verdicts(), tiny_adapters(), patcher_llm(),
+                             work_dir("dead-patch-run"), config=CONFIG, build_request=BUILD,
+                             sandbox_factory=box)  # fmt: skip
+
+    alone = boxes[0].checks[2]["tests/test_cli.py"]
+    assert 'monkeypatch.setattr(cli, "Anthropic", lambda: None)' in alone
+    assert 'monkeypatch.setattr(cli, "token_factory_client", lambda: None)' in alone
+    assert result.combined == ["cs_01", "cs_03"], [v.reason for v in result.verdicts]
+    assert "Anthropic" not in result.files[CLI]
+    assert result.files["tests/test_cli.py"] == DEAD_CLI_TEST.replace(
+        '    monkeypatch.setattr(cli, "Anthropic", lambda: None)\n',
+        '    monkeypatch.setattr(cli, "token_factory_client", lambda: None)\n',
+    )
+    assert (
+        "removed 1 patch(es) of `tinyapp.cli.Anthropic`, which Offramp's rewrite removed" in result.warnings
+    )
+
+
+def test_a_dead_patch_goes_from_the_test_shown_alone_when_one_site_orphans_the_import():
+    test = "from tinyapp import cli\n\n\ndef test_main(monkeypatch):\n"
+    test += '    monkeypatch.setattr(cli, "Anthropic", lambda: None)\n    assert cli.main\n'
+    cli = ALIAS_CLI.replace(" as say", "").replace("say(", "greet(")  # a direct call: its test reaches greet
+    repo = anthropic_tiny("dead-patch-alone", {"tinyapp/cli.py": cli, "tests/test_cli.py": test})
+    boxes = []
+
+    def box(r):
+        boxes.append(FakeSandbox(r, precheck=True))
+        return boxes[-1]
+
+    result = compose_anthropic(repo, "dead-patch-alone-run", box=box)
+
+    assert boxes[0].checks[2]["tests/test_cli.py"] == test.replace('"Anthropic"', '"token_factory_client"')
+    assert result.files["tests/test_cli.py"] == test.replace('"Anthropic"', '"token_factory_client"')
+    assert (
+        "removed 1 patch(es) of `tinyapp.cli.Anthropic`, which Offramp's rewrite removed" in result.warnings
+    )

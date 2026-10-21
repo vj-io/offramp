@@ -38,6 +38,7 @@ import textwrap
 import tokenize
 import tomllib
 import uuid
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1407,12 +1408,10 @@ def _targets(sources: dict[str, str], site_file: str, function: str) -> set[str]
     return targets
 
 
-def _references(path: str, tree: ast.Module, targets: set[str], defined: str | None) -> list[ast.expr]:
-    """The expressions in a module that refer to the function `targets` names, resolved through the module's
-    imports, never by name alone: a name a `from ... import` (or a star import) binds to it, an attribute
-    chain through an imported module (`s.summarize` after `import app.summarize as s`), and its own name in
-    the module that defines it (`defined`)."""
-    names, modules = {defined} - {None}, {}
+def _module_aliases(tree: ast.Module, path: str) -> dict[str, str]:
+    """Local name -> the dotted name an import binds it to, perhaps a module (`s` -> `app.summarize` after
+    `import app.summarize as s` or `from app import summarize as s`; `app` -> `app` after `import app.x`)."""
+    modules = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
@@ -1420,29 +1419,40 @@ def _references(path: str, tree: ast.Module, targets: set[str], defined: str | N
                 modules[a.asname or top] = a.name if a.asname else top
         elif isinstance(node, ast.ImportFrom):
             base = _imported(node, path)
+            modules |= {a.asname or a.name: f"{base}.{a.name}" for a in node.names if a.name != "*"}
+    return modules
+
+
+def _chain(n: ast.expr, modules: dict[str, str]) -> str | None:
+    """`app.summarize.summarize` for an attribute chain on an imported name (`s.summarize`), else None."""
+    attrs = []
+    while isinstance(n, ast.Attribute):
+        attrs.append(n.attr)
+        n = n.value
+    return (
+        ".".join([modules[n.id], *reversed(attrs)]) if isinstance(n, ast.Name) and n.id in modules else None
+    )
+
+
+def _references(path: str, tree: ast.Module, targets: set[str], defined: str | None) -> list[ast.expr]:
+    """The expressions in a module that refer to the function `targets` names, resolved through the module's
+    imports, never by name alone: a name a `from ... import` (or a star import) binds to it, an attribute
+    chain through an imported module (`s.summarize` after `import app.summarize as s`), and its own name in
+    the module that defines it (`defined`)."""
+    names, modules = {defined} - {None}, _module_aliases(tree, path)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            base = _imported(node, path)
             for a in node.names:
                 if a.name == "*":
                     names |= {t.rpartition(".")[2] for t in targets if t.rpartition(".")[0] == base}
                 elif f"{base}.{a.name}" in targets:
                     names.add(a.asname or a.name)
-                else:  # perhaps a module: `from app import summarize as s`, then `s.summarize`
-                    modules[a.asname or a.name] = f"{base}.{a.name}"
-
-    def chain(n: ast.expr) -> str | None:  # `app.summarize.summarize` for an attribute chain on a module
-        attrs = []
-        while isinstance(n, ast.Attribute):
-            attrs.append(n.attr)
-            n = n.value
-        return (
-            ".".join([modules[n.id], *reversed(attrs)])
-            if isinstance(n, ast.Name) and n.id in modules
-            else None
-        )
 
     def refers(n: ast.AST) -> bool:
         if isinstance(n, ast.Name):
             return isinstance(n.ctx, ast.Load) and n.id in names
-        return isinstance(n, ast.Attribute) and chain(n) in targets
+        return isinstance(n, ast.Attribute) and _chain(n, modules) in targets
 
     return [n for n in ast.walk(tree) if refers(n)]
 
@@ -1501,7 +1511,7 @@ def rewrite_callers(sources: dict[str, str], site_file: str, function: str, clie
     return out
 
 
-def drop_orphaned_imports(before: str, after: str, sdks: set[str]) -> str:
+def drop_orphaned_imports(before: str, after: str, sdks: set[str], dropped: list[str] | None = None) -> str:
     """`after`, a module as Offramp's code rewrote it (a site's module, a rewired caller, alone or merged),
     without the import names from a replaced SDK (`sdks`, by top-level module) that the rewrite orphaned:
     read in `before` and nowhere in `after` (a name, or a string equal to it: `__all__`, a string
@@ -1509,8 +1519,9 @@ def drop_orphaned_imports(before: str, after: str, sdks: set[str]) -> str:
     statement left with none goes whole, with the blank line below it when it stood between two (or at the
     top). Every other line is byte-identical: an import unused before is the repo's own lint state. Live run
     7: three Anthropic sites each rewired one `Anthropic()` in helphub/cli.py; merged, nothing read the
-    import, the repo's ruff failed (F401) and cs_06 dropped. ponytail: an import sharing its line with
-    another statement, or the only statement of a block, stays."""
+    import, the repo's ruff failed (F401) and cs_06 dropped. `dropped` gets the names removed (for
+    `drop_dead_patches`). ponytail: an import sharing its line with another statement, or the only statement
+    of a block, stays."""
     old, new = _parsed(before), _parsed(after)
     if old is None or new is None:
         return after
@@ -1520,15 +1531,15 @@ def drop_orphaned_imports(before: str, after: str, sdks: set[str]) -> str:
                    for n in ast.walk(tree))  # fmt: skip
 
     lines = after.splitlines(keepends=True)
-    cuts = []  # (start, end) offsets into `after`
+    cuts, names = [], []  # (start, end) offsets into `after`; the names they remove
     for node in ast.walk(new):
         if not isinstance(node, ast.Import | ast.ImportFrom) or getattr(node, "level", 0):
             continue
         frm = isinstance(node, ast.ImportFrom)
+        bound = [a.asname or (a.name if frm else a.name.split(".")[0]) for a in node.names]
         gone = [
             (node.module if frm else a.name).split(".")[0] in sdks and reads(old, b) and not reads(new, b)
-            for a in node.names
-            for b in [a.asname or (a.name if frm else a.name.split(".")[0])]
+            for a, b in zip(node.names, bound, strict=True)
         ]
         if all(gone):  # the whole statement, on lines of its own
             first, last = sum(map(len, lines[: node.lineno - 1])), sum(map(len, lines[: node.end_lineno]))
@@ -1539,15 +1550,97 @@ def drop_orphaned_imports(before: str, after: str, sdks: set[str]) -> str:
             below = lines[node.end_lineno] if node.end_lineno < len(lines) else "x"
             between = (node.lineno == 1 or not lines[node.lineno - 2].strip()) and not below.strip()
             cuts.append((first, last + len(below) * between))
+            names += bound
             continue
         at = [(_offset(lines, a.lineno, a.col_offset), _offset(lines, a.end_lineno, a.end_col_offset))
               for a in node.names]  # fmt: skip
         # each name with a comma: up to the next kept name, else from the end of the last kept one
         for i in (i for i, g in enumerate(gone) if g):
             cuts.append((at[i][0], at[i + 1][0]) if not all(gone[i:]) else (at[i - 1][1], at[i][1]))
+            names.append(bound[i])
     for start, end in sorted(cuts, reverse=True):
         after = after[:start] + after[end:]
-    return after if _parsed(after) is not None else "".join(lines)
+    if _parsed(after) is None:
+        return "".join(lines)
+    if dropped is not None:
+        dropped += names
+    return after
+
+
+def _patch_target(node: ast.AST, modules: dict[str, str]) -> tuple[str, str, bool] | None:
+    """(dotted module, name, whether as a decorator it hands the test a mock) for a patch of a module's
+    attribute: `<fixture>.setattr(module, "N", value)` or `.setattr("pkg.mod.N", value)`, `patch("pkg.mod.N",
+    ...)` and `patch.object(module, "N", ...)`, bare or through `mock.`, also started (`.start()`). A module
+    argument is resolved through the file's imports (`modules`), never by its name; None for anything else."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "start":
+        node = node.func.value
+    if not isinstance(node, ast.Call):
+        return None
+    f, args, new = node.func, node.args, any(k.arg == "new" for k in node.keywords)
+    text = [a.value if isinstance(a, ast.Constant) and isinstance(a.value, str) else None for a in args]
+    kind = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+    on = getattr(f, "value", None)
+    if kind == "object" and (getattr(on, "id", None) or getattr(on, "attr", None)) != "patch":
+        return None
+    if (kind == "setattr" and isinstance(f, ast.Attribute) and len(args) == 3 or kind == "object"
+            and len(args) >= 2) and text[1] and (module := _chain(args[0], modules)):  # fmt: skip
+        return module, text[1], len(args) < 3 and not new
+    if (
+        kind == "setattr" and isinstance(f, ast.Attribute) and len(args) == 2 or kind == "patch" and args
+    ) and (text[0] and "." in text[0]):
+        module, _, name = text[0].rpartition(".")
+        return module, name, len(args) < 2 and not new
+    return None
+
+
+def drop_dead_patches(source: str, path: str, dropped: dict[str, set[str]]) -> tuple[str, dict[str, int]]:
+    """A test file (`path`) without its patches of a module attribute that `drop_orphaned_imports` removed
+    (`dropped`: module path -> names), which would now raise: a statement (`monkeypatch.setattr(cli,
+    "Anthropic", fake)`, a started `patch`) or a decorator that passes no mock to the test. Only in a test
+    that also patches the Token Factory client on that module (mirror_fakes' twin), so the test still fakes
+    the call. Returns (the source, `module.name` -> patches removed). Live run 7, replayed: tests/test_cli.py
+    patched `cli.Anthropic` beside its twins; merged, cli.py no longer imported it and pytest failed.
+    ponytail: a `with patch(...)` block, a decorator that injects a mock, a statement sharing its line or the
+    only one of its block stay, for the repair or a manual review."""
+    tree = _parsed(source)
+    if tree is None or not dropped:
+        return source, {}
+    modules = _module_aliases(tree, path)
+    by_dotted = {d: m for m in dropped for d in _dotted(m)}
+    lines = source.splitlines(keepends=True)
+    gone: dict[int, tuple[int, str]] = {}  # first line -> (last line, `module.name`)
+    for fn in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)):
+        stmts = [s for s in ast.walk(fn) if isinstance(s, ast.Expr)]
+        found = [
+            (n, t)
+            for n in [*fn.decorator_list, *stmts]
+            if (t := _patch_target(getattr(n, "value", n), modules))
+        ]
+        twins = {by_dotted[m] for _, (m, name, _) in found if m in by_dotted and name in FACTORIES}
+        lone = {id(b[0]) for n in ast.walk(fn) for f in ("body", "orelse", "finalbody")
+                if isinstance(b := getattr(n, f, None), list) and len(b) == 1}  # fmt: skip
+        for node, (module, name, injects) in found:
+            m = by_dotted.get(module)
+            alone = (
+                not lines[node.lineno - 1][: node.col_offset].strip(" \t@")
+                and not lines[node.end_lineno - 1][node.end_col_offset :].split("#")[0].strip()
+            )
+            if (
+                m in twins
+                and name in dropped[m]
+                and alone
+                and id(node) not in lone
+                and not (injects and node in fn.decorator_list)
+            ):
+                gone[node.lineno] = (node.end_lineno, f"{_module_name(m)}.{name}")
+    drop = {i for first, (last, _) in gone.items() for i in range(first, last + 1)}
+    out = "".join(line for i, line in enumerate(lines, 1) if i not in drop)
+    if not gone or _parsed(out) is None:
+        return source, {}
+    counts: dict[str, int] = {}
+    for _, key in gone.values():
+        counts[key] = counts.get(key, 0) + 1
+    return out, counts
 
 
 def mirror_fakes(
@@ -3347,6 +3440,7 @@ def compose_patches(
     befores: dict[str, dict[str, str]] = {}  # site -> its files before its patch
     code_of: dict[str, dict[str, str]] = {}  # site -> the code files Offramp's code changed, as written
     site_twins: dict[str, dict[str, set[str]]] = {}  # site -> test file -> the fake lines mirror_fakes added
+    site_dead: dict[str, Counter] = {}  # site -> `module.name` -> its tests' patches of it removed alone
     alone: dict[str, bool] = {}
     for v in to_migrate:
         site, adapter = by_id.get(v.site_id), adapters.get(v.site_id)
@@ -3396,7 +3490,10 @@ def compose_patches(
                    and (text := read(p)) is not None} | code  # fmt: skip  # the repo's code, as it would ship
         if site.function:  # mechanical: callers hand the migrated function a Token Factory client
             code |= rewrite_callers(modules, site.file, local.function, client_at[1])
-        code = {p: drop_orphaned_imports(read(p) or "", text, sdks) for p, text in code.items()}
+        dropped: dict[str, set[str]] = {}  # code file -> the SDK names its rewrite orphaned, dropped
+        for p, text in code.items():
+            code[p] = drop_orphaned_imports(read(p) or "", text, sdks, names := [])
+            dropped |= {p: set(names)} if names else {}
         context += [p for p in code if p not in context]  # a caller reached through an alias is shown too
         base = {p: read(p) for p in code}
         for p, text in code.items():
@@ -3449,6 +3546,10 @@ def compose_patches(
                     twins[p] = twins.get(p, set()) | added
                     shown[p] = mirrored
                     done.append(f"`{p}` also fakes `{OLD_CLIENTS[name]}` where it faked `{name}`")
+            if dropped and (cut := drop_dead_patches(shown[p], p, dropped))[1]:
+                shown[p] = cut[0]
+                site_dead[site.id] = Counter(site_dead.get(site.id)) + Counter(cut[1])
+                done += [f"`{p}` no longer patches `{k}`, which the rewrite removed" for k in cut[1]]
         before = {p: read(p) for p in shown}
         probe = (lambda sid=site.id: verify([sid]).get(sid)) if probed else None
         names = [*constants.values(), *([system_name] if (system_name or "").startswith("NEMOTRON_") else [])]
@@ -3564,6 +3665,7 @@ def compose_patches(
     by_verdict = {v.site_id: v for v in to_migrate}
 
     unified: set[str] = set()  # test files where merge() gave one fake per case to several sites' twins
+    dead: Counter = Counter()  # `module.name` -> the merged tests' patches of it removed (drop_dead_patches)
 
     def merge(sids: list[str]) -> tuple[dict[str, str], list[str]]:  # (merged files, sites merged)
         merged: dict[str, str] = {}
@@ -3578,13 +3680,20 @@ def compose_patches(
                 trial[path] = m
             else:
                 merged, taken = trial, [*taken, sid]
+        dropped: dict[str, set[str]] = {}  # merged code file -> the SDK names dropped from it
         for path in {p for sid in taken for p in code_of[sid]} & set(merged):  # Offramp's code, merged
-            merged[path] = drop_orphaned_imports(base_files[path], merged[path], sdks)
+            merged[path] = drop_orphaned_imports(base_files[path], merged[path], sdks, names := [])
+            dropped |= {path: set(names)} if names else {}
         for path in merged:  # sites of different SDKs faked in one test: one fake per case (Offramp's twins)
             twins = [(site_twins[sid][path], reach[sid]) for sid in taken if path in site_twins[sid]]
             if len(twins) > 1 and (one := unify_twins(merged[path], twins)) != merged[path]:
                 merged[path] = one
                 unified.add(path)
+        dead.clear()  # what the tree last merged (the one placed) removed
+        for path in [p for p in merged if is_test_path(p)] if dropped else []:
+            merged[path], counts = drop_dead_patches(merged[path], path, dropped)
+            dead.update(counts)
+        dead.update(sum((Counter(site_dead.get(sid)) for sid in taken), Counter()))
         return merged, taken
 
     def drift(sids: list[str]) -> dict[str, list[str]]:
@@ -3782,6 +3891,9 @@ def compose_patches(
             adapters[sid].patch = None
     migrated = len(combined)
 
+    warnings += [
+        f"removed {n} patch(es) of `{k}`, which Offramp's rewrite removed" for k, n in sorted(dead.items())
+    ]
     files = {p: text for p in originals if (text := read(p)) is not None and text != originals[p]}
     files |= {p: text for p, text in dependencies.items() if p in files}  # as written: a CRLF file stays CRLF
     if not migrated:  # nothing uses the client module, nor the openai SDK it imports
