@@ -1,4 +1,7 @@
+import sys
+import tracemalloc
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -348,7 +351,9 @@ def test_walk_skips_tests_hidden_venv_and_unparseable(tmp_path):
         (tmp_path / rel).write_text(text)
     scan = scan_repo(tmp_path)
     assert [s.file for s in scan.sites] == ["app/main.py"]
-    assert scan.warnings == ["skipped app/broken.py: not parseable as Python 3.12 (SyntaxError)"]
+    # the running interpreter's grammar decides (a 3.14-only `except A, B:` fails on 3.13), so it is named
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    assert scan.warnings == [f"skipped app/broken.py: not parseable as Python {version} (SyntaxError)"]
 
 
 def test_a_py_symlink_that_leaves_the_repo_is_not_read(tmp_path):
@@ -554,3 +559,208 @@ def test_recursion_error_skips_only_that_file(tmp_path, caplog):
     assert [s.file for s in scan.sites] == ["ok.py"]
     assert scan.warnings == ["skipped deep.py: nested too deeply to analyse (RecursionError)"]
     assert "deep.py" in caplog.text
+
+
+# Bugs the ecosystem scan (scripts/ecosystem_scan.py) found in public repos.
+
+STREAM_HELPERS = """from anthropic import Anthropic
+from openai import OpenAI
+
+claude, client = Anthropic(), OpenAI()
+
+
+def reply(text):
+    msgs = [{"role": "user", "content": text}]
+    with claude.messages.stream(model="claude-sonnet-4-5", max_tokens=64, messages=msgs) as s:
+        return s.get_final_text()
+
+
+def draft(text):
+    msgs = [{"role": "user", "content": text}]
+    with client.beta.chat.completions.stream(model="gpt-4o", messages=msgs) as s:
+        return s.get_final_completion()
+
+
+def answer(text):
+    with client.responses.stream(model="gpt-4.1", input=text) as s:
+        return s.get_final_response()
+"""
+
+
+def test_sdk_streaming_helpers_are_streaming_sites(tmp_path):
+    sites = _scan_module(tmp_path, STREAM_HELPERS)
+    assert [(s.call, s.sdk, s.source_model) for s in sites] == [
+        ("claude.messages.stream", "anthropic", "claude-sonnet-4-5"),
+        ("client.beta.chat.completions.stream", "openai", "gpt-4o"),
+        ("client.responses.stream", "openai", "gpt-4.1"),
+    ]
+    for s in sites:  # the helper sends stream=True: a streaming site goes to manual review
+        assert s.params["stream"] is True and "MANUAL_REVIEW" in s.flags
+
+
+def test_invalid_escape_sequences_in_target_code_print_no_warning(tmp_path, recwarn):
+    (tmp_path / "m.py").write_text('PATTERN = "\\s+\\d"\n' + OPENAI_FILE)
+    assert [s.file for s in scan_repo(tmp_path).sites] == ["m.py"]
+    assert not [w for w in recwarn if issubclass(w.category, SyntaxWarning)]
+
+
+# Untrusted repos (/api/scan, task 20 review): one file's cost is bounded; one bad file never stops the scan.
+
+CLIENT = "from openai import OpenAI\nclient = OpenAI()\n"
+
+
+def _scan_counted(tmp_path, monkeypatch):
+    """The scan, the peak of traced Python allocations and the number of resolve() calls: measures that do not
+    depend on how fast the machine is."""
+    from offramp.agents import scanner
+
+    calls = 0
+    real = scanner._Module.resolve
+
+    def resolve(self, *args):
+        nonlocal calls
+        calls += 1
+        return real(self, *args)
+
+    monkeypatch.setattr(scanner._Module, "resolve", resolve)
+    tracemalloc.start()
+    try:
+        scan = scan_repo(tmp_path)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    return scan, peak, calls
+
+
+def test_a_doubling_name_chain_resolves_in_linear_time(tmp_path, monkeypatch):
+    ints = "\n".join(["a0 = 1", *(f"a{i} = a{i - 1} + a{i - 1}" for i in range(1, 31))])
+    strs = "\n".join(['s0 = "ab"', *(f"s{i} = s{i - 1} + s{i - 1}" for i in range(1, 31))])
+    call = 'client.chat.completions.create(model=a30, messages=[{"role": "user", "content": s30}])\n'
+    (tmp_path / "chain.py").write_text(f"{ints}\n{strs}\n{CLIENT}{call}")
+    scan, peak, calls = _scan_counted(tmp_path, monkeypatch)
+    [site] = scan.sites
+    assert calls < 1_000 and peak < 50e6  # without the memo: about 2**31 calls
+    assert site.source_model is None  # an int, not a model id
+    # 2**31 characters: over the cap, so unknown
+    assert site.template is None and "NEEDS_RUNTIME_CAPTURE" in site.flags
+
+
+def test_a_format_spec_wider_than_the_cap_is_never_evaluated(tmp_path, monkeypatch):
+    call = (
+        'def ask(q):\n    return client.chat.completions.create(model=f"{1:>400000000}",\n'
+        '        messages=[{"role": "user", "content": f"{q:>400000000}"}])\n'
+    )
+    (tmp_path / "wide.py").write_text(CLIENT + call)
+    scan, peak, _ = _scan_counted(tmp_path, monkeypatch)
+    [site] = scan.sites
+    assert peak < 50e6  # formatting it would allocate 400 MB
+    assert site.source_model is None and site.template is None  # neither formatted nor kept as a format spec
+
+
+def test_a_file_over_1_mb_is_skipped_with_the_reason(tmp_path, monkeypatch):
+    import ast
+
+    parsed, real = [], ast.parse
+
+    def parse(source, *args, **kwargs):
+        parsed.append(len(source))
+        return real(source, *args, **kwargs)
+
+    monkeypatch.setattr(ast, "parse", parse)
+    (tmp_path / "dense.py").write_text("x = 1\n" * 500_000)  # 3 MB of statements
+    (tmp_path / "ok.py").write_text(OPENAI_FILE)
+    scan = scan_repo(tmp_path)
+    assert [s.file for s in scan.sites] == ["ok.py"] and parsed == [len(OPENAI_FILE)]  # never parsed
+    assert scan.warnings == ["skipped dense.py: over 1 MB (3000000 bytes)"]
+
+
+def test_the_scan_stops_collecting_at_the_site_cap(tmp_path, monkeypatch):
+    from offramp.agents import scanner
+
+    monkeypatch.setattr(scanner, "MAX_SITES", 3)
+    for name in ("a.py", "b.py", "c.py"):  # two sites each
+        (tmp_path / name).write_text(OPENAI_FILE + CALL)
+    scan = scan_repo(tmp_path)
+    assert [s.file for s in scan.sites] == ["a.py", "a.py", "b.py"]
+    assert scan.warnings == ["truncated at 3 call sites: the rest of the repository was not scanned"]
+
+
+def test_a_file_the_parser_cannot_hold_is_skipped_not_fatal(tmp_path):
+    (tmp_path / "minus.py").write_text("x = " + "-" * 6100 + "1\n")  # MemoryError: parser stack overflowed
+    (tmp_path / "ok.py").write_text(OPENAI_FILE)
+    scan = scan_repo(tmp_path)
+    assert [s.file for s in scan.sites] == ["ok.py"]
+    [warning] = scan.warnings
+    assert warning.startswith("skipped minus.py: not parseable as Python ")
+
+
+def test_a_huge_int_constant_is_unknown_not_fatal(tmp_path):
+    factors = " * ".join(["9" * 200] * 30)  # 6,000 digits: str() of it raises ValueError
+    call = 'client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": C}])\n'
+    (tmp_path / "big.py").write_text(f"C = {factors}\n{CLIENT}{call}")
+    (tmp_path / "ok.py").write_text(OPENAI_FILE)
+    scan = scan_repo(tmp_path)
+    assert [s.file for s in scan.sites] == ["big.py", "ok.py"] and scan.warnings == []
+    assert scan.sites[0].template is None
+
+
+def test_any_error_analysing_one_file_skips_that_file(tmp_path, monkeypatch):
+    from offramp.agents import scanner
+
+    real = scanner._Module.sites
+
+    def sites(self, file, *args):
+        if file == "bad.py":
+            raise TypeError("a scanner bug")
+        return real(self, file, *args)
+
+    monkeypatch.setattr(scanner._Module, "sites", sites)
+    (tmp_path / "bad.py").write_text(OPENAI_FILE)
+    (tmp_path / "ok.py").write_text(OPENAI_FILE)
+    scan = scan_repo(tmp_path)
+    assert [s.file for s in scan.sites] == ["ok.py"]
+    assert scan.warnings == ["skipped bad.py: could not be analysed (TypeError)"]
+
+
+def test_the_deadline_is_checked_inside_one_file(tmp_path, monkeypatch):
+    from offramp.agents import scanner
+
+    clock = iter([0.0, *[100.0] * 10_000])  # the between-files check passes, the next check is past it
+    monkeypatch.setattr(scanner, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+    (tmp_path / "m.py").write_text(OPENAI_FILE)
+    with pytest.raises(TimeoutError):
+        scan_repo(tmp_path, deadline=50.0)
+
+
+@pytest.mark.parametrize("where", ["parse", "analysis"])
+def test_running_out_of_memory_stops_the_scan_instead_of_skipping_a_file(tmp_path, monkeypatch, where):
+    # The parser's own MemoryError carries a message ("Parser stack overflowed ..."): that file is skipped.
+    # An empty MemoryError is the process out of memory (RLIMIT_AS in /api/scan's child): the caller decides.
+    import ast
+
+    from offramp.agents import scanner
+
+    def out_of_memory(*args, **kwargs):
+        raise MemoryError
+
+    if where == "parse":
+        monkeypatch.setattr(ast, "parse", out_of_memory)
+    else:
+        monkeypatch.setattr(scanner._Module, "sites", out_of_memory)
+    (tmp_path / "ok.py").write_text(OPENAI_FILE)
+    with pytest.raises(MemoryError):
+        scan_repo(tmp_path)
+
+
+def test_an_enomem_os_error_counts_as_out_of_memory(tmp_path, monkeypatch):
+    import errno
+
+    from offramp.agents import scanner
+
+    def no_memory(*args, **kwargs):
+        raise OSError(errno.ENOMEM, "Cannot allocate memory")  # how an mmap refused by RLIMIT_AS surfaces
+
+    monkeypatch.setattr(scanner._Module, "sites", no_memory)
+    (tmp_path / "ok.py").write_text(OPENAI_FILE)
+    with pytest.raises(MemoryError):
+        scan_repo(tmp_path)

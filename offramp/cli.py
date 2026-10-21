@@ -1,6 +1,6 @@
 """`offramp` command line.
 
-offramp scan <path>                          closed-LLM call sites (no model calls)
+offramp scan <path> [--json]                 closed-LLM call sites (no key, no model calls)
 offramp prepare <path>                       eval cases + references into <path>/evals (TF calls)
 offramp run <repo> [--no-pr] [--cache-only]  the whole pipeline on a repo URL or local path
 offramp run --resume <run_id> [--cache-only] an interrupted or failed run, after its last finished step
@@ -39,9 +39,11 @@ def _spend(client) -> str:
 
 
 def scan(args: argparse.Namespace) -> int:
+    from offramp import scan_table
     from offramp.agents.scanner import scan_repo
 
-    print(scan_repo(args.path).model_dump_json(indent=2))
+    result = scan_repo(args.path)
+    print(result.model_dump_json(indent=2) if args.json else scan_table.render(result))
     return 0
 
 
@@ -155,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("scan", help="list the closed-LLM call sites of a repo (no model calls)")
     p.add_argument("path", type=Path)
+    p.add_argument("--json", action="store_true", help="the full scan result as JSON instead of the table")
     p.set_defaults(func=scan)
 
     p = sub.add_parser("prepare", help="generate eval cases and references into <path>/evals")

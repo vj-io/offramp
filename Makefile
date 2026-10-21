@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install lint test cov web-test web-build ci api web demo cassettes-clear live docker
+.PHONY: help install lint test cov web-test web-build ci api web demo cassettes-clear live docker vendor-scan
 
 API_PORT ?= 8000
 WEB_PORT ?= 3000
@@ -58,3 +58,10 @@ live: cassettes-clear ## Re-record the cassettes against Token Factory (needs NE
 
 docker: ## Build the API image
 	docker build -t offramp-api .
+
+# What /api/scan imports (web/api/scan.py). The Vercel deploy uploads web/ only, so these are copied into it;
+# tests/unit/test_scan_vendor.py fails when the copy differs from offramp/.
+SCAN_VENDOR := offramp/__init__.py offramp/schemas.py offramp/agents/__init__.py offramp/agents/scanner.py \
+	offramp/pricing.py offramp/evals/pricing.yaml offramp/scan_table.py offramp/github_scan.py
+vendor-scan: ## Copy the scanner modules that /api/scan runs into web/pyvendor
+	rm -rf web/pyvendor && rsync -R $(SCAN_VENDOR) web/pyvendor/

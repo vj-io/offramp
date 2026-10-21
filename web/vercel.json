@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/scan.py": { "maxDuration": 30, "includeFiles": "pyvendor/**" }
+  }
+}

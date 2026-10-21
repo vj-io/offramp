@@ -1,0 +1,3526 @@
+{
+ "date": "2026-10-21",
+ "offramp_commit": "9dc158caf4bf95a357187501f8c8d162075fcda4",
+ "python": "3.14.7",
+ "queries": [
+  "openai language:python archived:false fork:false stars:>1000",
+  "anthropic language:python archived:false fork:false stars:>1000"
+ ],
+ "sunset_sources": {
+  "openai": "https://developers.openai.com/api/docs/deprecations",
+  "anthropic": "https://platform.claude.com/docs/en/about-claude/model-deprecations",
+  "as_of": "2026-10-21"
+ },
+ "totals": {
+  "repos": 30,
+  "repos_with_sites": 24,
+  "call_sites": 184,
+  "chat_sites": 166,
+  "embedding_sites": 18,
+  "sdk": {
+   "openai": 105,
+   "langchain": 39,
+   "anthropic": 37,
+   "litellm": 3
+  },
+  "shapes": {
+   "unknown": 119,
+   "tool call": 20,
+   "free text": 19,
+   "JSON": 8
+  },
+  "shapes_from_parameters": {
+   "unknown": 119,
+   "tool call": 20,
+   "JSON": 7
+  },
+  "deterministic_shapes": 28,
+  "deterministic_from_parameters": 27,
+  "streams": 21,
+  "may_stream": 6,
+  "prompt_at_runtime": 139,
+  "model_known": 50,
+  "sunset_retired": 12,
+  "sunset_deprecated": 21,
+  "models": {
+   "gpt-4o": 9,
+   "claude-opus-4-7": 7,
+   "gpt-5.5": 6,
+   "claude-3-5-sonnet-20241022": 6,
+   "gpt-4-turbo": 5,
+   "claude-3-sonnet-20240229": 3,
+   "gpt-4o-mini": 3,
+   "gpt-5.6-sol": 3,
+   "gpt-4-turbo-preview": 2,
+   "gpt-5-mini": 2,
+   "gpt-4": 1,
+   "gpt-3.5-turbo": 1,
+   "claude-opus-4-0": 1,
+   "test-credential-check": 1
+  }
+ },
+ "repos": [
+  {
+   "repo": "langchain-ai/langchain",
+   "stars": 148157,
+   "commit": "e6d83ef6a6e2482cd55691023c51e45d7584a94f",
+   "python_files": 2637,
+   "imports": [
+    "anthropic",
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "libs/langchain/langchain_classic/chains/flare/base.py",
+     "line": 278,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "libs/langchain/langchain_classic/chat_models/base.py",
+     "line": 400,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_03",
+     "file": "libs/langchain/langchain_classic/chat_models/base.py",
+     "line": 405,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_04",
+     "file": "libs/langchain/langchain_classic/evaluation/loading.py",
+     "line": 168,
+     "sdk": "langchain",
+     "model": "gpt-4",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_05",
+     "file": "libs/partners/anthropic/langchain_anthropic/llms.py",
+     "line": 283,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_06",
+     "file": "libs/partners/anthropic/langchain_anthropic/llms.py",
+     "line": 320,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_07",
+     "file": "libs/partners/anthropic/langchain_anthropic/llms.py",
+     "line": 361,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_08",
+     "file": "libs/partners/anthropic/langchain_anthropic/llms.py",
+     "line": 407,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_09",
+     "file": "libs/partners/openai/langchain_openai/chat_models/base.py",
+     "line": 1714,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_10",
+     "file": "libs/partners/openai/langchain_openai/chat_models/base.py",
+     "line": 1721,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_11",
+     "file": "libs/partners/openai/langchain_openai/chat_models/base.py",
+     "line": 1782,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_12",
+     "file": "libs/partners/openai/langchain_openai/chat_models/base.py",
+     "line": 1791,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_13",
+     "file": "libs/partners/openai/langchain_openai/chat_models/base.py",
+     "line": 1889,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_14",
+     "file": "libs/partners/openai/langchain_openai/chat_models/base.py",
+     "line": 2184,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "emb_01",
+     "file": "libs/partners/fireworks/langchain_fireworks/embeddings.py",
+     "line": 106,
+     "sdk": "openai",
+     "model": null,
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "xtekky/gpt4free",
+   "stars": 66910,
+   "commit": "1dbac2541335a2312f53002dfa9d14119af53099",
+   "python_files": 358,
+   "imports": [
+    "openai"
+   ],
+   "rows": [],
+   "warnings": []
+  },
+  {
+   "repo": "zylon-ai/private-gpt",
+   "stars": 57600,
+   "commit": "ff410fed574b8b2eab4e2f4c53d99e7065e5cdef",
+   "python_files": 929,
+   "imports": [
+    "openai"
+   ],
+   "rows": [],
+   "warnings": []
+  },
+  {
+   "repo": "langchain-ai/langgraph",
+   "stars": 43598,
+   "commit": "a24fc97778fca67cfac4cd3fc63e508ee1d29f59",
+   "python_files": 476,
+   "imports": [
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "examples/chatbot-simulation-evaluation/simulation_utils.py",
+     "line": 51,
+     "sdk": "langchain",
+     "model": "gpt-3.5-turbo",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_02",
+     "file": "libs/cli/examples/graph_prerelease_reqs/agent.py",
+     "line": 11,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_03",
+     "file": "libs/cli/examples/graph_prerelease_reqs_fail/agent.py",
+     "line": 12,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_04",
+     "file": "libs/cli/examples/graphs/agent.py",
+     "line": 14,
+     "sdk": "langchain",
+     "model": "claude-3-sonnet-20240229",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_05",
+     "file": "libs/cli/examples/graphs/agent.py",
+     "line": 15,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_06",
+     "file": "libs/cli/examples/graphs/storm.py",
+     "line": 25,
+     "sdk": "langchain",
+     "model": "gpt-4o-mini",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": {
+      "lightning": {
+       "input": 2.5,
+       "output": 2.5
+      },
+      "super": {
+       "input": 0.5,
+       "output": 0.67
+      },
+      "ultra": {
+       "input": 0.15,
+       "output": 0.2
+      }
+     },
+     "price_note": null
+    },
+    {
+     "id": "cs_07",
+     "file": "libs/cli/examples/graphs/storm.py",
+     "line": 28,
+     "sdk": "langchain",
+     "model": "gpt-4o",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": {
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
+     },
+     "price_note": null
+    },
+    {
+     "id": "cs_08",
+     "file": "libs/cli/examples/graphs/storm.py",
+     "line": 146,
+     "sdk": "langchain",
+     "model": "gpt-4o-mini",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": {
+      "lightning": {
+       "input": 2.5,
+       "output": 2.5
+      },
+      "super": {
+       "input": 0.5,
+       "output": 0.67
+      },
+      "ultra": {
+       "input": 0.15,
+       "output": 0.2
+      }
+     },
+     "price_note": null
+    },
+    {
+     "id": "cs_09",
+     "file": "libs/cli/examples/graphs/storm.py",
+     "line": 272,
+     "sdk": "langchain",
+     "model": "gpt-4o-mini",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": {
+      "lightning": {
+       "input": 2.5,
+       "output": 2.5
+      },
+      "super": {
+       "input": 0.5,
+       "output": 0.67
+      },
+      "ultra": {
+       "input": 0.15,
+       "output": 0.2
+      }
+     },
+     "price_note": null
+    },
+    {
+     "id": "cs_10",
+     "file": "libs/cli/examples/graphs_reqs_a/graphs_submod/agent.py",
+     "line": 15,
+     "sdk": "langchain",
+     "model": "claude-3-sonnet-20240229",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_11",
+     "file": "libs/cli/examples/graphs_reqs_a/graphs_submod/agent.py",
+     "line": 16,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_12",
+     "file": "libs/cli/examples/graphs_reqs_b/graphs_submod/agent.py",
+     "line": 15,
+     "sdk": "langchain",
+     "model": "claude-3-sonnet-20240229",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_13",
+     "file": "libs/cli/examples/graphs_reqs_b/graphs_submod/agent.py",
+     "line": 16,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "AstrBotDevs/AstrBot",
+   "stars": 42435,
+   "commit": "f2404c191716a64daaa422be7f3c567cace50d39",
+   "python_files": 747,
+   "imports": [
+    "anthropic",
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "astrbot/core/provider/sources/anthropic_source.py",
+     "line": 557,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "astrbot/core/provider/sources/anthropic_source.py",
+     "line": 675,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_03",
+     "file": "astrbot/core/provider/sources/openai_responses_source.py",
+     "line": 352,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_04",
+     "file": "astrbot/core/provider/sources/openai_responses_source.py",
+     "line": 423,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_05",
+     "file": "astrbot/core/provider/sources/openai_source.py",
+     "line": 572,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_06",
+     "file": "astrbot/core/provider/sources/openai_source.py",
+     "line": 632,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "emb_01",
+     "file": "astrbot/core/provider/sources/openai_embedding_source.py",
+     "line": 53,
+     "sdk": "openai",
+     "model": null,
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    },
+    {
+     "id": "emb_02",
+     "file": "astrbot/core/provider/sources/openai_embedding_source.py",
+     "line": 63,
+     "sdk": "openai",
+     "model": null,
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "PDFMathTranslate/PDFMathTranslate",
+   "stars": 37707,
+   "commit": "17922e7610291d3f2f43098b34478059087549fe",
+   "python_files": 33,
+   "imports": [
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "pdf2zh/translator.py",
+     "line": 464,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": null,
+     "flags": [
+      "may stream",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "pdf2zh/translator.py",
+     "line": 535,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_03",
+     "file": "pdf2zh/translator.py",
+     "line": 610,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_04",
+     "file": "pdf2zh/translator.py",
+     "line": 1095,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": null,
+     "flags": [
+      "may stream",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_05",
+     "file": "pdf2zh/translator.py",
+     "line": 1183,
+     "sdk": "openai",
+     "model": null,
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "mukul975/Anthropic-Cybersecurity-Skills",
+   "stars": 34763,
+   "commit": "54a798831d2266a3ca61ce68a7acb80b81160d57",
+   "python_files": 1103,
+   "imports": [
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "skills/testing-for-system-prompt-leakage/scripts/agent.py",
+     "line": 61,
+     "sdk": "openai",
+     "model": null,
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "openai/openai-agents-python",
+   "stars": 30184,
+   "commit": "64cd5dfc5a1579870dcbed0ea42b27aa84033fee",
+   "python_files": 1020,
+   "imports": [
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "docs/scripts/translate_docs.py",
+     "line": 598,
+     "sdk": "openai",
+     "model": "gpt-5.6-sol",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_02",
+     "file": "docs/scripts/translate_docs.py",
+     "line": 606,
+     "sdk": "openai",
+     "model": "gpt-5.6-sol",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_03",
+     "file": "docs/scripts/translate_docs.py",
+     "line": 612,
+     "sdk": "openai",
+     "model": "gpt-5.6-sol",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_04",
+     "file": "src/agents/extensions/models/litellm_model.py",
+     "line": 631,
+     "sdk": "litellm",
+     "model": null,
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": null,
+     "flags": [
+      "may stream",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_05",
+     "file": "src/agents/models/openai_chatcompletions.py",
+     "line": 742,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_06",
+     "file": "src/agents/models/openai_responses.py",
+     "line": 888,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_07",
+     "file": "src/agents/models/openai_responses.py",
+     "line": 900,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "chidiwilliams/buzz",
+   "stars": 22105,
+   "commit": "6186d09a9f7c2b51c9d5de89592ace2e9cc0092c",
+   "python_files": 226,
+   "imports": [
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "buzz/plugins/ai_summary/plugin.py",
+     "line": 138,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "buzz/translator.py",
+     "line": 63,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_03",
+     "file": "buzz/translator.py",
+     "line": 100,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "openai/swarm",
+   "stars": 22064,
+   "commit": "6af0b4caf37dca4526dfd98e9fbd8ce36e7eeb22",
+   "python_files": 62,
+   "imports": [
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "examples/customer_service_streaming/src/evals/eval_function.py",
+     "line": 45,
+     "sdk": "openai",
+     "model": "gpt-4-turbo-preview",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_02",
+     "file": "swarm/core.py",
+     "line": 69,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "emb_01",
+     "file": "examples/customer_service_streaming/configs/tools/query_docs/handler.py",
+     "line": 20,
+     "sdk": "openai",
+     "model": "text-embedding-3-large",
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    },
+    {
+     "id": "emb_02",
+     "file": "examples/customer_service_streaming/prep_data.py",
+     "line": 31,
+     "sdk": "openai",
+     "model": "text-embedding-3-large",
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    },
+    {
+     "id": "emb_03",
+     "file": "examples/support_bot/customer_service.py",
+     "line": 26,
+     "sdk": "openai",
+     "model": "text-embedding-3-large",
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    },
+    {
+     "id": "emb_04",
+     "file": "examples/support_bot/main.py",
+     "line": 23,
+     "sdk": "openai",
+     "model": "text-embedding-3-large",
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    },
+    {
+     "id": "emb_05",
+     "file": "examples/support_bot/prep_data.py",
+     "line": 34,
+     "sdk": "openai",
+     "model": "text-embedding-3-large",
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "langbot-app/LangBot",
+   "stars": 18318,
+   "commit": "fc62f2ee137f5936284fcc462bbaec4807ae36b3",
+   "python_files": 1171,
+   "imports": [
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "src/langbot/pkg/provider/modelmgr/requesters/litellmchat.py",
+     "line": 1287,
+     "sdk": "litellm",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "src/langbot/pkg/provider/modelmgr/requesters/litellmchat.py",
+     "line": 1293,
+     "sdk": "litellm",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "AsyncFuncAI/deepwiki-open",
+   "stars": 18232,
+   "commit": "d92819a9c9f3b99416e3580ff235fc9d3adf8b89",
+   "python_files": 67,
+   "imports": [
+    "anthropic",
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "api/clients/anthropic.py",
+     "line": 153,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "api/clients/anthropic.py",
+     "line": 176,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_03",
+     "file": "api/clients/dashscope.py",
+     "line": 405,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_04",
+     "file": "api/clients/dashscope.py",
+     "line": 541,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "emb_01",
+     "file": "api/clients/dashscope.py",
+     "line": 460,
+     "sdk": "openai",
+     "model": null,
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    },
+    {
+     "id": "emb_02",
+     "file": "api/clients/dashscope.py",
+     "line": 611,
+     "sdk": "openai",
+     "model": null,
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "TransformerOptimus/SuperAGI",
+   "stars": 17711,
+   "commit": "c3c1982e7bd6a11cfed53c5a193ea502f924b1b6",
+   "python_files": 461,
+   "imports": [
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "superagi/resource_manager/llama_document_summary.py",
+     "line": 61,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "superagi/tools/resource/query_resource.py",
+     "line": 45,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "Usagi-org/ai-goofish-monitor",
+   "stars": 15045,
+   "commit": "77f8d75869acd65f9dba72731b95c7c49ea67bdf",
+   "python_files": 115,
+   "imports": [
+    "openai"
+   ],
+   "rows": [],
+   "warnings": []
+  },
+  {
+   "repo": "livekit/agents",
+   "stars": 14869,
+   "commit": "de40bb258b58e1aeb1b6350a24e6b6cca79b25a5",
+   "python_files": 1181,
+   "imports": [
+    "anthropic",
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "livekit-agents/livekit/agents/inference/llm.py",
+     "line": 529,
+     "sdk": "openai",
+     "model": null,
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "livekit-plugins/livekit-plugins-anthropic/livekit/plugins/anthropic/llm.py",
+     "line": 284,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_03",
+     "file": "livekit-plugins/livekit-plugins-anthropic/livekit/plugins/anthropic/llm.py",
+     "line": 293,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_04",
+     "file": "livekit-plugins/livekit-plugins-openai/livekit/plugins/openai/responses/llm.py",
+     "line": 574,
+     "sdk": "openai",
+     "model": null,
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "The-PR-Agent/pr-agent",
+   "stars": 13507,
+   "commit": "729415c68b8ef55df8bcce919a419af7f5cebffb",
+   "python_files": 493,
+   "imports": [
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "pr_agent/algo/ai_handlers/langchain_ai_handler.py",
+     "line": 53,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "pr_agent/algo/ai_handlers/langchain_ai_handler.py",
+     "line": 55,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_03",
+     "file": "pr_agent/algo/ai_handlers/openai_ai_handler.py",
+     "line": 57,
+     "sdk": "openai",
+     "model": null,
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "emb_01",
+     "file": "pr_agent/tools/pr_similar_issue.py",
+     "line": 35,
+     "sdk": "openai",
+     "model": "text-embedding-ada-002",
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "simonw/llm",
+   "stars": 12647,
+   "commit": "cbeeb8f2b93b642107e51c735c7eb55734355da1",
+   "python_files": 56,
+   "imports": [
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "llm/default_plugins/openai_models.py",
+     "line": 1441,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "llm/default_plugins/openai_models.py",
+     "line": 1494,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_03",
+     "file": "llm/default_plugins/openai_models.py",
+     "line": 1559,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_04",
+     "file": "llm/default_plugins/openai_models.py",
+     "line": 1610,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_05",
+     "file": "llm/default_plugins/openai_models.py",
+     "line": 2552,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_06",
+     "file": "llm/default_plugins/openai_models.py",
+     "line": 2677,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_07",
+     "file": "llm/default_plugins/openai_models.py",
+     "line": 2799,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_08",
+     "file": "llm/default_plugins/openai_models.py",
+     "line": 2926,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "emb_01",
+     "file": "llm/default_plugins/openai_models.py",
+     "line": 519,
+     "sdk": "openai",
+     "model": null,
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "bentoml/OpenLLM",
+   "stars": 12560,
+   "commit": "9ca8247b503f5fb2e90e2a5b1b6480e1bd76c58f",
+   "python_files": 12,
+   "imports": [
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "src/openllm/local.py",
+     "line": 130,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "TheR1D/shell_gpt",
+   "stars": 12296,
+   "commit": "a082bd5327ce0c4ef5a0284d9060e833be9444a6",
+   "python_files": 28,
+   "imports": [
+    "openai"
+   ],
+   "rows": [],
+   "warnings": []
+  },
+  {
+   "repo": "Arize-ai/phoenix",
+   "stars": 11927,
+   "commit": "e554217fb39fbc05b6732462dc57371ca64b5e6e",
+   "python_files": 1599,
+   "imports": [
+    "anthropic",
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "examples/agent_framework_comparison/code_based_agent/router.py",
+     "line": 40,
+     "sdk": "openai",
+     "model": "gpt-4o",
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": {
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
+     },
+     "price_note": null
+    },
+    {
+     "id": "cs_02",
+     "file": "examples/agent_framework_comparison/crewai_multi_agent/router.py",
+     "line": 19,
+     "sdk": "langchain",
+     "model": "gpt-4o",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": {
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
+     },
+     "price_note": null
+    },
+    {
+     "id": "cs_03",
+     "file": "examples/agent_framework_comparison/langgraph/analyze_data.py",
+     "line": 33,
+     "sdk": "langchain",
+     "model": "gpt-4o",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": {
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
+     },
+     "price_note": null
+    },
+    {
+     "id": "cs_04",
+     "file": "examples/agent_framework_comparison/langgraph/generate_sql_query.py",
+     "line": 48,
+     "sdk": "langchain",
+     "model": "gpt-4o",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": {
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
+     },
+     "price_note": null
+    },
+    {
+     "id": "cs_05",
+     "file": "examples/agent_framework_comparison/langgraph/router.py",
+     "line": 19,
+     "sdk": "langchain",
+     "model": "gpt-4o",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": {
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
+     },
+     "price_note": null
+    },
+    {
+     "id": "cs_06",
+     "file": "examples/agent_framework_comparison/skills/analyze_data.py",
+     "line": 80,
+     "sdk": "openai",
+     "model": "gpt-4o",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": {
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
+     },
+     "price_note": null
+    },
+    {
+     "id": "cs_07",
+     "file": "examples/agent_framework_comparison/skills/generate_sql_query.py",
+     "line": 82,
+     "sdk": "openai",
+     "model": "gpt-4o",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": {
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
+     },
+     "price_note": null
+    },
+    {
+     "id": "cs_08",
+     "file": "examples/agents/tau_bench_langgraph/agent.py",
+     "line": 94,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_09",
+     "file": "examples/agents/traject_bench_langgraph/agent.py",
+     "line": 111,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_10",
+     "file": "examples/code_gen_agent/agent.py",
+     "line": 48,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_11",
+     "file": "examples/code_gen_agent/tools.py",
+     "line": 11,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_12",
+     "file": "examples/computer_use_agent/agent.py",
+     "line": 67,
+     "sdk": "anthropic",
+     "model": "claude-opus-4-0",
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_13",
+     "file": "examples/cron-evals/run_chain.py",
+     "line": 41,
+     "sdk": "langchain",
+     "model": "gpt-4-turbo-preview",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_14",
+     "file": "examples/quickstarts/python/evaluate.py",
+     "line": 57,
+     "sdk": "openai",
+     "model": "gpt-5-mini",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_15",
+     "file": "examples/quickstarts/python/observe.py",
+     "line": 17,
+     "sdk": "openai",
+     "model": "gpt-5-mini",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_16",
+     "file": "examples/rag_agent/agent.py",
+     "line": 42,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_17",
+     "file": "examples/rag_agent/tools.py",
+     "line": 14,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_18",
+     "file": "packages/phoenix-client/src/phoenix/client/helpers/sdk/anthropic/messages.py",
+     "line": 79,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_19",
+     "file": "packages/phoenix-client/src/phoenix/client/helpers/sdk/openai/chat.py",
+     "line": 60,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_20",
+     "file": "packages/phoenix-evals/src/phoenix/evals/llm/adapters/anthropic/adapter.py",
+     "line": 92,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_21",
+     "file": "packages/phoenix-evals/src/phoenix/evals/llm/adapters/anthropic/adapter.py",
+     "line": 117,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_22",
+     "file": "packages/phoenix-evals/src/phoenix/evals/llm/adapters/anthropic/adapter.py",
+     "line": 197,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_23",
+     "file": "packages/phoenix-evals/src/phoenix/evals/llm/adapters/anthropic/adapter.py",
+     "line": 224,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_24",
+     "file": "packages/phoenix-evals/src/phoenix/evals/llm/adapters/langchain/factories.py",
+     "line": 13,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_25",
+     "file": "packages/phoenix-evals/src/phoenix/evals/llm/adapters/langchain/factories.py",
+     "line": 25,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_26",
+     "file": "packages/phoenix-evals/src/phoenix/evals/llm/adapters/openai/adapter.py",
+     "line": 99,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_27",
+     "file": "packages/phoenix-evals/src/phoenix/evals/llm/adapters/openai/adapter.py",
+     "line": 119,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_28",
+     "file": "packages/phoenix-evals/src/phoenix/evals/llm/adapters/openai/adapter.py",
+     "line": 263,
+     "sdk": "openai",
+     "model": null,
+     "shape": "JSON",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_29",
+     "file": "packages/phoenix-evals/src/phoenix/evals/llm/adapters/openai/adapter.py",
+     "line": 284,
+     "sdk": "openai",
+     "model": null,
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_30",
+     "file": "packages/phoenix-evals/src/phoenix/evals/llm/adapters/openai/adapter.py",
+     "line": 324,
+     "sdk": "openai",
+     "model": null,
+     "shape": "JSON",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_31",
+     "file": "packages/phoenix-evals/src/phoenix/evals/llm/adapters/openai/adapter.py",
+     "line": 345,
+     "sdk": "openai",
+     "model": null,
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_32",
+     "file": "scripts/testing/otel_gen_ai/send_anthropic_traces.py",
+     "line": 128,
+     "sdk": "anthropic",
+     "model": "claude-opus-4-7",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_33",
+     "file": "scripts/testing/otel_gen_ai/send_anthropic_traces.py",
+     "line": 154,
+     "sdk": "anthropic",
+     "model": "claude-opus-4-7",
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_34",
+     "file": "scripts/testing/otel_gen_ai/send_anthropic_traces.py",
+     "line": 180,
+     "sdk": "anthropic",
+     "model": "claude-opus-4-7",
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_35",
+     "file": "scripts/testing/otel_gen_ai/send_anthropic_traces.py",
+     "line": 204,
+     "sdk": "anthropic",
+     "model": "claude-opus-4-7",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_36",
+     "file": "scripts/testing/otel_gen_ai/send_anthropic_traces.py",
+     "line": 225,
+     "sdk": "anthropic",
+     "model": "claude-opus-4-7",
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_37",
+     "file": "scripts/testing/otel_gen_ai/send_anthropic_traces.py",
+     "line": 263,
+     "sdk": "anthropic",
+     "model": "claude-opus-4-7",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_38",
+     "file": "scripts/testing/otel_gen_ai/send_anthropic_traces.py",
+     "line": 293,
+     "sdk": "anthropic",
+     "model": "claude-opus-4-7",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": true,
+     "flags": [
+      "streams"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_39",
+     "file": "scripts/testing/otel_gen_ai/send_openai_traces.py",
+     "line": 140,
+     "sdk": "openai",
+     "model": "gpt-5.5",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_40",
+     "file": "scripts/testing/otel_gen_ai/send_openai_traces.py",
+     "line": 167,
+     "sdk": "openai",
+     "model": "gpt-5.5",
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_41",
+     "file": "scripts/testing/otel_gen_ai/send_openai_traces.py",
+     "line": 192,
+     "sdk": "openai",
+     "model": "gpt-5.5",
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_42",
+     "file": "scripts/testing/otel_gen_ai/send_openai_traces.py",
+     "line": 212,
+     "sdk": "openai",
+     "model": "gpt-5.5",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_43",
+     "file": "scripts/testing/otel_gen_ai/send_openai_traces.py",
+     "line": 241,
+     "sdk": "openai",
+     "model": "gpt-5.5",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_44",
+     "file": "scripts/testing/otel_gen_ai/send_openai_traces.py",
+     "line": 264,
+     "sdk": "openai",
+     "model": "gpt-5.5",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": true,
+     "flags": [
+      "streams"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_45",
+     "file": "src/phoenix/server/api/helpers/playground_clients.py",
+     "line": 508,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_46",
+     "file": "src/phoenix/server/api/helpers/playground_clients.py",
+     "line": 534,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_47",
+     "file": "src/phoenix/server/api/helpers/playground_clients.py",
+     "line": 700,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_48",
+     "file": "src/phoenix/server/api/helpers/playground_clients.py",
+     "line": 915,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_49",
+     "file": "src/phoenix/server/api/helpers/playground_clients.py",
+     "line": 2394,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": true,
+     "flags": [
+      "streams",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_50",
+     "file": "src/phoenix/server/api/helpers/playground_clients.py",
+     "line": 2449,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_51",
+     "file": "src/phoenix/server/api/mutations/generative_model_custom_provider_mutations.py",
+     "line": 383,
+     "sdk": "anthropic",
+     "model": "test-credential-check",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_52",
+     "file": "tutorials/mcp/tracing_between_mcp_client_and_server/server.py",
+     "line": 71,
+     "sdk": "openai",
+     "model": "gpt-4-turbo",
+     "shape": "JSON",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_53",
+     "file": "tutorials/mcp/tracing_between_mcp_client_and_server/server.py",
+     "line": 119,
+     "sdk": "openai",
+     "model": "gpt-4-turbo",
+     "shape": "JSON",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_54",
+     "file": "tutorials/mcp/tracing_between_mcp_client_and_server/server.py",
+     "line": 160,
+     "sdk": "openai",
+     "model": "gpt-4-turbo",
+     "shape": "JSON",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_55",
+     "file": "tutorials/mcp/tracing_between_mcp_client_and_server/server.py",
+     "line": 203,
+     "sdk": "openai",
+     "model": "gpt-4-turbo",
+     "shape": "JSON",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_56",
+     "file": "tutorials/mcp/tracing_between_mcp_client_and_server/server.py",
+     "line": 259,
+     "sdk": "openai",
+     "model": "gpt-4-turbo",
+     "shape": "JSON",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "BeehiveInnovations/pal-mcp-server",
+   "stars": 11794,
+   "commit": "7afc7c1cc96e23992c8f105f960132c657883bb1",
+   "python_files": 249,
+   "imports": [
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "providers/dial.py",
+     "line": 246,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "providers/openai_compatible.py",
+     "line": 456,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_03",
+     "file": "providers/openai_compatible.py",
+     "line": 641,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "Doriandarko/claude-engineer",
+   "stars": 11215,
+   "commit": "0a9e4b309bf6b2eda05dcf073cf5094beb08e0c8",
+   "python_files": 21,
+   "imports": [
+    "anthropic"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "Claude-Eng-v2/main.py",
+     "line": 664,
+     "sdk": "anthropic",
+     "model": "claude-3-5-sonnet-20241022",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_02",
+     "file": "Claude-Eng-v2/main.py",
+     "line": 1227,
+     "sdk": "anthropic",
+     "model": "claude-3-5-sonnet-20241022",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_03",
+     "file": "Claude-Eng-v2/main.py",
+     "line": 1503,
+     "sdk": "anthropic",
+     "model": "claude-3-5-sonnet-20241022",
+     "shape": "JSON",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_04",
+     "file": "Claude-Eng-v2/main.py",
+     "line": 1755,
+     "sdk": "anthropic",
+     "model": "claude-3-5-sonnet-20241022",
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_05",
+     "file": "Claude-Eng-v2/main.py",
+     "line": 1886,
+     "sdk": "anthropic",
+     "model": "claude-3-5-sonnet-20241022",
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    },
+    {
+     "id": "cs_06",
+     "file": "ce3.py",
+     "line": 338,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_07",
+     "file": "tools/toolcreator.py",
+     "line": 90,
+     "sdk": "anthropic",
+     "model": "claude-3-5-sonnet-20241022",
+     "shape": "free text",
+     "shape_guessed": true,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no list price on file"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "QuentinFuxa/WhisperLiveKit",
+   "stars": 11156,
+   "commit": "363e4f6d029694d9c81ae548beddd9d3c88a3637",
+   "python_files": 139,
+   "imports": [
+    "openai"
+   ],
+   "rows": [],
+   "warnings": []
+  },
+  {
+   "repo": "langchain-ai/open-swe",
+   "stars": 11048,
+   "commit": "1f8699a90ed66f01a717af2022d83ffc1975bb87",
+   "python_files": 1251,
+   "imports": [
+    "anthropic",
+    "openai"
+   ],
+   "rows": [],
+   "warnings": []
+  },
+  {
+   "repo": "OthersideAI/self-operating-computer",
+   "stars": 10290,
+   "commit": "eb8165a2efb1b34d66a28ecebf8ca97ae67cbb79",
+   "python_files": 18,
+   "imports": [
+    "anthropic",
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "evaluate.py",
+     "line": 106,
+     "sdk": "openai",
+     "model": "gpt-4o",
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": {
+      "lightning": {
+       "input": 41.67,
+       "output": 41.67
+      },
+      "super": {
+       "input": 8.33,
+       "output": 11.11
+      },
+      "ultra": {
+       "input": 2.5,
+       "output": 3.33
+      }
+     },
+     "price_note": null
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "LearningCircuit/local-deep-research",
+   "stars": 9372,
+   "commit": "683a967df20fe98ec0ddc99668041e22b95ff78b",
+   "python_files": 3167,
+   "imports": [
+    "anthropic",
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "src/local_deep_research/llm/providers/implementations/anthropic.py",
+     "line": 150,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "src/local_deep_research/llm/providers/implementations/openai.py",
+     "line": 157,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_03",
+     "file": "src/local_deep_research/llm/providers/openai_base.py",
+     "line": 155,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_04",
+     "file": "src/local_deep_research/llm/providers/openai_base.py",
+     "line": 226,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "zilliztech/deep-searcher",
+   "stars": 8350,
+   "commit": "ddc36db317836bd42302b36f03166bec5324708d",
+   "python_files": 156,
+   "imports": [
+    "anthropic",
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "deepsearcher/llm/aliyun.py",
+     "line": 59,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "deepsearcher/llm/anthropic_llm.py",
+     "line": 57,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_03",
+     "file": "deepsearcher/llm/azure_openai.py",
+     "line": 59,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_04",
+     "file": "deepsearcher/llm/deepseek.py",
+     "line": 57,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_05",
+     "file": "deepsearcher/llm/jiekouai.py",
+     "line": 54,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_06",
+     "file": "deepsearcher/llm/novita.py",
+     "line": 27,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_07",
+     "file": "deepsearcher/llm/openai_llm.py",
+     "line": 54,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_08",
+     "file": "deepsearcher/llm/ppio.py",
+     "line": 54,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_09",
+     "file": "deepsearcher/llm/siliconflow.py",
+     "line": 56,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_10",
+     "file": "deepsearcher/llm/volcengine.py",
+     "line": 56,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_11",
+     "file": "deepsearcher/llm/xai.py",
+     "line": 56,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "emb_01",
+     "file": "deepsearcher/embedding/openai_embedding.py",
+     "line": 112,
+     "sdk": "openai",
+     "model": null,
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    },
+    {
+     "id": "emb_02",
+     "file": "deepsearcher/embedding/openai_embedding.py",
+     "line": 117,
+     "sdk": "openai",
+     "model": null,
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    },
+    {
+     "id": "emb_03",
+     "file": "deepsearcher/embedding/openai_embedding.py",
+     "line": 134,
+     "sdk": "openai",
+     "model": null,
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    },
+    {
+     "id": "emb_04",
+     "file": "deepsearcher/embedding/openai_embedding.py",
+     "line": 139,
+     "sdk": "openai",
+     "model": null,
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "zilliztech/GPTCache",
+   "stars": 8213,
+   "commit": "a74ac654473f7bf4109118e8576945161616e17a",
+   "python_files": 229,
+   "imports": [
+    "anthropic",
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "examples/adapter/langchain_llms.py",
+     "line": 46,
+     "sdk": "langchain",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "gptcache/adapter/anthropic.py",
+     "line": 64,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_03",
+     "file": "gptcache/adapter/anthropic.py",
+     "line": 73,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_04",
+     "file": "gptcache/adapter/openai_client.py",
+     "line": 61,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_05",
+     "file": "gptcache/adapter/openai_client.py",
+     "line": 70,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "RayVentura/ShortGPT",
+   "stars": 8053,
+   "commit": "3df4e0f7a422bf7386565d498bf4521a2544c614",
+   "python_files": 68,
+   "imports": [
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "shortGPT/gpt/gpt_utils.py",
+     "line": 98,
+     "sdk": "openai",
+     "model": null,
+     "shape": "unknown",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    }
+   ],
+   "warnings": []
+  },
+  {
+   "repo": "Upsonic/Upsonic",
+   "stars": 7961,
+   "commit": "101f0313b0ddb96cd4078354879b2ff57005db29",
+   "python_files": 968,
+   "imports": [
+    "anthropic",
+    "openai"
+   ],
+   "rows": [
+    {
+     "id": "cs_01",
+     "file": "src/upsonic/models/anthropic.py",
+     "line": 439,
+     "sdk": "anthropic",
+     "model": null,
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": null,
+     "flags": [
+      "may stream",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_02",
+     "file": "src/upsonic/models/openai.py",
+     "line": 710,
+     "sdk": "openai",
+     "model": null,
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": null,
+     "flags": [
+      "may stream",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "cs_03",
+     "file": "src/upsonic/models/openai.py",
+     "line": 1702,
+     "sdk": "openai",
+     "model": null,
+     "shape": "tool call",
+     "shape_guessed": false,
+     "streaming": null,
+     "flags": [
+      "may stream",
+      "prompt built at runtime"
+     ],
+     "price_ratio": null,
+     "price_note": "model set at runtime"
+    },
+    {
+     "id": "emb_01",
+     "file": "src/upsonic/embeddings/azure_openai_provider.py",
+     "line": 285,
+     "sdk": "openai",
+     "model": null,
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    },
+    {
+     "id": "emb_02",
+     "file": "src/upsonic/embeddings/openai_provider.py",
+     "line": 222,
+     "sdk": "openai",
+     "model": null,
+     "shape": "embedding",
+     "shape_guessed": false,
+     "streaming": false,
+     "flags": [],
+     "price_ratio": null,
+     "price_note": "no Nemotron embedding tier"
+    }
+   ],
+   "warnings": []
+  }
+ ],
+ "skipped": [
+  {
+   "repo": "NousResearch/hermes-agent",
+   "stars": 255586,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "microsoft/markitdown",
+   "stars": 191314,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "Significant-Gravitas/AutoGPT",
+   "stars": 187677,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "langgenius/dify",
+   "stars": 159066,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "open-webui/open-webui",
+   "stars": 156304,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "vllm-project/vllm",
+   "stars": 94430,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "unslothai/unsloth",
+   "stars": 78327,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "headroomlabs-ai/headroom",
+   "stars": 76751,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "calesthio/OpenMontage",
+   "stars": 70296,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "asgeirtj/system_prompts_leaks",
+   "stars": 69941,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "BerriAI/litellm",
+   "stars": 61672,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "hesreallyhim/awesome-claude-code",
+   "stars": 56112,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "Aider-AI/aider",
+   "stars": 49668,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "oobabooga/textgen",
+   "stars": 47737,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "zhayujie/CowAgent",
+   "stars": 47483,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "anthropics/claude-plugins-official",
+   "stars": 43409,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "wshobson/agents",
+   "stars": 41247,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "mouredev/Hello-Python",
+   "stars": 37817,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "davila7/claude-code-templates",
+   "stars": 32790,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "openai/openai-python",
+   "stars": 31893,
+   "reason": "the OpenAI SDK itself"
+  },
+  {
+   "repo": "mlflow/mlflow",
+   "stars": 28470,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "SYSTRAN/faster-whisper",
+   "stars": 25997,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "karpathy/minGPT",
+   "stars": 24960,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "guillaumemeyer/watermarks-remover",
+   "stars": 24552,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "comet-ml/opik",
+   "stars": 22786,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "modelscope/FunASR",
+   "stars": 20769,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "openai/gpt-oss",
+   "stars": 20479,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "tanweai/pua",
+   "stars": 19722,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "openai/tiktoken",
+   "stars": 19495,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "lss233/kirara-ai",
+   "stars": 19122,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "emcie-co/parlant",
+   "stars": 18306,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "wanshuiyin/Auto-claude-code-research-in-sleep",
+   "stars": 17794,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "Evolink-AI/awesome-gpt-image-2-API-Prompts",
+   "stars": 17325,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "cft0808/edict",
+   "stars": 17006,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "openai/baselines",
+   "stars": 16773,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "kyegomez/OpenMythos",
+   "stars": 14907,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "e2b-dev/E2B",
+   "stars": 14475,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "567-labs/instructor",
+   "stars": 14038,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "DLR-RM/stable-baselines3",
+   "stars": 13916,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "xszyou/Fay",
+   "stars": 13581,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "jina-ai/clip-as-service",
+   "stars": 12832,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "FareedKhan-dev/train-llm-from-scratch",
+   "stars": 12392,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "dataelement/bisheng",
+   "stars": 12060,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "EmbraceAGI/awesome-chatgpt-zh",
+   "stars": 11768,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "lucidrains/DALLE2-pytorch",
+   "stars": 11302,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "aden-hive/hive",
+   "stars": 11113,
+   "reason": "The repository archive is over 25 MB."
+  },
+  {
+   "repo": "xonsh/xonsh",
+   "stars": 9680,
+   "reason": "no file the scanner reads imports openai or anthropic"
+  },
+  {
+   "repo": "anthropics/anthropic-sdk-python",
+   "stars": 3986,
+   "reason": "the Anthropic SDK itself"
+  }
+ ]
+}
