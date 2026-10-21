@@ -15,7 +15,8 @@ Per run, on a sandbox copy of the target repo:
 3. every patch is checked: the backstop (each file that ships as code, on disk, AST-identical to what
    Offramp's code wrote; no new ones), no removed tests; the repo's ruff + pytest in the sandbox; and, where
    an eval case can drive it, the probe (the migrated function, run there, must send exactly build_request's
-   request). Up to REPAIRS repair rounds (Ultra). Any failure: the site becomes MANUAL_REVIEW;
+   request). Up to REPAIRS repair rounds (Ultra), each applied to, and shown, the files as the last checked
+   try left them. Any failure: the site becomes MANUAL_REVIEW;
 4. the sites green alone are merged in site order and checked together, the backstop and the probe again
    too: a site whose code changed drops with every site whose patch edited code it reads; a red check gets
    one combined repair (tests and fakes only), then sites are added one at a time (MANUAL_REVIEW if dropped).
@@ -25,6 +26,7 @@ import ast
 import difflib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -38,6 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from openai import APIStatusError
 from pydantic import BaseModel, Field
 
 from offramp.agents.pr_writer import TIER_NAMES, is_test_path, threshold
@@ -59,21 +62,46 @@ from offramp.tf.budget import BudgetExceeded
 from offramp.tf.client import LLM, _merge, plan_structured
 from offramp.tf.tiers import get_tier, reasoning_params
 
+log = logging.getLogger(__name__)
+
 ROLE = "patcher"
 MAX_TOKENS = 8000
 REPAIR_MAX_TOKENS = 12000  # a complete second set of blocks, with room to spare (a recorded repair ran out)
 REPAIRS = 3  # tries after the first, each shown the last failure; a repeated patch stops at once
 REPAIR = """Your edits were not accepted: {failure}
-Reply with SEARCH/REPLACE edit blocks only, no analysis or explanation, then the NOTES line. Each file you \
-name is taken as shown in my first message with your new blocks applied, so give every block that file \
-needs, not only the fix; a file you do not name keeps your previous edits. Begin with `FILE:`."""
+Reply with SEARCH/REPLACE edit blocks only, no analysis or explanation, then the NOTES line. Your blocks \
+apply to each file as it is now: as shown under "Files now" below where it changed since my first message \
+(your checked edits, the imports Offramp added and the repo's formatting are in it) or where a SEARCH \
+missed, else as shown in my first message. Copy every SEARCH from that text and give only the blocks still \
+needed: edits already checked stay in, and leaving one out does not drop it; to drop one, send a block that \
+restores the earlier text. Begin with `FILE:`."""
 DELETED = """Your patch deletes {tests}. Never delete a test: keep each one under its name and rewrite it \
 so it asserts the new Nemotron request (the model ID, keyword arguments and message layout Offramp now \
 sends) where it pinned the old provider's."""
 WHOLE_FILE_LINES = 300  # a test file shorter than this may come back whole (offered after a SEARCH miss)
+FILES_NOW_CHARS = 40_000  # "Files now" holds the failure's own files first, then others while they fit
+LEFT_OUT = (
+    "Also changed, not shown again to keep this message short, so not editable in this repair: {files}."
+)
+NOT_SHOWN = "was not shown again in its current text, so it is not editable in this repair"
+SUPERSEDED = '### {path} (editable): superseded, its current text is under the latest "Files now"'
+ALREADY = "every block of the repair is already"  # its checked blocks re-sent, the one to drop left out
+RETURNED = "the repair returned to a patch already checked"
+# account- or config-wide (auth, out of credit, unknown model) or transient (what the SDK itself retries):
+# these fail the run, which can be resumed; any other 4xx fails only the site whose request it refused
+NOT_A_REFUSAL = (401, 402, 403, 404, 408, 409, 429)
+STALE = "internal: the conversation would show a stale copy of {path}"
+TOO_LARGE = (
+    "context length",
+    "context window",
+    "maximum context",
+    "too long",
+    "too many tokens",
+    "too large",
+)
 READ_ONLY = "is read-only: it ships as Offramp's code wrote it; edit only tests and fakes"
 WHOLE = """Your SEARCH text did not match exactly one place in {files}. Instead of SEARCH/REPLACE blocks, \
-you may give such a file whole, as shown in my first message with all your changes, in one block:
+you may give such a file whole, as shown under "Files now" with all your changes, in one block:
 FILE: {path}
 <<<<<<< WHOLE FILE
 every line of the new file
@@ -763,30 +791,124 @@ def _near(text: str, search: str) -> tuple[int, int] | None:
     return start, start + len("\n".join(have[runs[0] : runs[0] + n]))
 
 
-def _repair(failure: str, editable: dict[str, str]) -> str:
+def _file_block(path: str, mode: str, text: str) -> str:
+    """One file as every prompt shows it (and as `_supersede` finds it again)."""
+    return f"### {path} ({mode})\n```python\n{text.rstrip('\n')}\n```"
+
+
+def _repair(
+    failure: str, now: dict[str, str], visible: dict[str, str]
+) -> tuple[str, list[str], frozenset[str]]:
     """The repair turn: the last failure, plus what to do about the two that a bare retry repeated live: each
     test the patch deleted, named, to be rewritten; after a SEARCH miss, the short test files it missed in
-    offered whole. `failure` may carry the last checked try's failure ("...; last failure: ...")."""
+    offered whole. `failure` may carry the last checked try's failure ("...; last failure: ...").
+
+    `now` is each editable file as the next blocks meet it, `visible` the text of its one copy in the
+    conversation so far. A file whose copy is not its current text (a checked try's edits, Offramp's imports,
+    the repo's formatting, a restore to the first text), or that a SEARCH missed, is shown again, so every
+    SEARCH can be copied from the text it is applied to (live run 6: repairs searched a blend of the first
+    text and their own earlier edits, or a file never shown again). The files the failure names are always
+    shown; others while they fit in FILES_NOW_CHARS (at least one). A file left out whose copy is stale is
+    named, and not editable this turn. Returns (the turn, the files it shows again, those left out stale).
+    """
     text = REPAIR.format(failure=failure)
     removed = re.findall(r"patch removes tests from (\S+): \[([^\]]*)\]", failure)
     deleted = [f"`{path}::{name}`" for path, names in removed for name in re.findall(r"'(\w+)'", names)]
     if deleted:
         text += "\n\n" + DELETED.format(tests=", ".join(deleted))
-    misses = re.findall(r"search text (?:not found|found \d+ times) in (\S+?)(?::| \()", failure)
-    missed = sorted(
-        {
-            p
-            for p in misses
-            if p in editable and is_test_path(p) and len(editable[p].splitlines()) < WHOLE_FILE_LINES
-        }
-    )
+    misses = {p for p in re.findall(r"search text (?:not found|found \d+ times) in (\S+?)(?::| \()", failure)
+              if p in now}  # fmt: skip
+    named = {p for p in now if re.search(rf"(?<![\w./-]){re.escape(p)}(?![\w/-]|\.\w)", failure)}
+    again, left, size = [], [], 0
+    for p in sorted(misses | {p for p in now if now[p] != visible[p]}, key=lambda p: (p not in named, p)):
+        if p in named or not again or size + len(now[p]) <= FILES_NOW_CHARS:
+            again, size = [*again, p], size + len(now[p])
+        else:  # stale (a miss is named, so always shown): listed, and not editable this turn
+            left.append(p)
+    missed = [
+        p for p in again if p in misses and is_test_path(p) and len(now[p].splitlines()) < WHOLE_FILE_LINES
+    ]
     if missed:
         text += "\n\n" + WHOLE.format(files=", ".join(f"`{p}`" for p in missed), path=missed[0])
-    return text
+    if again:
+        text += "\n\n## Files now\n" + "\n".join(_file_block(p, "editable", now[p]) for p in again)
+    if left:
+        text += "\n\n" + LEFT_OUT.format(files=", ".join(f"`{p}`" for p in left))
+    return text, again, frozenset(left)
 
 
-def _apply(edits: list[Edit], files: dict[str, str], locked: frozenset[str] = frozenset()) -> list[Problem]:
-    """Apply the edit blocks in order; `locked` files (code that ships) are shown but read-only."""
+@dataclass
+class _Copy:
+    """One copy of an editable file that Offramp put in the conversation: its message, its text."""
+
+    path: str
+    turn: int  # index of the message holding it
+    text: str
+    superseded: bool = False
+
+
+def _supersede(messages: list[dict[str, Any]], ledger: list[_Copy], paths: set[str]) -> list[dict[str, Any]]:
+    """`messages` with the live copy of each of `paths` replaced by a one-line marker, so the conversation
+    holds one copy of each file: the one under the latest "Files now" (copies of one file in several versions
+    were what cs_01's repairs blended, live run 6). A copy is marked superseded in `ledger` only once its own
+    block was found, and replaced, in its own message."""
+    out = [dict(m) for m in messages]
+    for c in ledger:
+        block = _file_block(c.path, "editable", c.text)
+        if c.path in paths and not c.superseded and out[c.turn]["content"].count(block) == 1:
+            out[c.turn]["content"] = out[c.turn]["content"].replace(block, SUPERSEDED.format(path=c.path))
+            c.superseded = True
+    return out
+
+
+def _stale(ledger: list[_Copy], now: dict[str, str], hidden: frozenset[str]) -> str | None:
+    """The rule every model request meets, read from Offramp's own record of the copies it placed (never from
+    the messages' text, which holds the target repo's files): each editable file not left out has exactly one
+    live copy, and it is the file's current text. The first file that breaks it, else None."""
+    for p, text in now.items():
+        live = [c.text for c in ledger if c.path == p and not c.superseded]
+        if p not in hidden and live != [text]:
+            return p
+    return None
+
+
+def _live(ledger: list[_Copy]) -> dict[str, str]:
+    """Each file's live copy's text (what the model sees of it now)."""
+    return {c.path: c.text for c in ledger if not c.superseded}
+
+
+def _resent(edits: list[Edit], applied: list[Edit], base: dict[str, str]) -> tuple[list[Edit], list[Edit]]:
+    """(the blocks still to apply, the checked blocks the reply leaves out of a file it names). A block a
+    checked try applied whose change is still in the text is not applied twice; one the model since undid is.
+    Leaving a block out does not drop it: a block that restores the earlier text does."""
+
+    def on(e: Edit) -> bool:  # its change is still in the text
+        text = base.get(e.path, "")
+        return e.search not in text or bool(e.replace) and e.replace in text
+
+    named = {e.path for e in edits}
+    fresh = [e for e in edits if e not in applied or not on(e)]
+    return fresh, [a for a in applied if a.path in named and a not in edits and on(a)]
+
+
+def _refusal(e: APIStatusError) -> str | None:
+    """A model request Token Factory refused for what it is (a 4xx: too large, malformed), in Offramp's words:
+    its HTTP status (its text is read for a size cause, never quoted). None for a transient failure (429, 5xx,
+    what the SDK retries) or an auth failure (401/403): those fail the run, which can then be resumed."""
+    if not 400 <= e.status_code < 500 or e.status_code in NOT_A_REFUSAL:
+        return None
+    big = e.status_code == 413 or any(w in f"{e.message} {e.body}".lower() for w in TOO_LARGE)
+    return f"the model request was {'too large' if big else 'refused'} (HTTP {e.status_code})"
+
+
+def _apply(
+    edits: list[Edit],
+    files: dict[str, str],
+    locked: frozenset[str] = frozenset(),
+    hidden: frozenset[str] = frozenset(),
+) -> list[Problem]:
+    """Apply the edit blocks in order; `locked` files (code that ships) are shown but read-only, `hidden` ones
+    (left out of the last repair turn in their current text) are not editable, whatever a block's label."""
     shown = dict(files)
     seen = set()
     for e in edits:
@@ -799,6 +921,8 @@ def _apply(edits: list[Edit], files: dict[str, str], locked: frozenset[str] = fr
             lines = len(shown[e.path].splitlines())
             if e.path in locked:
                 return [Problem("locked_file", f"{e.path} {READ_ONLY}", e.path)]
+            if e.path in hidden:
+                return [Problem("not_editable", f"{e.path} {NOT_SHOWN}", e.path)]
             if not is_test_path(e.path):
                 return [
                     Problem("not_editable", f"{e.path}: a whole-file block is for test files only", e.path)
@@ -823,6 +947,8 @@ def _apply(edits: list[Edit], files: dict[str, str], locked: frozenset[str] = fr
             n = 1
         if e.path in locked:
             return [Problem("locked_file", f"{e.path} {READ_ONLY}", e.path)]
+        if e.path in hidden:  # labelled so, or relabelled to it above
+            return [Problem("not_editable", f"{e.path} {NOT_SHOWN}", e.path)]
         near = _near(files[e.path], e.search) if n == 0 and e.search not in shown[e.path] else None
         # a slip in copying a long block still names one place; only the model's intended changes (its SEARCH
         # to its REPLACE) land there, never its mis-copied lines over the file's real ones
@@ -1690,8 +1816,7 @@ def _prompt(
         "```",
     ]
     for path, text in files.items():
-        mode = "read-only" if path in read_only else "editable"
-        lines += [f"### {path} ({mode})", "```python", text.rstrip("\n"), "```"]
+        lines.append(_file_block(path, "read-only" if path in read_only else "editable", text))
     return "\n".join(lines) + "\n"
 
 
@@ -1742,8 +1867,7 @@ def _together_prompt(
     lines += ["", "## What fails together", f"With all of them merged, {failing}", "", f"Repo ruff line "
               f"length: {width}.", "", "## Files"]  # fmt: skip
     for path in sorted(files, key=lambda p: p not in editable):
-        mode = "editable" if path in editable else "read-only"
-        lines += [f"### {path} ({mode})", "```python", files[path].rstrip("\n"), "```"]
+        lines.append(_file_block(path, "editable" if path in editable else "read-only", files[path]))
     return "\n".join(lines) + "\n"
 
 
@@ -2000,14 +2124,27 @@ def _settle(box: Sandbox, repo: Path, paths: list[str], before: dict[str, str], 
 
 
 def _attempt(
-    job: _Job, edits: list[Edit], repo: Path, box: Sandbox, formatted: bool, write
-) -> tuple[str | None, dict, PatchFailure | None]:
-    """Apply one set of edits to the base, check it alone, then put the base back. (None, the site's patched
-    files, None) when the repo is green with it and its code is the code Offramp wrote; else (why not, {}, the
-    failure's kind and the files it names)."""
-    new = dict(job.shown)
+    job: _Job,
+    edits: list[Edit],
+    repo: Path,
+    box: Sandbox,
+    formatted: bool,
+    write,
+    base: dict[str, str] | None = None,
+    tried: list | None = None,
+    hidden: frozenset[str] = frozenset(),
+) -> tuple[str | None, dict | None, PatchFailure | None]:
+    """Apply one set of edits to `base` (the files as shown in the first message unless given), check it
+    alone, then put the disk back. (None, the site's patched files, None) when the repo is green with it and
+    its code is the code Offramp wrote; when the checks ran red, (why, the changed files as they were checked,
+    the failure); else (why not, {}, the failure's kind and the files it names). `tried` holds every tree
+    checked so far, with its outcome: a tree in it is not checked again (the sandbox would say the same) and
+    comes back as (its why, None, its failure). Blocks for `hidden` files (not shown in their current text in
+    the last repair turn) are refused."""
+    base = job.shown if base is None else base
+    new = dict(base)
     locked = frozenset(p for p in new if p in job.reference) if job.locked else frozenset()
-    problems = _apply(edits, new, locked)
+    problems = _apply(edits, new, locked, hidden)
     for path in new if not problems else []:
         try:
             if new[path] != job.shown[path]:
@@ -2029,6 +2166,8 @@ def _attempt(
         files = list(dict.fromkeys(p.file for p in problems))
         rejected = PatchFailure(kind=problems[0].kind, files=files, tests=deleted)
         return f"patch rejected (patch rules): {'; '.join(p.text for p in problems)}", {}, rejected
+    if (seen := next((t for t in tried or [] if t[0] == new), None)) is not None:
+        return seen[1], None, seen[2]
     changed = [p for p in new if new[p] != job.before[p]]
     for p in changed:
         write(p, new[p])
@@ -2042,20 +2181,24 @@ def _attempt(
         (repo / p).write_text(job.before[p])
     if off:
         text = f"the patch changes code that ships (only tests may change): {'; '.join(off.values())}"
-        return text, {}, PatchFailure(kind="backstop", files=sorted(off))
-    if why:
-        return (
+        out = text, {}, PatchFailure(kind="backstop", files=sorted(off))
+    elif why:
+        out = (
             f"the patched code does not send the evaluated request: {why}",
             {},
             PatchFailure(kind="probe_mismatch"),
         )
-    if result.ok:
+    elif result.ok:
         return None, patched, None
-    return (
-        f"repo checks failed on the patch ({result.mode}): {_summary(result.output)}",
-        {},
-        PatchFailure(kind="checks_failed"),
-    )
+    else:  # the files as checked: what a repair is shown and applied to
+        out = (
+            f"repo checks failed on the patch ({result.mode}): {_summary(result.output)}",
+            patched,
+            PatchFailure(kind="checks_failed"),
+        )
+    if tried is not None:
+        tried.append((new, out[0], out[2].model_copy(update={"model_edit": bool(edits)})))
+    return out
 
 
 def compose_patches(
@@ -2320,19 +2463,28 @@ def compose_patches(
         job = _Job(local, shown, before, {**base_code, **code}, client_module=client_at[1], width=width,
                    constants=imports, locked=locked, verify=probe)  # fmt: skip
         # Offramp's own changes alone: green needs no model call; red shows the model what fails
-        failure, patched, last = _attempt(job, [], repo, box, formatted, write)
+        tried: list = []  # every tree checked for this site, with its outcome (see _attempt)
+        failure, patched, last = _attempt(job, [], repo, box, formatted, write, tried=tried)
         if last is not None and last.kind == "probe_mismatch":  # the model may not touch it
             why = f"Offramp's own rewrite was run and {failure.partition(': ')[2]}"
             downgrade(v, f"patch not composed: {why}", last)
             continue
-        tried, checked, applied = [[]], failure, []  # tries; what the last said; the last checked one's edits
+        checked, applied, sent = failure, [], []  # the last check's failure; checked tries' blocks; replies
+        base = dict(shown)  # what the next blocks meet: the first message's text, then the last checked try's
+        hidden: frozenset[str] = frozenset()  # changed files the last repair turn had no room to show
         ended: PatchFailureKind | None = None  # how the loop ended when not on a checked try's failure
         replies = 0  # the model's replies for this site
         calls = (_call_text(original, local), _call_text(code[site.file], local))
         read_only = {p for p in shown if p in job.reference} if locked else set()
         prompt = _prompt(local, tier, shown, read_only, client, client_at, width, calls, done, failure)
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
+        editable = [p for p in shown if p not in read_only]
+        ledger = [_Copy(p, 1, shown[p]) for p in editable]  # the copies of editable files in the conversation
         for attempt in range(1 + REPAIRS if failure else 0):
+            if (stale := _stale(ledger, {p: base[p] for p in editable}, hidden)) is not None:
+                failure, ended = STALE.format(path=stale), "internal_check"
+                log.error("%s: %s; nothing was sent to the model", site.id, failure)
+                break
             try:
                 res = llm.chat(
                     role=ROLE,
@@ -2348,6 +2500,12 @@ def compose_patches(
                 failure = f"patch not composed: {e}" + (f"; last failure: {failure}" if failure else "")
                 ended = "budget_stop"
                 break
+            except APIStatusError as e:  # a refusal (too large, a 4xx) fails this site only, never cached
+                if (refused := _refusal(e)) is None:
+                    raise  # transient or auth: the run fails and can be resumed
+                failure = f"patch not composed: {refused}" + (f"; last failure: {failure}" if failure else "")
+                ended = "provider_error"
+                break
             replies += 1
             edits = parse_edits(res.output.text or "").edits
             if not edits:  # empty or malformed: ask again, no check needed
@@ -2356,26 +2514,39 @@ def compose_patches(
                 )
                 ended = "no_edit_block"
             else:
-                named = {e.path for e in edits}
-                edits += [e for e in applied if e.path not in named]  # the last checked try's, kept as is
-                if edits in tried:  # a patch already tried (A-B-A too): the sandbox would say the same again
+                fresh, omitted = _resent(edits, applied, base)
+                # the same reply on the same text again, or only checked blocks: nothing new to check
+                if (base, hidden, edits) in sent or not (fresh or omitted):
                     failure = f"repair produced no change; last failure: {failure}"
                     ended = "no_change"
                     break
-                tried.append(edits)
-                failure, patched, found = _attempt(job, edits, repo, box, formatted, write)
-                checked, ended = failure, None
+                sent.append((base, hidden, edits))
+                if not fresh:  # checked blocks left out to drop them: the tree is still the one checked last
+                    _, was, last = next(t for t in tried if t[0] == base)
+                    failure = f"{ALREADY} applied, and leaving one out does not drop it; last failure: {was}"
+                    ended = None
+                    break
+                why, found_patched, found = _attempt(
+                    job, fresh, repo, box, formatted, write, base, tried, hidden
+                )
+                if found_patched is None:  # a tree checked before (A-B-A, an undo): its own failure, its kind
+                    failure, last, ended = f"{RETURNED}; its failure: {why}", found, None
+                    break
+                failure, patched, checked, ended = why, found_patched, why, None
                 last = found.model_copy(update={"model_edit": True}) if found else last
-                if found and found.kind == "checks_failed":  # it applied: a repair builds on it
-                    applied = edits
+                if found and found.kind == "checks_failed":  # it applied: a repair builds on it, as checked
+                    base = {p: patched.get(p, job.before[p]) for p in base}
+                    tried.append((base, why, last))
+                    applied += fresh
                 if failure is None:
                     break
-            repair = _repair(failure, {p: t for p, t in shown.items() if p not in read_only})
+            repair, again, hidden = _repair(failure, {p: base[p] for p in editable}, _live(ledger))
             messages = [
-                *messages,
+                *_supersede(messages, ledger, set(again)),
                 {"role": "assistant", "content": res.output.text or ""},
                 {"role": "user", "content": repair},
             ]
+            ledger += [_Copy(p, len(messages) - 1, base[p]) for p in again]
         if failure is not None:
             outer = {"kind": ended, "last": last.kind} if ended else {}
             downgrade(v, failure, last.model_copy(update={**outer, "tries": replies}))
@@ -2485,24 +2656,36 @@ def compose_patches(
         read_only = frozenset(set(shown) - editable) if locked else frozenset()
         prompt = _together_prompt([by_id[sid] for sid in combined], reach, failure, shown, editable, width)
         messages = [{"role": "system", "content": TOGETHER}, {"role": "user", "content": prompt}]
-        tried, checked, applied = [[]], failure, []
+        tried, checked, applied, base = [(dict(shown), failure)], failure, [], dict(shown)  # as per site
+        sent: list = []
+        hidden: frozenset[str] = frozenset()
+        ledger = [_Copy(p, 1, shown[p]) for p in editable]
         for _ in range(TOGETHER_REPAIRS):
+            if (stale := _stale(ledger, {p: base[p] for p in editable}, hidden)) is not None:
+                log.error("combined repair: %s; nothing was sent to the model", STALE.format(path=stale))
+                return [], STALE.format(path=stale)
             try:
                 res = llm.chat(role=ROLE, tier=Tier.ULTRA, messages=messages, max_tokens=REPAIR_MAX_TOKENS,
                                temperature=0.0, reasoning="off")  # fmt: skip
             except BudgetExceeded as e:
                 return [], f"combined repair not composed: {e}; last failure: {checked}"
+            except APIStatusError as e:  # a refusal fails the combined repair; anything else, the run
+                if (refused := _refusal(e)) is None:
+                    raise
+                return [], f"combined repair not composed: {refused}; last failure: {checked}"
             edits = parse_edits(res.output.text or "").edits
             if not edits:
                 failure = f"the reply holds no complete edit block; last failure: {checked}"
             else:
-                named = {e.path for e in edits}
-                edits += [e for e in applied if e.path not in named]
-                if edits in tried:
+                fresh, omitted = _resent(edits, applied, base)
+                if (base, hidden, edits) in sent or not (fresh or omitted):
                     return [], f"combined repair produced no change; last failure: {checked}"
-                tried.append(edits)
-                new = dict(shown)
-                problems = [p.text for p in _apply(edits, new, read_only)]
+                if not fresh:
+                    why = f"{ALREADY} applied, and leaving one out does not drop it; last failure: {checked}"
+                    return [], why
+                sent.append((base, hidden, edits))
+                new = dict(base)
+                problems = [p.text for p in _apply(fresh, new, read_only, hidden)]
                 gone = {p: _test_names(shown[p]) - _test_names(new[p]) for p in new if is_test_path(p)}
                 problems += [f"patch removes tests from {p}: {sorted(g)}" for p, g in gone.items() if g]
                 for p in sorted(editable) if not problems else []:
@@ -2510,6 +2693,8 @@ def compose_patches(
                         n for n in _test_bodies_changed(shown[p], new[p]) if (p, n) not in failing
                     ):
                         problems.append(f"only the failing tests may change: {p}::{name} did")
+                if not problems and (seen := next((w for t, w in tried if t == new), None)):
+                    return [], f"{RETURNED}; its failure: {seen}"
                 if problems:
                     failure = f"patch rejected (patch rules): {'; '.join(problems)}"
                 else:
@@ -2525,12 +2710,18 @@ def compose_patches(
                     failure = checked = (
                         f"repo checks failed on the merged patches ({result.mode}): {_summary(result.output)}"
                     )
+                    # as checked, the next blocks meet it (after a backstop or probe failure too, unlike per
+                    # site: every later merged tree is drift-checked again)
+                    base = {**shown, **{p: read(p) for p in changed}}
+                    tried += [(new, failure), (base, failure)]
                     for p in changed:
                         write(p, shown[p])
-                    applied = edits
-            repair = _repair(failure, {p: shown[p] for p in editable})
-            messages = [*messages, {"role": "assistant", "content": res.output.text or ""},
+                    applied += fresh
+            repair, again, hidden = _repair(failure, {p: base[p] for p in editable}, _live(ledger))
+            messages = [*_supersede(messages, ledger, set(again)),
+                        {"role": "assistant", "content": res.output.text or ""},
                         {"role": "user", "content": repair}]  # fmt: skip
+            ledger += [_Copy(p, len(messages) - 1, base[p]) for p in again]
         return [], failure
 
     merged, combined = merge([v.site_id for v in to_migrate if v.site_id in versions])

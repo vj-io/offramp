@@ -580,6 +580,17 @@ def test_non_retryable_4xx_fails_immediately(tmp_path):
     assert len(server.requests) == 1
 
 
+def test_a_refused_request_is_never_cached_as_a_reply(tmp_path):
+    """A 4xx (e.g. a request past the context window) raises, and the patcher fails that site on it; nothing
+    is cached, so the same request reaches Token Factory again."""
+    server = Server(400, completion("answered"))
+    client = make_client(tmp_path, server)
+    with pytest.raises(openai.BadRequestError):
+        chat(client)
+    assert not list((tmp_path / "cache").glob("**/*.json"))
+    assert chat(client).output.text == "answered" and len(server.requests) == 2
+
+
 def test_live_client_without_a_key_fails_clearly(tmp_path, monkeypatch):
     monkeypatch.delenv("NEBIUS_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="NEBIUS_API_KEY"):

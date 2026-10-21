@@ -57,7 +57,7 @@ RECORDED = {
     "cs_01": "KEEP_CLOSED",
     "cs_02": "KEEP_CLOSED",
     "cs_03": "KEEP_CLOSED",
-    "cs_04": "MIGRATE",
+    "cs_04": "MANUAL_REVIEW",  # recorded MIGRATE: Task 24 changed its Ultra repair turn (not re-recorded)
     "cs_05": "MANUAL_REVIEW",
     "cs_06": "MIGRATE",
 }
@@ -138,6 +138,8 @@ def test_record_demo_run(tmp_path, monkeypatch):
 def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch, unrecorded_patcher_calls_stop):
     """Task 18 changed the patcher's repair turn after a deleted test, so cs_05's Ultra repair is not recorded
     for it yet: the replay stops cs_05 there (see the fixture), with its recorded first try's failure kept.
+    Task 24 shows a repair the files as the last checked try left them, so cs_04's Ultra repair (recorded
+    green) is not recorded for that turn yet: the replay stops cs_04 on its first try's checked failure.
     The free-text per-case floor (holdout only) changes nothing here: no recorded holdout case is below 3."""
     log = run_demo(tmp_path, monkeypatch, live=False)
     snap = pipeline.snapshot(log.run_id, log.events)
@@ -150,13 +152,14 @@ def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch, unrecorded_patche
         assert v["best_tier"] == "lightning" and v["parity_pct"] < 95
         assert f"parity vs reference {v['parity_pct']:.1f}% < 95%" in v["reason"]
     # cs_05, the reasoning canary, reached parity on Lightning here (12 of 12 oracle answers) but its patch
-    # did not pass, and the site was re-announced for review; cs_06's patch passed
+    # did not pass, and the site was re-announced for review (cs_04 too, in this replay); cs_06's patch passed
     routed = {
         sid: [(e.payload["decision"], e.payload["tier"]) for e in log.events
               if e.type == "verdict" and e.call_site_id == sid]
-        for sid in ("cs_05", "cs_06")
+        for sid in ("cs_04", "cs_05", "cs_06")
     }  # fmt: skip
     assert routed == {
+        "cs_04": [("MIGRATE", "lightning"), ("MANUAL_REVIEW", "lightning")],
         "cs_05": [("MIGRATE", "lightning"), ("MANUAL_REVIEW", "lightning")],
         "cs_06": [("MIGRATE", "lightning")],
     }
@@ -165,14 +168,14 @@ def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch, unrecorded_patche
         "patch removes tests from tests/test_call_sites.py: "
         "['test_openai_reasoning_site_follows_the_o3_parameter_rules']"
     )
-    # cs_04's and cs_06's patches passed the demo repo's own ruff + pytest, alone and together
-    patch = json.loads((log.dir / "patch.json").read_text())
-    assert (patch["alone"], patch["combined"]) == (
-        {"cs_04": True, "cs_05": False, "cs_06": True},
-        ["cs_04", "cs_06"],
+    assert found["cs_04"]["reason"].startswith(
+        "patch not composed: no recording of this patcher call; last failure: repo checks failed on the patch"
     )
-    assert {"helphub/qa/rag_answer.py", "helphub/summaries/summarize.py"} <= set(patch["files"])
-    assert "helphub/refunds/plan.py" not in patch["files"]
+    # cs_06's patch passed the demo repo's own ruff + pytest (recorded live: cs_04's too, alone and together)
+    patch = json.loads((log.dir / "patch.json").read_text())
+    assert (patch["alone"], patch["combined"]) == ({"cs_04": False, "cs_05": False, "cs_06": True}, ["cs_06"])
+    assert "helphub/summaries/summarize.py" in patch["files"]
+    assert not {"helphub/qa/rag_answer.py", "helphub/refunds/plan.py"} & set(patch["files"])
     assert snap.totals.sites == 6 and snap.totals.cases == sum(c.dev + c.holdout for c in snap.case_summaries)
     # cache-only: every response came from the cassettes, nothing was spent
     assert (snap.totals.tokens_in, snap.totals.tokens_out, snap.totals.tf_spend_usd) == (0, 0, 0.0)
