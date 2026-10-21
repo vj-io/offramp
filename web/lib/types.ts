@@ -161,6 +161,7 @@ export type PatchFailureKind =
   | "no_change"
   | "search_miss"
   | "deletes_tests"
+  | "skips_tests"
   | "locked_file"
   | "not_editable"
   | "does_not_parse"
@@ -178,7 +179,7 @@ export interface PatchFailure {
   tries?: number; // the model's replies for this site
   model_edit?: boolean; // the last checked try was the model's edits (else Offramp's changes alone)
   files?: string[];
-  tests?: string[]; // deletes_tests: "path::name"
+  tests?: string[]; // deletes_tests, skips_tests: "path::name"
 }
 
 // Where the source model's price behind cost_before came from (Task 19): the report's Tavily panel.

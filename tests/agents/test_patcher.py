@@ -37,6 +37,7 @@ from offramp.agents.patcher import (
     _apply,
     _file_block,
     _map_reply,
+    _new_skips,
     _prepare,
     _repair,
     _rewrite_call,
@@ -70,7 +71,7 @@ from offramp.agents.patcher import (
 )
 from offramp.agents.pr_writer import is_test_path, manual_reason
 from offramp.agents.translate import build_request, system_message
-from offramp.sandbox import NO_LINTER, CheckResult, Sandbox, configures_ruff, docker_available
+from offramp.sandbox import NO_LINTER, TIDY, CheckResult, Sandbox, configures_ruff, docker_available
 from offramp.schemas import Adapter, AdapterSpec, CallSite, EvalCase, PatchFailure, RunConfig, Tier, Verdict
 from offramp.tf import BudgetExceeded, FakeLLM, TFClient, get_tier
 
@@ -4599,8 +4600,6 @@ def test_a_dependency_edit_the_sandbox_did_not_install_is_named_in_the_pr(tmp_pa
 
 # ------------------------------------------------------- Task 26: orphaned SDK imports, edits by name
 
-SDKS = {"anthropic", "openai"}
-
 
 @pytest.mark.parametrize(
     ("before", "after", "expected"),
@@ -4635,23 +4634,33 @@ SDKS = {"anthropic", "openai"}
          "from anthropic import A\n\nx = A\n"),
         ("import json\nfrom openai import OpenAI\n\nA = OpenAI(json.dumps)\n",
          "import json\nfrom openai import OpenAI\n\nA = token_factory_client()\n",
-         "import json\n\nA = token_factory_client()\n"),
+         "A = token_factory_client()\n"),
+        ('"""Doc."""\n\nimport os\nimport json\n\nfrom app import go\n\nA = go(json, os)\n',
+         '"""Doc."""\n\nimport os\nimport json\n\nfrom app import go\n\nA = go(os)\n',
+         '"""Doc."""\n\nimport os\n\nfrom app import go\n\nA = go(os)\n'),
+        ('import os\nimport json\n\nfrom app import go\n\nA = go(json, os)\n',
+         'import os\nimport json\n\nfrom app import go\n\nA = go()\n',
+         'from app import go\n\nA = go()\n'),
+        ("import app.plugins  # registers the handlers\nimport app\n\nA = app.run()\n",
+         "import app.plugins  # registers the handlers\nimport app\n\nA = token_factory_client()\n",
+         "import app.plugins  # registers the handlers\n\nA = token_factory_client()\n"),
         ("from anthropic import Anthropic\n\n__all__ = ['Anthropic']\nA = Anthropic()\n",
          "from anthropic import Anthropic\n\n__all__ = ['Anthropic']\nA = token_factory_client()\n",
          "from anthropic import Anthropic\n\n__all__ = ['Anthropic']\nA = token_factory_client()\n"),
         ("from litellm import completion\n\nA = completion()\n",
          "from litellm import completion\n\nA = token_factory_client()\n",
-         "from litellm import completion\n\nA = token_factory_client()\n"),
+         "A = token_factory_client()\n"),
     ],
     ids=["first-of-two", "last-of-two", "module-import", "module-still-read", "alias", "unused-before-stays",
-         "parenthesized", "middle-run", "trailing-run", "non-sdk-orphan-stays", "all-entry",
-         "not-replaced-sdk"],
+         "parenthesized", "middle-run", "trailing-run", "two-adjacent-orphans", "one-of-a-group",
+         "a-whole-group", "dotted-side-effect-import-stays", "all-entry", "any-module"],
 )  # fmt: skip
-def test_only_the_sdk_names_offramps_rewrite_orphaned_are_dropped(before, after, expected):
+def test_only_the_names_a_change_orphaned_are_dropped(before, after, expected):
     """Live run 7: three Anthropic sites each rewired one `Anthropic()` in helphub/cli.py; merged, nothing
-    used the import and the repo's ruff failed (F401), dropping cs_06. Only a replaced SDK's name that was
-    read before the rewrite and is read nowhere after it goes; every other line stays as it was."""
-    out = drop_orphaned_imports(before, after, SDKS)
+    used the import and the repo's ruff failed (F401), dropping cs_06. A name read before the change and
+    nowhere after it goes, from any module (review I5: the lint autofix that did this for every unused import
+    is gone); an import unused before, or a dotted `import a.b` (it may run for its side effect), stays."""
+    out = drop_orphaned_imports(before, after)
 
     assert out == expected
     ast.parse(out)
@@ -5152,7 +5161,7 @@ def test_the_merged_tree_drops_the_tests_patch_of_the_import_it_dropped_and_says
         "removed 1 patch(es) of `tinyapp.cli.Anthropic`, which Offramp's rewrite removed" in result.warnings
     )
     assert result.change_notes[-2:] == [  # review M4: the PR says so, one line each
-        "replaced-SDK imports that Offramp's rewrite left unused were removed: "
+        "imports that Offramp's or the model's changes left unused were removed: "
         "`Anthropic` from `tinyapp/cli.py`",
         "test patches of those names were removed: 1 of `tinyapp.cli.Anthropic`",
     ]
@@ -5179,7 +5188,7 @@ def test_a_dead_patch_goes_from_the_test_shown_alone_when_one_site_orphans_the_i
     assert boxes[0].checks[2]["tests/test_cli.py"] == test.replace('"Anthropic"', '"token_factory_client"')
     assert result.files["tests/test_cli.py"] == test.replace('"Anthropic"', '"token_factory_client"')
     assert (  # dropped alone, so only the site's record says so
-        "replaced-SDK imports that Offramp's rewrite left unused were removed: "
+        "imports that Offramp's or the model's changes left unused were removed: "
         "`Anthropic` from `tinyapp/cli.py`"
     ) in result.change_notes
     assert (
@@ -5343,3 +5352,343 @@ def test_a_combined_repairs_by_name_edit_that_the_next_round_builds_on_is_report
         f"combined repair: an edit to `{TESTS}` was applied by function name "
         "(`test_motto_returns_the_reply`) after its SEARCH matched nowhere"
     ]
+
+
+# --------------------------------------------------- Task 26 fix round 2: I3, m1 (checks and decorators)
+
+CHECKS = (
+    "import unittest\nfrom unittest import mock\n\nimport pytest\n\n\ndef run(c):\n    return c.go()\n\n\n"
+    "def test_m():\n    c = mock.Mock()\n    run(c)\n    c.go.assert_called_once_with()\n\n\n"
+    "def test_r():\n    with pytest.raises(ValueError):\n        int('x')\n\n\n"
+    "def test_c():\n    pytest.raises(ValueError, int, 'x')\n\n\n"
+    "class TestK(unittest.TestCase):\n    def test_k(self):\n        self.assertEqual(1 + 2, 3)\n"
+    "        self.assertTrue(True)\n\n\n"
+    "@pytest.mark.parametrize('n', [1, 2, 3])\ndef test_p(n):\n    assert n\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("replace", "check"),
+    [
+        ("def test_m():\n    c = mock.Mock()\n    run(c)", "c.go.assert_called_once_with()"),
+        ("def test_r():\n    int('1')", "with pytest.raises(ValueError)"),
+        ("def test_c():\n    int('1')", "pytest.raises(ValueError, int, 'x')"),
+        ("class TestK(unittest.TestCase):\n    def test_k(self):\n        self.assertTrue(True)",
+         "self.assertEqual(1 + 2, 3)"),
+        ("@pytest.mark.parametrize('n', [1])\ndef test_p(n):\n    assert n",
+         "@pytest.mark.parametrize('n', [1, 2, 3])"),
+    ],
+    ids=["mock-assert-call", "raises-block", "raises-call", "unittest-assert", "parametrize-narrowed"],
+)  # fmt: skip
+def test_a_by_name_edit_may_not_drop_a_check_or_decorator_it_never_quoted(replace, check):
+    """Review I3: the I1 rule covered `assert` only, so a mock or unittest check, a `pytest.raises` block and
+    a file decorator the model never saw (a `parametrize` narrowed from 3 cases to 1) still dropped unseen."""
+    files = {"tests/test_k.py": CHECKS}
+
+    (problem,) = _apply([Edit(path="tests/test_k.py", search="nowhere at all", replace=replace)], files)
+
+    assert problem.text.endswith(
+        f"; applied by name, this edit would drop `{check}`, which your SEARCH never quoted: "
+        "keep it, or quote it to change it"
+    )
+    assert files == {"tests/test_k.py": CHECKS}
+
+
+@pytest.mark.parametrize(
+    ("search", "replace"),
+    [
+        ("nowhere at all", "def test_r():\n    with pytest.raises(ValueError):\n        int('y')"),
+        ("nowhere at all",
+         "@pytest.mark.parametrize('n', [1, 2, 3])\n@pytest.mark.slow\ndef test_p(n):\n    assert n"),
+        ("@pytest.mark.parametrize('n', [1, 2, 3])\ndef test_p(n):\n    pass",
+         "@pytest.mark.parametrize('n', [1])\ndef test_p(n):\n    assert n"),
+        ("nowhere at all", "def test_p(n):\n    assert n\n    assert n > 0"),
+    ],
+    ids=["raises-kept-body-changed", "decorator-kept-one-added", "decorator-quoted",
+         "no-decorator-keeps-the-files"],
+)  # fmt: skip
+def test_a_by_name_edit_that_keeps_or_quotes_each_check_and_decorator_applies(search, replace):
+    files = {"tests/test_k.py": CHECKS}
+
+    assert _apply([Edit(path="tests/test_k.py", search=search, replace=replace)], files) == []
+
+    assert (
+        files["tests/test_k.py"] != CHECKS and "@pytest.mark.parametrize('n', [1" in files["tests/test_k.py"]
+    )
+
+
+def test_a_check_is_quoted_only_by_a_whole_statement_not_a_substring():
+    """Review m1: `assert r` counted as quoted by a SEARCH holding `assert rate == 2`."""
+    source = "def test_x():\n    r, rate = 1, 2\n    assert r\n    assert rate == 2\n"
+    files = {"tests/test_x.py": source}
+    edit = Edit(path="tests/test_x.py", search="    assert rate == 2\n    nowhere",
+                replace="def test_x():\n    r, rate = 1, 2\n    assert rate == 2")  # fmt: skip
+
+    (problem,) = _apply([edit], files)
+
+    assert "this edit would drop `assert r`, which your SEARCH never quoted" in problem.text
+
+
+# --------------------------------------------------- Task 26 fix round 2: I4, no model edit skips a test
+
+SKIPLESS = (
+    "import unittest\n\nimport pytest\n\n\ndef test_a():\n    assert 1\n\n\n"
+    "@pytest.mark.skipif(True, reason='old')\ndef test_b():\n    assert 1\n\n\n"
+    "class TestK(unittest.TestCase):\n    def test_k(self):\n        self.assertTrue(1)\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "gained"),
+    [
+        ("def test_a():", "@pytest.mark.skip\ndef test_a():", ["`test_a` gains `pytest.mark.skip`"]),
+        ("def test_a():", "@pytest.mark.xfail(reason='x')\ndef test_a():",
+         ["`test_a` gains `pytest.mark.xfail`"]),
+        ("def test_a():\n    assert 1", "def test_a():\n    pytest.skip('later')\n    assert 1",
+         ["`test_a` gains `pytest.skip`"]),
+        ("def test_a():\n    assert 1", "def test_a():\n    pytest.importorskip('numpy')\n    assert 1",
+         ["`test_a` gains `pytest.importorskip`"]),
+        ("def test_a():\n    assert 1", "def test_a():\n    pytest.xfail('later')\n    assert 1",
+         ["`test_a` gains `pytest.xfail`"]),
+        ("        self.assertTrue(1)", "        self.skipTest('later')\n        self.assertTrue(1)",
+         ["`TestK.test_k` gains `self.skipTest`"]),
+        ("class TestK(", "@unittest.skip('later')\nclass TestK(", ["`TestK` gains `unittest.skip`"]),
+        ("import pytest\n", "import pytest\n\npytestmark = pytest.mark.skip\n",
+         ["`pytestmark` gains `pytest.mark.skip`"]),
+        ("@pytest.mark.skipif(True, reason='old')", "@pytest.mark.skipif(False, reason='new')", []),
+        ("def test_a():\n    assert 1", "def test_a():\n    assert 2", []),
+    ],
+    ids=["mark-skip", "mark-xfail", "pytest-skip", "importorskip", "pytest-xfail", "skipTest",
+         "unittest-skip",
+         "pytestmark", "existing-skipif-changed", "no-skip"],
+)  # fmt: skip
+def test_a_skip_or_xfail_a_test_did_not_have_is_found(before, after, gained):
+    """Review I4: an edit could add `pytest.skip(...)` or `@pytest.mark.skip` and the sandbox counted the
+    skipped test as green; a test switched off passes every other rule."""
+    assert _new_skips(SKIPLESS, SKIPLESS.replace(before, after, 1)) == {
+        k: [m]
+        for k, m in (g.removeprefix("`").replace("` gains `", " ").removesuffix("`").split() for g in gained)
+    }
+
+
+def test_a_model_edit_that_skips_a_test_is_refused_naming_it():
+    skip = Edit(path=TESTS, search="def test_greet_strips_the_reply():",
+                replace="@pytest.mark.skip(reason='flaky')\ndef test_greet_strips_the_reply():")  # fmt: skip
+    llm = patcher_llm(PatchEdits(edits=[skip]), PatchEdits(edits=[skip]), migrate(SHOUT))
+
+    result = run(llm)
+
+    greet = verdict(result, "cs_01")
+    assert greet.decision == "MANUAL_REVIEW" and greet.patch_failure.last == "skips_tests"
+    assert (
+        f"patch makes tests skip in {TESTS}: `test_greet_strips_the_reply` gains `pytest.mark.skip`; "
+        "never switch a test off: make it pass"
+    ) in greet.reason
+    assert greet.patch_failure.tests == [f"{TESTS}::test_greet_strips_the_reply"]
+
+
+def test_a_combined_repair_that_skips_a_failing_test_is_refused():
+    off = Edit(path=TESTS, search="def test_motto_returns_the_reply():\n",
+               replace="def test_motto_returns_the_reply():\n    pytest.skip('later')\n")  # fmt: skip
+    again = off.model_copy(update={"replace": off.replace.replace("'later'", "'later!'")})
+    llm = patcher_llm(migrate(GREET), migrate(SHOUT), PatchEdits(edits=[off]), PatchEdits(edits=[again]))
+
+    result = run(llm, results=[True, True, True, True, False, False, False],
+                 output="FAILED tests/test_tinyapp.py::test_motto_returns_the_reply")  # fmt: skip
+
+    assert (
+        "patch makes tests skip in tests/test_tinyapp.py: `test_motto_returns_the_reply` gains `pytest.skip`"
+        in (result.combined_failure)
+    )
+    assert "pytest.skip" not in "".join(result.files.values())
+
+
+class SkipCountingSandbox(FakeSandbox):
+    """A green run's pytest summary counts a skip for each `# skipped at run time` line in the tests (a
+    fixture or conftest that skips: nothing a static rule sees)."""
+
+    def check(self) -> CheckResult:
+        result = super().check()
+        n = sum(t.count("# skipped at run time") for p, t in self._files().items() if is_test_path(p))
+        return (
+            CheckResult(ok=True, mode="docker", output=f"3 passed, {n} skipped in 0.1s")
+            if result.ok
+            else result
+        )
+
+
+def test_a_patch_whose_run_skips_more_tests_than_the_untouched_repo_is_red():
+    """Review I4's backstop: the patched run's skipped + xfailed may not exceed the untouched run's."""
+    hide = Edit(path=TESTS, search="def test_greet_strips_the_reply():",
+                replace="# skipped at run time\ndef test_greet_strips_the_reply():")  # fmt: skip
+    undo = Edit(path=TESTS, search="# skipped at run time\n", replace="")
+    llm = patcher_llm(
+        PatchEdits(edits=[hide]), PatchEdits(edits=[undo, *migrate(GREET).edits]), migrate(SHOUT)
+    )
+
+    result = run(llm, box=SkipCountingSandbox)
+
+    assert (
+        "repo checks failed on the patch (docker): the patch makes 1 more tests skip"
+        in (llm.calls[1]["messages"][-1]["content"])
+    )
+    assert (
+        verdict(result, "cs_01").decision == "MIGRATE" and "# skipped at run time" not in result.files[TESTS]
+    )
+
+
+# --------------------------------------------------- Task 26 fix round 2: I5, the repo's imports kept
+
+
+class RuffTidySandbox(FakeSandbox):
+    """`tidy` runs `Sandbox.tidy`'s own ruff command (`TIDY`) on each file, with this venv's ruff, in the repo
+    (its ruff config): what `_settle` does to a patch."""
+
+    def tidy(self, paths: list[str], format_code: bool = False) -> None:
+        super().tidy(paths, format_code)
+        ruff = str(Path(sys.executable).parent / "ruff")
+        for p in paths:
+            text = (self.repo / p).read_text()
+            cmd = [ruff, *TIDY[1:], "--stdin-filename", p, "-"]
+            run = subprocess.run(cmd, input=text, capture_output=True, text=True, cwd=self.repo, check=True)
+            (self.repo / p).write_text(run.stdout or text)
+
+
+def test_an_import_kept_for_another_module_survives_settle():
+    """Review I5: `_settle`'s `ruff check --fix --select I001,F401` deleted the import I2 kept (ruff checks a
+    file alone), while the run warned "kept"."""
+    repo = anthropic_tiny("kept-import-tidy", {"tinyapp/cli.py": DIRECT_CLI, "tinyapp/admin.py": ADMIN})
+
+    result = compose_anthropic(repo, "kept-import-tidy-run", box=lambda r: RuffTidySandbox(r, precheck=True))
+
+    assert result.files["tinyapp/cli.py"].startswith("from anthropic import Anthropic\n")
+    assert [w for w in result.warnings if w.startswith("kept the `Anthropic` import in `tinyapp/cli.py`")]
+
+
+def test_the_repos_own_unused_and_side_effect_imports_survive_settle():
+    """Review autofix (a): the CLI `--select` overrode the repo's lint config, so `ruff --fix` removed an
+    import the repo left unused, and a side-effect `import app.plugins`, from every file Offramp touched."""
+    head = "import os  # unused: the repo's own lint state\nimport tinyapp.motto  # registers, say\n"
+    repo = anthropic_tiny("own-imports-tidy", {"tinyapp/cli.py": head + DIRECT_CLI})
+
+    result = compose_anthropic(repo, "own-imports-tidy-run", box=lambda r: RuffTidySandbox(r, precheck=True))
+
+    shipped = result.files["tinyapp/cli.py"]
+    assert (
+        all(line in shipped for line in head.splitlines())
+        and 'greet(token_factory_client(), "Ana")' in shipped
+    )
+    assert "from anthropic import Anthropic" not in shipped  # the one name Offramp's rewrite left unused
+
+
+def test_an_import_a_model_edit_left_unused_goes_and_the_pr_says_so():
+    repo = work_dir("model-orphan") / "src"
+    shutil.copytree(TINY, repo, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+    more = "tests/test_greet_more.py"
+    (repo / more).write_text(
+        "import json\n\nfrom tinyapp.greet import greet\n\n\ndef test_greet_is_a_function():\n"
+        "    assert json.dumps(callable(greet)) == 'true'\n"
+    )
+    edit = Edit(
+        path=more,
+        search="    assert json.dumps(callable(greet)) == 'true'",
+        replace="    assert callable(greet)",
+    )
+    llm = patcher_llm(PatchEdits(edits=[edit]), migrate(SHOUT))
+
+    result = run(llm, repo=repo, name="model-orphan-run", box=RuffTidySandbox)
+
+    assert result.files[more].startswith("from tinyapp.greet import greet\n")  # `json` went with its last use
+    assert (
+        "imports that Offramp's or the model's changes left unused were removed: `json` from "
+        "`tests/test_greet_more.py`"
+    ) in result.change_notes
+
+
+# --------------------------------------------------- Task 26 fix round 2: m2, the notes' surviving mutants
+
+KEEP_GREET = (
+    'def test_greet_strips_the_reply():\n    assert greet(FakeClient("  Hi Ana! "), "Ana") == "Hi Ana!"  # x'
+)
+BY_NAME_GREET = Edit(path=TESTS, search="def test_greet_strips_the_reply():\n    pass", replace=KEEP_GREET)
+
+
+def test_a_by_name_edit_of_a_refused_try_is_not_reported_when_a_later_try_ships():
+    """Re-review m2, mutant A10 (no per-attempt reset): try 1 applies an edit by name, then the no-deletion
+    rule refuses the try; try 2 is green without it. Only try 2's edits ship, so no by-name line."""
+    motto = 'def test_motto_returns_the_reply():\n    assert motto(FakeClient("Ship it")) == "Ship it"\n'
+    drop = Edit(path=TESTS, search=motto, replace="")
+    later = Edit(path=TESTS, search="from types import", replace="# later\nfrom types import")
+    llm = patcher_llm(PatchEdits(edits=[BY_NAME_GREET, drop]), PatchEdits(edits=[later]), migrate(SHOUT))
+
+    result = run(llm, results=[True, True, True, True, True])
+
+    assert verdict(result, "cs_01").decision == "MIGRATE" and "# x" not in result.files[TESTS]
+    assert "patch removes tests" in llm.calls[1]["messages"][-1]["content"]
+    assert not [w for w in result.warnings if "applied by function name" in w]
+
+
+def test_a_by_name_edit_of_a_site_green_alone_that_never_ships_is_not_reported():
+    """Re-review m2, mutant A19 (every site's notes): shout's by-name edit is green alone, but its patch
+    conflicts with greet's in the test file, so shout never ships and nothing of it is reported."""
+    line = "from types import SimpleNamespace"
+    greet = migrate(GREET, extra=[Edit(path=TESTS, search=line, replace=f"{line}  # greet")])
+    kept = (
+        'def test_shout_upper_cases_the_reply():\n    assert shout(FakeClient("big news"), "x") == "BIG NEWS"'
+    )
+    by_name = Edit(
+        path=TESTS, search="def test_shout_upper_cases_the_reply():\n    pass", replace=f"{kept}  # y"
+    )
+    clash = Edit(path=TESTS, search=line, replace=f"{line}  # shout")
+    llm = patcher_llm(greet, PatchEdits(edits=[by_name, clash]))
+
+    result = run(llm, results=[True, True, True, True])
+
+    assert result.alone == {"cs_01": True, "cs_03": True} and result.combined == ["cs_01"]
+    assert verdict(result, "cs_03").patch_failure.kind == "merge_conflict"
+    assert not [w for w in result.warnings if "applied by function name" in w]
+    assert not [n for n in result.change_notes if "applied by function name" in n]
+
+
+MORE_JSON = (
+    "import json\n\nfrom tinyapp.greet import greet\n\n\ndef test_greet_is_a_function():\n"
+    "    assert json.dumps(callable(greet)) == 'true'\n"
+)
+UNJSON = Edit(path="tests/test_greet_more.py", search="    assert json.dumps(callable(greet)) == 'true'",
+              replace="    assert callable(greet)")  # fmt: skip
+JSON_GONE = "imports that Offramp's or the model's changes left unused were removed: " + (
+    "`json` from `tests/test_greet_more.py`"
+)
+
+
+def tiny_with(name: str, files: dict[str, str]) -> Path:
+    repo = work_dir(name) / "src"
+    shutil.copytree(TINY, repo, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+    for path, text in files.items():
+        (repo / path).write_text(text)
+    return repo
+
+
+def test_an_import_a_red_try_orphaned_ships_said_when_the_green_try_builds_on_it():
+    repo = tiny_with("model-orphan-carried", {"tests/test_greet_more.py": MORE_JSON})
+    later = Edit(path=TESTS, search="from types import", replace="# later\nfrom types import")
+    llm = patcher_llm(PatchEdits(edits=[UNJSON]), PatchEdits(edits=[later]), migrate(SHOUT))
+
+    # untouched, base; greet: own changes (red), try 1 (red), try 2 (green); shout: its patch; together
+    result = run(
+        llm, repo=repo, name="model-orphan-carried-run", results=[True, True, False, True, True, True]
+    )
+
+    assert "# later" in result.files[TESTS] and "import json" not in result.files["tests/test_greet_more.py"]
+    assert JSON_GONE in result.change_notes
+
+
+def test_an_import_a_combined_repair_orphans_goes_and_the_pr_says_so():
+    repo = tiny_with("together-orphan", {"tests/test_greet_more.py": MORE_JSON})
+    llm = patcher_llm(migrate(GREET), migrate(SHOUT), PatchEdits(edits=[UNJSON]))
+
+    result = run(llm, repo=repo, name="together-orphan-run", results=[True, True, True, True, False, True],
+                 output="FAILED tests/test_greet_more.py::test_greet_is_a_function")  # fmt: skip
+
+    assert result.combined_repair == ["tests/test_greet_more.py"]
+    assert "import json" not in result.files["tests/test_greet_more.py"] and JSON_GONE in result.change_notes

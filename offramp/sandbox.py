@@ -53,6 +53,9 @@ DOCKER_LIMITS = ["--network", "none", "--cpus", "2", "--memory", "2g", "--pids-l
                  "--cap-drop", "ALL", "--security-opt", "no-new-privileges"]  # fmt: skip
 Mode = Literal["docker", "local", "none"]
 PYTHON_VERSION = re.compile(r"\d+\.\d+(\.\d+)?")  # .python-version goes into the Dockerfile's FROM line
+# Import order only (review I5): `--select F401` overrode the repo's own lint config and removed its unused
+# and side-effect imports, and imports kept for other modules; the patcher removes what its changes orphaned.
+TIDY = ("ruff", "check", "--no-cache", "--fix", "--exit-zero", "--quiet", "--select", "I001")
 CHECKS = (
     ["ruff", "check", "--no-cache", "--output-format", "concise", "."],
     ["python", "-m", "pytest", "-q", "-p", "no:cacheprovider"],
@@ -317,8 +320,8 @@ class Sandbox:
         )
 
     def tidy(self, paths: list[str], format_code: bool = False) -> None:
-        """Mechanical clean-up of patched files with the repo's own ruff: import order and unused imports
-        (I001, F401), plus `ruff format` when the repo is formatted.
+        """Mechanical clean-up of patched files with the repo's own ruff: import order (`TIDY`), plus `ruff
+        format` when the repo is formatted.
 
         Files go through ruff on stdin/stdout and are written here: the mount stays read-only, and writes made
         through a Docker Desktop bind mount were seen truncated on the host. A repo that does not configure
@@ -328,9 +331,7 @@ class Sandbox:
         deadline = self._deadline()
         for path in paths:
             text = (self.repo / path).read_text()
-            steps = [
-                ["ruff", "check", "--no-cache", "--fix", "--exit-zero", "--quiet", "--select", "I001,F401"]
-            ]
+            steps = [list(TIDY)]
             steps += [["ruff", "format", "--no-cache", "--quiet"]] if format_code else []
             for cmd in steps:
                 code, out = self._run(
