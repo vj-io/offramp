@@ -3,9 +3,10 @@
 Per run, on a sandbox copy of the target repo:
 0. copy the repo without following symlinks (a link leaving the repo is dropped, with a warning) and check the
    untouched copy with the repo's own ruff + pytest;
-1. add the Token Factory client module (`<pkg>/offramp_client.py` inside the package holding the migrated
-   sites, so it ships with it; else `offramp/client.py`; with an async client too when an async site is
-   migrated) and mark KEEP_CLOSED calls with
+1. add the Token Factory client module beside the migrated sites (`<pkg>/offramp_client.py` inside the
+   package holding them, so it ships with it; see `client_location`; with an async client too when an async
+   site is migrated), declare the openai SDK where the repo declares the one it replaces, and mark
+   KEEP_CLOSED calls with
    `# offramp: kept on <model> — parity <p>% < <threshold>%`; check again;
 2. for each MIGRATE site, against that same base (so no site depends on another's patch): the request
    parameters come from `build_request` (Task 6, the function the eval runner used), so what ships is what was
@@ -108,7 +109,7 @@ FILE: {path}
 every line of the new file
 >>>>>>> WHOLE FILE
 Every test in it stays: rewritten where it pins the old provider, never deleted."""
-ROOT_CLIENT = ("offramp/client.py", "offramp.client")  # when the sites are not inside one package
+ROOT_CLIENT = ("offramp_client.py", "offramp_client")  # when no one package or folder holds the sites
 TEMPLATE = Path(__file__).parents[1] / "templates" / "client.py.tmpl"
 IGNORE = shutil.ignore_patterns(*NOT_COPIED, ".env", ".env.*")
 SKIP_PARTS = {".git", ".venv", "venv", "__pycache__", "node_modules", "offramp"}
@@ -230,6 +231,7 @@ OLD_CLIENTS = {
     "AsyncOpenAI": "token_factory_async_client",
     "AsyncAnthropic": "token_factory_async_client",
 }
+PROVIDER_KEYS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}  # the replaced SDK's key name
 CLIENT_OPTIONS = ("timeout", "max_retries")  # options of an old client that the async Token Factory one takes
 
 
@@ -255,29 +257,71 @@ class PatchResult(BaseModel):
     linted: bool = True  # the checks ran the repo's ruff (only a repo that configures ruff gets it)
     sandbox_notes: list[str] = Field(default_factory=list)  # Sandbox.notes: the PR states them
     async_client: bool = False  # the client module also holds token_factory_async_client
+    client_packaged: bool = True  # the client module sits inside a package (it ships in its wheel)
+    change_notes: list[str] = Field(default_factory=list)  # dependency edits, lockfiles, key reads left as is
 
 
 def client_location(repo: Path, files: list[str]) -> tuple[str, str] | None:
-    """(path, module) of the client: `<pkg>/offramp_client.py` in the one top-level package that holds every
-    migrated site, so it ships in that package's wheel; else `offramp/client.py` at the repository root.
+    """(path, module) of the client, beside the migrated sites; never a top-level `offramp` package (Offramp's
+    own name, and perhaps the target's):
+    - one top-level package holds every site: `<pkg>/offramp_client.py`, imported as `<pkg>.offramp_client`,
+      so it ships in that package's wheel;
+    - one plain folder (no `__init__.py`) holds them: `<folder>/offramp_client.py`, imported the way the
+      folder's modules import each other: by bare name when the folder is an import root (the repository root,
+      `src/`) or one of them imports a sibling so (`import db` beside db.py: the folder is on sys.path), else
+      by the folder's dotted path;
+    - else `offramp_client.py` at the import root (`src/` when every site is under it), by bare name.
 
     None when a site sits directly in a repository root that is itself a package (`__init__.py`): there is
     no package below the root to hold the module, and the root's own import name is not known here."""
     repo = repo.resolve()
-    tops = set()
+    tops, folders = set(), set()
     for f in files:
         top = (repo / f).resolve().parent
-        if top == repo:
-            return None if (repo / "__init__.py").is_file() else ROOT_CLIENT
-        if not (top / "__init__.py").is_file():
-            return ROOT_CLIENT
+        if top == repo and (repo / "__init__.py").is_file():
+            return None
+        if top == repo or not (top / "__init__.py").is_file():
+            folders.add(top)
+            continue
         while top.parent != repo and (top.parent / "__init__.py").is_file():  # never climb to the root
             top = top.parent
         tops.add(top)
-    if len(tops) != 1:
-        return ROOT_CLIENT
-    top = tops.pop()
-    return f"{top.relative_to(repo).as_posix()}/offramp_client.py", f"{top.name}.offramp_client"
+
+    def root(folder: Path) -> Path:  # the folder an import starts from: src/ for a src layout
+        return repo / "src" if folder == repo / "src" or (repo / "src") in folder.parents else repo
+
+    if len(tops) == 1 and not folders:
+        top = tops.pop()
+        return f"{top.relative_to(repo).as_posix()}/offramp_client.py", f"{top.name}.offramp_client"
+    if len(folders) == 1 and not tops:
+        folder = folders.pop()
+        path = (folder / "offramp_client.py").relative_to(repo).as_posix()
+        if folder == root(folder) or _imports_siblings(folder):
+            return path, "offramp_client"
+        return path, ".".join([*folder.relative_to(root(folder)).parts, "offramp_client"])
+    roots = {root(f) for f in tops | folders}
+    base = roots.pop() if len(roots) == 1 else repo
+    return (base / "offramp_client.py").relative_to(repo).as_posix(), "offramp_client"
+
+
+def _imports_siblings(folder: Path) -> bool:
+    """Whether a module in this plain folder imports another one by bare name (`import db` beside db.py), so
+    the folder is on sys.path when its code runs."""
+    for f in folder.glob("*.py"):
+        try:
+            tree = ast.parse(f.read_text())
+        except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+            continue
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Import):
+                names = [a.name for a in n.names]
+            elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
+                names = [n.module]
+            else:
+                continue
+            if any((folder / f"{name.split('.')[0]}.py").is_file() for name in names):
+                return True
+    return False
 
 
 def copy_repo(src: Path, dst: Path) -> list[str]:
@@ -615,6 +659,17 @@ def _rewrite_call(
         ]
         if len(imports) == 1 and len(imports[0].names) == 1 and len(reads) == 1:
             put(imports[0], f"from {client} import {factory}")  # imported where the SDK was: lazily too
+    # the function's own checks of the old provider's key (`os.environ.get("ANTHROPIC_API_KEY")`, `in
+    # os.environ`) check the Token Factory key: the literal names only, outside the call and its old client
+    key, rewritten_nodes = PROVIDER_KEYS.get(site.sdk), {*ast.walk(call), *(ast.walk(built) if built else ())}
+    for n in ast.walk(scope) if key else ():
+        if (
+            isinstance(n, ast.Constant)
+            and n.value == key
+            and n not in rewritten_nodes
+            and key in (seg(n) or "")
+        ):
+            put(n, seg(n).replace(key, "NEBIUS_API_KEY"))
 
     def system_text(node: ast.expr) -> str:  # what translate.system_message sent: a string, or blocks joined
         text = isinstance(node, ast.JoinedStr) or (
@@ -1642,8 +1697,9 @@ def probe_parameters(source: str, site: CallSite) -> tuple[list[str], list[str],
 
 
 PROBE = r"""
-import asyncio, importlib, inspect, json, sys, types
+import asyncio, importlib, inspect, json, os, sys, types
 sys.path[:0] = [".", "src"]
+os.environ.setdefault("NEBIUS_API_KEY", "offramp-probe")  # a key check in the function lets the call through
 JOBS, MARK = json.loads(%(jobs)r), %(mark)r
 
 
@@ -2254,6 +2310,145 @@ def token_factory_async_client(**options) -> AsyncOpenAI:
 '''
 
 
+# The floor Offramp's own pyproject declares: the client module and the evaluated calls ran on it (the API
+# they use, OpenAI / AsyncOpenAI with base_url and extra_body, is older).
+OPENAI_REQUIREMENT = "openai>=1.50"
+LOCKS = {"uv.lock": "uv lock", "poetry.lock": "poetry lock"}  # lockfile -> the command that regenerates it
+
+
+def _requirement_name(spec: str) -> str | None:
+    """The normalised project name of a requirement (`Anthropic[vertex]>=1` -> `anthropic`); None for a
+    comment, an option line (`-r`, `--index-url`) or a blank."""
+    m = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", spec)
+    return re.sub(r"[-_.]+", "-", m[1]).lower() if m and not spec.lstrip().startswith(("#", "-")) else None
+
+
+def _requirement_places(data: dict) -> dict[tuple[str, ...], list | dict]:
+    """pyproject's requirement declarations: [project] dependencies, optional dependencies and dependency
+    groups (lists of requirement strings), and Poetry's dependency tables (name -> version spec)."""
+    project, poetry = data.get("project", {}), data.get("tool", {}).get("poetry", {})
+    out = {("project", "dependencies"): project.get("dependencies")}
+    out |= {
+        ("project", "optional-dependencies", k): v
+        for k, v in project.get("optional-dependencies", {}).items()
+    }
+    out |= {("dependency-groups", k): v for k, v in data.get("dependency-groups", {}).items()}
+    out |= {("tool", "poetry", "dependencies"): poetry.get("dependencies")}
+    out |= {
+        ("tool", "poetry", "group", g, "dependencies"): v.get("dependencies")
+        for g, v in poetry.get("group", {}).items()
+        if isinstance(v, dict)
+    }
+    return {k: v for k, v in out.items() if isinstance(v, list | dict)}
+
+
+def _names(place: list | dict) -> list[str | None]:
+    return [_requirement_name(x) if isinstance(x, str) else None for x in place]  # a table's keys are names
+
+
+def _pyproject_with_openai(text: str, sdks: set[str]) -> tuple[str, list[tuple[str, ...]]]:
+    """pyproject text with openai added to each requirement declaration naming a replaced SDK and not openai,
+    right after that SDK's entry and in the file's own layout: in a list, an entry per line or inline; in a
+    Poetry table, a `openai = ">=..."` line. The declarations it changed come back too. One whose text this
+    cannot change exactly (checked by parsing the result) is left as it is."""
+    data = tomllib.loads(text)
+    for key, place in _requirement_places(data).items():
+        names = _names(place)
+        at = next((i for i, n in enumerate(names) if n in sdks), None)
+        if at is None or "openai" in names:
+            continue
+        want = tomllib.loads(text)
+        target = want
+        for part in key[:-1]:
+            target = target[part]
+        if isinstance(place, dict):  # Poetry: `anthropic = "^0.40"` -> a line after it
+            sdk = list(place)[at]
+            target[key[-1]] = {**place, "openai": OPENAI_REQUIREMENT.removeprefix("openai")}
+            found = re.finditer(rf"^[ \t]*([\"']?){re.escape(sdk)}\1[ \t]*=.*$", text, re.M)
+            candidates = [
+                text[: m.end()]
+                + f'\nopenai = "{OPENAI_REQUIREMENT.removeprefix("openai")}"'
+                + text[m.end() :]
+                for m in found
+            ]
+        else:
+            items = place
+            target[key[-1]] = [*items[: at + 1], OPENAI_REQUIREMENT, *items[at + 1 :]]
+            candidates = []
+            for m in re.finditer(rf"([\"']){re.escape(items[at])}\1", text):
+                line_end = text.find("\n", m.end())
+                rest = text[m.end() : len(text) if line_end < 0 else line_end]
+                quote, line_start = m[1], text.rfind("\n", 0, m.start()) + 1
+                indent = re.match(r"[ \t]*", text[line_start:]).group(0)
+                if text[line_start : m.start()].strip() == "" and re.fullmatch(r"\s*,?\s*(#.*)?", rest):
+                    comma = "" if rest.lstrip().startswith(",") else ","  # the last entry gets one
+                    entry = f"\n{indent}{quote}{OPENAI_REQUIREMENT}{quote},"
+                    candidates.append(text[: m.end()] + comma + rest + entry + text[m.end() + len(rest) :])
+                else:  # an inline list
+                    candidates.append(
+                        text[: m.end()] + f", {quote}{OPENAI_REQUIREMENT}{quote}" + text[m.end() :]
+                    )
+        for new in candidates:
+            try:
+                if tomllib.loads(new) == want:
+                    text = new
+                    break
+            except tomllib.TOMLDecodeError:
+                continue
+    places = _requirement_places(data)
+    changed = [k for k, v in _requirement_places(tomllib.loads(text)).items() if v != places.get(k)]
+    return text, changed
+
+
+def declare_openai(repo: Path, sdks: set[str]) -> tuple[dict[str, str], list[str]]:
+    """The migrated code imports the openai SDK (through the client module). Wherever the repo declares a
+    replaced SDK and not openai beside it, the same declaration gains OPENAI_REQUIREMENT: a requirements*.txt
+    file (a line after the SDK's), or a pyproject declaration (see `_pyproject_with_openai`). A lockfile
+    is never edited: a note says how to regenerate it. Returns (path -> new text, notes for the PR)."""
+    sdks = sdks - {"openai"}  # a replaced openai SDK is declared already
+    edits, notes, declared = {}, [], False
+    named = ", ".join(f"`{s}`" for s in sorted(sdks))
+    reqs = sorted(f for f in repo.rglob("requirements*.txt") if f.is_file() and not f.is_symlink()
+                  and not set(NOT_COPIED) & set(f.relative_to(repo).parts[:-1]))  # fmt: skip
+    for f in reqs:
+        try:
+            lines = f.read_text().splitlines(keepends=True)
+        except (OSError, UnicodeDecodeError):
+            continue
+        names = [_requirement_name(line) for line in lines]
+        at = next((i for i, n in enumerate(names) if n in sdks), None)
+        declared |= at is not None
+        if at is None or "openai" in names:
+            continue
+        lines[at] = lines[at] if lines[at].endswith("\n") else lines[at] + "\n"
+        lines.insert(at + 1, f"{OPENAI_REQUIREMENT}\n")
+        edits[f.relative_to(repo).as_posix()] = "".join(lines)
+    pyproject = repo / "pyproject.toml"
+    if pyproject.is_file() and not pyproject.is_symlink():
+        try:
+            data = tomllib.loads(pyproject.read_text())
+            text, changed = _pyproject_with_openai(pyproject.read_text(), sdks)
+        except tomllib.TOMLDecodeError:
+            data, text, changed = {}, "", []
+        names = {k: set(_names(v)) for k, v in _requirement_places(data).items()}
+        declared |= any(sdks & n for n in names.values())
+        if changed:
+            edits["pyproject.toml"] = text
+            locks = [(lock, cmd) for lock, cmd in LOCKS.items() if (repo / lock).is_file()]
+            notes += [f"`{lock}` is not regenerated by Offramp: run `{cmd}` before merging, so the lockfile "
+                      f"includes `{OPENAI_REQUIREMENT}`" for lock, cmd in locks]  # fmt: skip
+        missed = [k for k, n in names.items() if sdks & n and "openai" not in n and k not in changed]
+        notes += [f"`pyproject.toml` `{'.'.join(k)}` declares {named}, but Offramp could not add "
+                  f"`{OPENAI_REQUIREMENT}` to it exactly: add it by hand" for k in missed]  # fmt: skip
+    notes[:0] = [f"`{p}`: added `{OPENAI_REQUIREMENT}` beside {named}, since the migrated code imports the "
+                 "OpenAI SDK through Offramp's client module" for p in sorted(edits)]  # fmt: skip
+    if sdks and not declared:
+        why = "since the migrated code imports it"
+        notes.append(f"No requirements*.txt or pyproject.toml here declares {named}: add "
+                     f"`{OPENAI_REQUIREMENT}` where this repo declares its dependencies, {why}")  # fmt: skip
+    return edits, notes
+
+
 def client_module(asynchronous: bool = False, module: str = ROOT_CLIENT[1]) -> str:
     """The Token Factory client module; with `asynchronous`, also `token_factory_async_client` (an async site
     was migrated), documented for its import path `module`. Without it, the module is exactly as before."""
@@ -2286,6 +2481,32 @@ def _built_note(site: CallSite, code: str, original: str, client: str) -> str | 
         f"it built the old SDK client, {how}; the fake client's `chat.completions.create` returns an OpenAI "
         "chat completion"
     )
+
+
+def _key_reads(repo: Path, keys: set[str]) -> list[str]:
+    """Where the repo's code (tests aside) still names a replaced provider's key, as PR notes: Offramp renames
+    it only inside the migrated functions. At most 10, then a count."""
+    found = []
+    for f in sorted(_py_files(repo)):
+        path = f.relative_to(repo).as_posix()
+        if is_test_path(path) or f.is_symlink() or not keys:
+            continue
+        try:
+            tree = ast.parse(f.read_text())
+        except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+            continue
+        defs = _defs(tree)
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Constant) and n.value in keys:
+                inside = [
+                    (d.end_lineno - d.lineno, q) for q, d in defs if d.lineno <= n.lineno <= d.end_lineno
+                ]
+                where = f"in `{min(inside)[1]}`" if inside else "at module level"
+                found.append((path, n.lineno, f"`{path}:{n.lineno}` ({where}) still reads `{n.value}`"))
+    notes = [text for *_, text in sorted(found)]
+    tail = [f"and {len(notes) - 10} more such reads"] if len(notes) > 10 else []
+    why = "Offramp renamed the key to `NEBIUS_API_KEY` only inside the migrated functions"
+    return [f"{note}: {why}" for note in notes[:10]] + tail
 
 
 def is_async_site(source: str, site: CallSite) -> bool:
@@ -2492,8 +2713,10 @@ def compose_patches(
     )
     client = client_module(asynchronous, client_at[1])
     write(client_at[0], client)
-    if client_at == ROOT_CLIENT and read("offramp/__init__.py") is None:
-        write("offramp/__init__.py", "")
+    sdks = {by_id[v.site_id].sdk for v in to_migrate if v.site_id in by_id}
+    dependencies, change_notes = declare_openai(repo, sdks)  # code-written like the client module
+    for path, text in dependencies.items():
+        write(path, text)
     kept = [by_id[v.site_id] for v in verdicts if v.decision == "KEEP_CLOSED" and v.site_id in by_id]
     for site in sorted(kept, key=lambda s: (s.file, -s.lines[0])):  # bottom-up: line numbers stay valid
         v = next(v for v in verdicts if v.site_id == site.id)
@@ -2517,6 +2740,9 @@ def compose_patches(
     formatted = box.formatted()  # the repo keeps `ruff format` clean: so do the patches
 
     base_code = shipped_code(repo)  # the base's code (client module and kept-site comments in): read-only
+    base_code |= {
+        p: read(p) for p in dependencies
+    }  # the dependency edit too: the backstop keeps it as written
     qual_of: dict[str, CallSite] = {}  # MIGRATE site -> the site with its function's qualified name
     for v in to_migrate:
         site = by_id.get(v.site_id)
@@ -3003,10 +3229,22 @@ def compose_patches(
     migrated = len(combined)
 
     files = {p: text for p in originals if (text := read(p)) is not None and text != originals[p]}
-    if not migrated:  # nothing uses the client module
-        files.pop(client_at[0], None)
-        if originals.get("offramp/__init__.py", "") is None:  # added for the root client only
-            files.pop("offramp/__init__.py", None)
+    if not migrated:  # nothing uses the client module, nor the openai SDK it imports
+        for path in [client_at[0], *dependencies]:
+            files.pop(path, None)
+        change_notes = []
+    keys = {PROVIDER_KEYS[by_id[sid].sdk] for sid in combined if by_id[sid].sdk in PROVIDER_KEYS}
+    for sid in combined:  # the migrated function's own key checks, renamed by `_rewrite_call`
+        site, key = qual_of[sid], PROVIDER_KEYS.get(by_id[sid].sdk, "")
+        if (
+            key
+            and "NEBIUS_API_KEY" in code_of[sid][site.file]
+            and "NEBIUS_API_KEY" not in befores[sid][site.file]
+        ):
+            now = f"now checks `NEBIUS_API_KEY` where it checked `{key}`"
+            why = "so its Nemotron call runs when the Token Factory key is set"
+            change_notes.append(f"`{site.function}` (`{site.file}`) {now}, {why}")
+    change_notes += _key_reads(repo, keys)
     return PatchResult(
         files=files,
         diffs=diffs,
@@ -3024,4 +3262,7 @@ def compose_patches(
         linted=box.ruff,
         sandbox_notes=box.notes,
         async_client=any(FACTORIES[1] in text for p, text in files.items() if p != client_at[0]),
+        client_packaged=(repo / client_at[0]).parent != repo
+        and ((repo / client_at[0]).parent / "__init__.py").is_file(),
+        change_notes=change_notes,
     )

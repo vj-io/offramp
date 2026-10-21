@@ -104,6 +104,8 @@ class PRContext(BaseModel):
     linted: bool = True  # PatchResult.linted: the checks ran the repo's ruff too
     sandbox_notes: list[str] = Field(default_factory=list)  # PatchResult.sandbox_notes, stated as they are
     async_client: bool = False  # PatchResult.async_client: the client module holds token_factory_async_client
+    client_packaged: bool = True  # PatchResult.client_packaged: the client module sits inside a package
+    change_notes: list[str] = Field(default_factory=list)  # PatchResult.change_notes, one bullet each
     client_path: str | None = None  # PatchResult.client_path: where the Token Factory client module lives
     alone: dict[str, bool] = Field(default_factory=dict)  # PatchResult.alone: site -> green on its own
     combined: list[str] = Field(default_factory=list)  # PatchResult.combined: sites in the checked tree
@@ -450,12 +452,14 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         "",
     ]
     if migrated:
-        client = ctx.client_path or "offramp/client.py"
-        where = (
-            f"inside the `{client.rsplit('/', 2)[-2]}` package, so it ships with it"
-            if client.endswith("/offramp_client.py")
-            else "at the repository root, because the migrated call sites are not inside one package"
-        )
+        client = ctx.client_path or "offramp_client.py"
+        folder = client.rsplit("/", 2)[-2] if "/" in client else ""
+        if client.endswith("/offramp_client.py") and ctx.client_packaged:
+            where = f"inside the `{folder}` package, so it ships with it"
+        elif client.endswith("/offramp_client.py"):
+            where = f"beside the migrated modules in the `{folder}/` folder, which is not a package"
+        else:
+            where = "at the repository root, because the migrated call sites are not inside one package"
         asynchronous = (
             " For the async call sites, `token_factory_async_client()` (`openai.AsyncOpenAI`): each still "
             "`await`s its call, and a test fakes it the way it faked the old SDK client."
@@ -469,6 +473,7 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
             "`chat_template_kwargs.enable_thinking` explicitly, since Nemotron reasons by default."
             + asynchronous
         )
+    out += [f"- {note[0].upper()}{note[1:]}." for note in ctx.change_notes] if migrated else []
     for v in migrated:
         site = sites.get(v.site_id)
         text = " ".join(

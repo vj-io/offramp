@@ -49,6 +49,7 @@ from offramp.agents.patcher import (
     conformance,
     convert_fakes,
     copy_repo,
+    declare_openai,
     edits_text,
     keep_comment,
     line_length,
@@ -824,8 +825,8 @@ def test_a_json_object_request_is_not_patched():
             ("tinyapp/offramp_client.py", "tinyapp.offramp_client"),
         ),
         (["src/pkg/a.py"], ["src/pkg"], ("src/pkg/offramp_client.py", "pkg.offramp_client")),
-        (["app.py"], [], ("offramp/client.py", "offramp.client")),
-        (["one/a.py", "two/b.py"], ["one", "two"], ("offramp/client.py", "offramp.client")),
+        (["app.py"], [], ("offramp_client.py", "offramp_client")),  # never a top-level `offramp` package
+        (["one/a.py", "two/b.py"], ["one", "two"], ("offramp_client.py", "offramp_client")),
         (["pkg/a.py"], [".", "pkg"], ("pkg/offramp_client.py", "pkg.offramp_client")),
         (["app.py"], ["."], None),
     ],
@@ -3575,3 +3576,223 @@ def test_when_no_python_builds_the_first_failure_is_reported(monkeypatch, tmp_pa
     result = Sandbox(tmp_path, docker=True).check()
 
     assert not result.ok and "failed on 3.12" in result.output and "failed on 3.13" not in result.output
+
+
+# ---------------------------------------------------------------- Task 23 round 0: dependency, keys, location
+
+
+@pytest.mark.parametrize(
+    ("sources", "expected"),
+    [
+        ({"api/main.py": "import db\n", "api/db.py": ""}, ("api/offramp_client.py", "offramp_client")),
+        ({"api/report.py": "import os\n"}, ("api/offramp_client.py", "api.offramp_client")),
+        ({"src/app.py": ""}, ("src/offramp_client.py", "offramp_client")),
+        ({"api/a.py": "", "jobs/b.py": ""}, ("offramp_client.py", "offramp_client")),
+    ],
+    ids=["folder-on-sys-path", "folder-by-dotted-path", "src-folder", "two-folders"],
+)
+def test_a_client_for_sites_in_a_plain_folder_sits_beside_them_imported_as_they_import_each_other(
+    sources, expected
+):
+    """The demo target's sites sit in `api/` (no __init__.py), whose modules `import db`: the client goes in
+    api/ and is imported by bare name, never as a top-level `offramp` package."""
+    repo = work_dir("location-folders")
+    for path, text in sources.items():
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(text)
+    sites = [p for p in sources if not p.endswith("db.py")]
+
+    assert client_location(repo, sites) == expected
+
+
+def anthropic_tiny(name: str, extra: dict[str, str] | None = None, module: str = PLANT) -> Path:
+    """The tiny repo with greet an Anthropic site, plus `extra` files."""
+    repo = work_dir(name) / "src"
+    shutil.copytree(TINY, repo, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+    (repo / GREET).write_text(module)
+    for path, text in (extra or {}).items():
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(text)
+    return repo
+
+
+def compose_anthropic(repo: Path, name: str, llm=None, box=None):
+    sites = [s.model_copy(update={"sdk": "anthropic"}) if s.id == "cs_01" else s for s in tiny_sites()]
+    llm = llm or patcher_llm()
+    return compose_patches(repo, sites, tiny_verdicts(), tiny_adapters(), llm, work_dir(name),
+                           config=CONFIG, build_request=BUILD,
+                           sandbox_factory=box or (lambda r: FakeSandbox(r, precheck=True)))  # fmt: skip
+
+
+TINY_PYPROJECT = (TINY / "pyproject.toml").read_text()
+DEPS = 'dependencies = [\n    "anthropic>=0.40",\n    "httpx>=0.27",\n]'
+DEPS_WITH_OPENAI = DEPS.replace('"anthropic>=0.40",', '"anthropic>=0.40",\n    "openai>=1.50",')
+
+
+@pytest.mark.parametrize(
+    ("files", "path", "expected"),
+    [
+        ({"requirements.txt": "anthropic>=0.40.0,<1.0.0\nhttpx\n"}, "requirements.txt",
+         "anthropic>=0.40.0,<1.0.0\nopenai>=1.50\nhttpx\n"),
+        ({"api/requirements.txt": "fastapi\nanthropic>=0.40.0,<1.0.0"}, "api/requirements.txt",
+         "fastapi\nanthropic>=0.40.0,<1.0.0\nopenai>=1.50\n"),
+        ({"pyproject.toml": TINY_PYPROJECT.replace("dependencies = []", DEPS)}, "pyproject.toml",
+         TINY_PYPROJECT.replace("dependencies = []", DEPS_WITH_OPENAI)),
+    ],
+    ids=["requirements", "requirements-in-a-folder", "pyproject-with-uv-lock"],
+)  # fmt: skip
+def test_the_openai_sdk_is_declared_where_the_replaced_sdk_is_and_ships_with_the_migration(
+    files, path, expected
+):
+    """The migrated code imports openai (through Offramp's client module): code adds it beside the replaced
+    SDK, in that file's layout; a lockfile is never edited, and the PR says how to regenerate it."""
+    name = f"declare-{path.replace('/', '-')}"
+    repo = anthropic_tiny(name, files)
+
+    result = compose_anthropic(repo, f"{name}-run")
+
+    assert verdict(result, "cs_01").decision == "MIGRATE"
+    assert result.files[path] == expected
+    assert result.change_notes[0].startswith(f"`{path}`: added `openai>=1.50` beside `anthropic`")
+    assert "uv.lock" not in result.files  # the tiny repo has one: never edited
+    pyproject = path == "pyproject.toml"
+    assert (
+        any("`uv.lock` is not regenerated by Offramp: run `uv lock`" in n for n in result.change_notes)
+        is pyproject
+    )
+
+
+def test_without_a_migration_the_dependency_edit_does_not_ship():
+    repo = anthropic_tiny("declare-none", {"requirements.txt": "anthropic\n"})
+    verdicts = [v.model_copy(update={"decision": "KEEP_CLOSED"}) for v in tiny_verdicts()]
+    sites = [s.model_copy(update={"sdk": "anthropic"}) if s.id == "cs_01" else s for s in tiny_sites()]
+
+    work = work_dir("declare-none-run")
+    result = compose_patches(repo, sites, verdicts, tiny_adapters(), patcher_llm(), work, config=CONFIG,
+                             build_request=BUILD, sandbox_factory=FakeSandbox)  # fmt: skip
+
+    assert "requirements.txt" not in result.files and result.change_notes == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('[dependency-groups]\nai = ["anthropic>=0.40", "x"]\n',
+         '[dependency-groups]\nai = ["anthropic>=0.40", "openai>=1.50", "x"]\n'),
+        ("[project]\nname = 'x'\ndependencies = [\n  'anthropic'\n]\n",
+         "[project]\nname = 'x'\ndependencies = [\n  'anthropic',\n  'openai>=1.50',\n]\n"),
+        ('[tool.poetry.dependencies]\nanthropic = "^0.40"\nhttpx = "*"\n',
+         '[tool.poetry.dependencies]\nanthropic = "^0.40"\nopenai = ">=1.50"\nhttpx = "*"\n'),
+        ('[project]\nname = "x"\ndependencies = ["anthropic", "openai>=2"]\n', None),  # declared already
+        ('[project]\nname = "x"\nkeywords = ["anthropic"]\n', None),  # not a requirement list
+    ],
+    ids=["inline-group", "last-entry-single-quotes", "poetry-table", "openai-declared", "keywords-only"],
+)  # fmt: skip
+def test_a_pyproject_list_gains_openai_in_its_own_layout(tmp_path, text, expected):
+    (tmp_path / "pyproject.toml").write_text(text)
+
+    edits, notes = declare_openai(tmp_path, {"anthropic"})
+
+    assert edits.get("pyproject.toml") == expected
+    nowhere = "No requirements*.txt or pyproject.toml here declares `anthropic`: add `openai>=1.50`"
+    assert any(n.startswith(nowhere) for n in notes) is ("keywords" in text)
+
+
+def test_a_poetry_lockfile_is_left_alone_and_the_note_names_its_command(tmp_path):
+    (tmp_path / "pyproject.toml").write_text('[tool.poetry.dependencies]\nanthropic = "^0.40"\n')
+    (tmp_path / "poetry.lock").write_text("# lock\n")
+
+    edits, notes = declare_openai(tmp_path, {"anthropic"})
+
+    assert sorted(edits) == ["pyproject.toml"]
+    assert any(n.startswith("`poetry.lock` is not regenerated by Offramp: run `poetry lock`") for n in notes)
+
+
+def test_the_model_cannot_edit_a_dependency_file_and_a_check_that_writes_one_is_caught():
+    """The dependency edit is Offramp's code: the model may not touch the file, and the backstop holds it as
+    Offramp wrote it (a check run that rewrites it is flagged, and the file is put back)."""
+    repo = anthropic_tiny("declare-guard", {"requirements.txt": "anthropic\n"})
+    sneak = Edit(path="requirements.txt", search="anthropic", replace="anthropic\nevil-package")
+
+    class WritesRequirements(FakeSandbox):
+        def check(self):
+            result = super().check()
+            if len(self.checks) == 3:  # untouched, base, then greet's first check
+                (self.repo / "requirements.txt").write_text("anthropic\nrequests\n")
+            return result
+
+    llm = patcher_llm(PatchEdits(edits=[sneak]), BudgetExceeded("stop"))
+    result = compose_anthropic(
+        repo, "declare-guard-run", llm, box=lambda r: WritesRequirements(r, precheck=True)
+    )
+
+    first, repair = (call["messages"][-1]["content"] for call in llm.calls)
+    assert "requirements.txt is not the code Offramp wrote" in first  # the check's write: the backstop
+    assert "requirements.txt is not editable for this site" in repair  # the model's edit: refused
+    assert verdict(result, "cs_01").decision == "MANUAL_REVIEW"
+    assert verdict(result, "cs_03").decision == "MIGRATE"
+    assert result.files["requirements.txt"] == "anthropic\nopenai>=1.50\n"  # as Offramp wrote it, shipped
+
+
+GUARDED = '''"""Greetings (the real shape: the provider key is checked before the call)."""
+
+import os
+
+GREET_SYSTEM_PROMPT = "You write one-line greetings."
+CONFIGURED = bool(os.environ.get("ANTHROPIC_API_KEY"))  # module-level config: left as is
+
+
+async def greet(name: str):
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    if "ANTHROPIC_API_KEY" not in os.environ or not os.getenv('ANTHROPIC_API_KEY'):
+        return None
+    try:
+        import anthropic
+
+        client = anthropic.AsyncAnthropic(api_key=api_key, timeout=30.0)
+        message = await client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=32,
+            system=GREET_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": f"Greet {name}."}],
+        )
+        return message.content[0].text.strip()
+    except Exception:
+        return None
+
+
+def key_status():
+    return "ANTHROPIC_API_KEY" in os.environ  # another function: left as is
+'''
+
+
+def test_the_migrated_functions_own_key_checks_check_the_token_factory_key():
+    out = _prepared(GUARDED)
+
+    function = out[out.index("async def greet") : out.index("def key_status")]
+    assert 'api_key = os.environ.get("NEBIUS_API_KEY")\n    if not api_key:\n        return None' in function
+    assert """if "NEBIUS_API_KEY" not in os.environ or not os.getenv('NEBIUS_API_KEY'):""" in function
+    assert "ANTHROPIC" not in function
+    assert 'CONFIGURED = bool(os.environ.get("ANTHROPIC_API_KEY"))' in out  # module level: untouched
+    assert '    return "ANTHROPIC_API_KEY" in os.environ' in out  # another function: untouched
+
+
+def test_a_guarded_site_migrates_its_key_check_runs_under_the_probe_and_the_pr_lists_what_was_left():
+    repo = anthropic_tiny("guarded", module=GUARDED)
+    write_case(repo, "cs_01", {"name": "Ana"}, "You write one-line greetings.", "Greet Ana.")
+
+    result = compose_anthropic(repo, "guarded-run")
+
+    assert verdict(result, "cs_01").decision == "MIGRATE"
+    assert result.verification["cs_01"] == (
+        "probe: run in the sandbox with case cs_01:001, it sends the evaluated request"
+    )  # the guard passed: the probe sets NEBIUS_API_KEY, which the function now checks
+    notes = result.change_notes
+    renamed = "`greet` (`tinyapp/greet.py`) now checks `NEBIUS_API_KEY` where it checked `ANTHROPIC_API_KEY`"
+    assert any(n.startswith(renamed) for n in notes)
+    assert any(
+        n.startswith("`tinyapp/greet.py:6` (at module level) still reads `ANTHROPIC_API_KEY`") for n in notes
+    )
+    assert any("(in `key_status`) still reads `ANTHROPIC_API_KEY`" in n for n in notes)
