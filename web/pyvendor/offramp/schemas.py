@@ -6,7 +6,7 @@ import from here; nobody redefines these shapes locally.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -197,6 +197,7 @@ class CaseScore(BaseModel):
     score: float  # 0..1 for deterministic checks; judge rubric mean 1..5 for free_text
     detail: str = ""
     error_category: str | None = None  # e.g. invalid_json, missing_key, wrong_label, wrong_tool
+    reference_score: float | None = None  # free_text judged pairwise: the judge's 1..5 score of the reference
 
 
 class TierMetrics(BaseModel):
@@ -217,6 +218,72 @@ class TierResult(BaseModel):
     metrics: TierMetrics
     failing_case_ids: list[str] = Field(default_factory=list)
     case_scores: list[CaseScore] = Field(default_factory=list)
+    # how many cases the run scored (failing_case_ids failed) and the Wilson 95% lower bound (0..100) of the
+    # share that passed: what the grid shows next to each score. None in results recorded before Task 19
+    cases: int | None = None
+    parity_lower_pct: float | None = None
+
+
+PatchFailureKind = Literal[
+    "budget_stop",  # the run's model budget stopped the site's repairs
+    "no_edit_block",  # the model's last reply held no complete edit block, so nothing was applied
+    "no_change",  # a repair repeated an edit already tried
+    "search_miss",  # patch rules: a SEARCH that does not match exactly one place
+    "deletes_tests",  # patch rules: the patch deletes tests
+    "locked_file",  # patch rules: an edit to code that ships
+    "not_editable",  # patch rules: a file this site's patch may not change (or not whole)
+    "does_not_parse",  # patch rules: an edited file that does not parse
+    "checks_failed",  # the repo's ruff + pytest failed on the patched tree
+    "backstop",  # code that ships changed on disk
+    "probe_mismatch",  # the patched call does not send the evaluated request
+    "merge_conflict",  # green alone; its patch conflicts with another site's
+    "not_together",  # green alone; the merged tree fails the repo's checks
+    "merged_drift",  # green alone; on the merged tree its code or its request changed
+    "repo_red",  # the repo's checks fail before any patch
+]
+
+
+class PatchFailure(BaseModel):
+    """Why the patch stage sent a MIGRATE site to manual review, recorded where it happened: the PR's plain
+    sentence is built from this, never from the reason's text (which holds the target repo's check output)."""
+
+    kind: PatchFailureKind  # the outermost, decisive failure
+    last: PatchFailureKind | None = None  # budget_stop / no_edit_block / no_change: the last checked try's
+    tries: int = 0  # the model's replies for this site
+    model_edit: bool = False  # the last checked try was the model's edits (else Offramp's changes alone)
+    files: list[str] = Field(default_factory=list)  # the files that failure names (Offramp's own record)
+    tests: list[str] = Field(default_factory=list)  # deletes_tests: "path::name"
+
+
+class PriceEvidence(BaseModel):
+    """Where the source model's price behind cost_before came from: the report's Tavily evidence panel."""
+
+    # Tavily Search; Tavily Extract printing pricing.yaml's own price (it never replaces it); pricing.yaml
+    method: Literal["search", "extract (confirms table)", "yaml fallback"]
+    query: str | None = None  # the Tavily search query; None when Tavily was not asked
+    url: str  # the page the price was read from (pricing.yaml's own source on a fallback)
+    quote: str | None = None  # that page's text printing the price, checked on the page; None on fallback
+    date: str  # YYYY-MM-DD: the day Tavily returned the page, or pricing.yaml's as_of
+    note: str | None = None  # on a fallback, why ("Tavily page <url> shows $X/$Y; checked-in table $A/$B")
+
+
+class AfterPrice(BaseModel):
+    """A Nemotron tier's price on Token Factory (USD per 1M tokens) and where it was read."""
+
+    model: str
+    input_usd_per_m: float
+    output_usd_per_m: float
+    via: Literal["token_factory_api", "pricing.yaml"]
+    source: str  # "Token Factory model API, 2026-10-21" or "pricing.yaml as of 2026-10-21; <why>"
+
+
+# Why a KEEP_CLOSED verdict keeps the site: "budget" when the run's budget stopped it before a measurement;
+# "dev" when dev never passed (holdout may have); else the bar its holdout missed: the parity threshold, every
+# output schema-valid, enough JSON cases passing whole, the judge mean of 4.0, no holdout case below 3.0, or a
+# judge mean within 0.3 of the references'.
+Gate = Literal[
+    "budget", "dev", "threshold", "schema", "pass_share", "judge_mean", "case_floor", "reference_margin"
+]
 
 
 class Verdict(BaseModel):
@@ -239,6 +306,22 @@ class Verdict(BaseModel):
     # that model's holdout parity on the same references. Model named, parity None: that model blind-audited
     # these references (only those it agreed with were kept), so a comparison would be circular; none is made
     closed_reference_parity_pct: float | None = None
+    # free text: holdout case -> the judge's score of its reference, for references scored below 3 (reference
+    # QA: shown in the PR and the report, never excluded from the evaluation)
+    weak_references: dict[str, float] = Field(default_factory=dict)
+    patch_failure: PatchFailure | None = None  # MANUAL_REVIEW from the patch stage: why, structured
+    # the holdout cases behind parity_pct: how many, how many passed, and the Wilson 95% lower bound (0..100)
+    # of that pass rate, which says how sure the figure is ("100.0% (3/3, ≥43%)")
+    holdout_cases: int | None = None
+    holdout_passed: int | None = None
+    parity_lower_pct: float | None = None
+    # free text: the judge's mean and lowest holdout case score (1..5), rounded down when the run failed
+    judge_mean: float | None = None
+    judge_min: float | None = None
+    retires_on: date | None = None  # the source model's retirement date, from the notice in sunset_risk
+    price_evidence: PriceEvidence | None = None  # where cost_before's source-model price came from
+    after_price: AfterPrice | None = None  # MIGRATE: the tier's Token Factory price and where it was read
+    failed_gate: Gate | None = None  # KEEP_CLOSED: why (None when passing, or recorded before Task 19)
     reason: str
 
 
