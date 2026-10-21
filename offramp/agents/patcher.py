@@ -2818,8 +2818,18 @@ def declare_openai(repo: Path, sdks: set[str]) -> tuple[dict[str, str], list[str
             notes += [f"`pyproject.toml` `{'.'.join(k)}` declares {named}, but Offramp could not add "
                       f"`{OPENAI_REQUIREMENT}` to it exactly: add it by hand"
                       for k in missed if k not in changed]  # fmt: skip
-    notes[:0] = [f"`{p}`: added `{OPENAI_REQUIREMENT}` beside {named}, since the migrated code imports the "
-                 "OpenAI SDK through Offramp's client module" for p in sorted(edits)]  # fmt: skip
+    added, why = [], "since the migrated code imports the OpenAI SDK through Offramp's client module"
+    for p in sorted(edits):
+        added.append(f"`{p}`: added `{OPENAI_REQUIREMENT}` beside {named}, {why}")
+        if repo / p != installed:  # the checks never installed the edit: say what they ran on
+            ran = f"ran on the environment from `{installed.name}`, which does not install that file"
+            ran = (
+                ran
+                if installed.is_file()
+                else "ran without it: the sandbox image installs no dependency file"
+            )
+            added.append(f"`{p}` gains `{OPENAI_REQUIREMENT}`; the checks {ran}")
+    notes[:0] = added
     if sdks and not declared:
         why = "since the migrated code imports it"
         notes.append(f"No requirements*.txt or pyproject.toml here declares {named}: add "
@@ -3691,8 +3701,10 @@ def compose_patches(
     ]
     if handed:  # their callers were checked (`_handed_clients`): say how far that goes
         names = ", ".join(f"`{s.function}`" for s in handed)
+        reflection = "getattr, importlib, sys.modules, vars/__dict__"
         change_notes.append(f"{names} get{'s' * (len(handed) == 1)} the client from callers: callers were "
-                            "checked statically; dynamic lookups by computed name were not")  # fmt: skip
+                            f"checked statically; lookups through reflection ({reflection}) were not, except "
+                            "the literal getattr/import_module forms Offramp refuses")  # fmt: skip
     if filtered:
         change_notes.append(left_out)
     return PatchResult(

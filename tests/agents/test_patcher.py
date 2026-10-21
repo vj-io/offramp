@@ -4517,8 +4517,9 @@ def test_an_aliased_caller_ships_rewired_and_the_pr_says_how_far_the_caller_chec
     assert verdict(result, "cs_01").decision == "MIGRATE", verdict(result, "cs_01").reason
     assert 'return say(token_factory_client(), "Ana")' in result.files["tinyapp/cli.py"]
     assert (
-        "`greet`, `shout` get the client from callers: callers were checked statically; dynamic lookups by "
-        "computed name were not"
+        "`greet`, `shout` get the client from callers: callers were checked statically; lookups through "
+        "reflection (getattr, importlib, sys.modules, vars/__dict__) were not, except the literal "
+        "getattr/import_module forms Offramp refuses"
     ) in result.change_notes
 
 
@@ -4566,3 +4567,32 @@ def test_only_the_declaration_the_image_installs_is_a_direct_one(tmp_path, files
         (tmp_path / path).write_text(text)
 
     assert declare_openai(tmp_path, {"anthropic"})[2] is direct
+
+
+# ---------------------------------------------------------------- round 4: what the checks did not install
+
+
+@pytest.mark.parametrize(
+    ("files", "note"),
+    [
+        ({"pyproject.toml": "[project]\nname = 'x'\n", "api/requirements.txt": "anthropic\n"},
+         "`api/requirements.txt` gains `openai>=1.50`; the checks ran on the environment from "
+         "`pyproject.toml`, which does not install that file"),
+        ({"api/requirements.txt": "anthropic\n"},
+         "`api/requirements.txt` gains `openai>=1.50`; the checks ran without it: the sandbox image installs "
+         "no dependency file"),
+        ({"requirements.txt": "anthropic\n"}, None),
+    ],
+    ids=["beside-a-pyproject", "no-installed-file", "the-installed-file"],
+)  # fmt: skip
+def test_a_dependency_edit_the_sandbox_did_not_install_is_named_in_the_pr(tmp_path, files, note):
+    """Re-review 3 R3-m2: on idea-reality-mcp the edit lands in `api/requirements.txt`, while the image
+    installs `pyproject.toml` and `uv.lock`, so the checks never saw it."""
+    for path, text in files.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(text)
+
+    edits, notes, _ = declare_openai(tmp_path, {"anthropic"})
+
+    assert len(edits) == 1
+    assert [n for n in notes if " gains `openai>=1.50`; the checks " in n] == ([note] if note else [])
