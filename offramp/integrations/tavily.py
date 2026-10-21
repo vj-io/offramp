@@ -525,6 +525,7 @@ _LIST_GLUE = re.compile(r"[\s,&]*(?:(?:and|or|are|were)[\s,&]*)*")
 # Right before the name: it is where the reader is sent, not what is retired.
 _TARGET_BEFORE = re.compile(
     r"(?:migrat\w*\s+to|switch\w*\s+to|upgrad\w*\s+to|mov\w*\s+to|replace[sd]?\s+(?:by|with)|replacement"
+    r"|(?:succeed|supersed)ed\s+by"
     r"|recommended|instead of|use|try)\W*$",
     re.I,
 )
@@ -562,6 +563,8 @@ def _about_end(text: str, start: int, model: str, pointers: bool = False) -> int
     for other in _OTHER_MODEL.finditer(text, start):
         if any(s < other.end() and other.start() < e for s, e in mine):
             continue  # a spelling of this model ("GPT-4o" inside "GPT-4o Mini" for gpt-4o-mini)
+        if re.search(r"\]\([^)\s]*$", text[max(0, other.start() - 200) : other.start()]):
+            continue  # inside a link's URL ("[GPT-5](/models/gpt-5)"): its text was the mention
         if pointers and _TARGET_BEFORE.search(text[max(0, other.start() - 40) : other.start()]):
             line_end = text.find("\n", other.end())
             line = text[text.rfind("\n", 0, other.start()) + 1 : line_end if line_end >= 0 else len(text)]

@@ -1064,7 +1064,7 @@ FELL_BACK = [
 # Recorded 2026-10-21: one advanced Tavily Extract each for FELL_BACK (extract/<model>.json). What it gave:
 EXTRACTED = {
     "gpt-4o": "tavily extract",  # its model page prints Input $2.50 / Output $10.00, pricing.yaml's price
-    "o3": "pricing.yaml",  # its page says "o3 is succeeded by GPT-5" before the price, ending the o3 stretch
+    "o3": "tavily extract",  # its page prints $2•$8 under "succeeded by GPT-5", a pointer, not another model
 }
 
 
@@ -1403,6 +1403,8 @@ def test_batch_and_cached_amounts_are_not_the_standard_price(page, expected):
             (2.5, 10.0),
         ),
         ("# GPT-4o Deprecated\nMigrate to GPT-4.1: Input $2.00 Output $8.00", None),
+        ("# GPT-4o\nGPT-4o is succeeded by GPT-4.1\nInput $2.50\nOutput $10.00", (2.5, 10.0)),  # o3's page
+        ("# GPT-4o\nSuperseded by [GPT-4.1](/models/gpt-4.1)\nInput $2.50\nOutput $10.00", (2.5, 10.0)),
         # review T19 N1: a table with a column per model, this model's only in the header: no column is picked
         ("| | GPT-4o mini | GPT-4o |\n| Input | $0.15 | $2.50 |\n| Output | $0.60 | $10.00 |", None),
         ("| | GPT-4.1 | GPT-4o |\n| Input | $2.00 | $2.50 |\n| Output | $8.00 | $10.00 |", None),
