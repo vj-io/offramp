@@ -1,6 +1,6 @@
 {
  "date": "2026-10-21",
- "offramp_commit": "5f44099d4187982d5faa571d68b5a3ecab801c14",
+ "offramp_commit": "9dc158caf4bf95a357187501f8c8d162075fcda4",
  "python": "3.14.7",
  "queries": [
   "openai language:python archived:false fork:false stars:>1000",
@@ -62,7 +62,7 @@
  "repos": [
   {
    "repo": "langchain-ai/langchain",
-   "stars": 148154,
+   "stars": 148157,
    "commit": "e6d83ef6a6e2482cd55691023c51e45d7584a94f",
    "python_files": 2637,
    "imports": [
@@ -313,7 +313,7 @@
   },
   {
    "repo": "zylon-ai/private-gpt",
-   "stars": 57599,
+   "stars": 57600,
    "commit": "ff410fed574b8b2eab4e2f4c53d99e7065e5cdef",
    "python_files": 929,
    "imports": [
@@ -324,7 +324,7 @@
   },
   {
    "repo": "langchain-ai/langgraph",
-   "stars": 43597,
+   "stars": 43598,
    "commit": "a24fc97778fca67cfac4cd3fc63e508ee1d29f59",
    "python_files": 476,
    "imports": [
@@ -583,7 +583,7 @@
   },
   {
    "repo": "AstrBotDevs/AstrBot",
-   "stars": 42433,
+   "stars": 42435,
    "commit": "f2404c191716a64daaa422be7f3c567cace50d39",
    "python_files": 747,
    "imports": [
@@ -715,7 +715,7 @@
   },
   {
    "repo": "PDFMathTranslate/PDFMathTranslate",
-   "stars": 37706,
+   "stars": 37707,
    "commit": "17922e7610291d3f2f43098b34478059087549fe",
    "python_files": 33,
    "imports": [
@@ -802,7 +802,7 @@
   },
   {
    "repo": "mukul975/Anthropic-Cybersecurity-Skills",
-   "stars": 34762,
+   "stars": 34763,
    "commit": "54a798831d2266a3ca61ce68a7acb80b81160d57",
    "python_files": 1103,
    "imports": [
@@ -827,7 +827,7 @@
   },
   {
    "repo": "openai/openai-agents-python",
-   "stars": 30182,
+   "stars": 30184,
    "commit": "64cd5dfc5a1579870dcbed0ea42b27aa84033fee",
    "python_files": 1020,
    "imports": [
@@ -1101,7 +1101,7 @@
   },
   {
    "repo": "langbot-app/LangBot",
-   "stars": 18317,
+   "stars": 18318,
    "commit": "fc62f2ee137f5936284fcc462bbaec4807ae36b3",
    "python_files": 1171,
    "imports": [
@@ -1372,7 +1372,7 @@
   },
   {
    "repo": "The-PR-Agent/pr-agent",
-   "stars": 13506,
+   "stars": 13507,
    "commit": "729415c68b8ef55df8bcce919a419af7f5cebffb",
    "python_files": 493,
    "imports": [
@@ -1440,7 +1440,7 @@
   },
   {
    "repo": "simonw/llm",
-   "stars": 12648,
+   "stars": 12647,
    "commit": "cbeeb8f2b93b642107e51c735c7eb55734355da1",
    "python_files": 56,
    "imports": [
@@ -2547,7 +2547,7 @@
   },
   {
    "repo": "BeehiveInnovations/pal-mcp-server",
-   "stars": 11793,
+   "stars": 11794,
    "commit": "7afc7c1cc96e23992c8f105f960132c657883bb1",
    "python_files": 249,
    "imports": [
@@ -3195,7 +3195,7 @@
   },
   {
    "repo": "Upsonic/Upsonic",
-   "stars": 7960,
+   "stars": 7961,
    "commit": "101f0313b0ddb96cd4078354879b2ff57005db29",
    "python_files": 968,
    "imports": [
@@ -3284,12 +3284,12 @@
  "skipped": [
   {
    "repo": "NousResearch/hermes-agent",
-   "stars": 255579,
+   "stars": 255586,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "microsoft/markitdown",
-   "stars": 191307,
+   "stars": 191314,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
@@ -3299,42 +3299,42 @@
   },
   {
    "repo": "langgenius/dify",
-   "stars": 159062,
+   "stars": 159066,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "open-webui/open-webui",
-   "stars": 156299,
+   "stars": 156304,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "vllm-project/vllm",
-   "stars": 94426,
+   "stars": 94430,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "unslothai/unsloth",
-   "stars": 78325,
+   "stars": 78327,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "headroomlabs-ai/headroom",
-   "stars": 76740,
+   "stars": 76751,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "calesthio/OpenMontage",
-   "stars": 70293,
+   "stars": 70296,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "asgeirtj/system_prompts_leaks",
-   "stars": 69940,
+   "stars": 69941,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "BerriAI/litellm",
-   "stars": 61671,
+   "stars": 61672,
    "reason": "The repository archive is over 25 MB."
   },
   {
@@ -3354,12 +3354,12 @@
   },
   {
    "repo": "zhayujie/CowAgent",
-   "stars": 47482,
+   "stars": 47483,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "anthropics/claude-plugins-official",
-   "stars": 43403,
+   "stars": 43409,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
@@ -3369,17 +3369,17 @@
   },
   {
    "repo": "mouredev/Hello-Python",
-   "stars": 37815,
+   "stars": 37817,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "davila7/claude-code-templates",
-   "stars": 32788,
+   "stars": 32790,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "openai/openai-python",
-   "stars": 31889,
+   "stars": 31893,
    "reason": "the OpenAI SDK itself"
   },
   {
@@ -3389,7 +3389,7 @@
   },
   {
    "repo": "SYSTRAN/faster-whisper",
-   "stars": 25996,
+   "stars": 25997,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
@@ -3399,7 +3399,7 @@
   },
   {
    "repo": "guillaumemeyer/watermarks-remover",
-   "stars": 24547,
+   "stars": 24552,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
@@ -3429,17 +3429,17 @@
   },
   {
    "repo": "lss233/kirara-ai",
-   "stars": 19121,
+   "stars": 19122,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
    "repo": "emcie-co/parlant",
-   "stars": 18305,
+   "stars": 18306,
    "reason": "The repository archive is over 25 MB."
   },
   {
    "repo": "wanshuiyin/Auto-claude-code-research-in-sleep",
-   "stars": 17792,
+   "stars": 17794,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
@@ -3459,7 +3459,7 @@
   },
   {
    "repo": "kyegomez/OpenMythos",
-   "stars": 14908,
+   "stars": 14907,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
@@ -3489,7 +3489,7 @@
   },
   {
    "repo": "FareedKhan-dev/train-llm-from-scratch",
-   "stars": 12391,
+   "stars": 12392,
    "reason": "no file the scanner reads imports openai or anthropic"
   },
   {
@@ -3519,7 +3519,7 @@
   },
   {
    "repo": "anthropics/anthropic-sdk-python",
-   "stars": 3985,
+   "stars": 3986,
    "reason": "the Anthropic SDK itself"
   }
  ]
