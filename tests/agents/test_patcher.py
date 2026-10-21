@@ -4099,10 +4099,7 @@ def test_a_plain_directory_reaches_no_image_without_the_opt_in(monkeypatch, tmp_
     result = Sandbox(tmp_path, docker=True).check()
 
     assert not result.ok and contexts == []
-    assert (
-        "is not a git checkout: the sandbox image takes only a git repository's tracked files"
-        in result.output
-    )
+    assert "is not a git checkout: the sandbox takes only a git repository's tracked files" in result.output
 
 
 def test_the_patch_stage_copies_and_shows_the_sandbox_only_a_checkouts_tracked_files(monkeypatch):

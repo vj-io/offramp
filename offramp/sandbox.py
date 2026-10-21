@@ -91,6 +91,9 @@ OPENAI_LAYER = """RUN if ( {sdks} ) && ! /opt/venv/bin/python -c "import openai"
       uv pip install --python /opt/venv/bin/python "{requirement}"; \\
     fi
 """
+IGNORE = shutil.ignore_patterns(*NOT_COPIED, ".env", ".env.*")  # never copied, tracked or not
+
+
 # the floor Offramp's own pyproject declares; the patcher declares the same
 OPENAI_REQUIREMENT = "openai>=1.50"
 
@@ -131,24 +134,69 @@ def _shippable(repo: Path, path: str) -> bool:
         return False
 
 
+def tracked_or_opted_in(repo: Path) -> list[str] | None:
+    """A git checkout's tracked files; None for a plain directory under UNTRACKED_OPT_IN (all of it but the
+    denylist may go in); RuntimeError for a plain directory without it."""
+    files = tracked_files(repo)
+    if files is None and os.environ.get(UNTRACKED_OPT_IN) != "1":
+        why = f"set {UNTRACKED_OPT_IN}=1 to let a plain directory in, minus .env files"
+        raise RuntimeError(
+            f"{Path(repo).name} is not a git checkout: the sandbox takes only a git repository's tracked "
+            f"files ({why}); nothing runs"
+        )
+    return files
+
+
 def context_files(repo: Path, files: list[str] | None = None) -> list[str]:
     """What the sandbox image may take from the repo: `files` when given (a copy made from tracked files), a
     git checkout's tracked files, or, only under UNTRACKED_OPT_IN, every file of a plain directory; always
     regular files only, never a .env file or a folder a copy leaves out. RuntimeError otherwise."""
     repo = Path(repo)
     if files is None:
-        files = tracked_files(repo)
+        files = tracked_or_opted_in(repo)
     if files is None:
-        if os.environ.get(UNTRACKED_OPT_IN) != "1":
-            why = f"set {UNTRACKED_OPT_IN}=1 to let a plain directory in, minus .env files"
-            raise RuntimeError(
-                f"{repo.name} is not a git checkout: the sandbox image takes only a git repository's tracked "
-                f"files ({why}); no sandbox image"
-            )
         files = [  # os.walk never follows a linked folder
             (Path(d) / f).relative_to(repo).as_posix() for d, _, names in os.walk(repo) for f in names
         ]
     return sorted(p for p in files if _shippable(repo, p))
+
+
+def copy_repo(src: Path, dst: Path, files: list[str] | None = None) -> list[str]:
+    """Copy without following symlinks; keep a link only if it resolves inside the copy. A link to a host
+    file (e.g. /proc/self/environ) would otherwise copy its content in, for the repo's tests to print.
+    `files`: a git checkout's tracked files (`tracked_files`), the only ones copied, so its untracked and
+    ignored files (local secrets) never reach the sandbox's mount or image. Every sandbox that mounts a target
+    repo mounts such a copy: the patch stage's, and the one target code runs in for the case generator."""
+    keep = None if files is None else {*files, *(q.as_posix() for f in files for q in Path(f).parents)}
+
+    def ignore(folder: str, names: list[str]) -> set[str]:
+        skip = set(IGNORE(folder, names))
+        if keep is not None:
+            rel = Path(folder).relative_to(src)
+            skip |= {n for n in names if (rel / n).as_posix() not in keep}
+        return skip
+
+    shutil.copytree(src, dst, ignore=ignore, symlinks=True)
+    root, warnings = dst.resolve(), []
+    for dirpath, dirnames, filenames in os.walk(dst):
+        for name in [*dirnames, *filenames]:
+            path = Path(dirpath) / name
+            if not path.is_symlink():
+                continue
+            why = None
+            try:
+                path.resolve(strict=True)  # 3.12 raises RuntimeError on a loop, 3.13 OSError (ELOOP)
+            except FileNotFoundError:  # dangling: judged by where it points
+                pass
+            except (OSError, RuntimeError):
+                why = "it is a symlink loop"
+            # os.path.realpath never raises on a loop; 3.12's non-strict Path.resolve can (dangling + loop)
+            if why is None and not Path(os.path.realpath(path)).is_relative_to(root):
+                why = "it points outside the repository"
+            if why:
+                path.unlink()
+                warnings.append(f"dropped symlink {path.relative_to(dst).as_posix()}: {why}")
+    return sorted(warnings)
 
 
 def configures_ruff(repo: Path) -> bool:

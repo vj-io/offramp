@@ -30,7 +30,6 @@ import fnmatch
 import io
 import json
 import logging
-import os
 import re
 import shutil
 import string
@@ -51,7 +50,15 @@ from pydantic import BaseModel, Field
 from offramp.agents.pr_writer import TIER_NAMES, is_test_path, threshold
 from offramp.agents.translate import UnresolvedCallSite, build_request
 from offramp.evals.baselines import load_cases
-from offramp.sandbox import NO_SANDBOX, NOT_COPIED, OPENAI_REQUIREMENT, CheckResult, Sandbox, tracked_files
+from offramp.sandbox import (
+    NO_SANDBOX,
+    NOT_COPIED,
+    OPENAI_REQUIREMENT,
+    CheckResult,
+    Sandbox,
+    copy_repo,
+    tracked_files,
+)
 from offramp.schemas import (
     Adapter,
     AdapterSpec,
@@ -114,7 +121,6 @@ every line of the new file
 Every test in it stays: rewritten where it pins the old provider, never deleted."""
 ROOT_CLIENT = ("offramp_client.py", "offramp_client")  # when no one package or folder holds the sites
 TEMPLATE = Path(__file__).parents[1] / "templates" / "client.py.tmpl"
-IGNORE = shutil.ignore_patterns(*NOT_COPIED, ".env", ".env.*")
 SKIP_PARTS = {".git", ".venv", "venv", "__pycache__", "node_modules", "offramp"}
 
 BuildRequest = Callable[[AdapterSpec, EvalCase, Tier], dict[str, Any]]
@@ -329,43 +335,6 @@ def _imports_siblings(folder: Path) -> bool:
             if any((folder / f"{name.split('.')[0]}.py").is_file() for name in names):
                 return True
     return False
-
-
-def copy_repo(src: Path, dst: Path, files: list[str] | None = None) -> list[str]:
-    """Copy without following symlinks; keep a link only if it resolves inside the copy. A link to a host
-    file (e.g. /proc/self/environ) would otherwise copy its content in, for the repo's tests to print.
-    `files`: a git checkout's tracked files (`tracked_files`), the only ones copied, so its untracked and
-    ignored files (local secrets) never reach the sandbox's mount or image."""
-    keep = None if files is None else {*files, *(q.as_posix() for f in files for q in Path(f).parents)}
-
-    def ignore(folder: str, names: list[str]) -> set[str]:
-        skip = set(IGNORE(folder, names))
-        if keep is not None:
-            rel = Path(folder).relative_to(src)
-            skip |= {n for n in names if (rel / n).as_posix() not in keep}
-        return skip
-
-    shutil.copytree(src, dst, ignore=ignore, symlinks=True)
-    root, warnings = dst.resolve(), []
-    for dirpath, dirnames, filenames in os.walk(dst):
-        for name in [*dirnames, *filenames]:
-            path = Path(dirpath) / name
-            if not path.is_symlink():
-                continue
-            why = None
-            try:
-                path.resolve(strict=True)  # 3.12 raises RuntimeError on a loop, 3.13 OSError (ELOOP)
-            except FileNotFoundError:  # dangling: judged by where it points
-                pass
-            except (OSError, RuntimeError):
-                why = "it is a symlink loop"
-            # os.path.realpath never raises on a loop; 3.12's non-strict Path.resolve can (dangling + loop)
-            if why is None and not Path(os.path.realpath(path)).is_relative_to(root):
-                why = "it points outside the repository"
-            if why:
-                path.unlink()
-                warnings.append(f"dropped symlink {path.relative_to(dst).as_posix()}: {why}")
-    return sorted(warnings)
 
 
 # ---------------------------------------------------------------- request parameters

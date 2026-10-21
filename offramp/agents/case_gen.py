@@ -41,6 +41,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import tomllib
 import unicodedata
 from collections import Counter
@@ -55,7 +56,7 @@ from pydantic import BaseModel
 from offramp.evals import baselines
 from offramp.evals.scorers import score_case
 from offramp.evals.scorers.json_schema import _infer_schema
-from offramp.sandbox import LOCAL_OPT_IN, Sandbox
+from offramp.sandbox import LOCAL_OPT_IN, Sandbox, copy_repo, tracked_or_opted_in
 from offramp.schemas import (
     BaselineResult,
     CallSite,
@@ -228,8 +229,9 @@ def _run_in_repo(repo: Path, code: str, *args: str, stdin: str | None = None) ->
     """Stdout of `python -B -c code *args` run against the target repo, with cwd at its root (so relative
     paths in `args` work in both places below):
 
-    - Docker: in the sandbox, its import roots inside the repo on sys.path (a local path source outside the
-      repo is not mounted, so it does not import);
+    - Docker: in the sandbox, on a copy of the repo's tracked files only (a plain directory needs
+      OFFRAMP_ALLOW_UNTRACKED_SANDBOX=1), its import roots inside the repo on sys.path (a local path source
+      outside the repo is not mounted, so it does not import);
     - else, only under OFFRAMP_ALLOW_LOCAL_SANDBOX=1: on this machine, in the target's own environment (see
       _target_python; the env setup gets SETUP_TIMEOUT_S);
     - else nothing runs: RuntimeError(NO_TARGET_SANDBOX).
@@ -244,7 +246,15 @@ def _run_in_repo(repo: Path, code: str, *args: str, stdin: str | None = None) ->
         return _run([*command, "-B", "-c", code, *args], repo, stdin=stdin, env=env)
     roots = [str(PurePosixPath("/repo", r.relative_to(repo).as_posix())) for r in _import_roots(repo)
              if r.is_relative_to(repo)]  # fmt: skip
-    status, out, err = box.python(f"import sys\nsys.path[:0] = {roots!r}\n{code}", *args, stdin=stdin)
+    files = tracked_or_opted_in(repo)  # a plain directory needs the opt-in: untracked files may be secrets
+    with tempfile.TemporaryDirectory(prefix="offramp-target-") as scratch:
+        # the code runs on a copy of the repo's tracked files only, as in the patch stage: its schemas and an
+        # oracle's answers flow into eval files and prompts, so no untracked or ignored file may reach it
+        copy = Path(scratch) / repo.name
+        copy_repo(repo, copy, files)
+        box = Sandbox(copy, timeout_s=RUN_TIMEOUT_S, docker=True)
+        box.files = files
+        status, out, err = box.python(f"import sys\nsys.path[:0] = {roots!r}\n{code}", *args, stdin=stdin)
     if status:
         raise subprocess.CalledProcessError(status, ["python", "-c", "<code>", *args], out, err)
     return out
