@@ -309,7 +309,7 @@ export function headline(verdicts: Verdict[], totals: RunTotals | null): { lead:
   const migrated = verdicts.filter((v) => v.decision === "MIGRATE");
   const reached = verdicts.filter((v) => v.decision !== "KEEP_CLOSED" && v.tier != null && v.parity_pct != null);
   const m = migrated.length;
-  let lead = `${reached.length} of ${n} call ${plural(n, "site", "sites")} reached parity on Nemotron · ${m || "none"} migrated`;
+  let lead = `${reached.length} of ${n} call ${plural(n, "site", "sites")} reached parity on Nemotron (held-out cases) · ${m || "none"} migrated`;
   const priced = migrated.every((v) => v.cost_before_per_1k != null && v.cost_after_per_1k != null);
   const sum = (k: "cost_before_per_1k" | "cost_after_per_1k") => migrated.reduce((a, v) => a + (v[k] ?? 0), 0);
   const onMigrated = m && priced ? change(sum("cost_before_per_1k"), sum("cost_after_per_1k")) : null;

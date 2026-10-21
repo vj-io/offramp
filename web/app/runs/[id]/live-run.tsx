@@ -81,6 +81,9 @@ function RunBody({ id, source, replay, query }: { id: string; source: RunSource;
               <span className="ml-2 font-mono text-lg font-bold">
                 <span className="sr-only">: </span>
                 {views.length}
+                {state.notEvaluated.length > 0 && (
+                  <span className="font-hand text-base font-normal text-muted"> + {state.notEvaluated.length} not evaluated</span>
+                )}
               </span>
             )}
           </h2>

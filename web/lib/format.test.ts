@@ -55,28 +55,28 @@ const config = { threshold: 0.95, reasoning_threshold: 0.9 } as RunConfig;
 describe("report headline", () => {
   it("tripwire: leads the recorded demo with what is true in its own data", () => {
     expect(headline(demo.verdicts, demo.totals)).toEqual({
-      lead: "6 of 6 call sites reached parity on Nemotron · 3 migrated · est. −82% on those 3",
+      lead: "6 of 6 call sites reached parity on Nemotron (held-out cases) · 3 migrated · est. −82% on those 3",
       scope: "−11% across all 6 ($49.24 → $43.86 per 1,000 calls, est.), since 3 stay for review",
     });
   });
   it("names every scope: all migrated, none migrated, kept and review together", () => {
     const totals = { est_cost_before_per_1k: 30, est_cost_after_per_1k: 12 } as never;
     expect(headline([V({}), V({ site_id: "cs_02" })], totals)).toEqual({
-      lead: "2 of 2 call sites reached parity on Nemotron · 2 migrated · est. −90% on all 2",
+      lead: "2 of 2 call sites reached parity on Nemotron (held-out cases) · 2 migrated · est. −90% on all 2",
       scope: null,
     });
     const kept = V({ site_id: "cs_02", decision: "KEEP_CLOSED", tier: null, best_tier: "ultra", parity_pct: 71 });
     const review = V({ site_id: "cs_03", decision: "MANUAL_REVIEW" });
     const stopped = V({ site_id: "cs_04", decision: "MANUAL_REVIEW", tier: null, parity_pct: null });
     expect(headline([V({}), kept, review, stopped], totals)).toEqual({
-      lead: "2 of 4 call sites reached parity on Nemotron · 1 migrated · est. −90% on that one",
+      lead: "2 of 4 call sites reached parity on Nemotron (held-out cases) · 1 migrated · est. −90% on that one",
       scope: "−60% across all 4 ($30.00 → $12.00 per 1,000 calls, est.), since 2 stay for review and 1 stays on its source model",
     });
-    expect(headline([kept], null)).toEqual({ lead: "0 of 1 call site reached parity on Nemotron · none migrated", scope: null });
+    expect(headline([kept], null)).toEqual({ lead: "0 of 1 call site reached parity on Nemotron (held-out cases) · none migrated", scope: null });
   });
   it("leaves out a cost figure it cannot compute from every migrated site", () => {
     expect(headline([V({ cost_after_per_1k: null })], null).lead).toBe(
-      "1 of 1 call site reached parity on Nemotron · 1 migrated",
+      "1 of 1 call site reached parity on Nemotron (held-out cases) · 1 migrated",
     );
   });
 });
