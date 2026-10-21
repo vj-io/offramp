@@ -7,6 +7,7 @@ import {
   parseRecording,
   replayDelays,
   replayEntry,
+  runReducer,
   toSnapshot,
   type Recording,
   type RunSource,
@@ -45,7 +46,7 @@ export type RunStatus =
 
 /** Live run state: SSE from the API, or a recording played back with pause, speed and skip to end. */
 export function useRun(id: string, source: RunSource, replay: string | null) {
-  const [state, dispatch] = useReducer(applyEvents, initialRunState);
+  const [state, dispatch] = useReducer(runReducer, initialRunState);
   const [status, setStatus] = useState<RunStatus>({ kind: source === "api" ? "connecting" : "loading" });
   const [attempt, setAttempt] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -105,6 +106,15 @@ export function useRun(id: string, source: RunSource, replay: string | null) {
     setStatus({ kind: "ended" });
   };
 
+  const restart = () => {
+    if (recording.current.length === 0) return;
+    dispatch("reset");
+    lastSeq.current = -1;
+    next.current = 0;
+    setPaused(false);
+    setStatus({ kind: "playing" });
+  };
+
   useEffect(() => {
     if (source !== "api") return;
     // EventSource reconnects by itself and sends Last-Event-ID; the reducer drops any repeat seq.
@@ -132,7 +142,7 @@ export function useRun(id: string, source: RunSource, replay: string | null) {
     setStatus({ kind: "connecting" });
     setAttempt((n) => n + 1);
   };
-  return { state, status, retry, playback: { paused, setPaused, speed, setSpeed, skipToEnd } };
+  return { state, status, retry, playback: { paused, setPaused, speed, setSpeed, skipToEnd, restart } };
 }
 
 export type Playback = ReturnType<typeof useRun>["playback"];

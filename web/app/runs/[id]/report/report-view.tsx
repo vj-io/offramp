@@ -1,32 +1,25 @@
 "use client";
 
-import { Fragment, type CSSProperties } from "react";
+import type { CSSProperties } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
-import { BrandBadges, CodeText, LinkedText, SunsetBadge, SunsetRisk } from "@/components/badges";
+import { BrandBadges, LinkedText, SunsetBadge, SunsetRisk } from "@/components/badges";
 import { DiffView } from "@/components/diff-view";
 import { DECISION_NOTE, Note, Stamp, Swipe, TIER_HL } from "@/components/doodle";
-import { FilePath } from "@/components/file-path";
+import { EvidenceTable, hasSunsetFootnote, holdoutResult } from "@/components/evidence";
+import { PriceEvidencePanel, ReviewNote } from "@/components/report-notes";
 import { NoRecording, NoticeNote, PolicyNote, RunLinks, SourceLabel } from "@/components/run-notices";
 import {
-  afterCells,
   auditText,
-  closedByConstructionText,
+  BOUNDS_NOTE,
+  byConstructionLines,
   closedReferenceText,
-  dayText,
   headline,
-  judgeText,
   keepClosedStamp,
-  keptText,
-  manualReason,
   ms,
-  parityText,
-  pct100,
-  PRICE_METHOD,
   referencesText,
   signedMs,
   sunsetLines,
-  TASK_NAME,
   TIER_NAME,
   TIER_SHORT,
   usd,
@@ -34,7 +27,7 @@ import {
   weakReferencesText,
 } from "@/lib/format";
 import { downloadPayload, pickSource, type RunSource } from "@/lib/run-state";
-import type { CallSite, CaseSummary, PriceEvidence, RunReport, TaskType, TierResult, Verdict } from "@/lib/types";
+import type { CallSite, CaseSummary, RunReport, TierResult, Verdict } from "@/lib/types";
 import { API_URL, useReport } from "@/lib/use-run";
 
 export function ReportView() {
@@ -57,13 +50,6 @@ function ReportBody({ id, source, replay, query }: { id: string; source: RunSour
   return <Report report={status.report} id={id} source={source} replay={replay} query={query} />;
 }
 
-// A kept call's sunset notice already sits in its card above the table; only the others get a footnote under it.
-const hasSunsetFootnote = (v: Verdict) => v.sunset_risk && v.decision !== "KEEP_CLOSED";
-
-function holdoutResult(results: TierResult[], v: Verdict) {
-  return results.findLast((r) => r.site_id === v.site_id && r.tier === v.tier && r.split === "holdout") ?? null;
-}
-
 function download(report: RunReport, source: RunSource) {
   const json = JSON.stringify(downloadPayload(report, source), null, 2);
   const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
@@ -71,17 +57,6 @@ function download(report: RunReport, source: RunSource) {
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000); // revoking synchronously can cancel the download
 }
-
-const EVIDENCE_COLUMNS = [
-  "Site",
-  "File",
-  "Task",
-  "Before",
-  "After",
-  "Parity vs reference (holdout)",
-  "p50 latency (after)",
-  "$/1k calls before (est.) → after",
-];
 
 const BACK: Record<RunSource, string> = { api: "Back to the live run", replay: "Back to the replay", fixture: "Back to the run" };
 
@@ -219,24 +194,14 @@ function Report({
         <h2 id="evidence-h" className="mb-4 text-3xl font-extrabold tracking-tight">
           Evidence
         </h2>
-        <div role="region" tabIndex={0} aria-label="Evidence table, scrolls sideways" className="relative overflow-x-auto pb-2">
-          <table className="w-full min-w-[60rem] border-collapse text-left">
-            <thead className="font-hand text-lg">
-              <tr className="border-b-2 border-ink">
-                {EVIDENCE_COLUMNS.map((h) => (
-                  <th key={h} scope="col" className="px-2 py-2 align-bottom font-normal">
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {verdicts.map((v) => (
-                <EvidenceRow key={v.site_id} v={v} site={sites[v.site_id]} results={snap.tier_results} report={report} today={today} />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <EvidenceTable
+          verdicts={verdicts}
+          sites={sites}
+          results={snap.tier_results}
+          config={snap.config}
+          notEvaluated={snap.not_evaluated ?? []}
+          today={today}
+        />
         {costNotes.length > 0 && (
           <div className="mt-4 max-w-4xl">
             <h3 className="font-hand text-lg">Cost before is an estimate. Price sources:</h3>
@@ -275,7 +240,14 @@ function Report({
           <ul className="flex flex-col gap-3">
             {shipped.map((v, i) => (
               <li key={v.site_id} className="min-w-0">
-                <DiffView siteId={v.site_id} siteFile={sites[v.site_id]?.file} tier={v.tier} diff={report.diffs![v.site_id]} open={i === 0} />
+                <DiffView
+                  siteId={v.site_id}
+                  siteFile={sites[v.site_id]?.file}
+                  tier={v.tier}
+                  diff={report.diffs![v.site_id]}
+                  prUrl={snap.artifacts.pr_url ?? null}
+                  open={i === 0}
+                />
               </li>
             ))}
           </ul>
@@ -316,95 +288,13 @@ function Report({
   );
 }
 
-function ReviewNote({ v, site, tilt }: { v: Verdict; site: CallSite | undefined; tilt: number }) {
-  const { sentence, raw } = manualReason(v);
-  return (
-    <Note as="li" note={DECISION_NOTE.MANUAL_REVIEW} tilt={tilt} className="flex min-w-0 flex-col gap-2 p-5 pt-6">
-      <p className="font-mono text-sm wrap-anywhere">
-        <span className="font-bold">{v.site_id}</span> {site?.file}
-      </p>
-      {v.tier && v.parity_pct != null && (
-        <p className="font-hand text-lg leading-snug">
-          Reached parity on {TIER_NAME[v.tier]}:{" "}
-          <span className="font-mono text-sm">{judgeText(v) ?? parityText(v, site?.contract?.task_type)}</span>.
-        </p>
-      )}
-      {raw === null ? (
-        <p className="font-mono text-xs leading-relaxed wrap-anywhere">{sentence}</p>
-      ) : (
-        <>
-          <p className="font-hand text-lg leading-snug wrap-anywhere">
-            <CodeText text={sentence} />
-          </p>
-          <details className="font-hand text-base">
-            <summary className="cursor-pointer underline underline-offset-2">Raw failure</summary>
-            <p className="mt-1 font-mono text-xs leading-relaxed whitespace-pre-wrap wrap-anywhere">
-              {raw.replaceAll(" | ", "\n")}
-            </p>
-          </details>
-        </>
-      )}
-    </Note>
-  );
-}
-
-// Where each source model's "before" price came from (Task 19): the method, the page, the words on it, the day,
-// and any disagreement. Sites sharing a model and its evidence share a card.
-function PriceEvidencePanel({ verdicts, sites }: { verdicts: Verdict[]; sites: Record<string, CallSite> }) {
-  const groups = new Map<string, { ev: PriceEvidence; model: string | null; ids: string[] }>();
-  for (const v of verdicts) {
-    if (!v.price_evidence) continue;
-    const model = sites[v.site_id]?.source_model ?? null;
-    const key = JSON.stringify([model, v.price_evidence]);
-    if (!groups.has(key)) groups.set(key, { ev: v.price_evidence, model, ids: [] });
-    groups.get(key)!.ids.push(v.site_id);
-  }
-  if (groups.size === 0) return null;
-  return (
-    <section aria-labelledby="tavily-h" className="flex flex-col gap-4">
-      <h2 id="tavily-h" className="text-3xl font-extrabold tracking-tight">
-        Price checked with Tavily
-      </h2>
-      <p className="max-w-3xl font-hand text-lg text-muted">
-        The source model&apos;s price behind each &ldquo;before&rdquo; cost: how Offramp found it, the page it cites
-        and the words on that page.
-      </p>
-      <ul className="grid gap-4 md:grid-cols-2">
-        {[...groups.values()].map(({ ev, model, ids }) => (
-          <li key={ids.join()} className="sketch-box flex min-w-0 flex-col gap-2 bg-note-plain p-4">
-            <p className="font-mono text-sm wrap-anywhere">
-              <span className="font-bold">{ids.join(", ")}</span> {model}
-            </p>
-            <p className="font-hand text-lg">
-              {PRICE_METHOD[ev.method] ?? ev.method}, {dayText(ev.date)}
-            </p>
-            {ev.query && (
-              <p className="font-hand text-base">
-                Query: <span className="font-mono text-xs wrap-anywhere">{ev.query}</span>
-              </p>
-            )}
-            <p className="font-mono text-xs wrap-anywhere">
-              <LinkedText text={ev.url} />
-            </p>
-            {ev.quote && (
-              <blockquote className="border-l-4 border-[var(--hl-lime)] pl-3 font-mono text-xs leading-relaxed wrap-anywhere">
-                {ev.quote}
-              </blockquote>
-            )}
-            {ev.note && (
-              <p className="font-hand text-base leading-snug wrap-anywhere">
-                <span className="font-bold">Note:</span> <LinkedText text={ev.note} />
-              </p>
-            )}
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
 function HowMeasured({ summaries, verdicts }: { summaries: CaseSummary[] | undefined; verdicts: Verdict[] }) {
   const closedRefs = verdicts.filter((v) => closedReferenceText(v));
+  // One auditor for every audited site (the usual case) is named once above the list, not on each line.
+  const auditors = new Set((summaries ?? []).filter((c) => auditText(c.audit)).map((c) => c.audit.auditor));
+  const sharedAuditor = auditors.size === 1 ? [...auditors][0] : null;
+  const byConstruction = byConstructionLines(verdicts, sharedAuditor);
+  const withBounds = verdicts.some((v) => verdictBounds(v));
   return (
     <section aria-labelledby="measured-h" className="max-w-4xl">
       <h2 id="measured-h" className="text-3xl font-extrabold tracking-tight">
@@ -414,12 +304,24 @@ function HowMeasured({ summaries, verdicts }: { summaries: CaseSummary[] | undef
         Parity is agreement with reference answers whose ground truth is known, scored on held-out cases. The source
         model&apos;s own outputs were never recorded.
       </p>
+      {withBounds && (
+        <p id="bounds-note" className="mt-2 font-hand text-xl leading-snug">
+          {BOUNDS_NOTE}
+        </p>
+      )}
+      {(sharedAuditor || byConstruction.length > 0) && (
+        <p className="mt-2 font-hand text-xl leading-snug">
+          {sharedAuditor && <>Reference audit by {sharedAuditor}. </>}
+          {byConstruction.map((line) => (
+            <span key={line}>{line}. </span>
+          ))}
+        </p>
+      )}
       {summaries && summaries.length > 0 && (
         <ul className="mt-4 flex flex-col gap-3">
           {summaries.map((c) => {
-            const audit = auditText(c.audit);
+            const audit = auditText(c.audit, !sharedAuditor);
             const verdict = verdicts.find((v) => v.site_id === c.site_id);
-            const byConstruction = verdict ? closedByConstructionText(verdict) : null;
             const weak = verdict ? weakReferencesText(verdict) : null;
             return (
               <li key={c.site_id} className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-3">
@@ -428,7 +330,6 @@ function HowMeasured({ summaries, verdicts }: { summaries: CaseSummary[] | undef
                   {referencesText(c)}, <span className="font-mono text-sm">{c.dev}</span> dev /{" "}
                   <span className="font-mono text-sm">{c.holdout}</span> holdout.
                   {audit && <> Reference audit: {audit}.</>}
-                  {byConstruction && <> {byConstruction}.</>}
                   {weak && <> {weak[0].toUpperCase() + weak.slice(1)}.</>}
                 </span>
               </li>
@@ -447,125 +348,6 @@ function HowMeasured({ summaries, verdicts }: { summaries: CaseSummary[] | undef
         </ul>
       )}
     </section>
-  );
-}
-
-// The parity cell: free text's judge figures, one unbroken figure per line where it wraps; else the parity
-// figure with its holdout count and lower bound under it.
-function ParityCell({ v, task }: { v: Verdict; task: TaskType | undefined }) {
-  const judged = task === "free_text" ? judgeText(v) : null;
-  if (judged)
-    return judged.split(", ").map((part, i) => (
-      <Fragment key={i}>
-        {i > 0 && ", "}
-        <span className="whitespace-nowrap">{part}</span>
-      </Fragment>
-    ));
-  const bounds = verdictBounds(v, task);
-  return (
-    <>
-      {pct100(v.parity_pct!)}
-      {bounds && <span className="block text-xs whitespace-nowrap">({bounds})</span>}
-    </>
-  );
-}
-
-function EvidenceRow({
-  v,
-  site,
-  results,
-  report,
-  today,
-}: {
-  v: Verdict;
-  site: CallSite | undefined;
-  results: TierResult[];
-  report: RunReport;
-  today: string;
-}) {
-  const task = site?.contract?.task_type;
-  const r = holdoutResult(results, v);
-  const isKept = v.decision === "KEEP_CLOSED";
-  const after = afterCells(v, r?.metrics.p50_ms ?? null);
-  return (
-    <tr
-      className="border-b border-dashed border-muted align-top"
-      style={isKept ? { background: "var(--note-pink)" } : v.decision === "MANUAL_REVIEW" ? { background: "var(--note-orange)" } : undefined}
-    >
-      <th scope="row" className="px-2 py-3 font-mono text-sm font-bold">
-        {v.site_id}
-      </th>
-      <td className="min-w-[9rem] px-2 py-3 font-mono text-sm wrap-anywhere">{site && <FilePath path={site.file} />}</td>
-      <td className="px-2 py-3 font-hand text-lg">{task ? TASK_NAME[task] : "—"}</td>
-      <td className="min-w-[10rem] px-2 py-3">
-        <span className="flex flex-col items-start gap-2">
-          <span className="font-mono text-sm wrap-anywhere">{site?.source_model ?? "—"}</span>
-          {v.sunset_risk && (
-            <span className="flex flex-wrap items-center gap-x-2">
-              <SunsetBadge />
-              {v.retires_on && (
-                <span className="font-hand text-base">
-                  {v.retires_on < today ? "retired" : "retires"} {dayText(v.retires_on)}
-                </span>
-              )}
-              {hasSunsetFootnote(v) && (
-                <a
-                  href={`#sunset-note-${v.site_id}`}
-                  aria-label={`Sunset risk note for ${v.site_id}`}
-                  className="font-hand text-base text-bluepen underline underline-offset-2"
-                >
-                  note
-                </a>
-              )}
-            </span>
-          )}
-        </span>
-      </td>
-      <td className="px-2 py-3">
-        {v.decision === "MIGRATE" && v.tier ? (
-          <span className="flex flex-col items-start gap-0.5">
-            <span className="text-lg font-extrabold tracking-tight whitespace-nowrap">
-              <Swipe mark={TIER_HL[v.tier]}>{TIER_NAME[v.tier]}</Swipe>
-            </span>
-            {v.model && <span className="font-mono text-xs wrap-anywhere text-muted">{v.model}</span>}
-          </span>
-        ) : isKept ? (
-          <Stamp rotate={-2}>NOT MIGRATED</Stamp>
-        ) : (
-          <span className="hl-chip sketch px-2 font-hand text-lg" style={{ "--mark": "var(--hl-orange)" } as CSSProperties}>
-            Manual review
-          </span>
-        )}
-      </td>
-      <td className="px-2 py-3 font-mono text-sm">
-        {isKept ? (
-          keptText(v, task, report.snapshot.config)
-        ) : v.parity_pct == null ? (
-          "—"
-        ) : (
-          <>
-            <ParityCell v={v} task={task} />
-            {v.iterations > 0 && (
-              <span className="font-hand text-base">
-                {" "}
-                after {v.iterations} adapter iteration{v.iterations === 1 ? "" : "s"}
-              </span>
-            )}
-          </>
-        )}
-      </td>
-      <td className="px-2 py-3 font-mono text-sm whitespace-nowrap">
-        {after.latency}
-      </td>
-      <td className="px-2 py-3 font-mono text-sm whitespace-nowrap">
-        {after.cost}
-        {v.cost_before_note && (
-          <a href={`#cost-note-${v.site_id}`} className="ml-1 font-hand text-base text-bluepen underline underline-offset-2">
-            source
-          </a>
-        )}
-      </td>
-    </tr>
   );
 }
 

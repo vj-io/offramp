@@ -1,26 +1,33 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import cases from "./offramp-cases.json";
 import {
+  auditText,
   boundsText,
+  byConstructionLines,
   dayText,
   headline,
   judgeText,
   keepClosedStamp,
   keptText,
   manualReason,
+  notEvaluatedText,
   parityText,
+  parseNotEvaluated,
   prLabel,
   repoName,
   resultBounds,
+  reviewNote,
   spelledName,
   splitDiff,
   sunsetLines,
 } from "./format";
-import { applyEvents, initialRunState, parseRecording, toSnapshot } from "./run-state";
-import type { CallSite, PatchFailure, RunConfig, TierResult, Verdict } from "./types";
+import { applyEvents, initialRunState, parseRecording, runReducer, toSnapshot } from "./run-state";
+import type { CallSite, PatchFailure, RunConfig, TaskType, TierResult, Verdict } from "./types";
 
-// The recorded demo run as the hosted site serves it: no field it lacks is assumed.
+// The recorded demo run as the hosted site serves it: no field it lacks is assumed. Tests marked "tripwire" pin
+// today's recording and are expected to change when the demo is re-recorded with the Task 18/19 fields.
 const demo = toSnapshot(
   applyEvents(
     initialRunState,
@@ -46,7 +53,7 @@ const V = (over: Partial<Verdict>): Verdict => ({
 const config = { threshold: 0.95, reasoning_threshold: 0.9 } as RunConfig;
 
 describe("report headline", () => {
-  it("leads the recorded demo with what is true in its own data", () => {
+  it("tripwire: leads the recorded demo with what is true in its own data", () => {
     expect(headline(demo.verdicts, demo.totals)).toEqual({
       lead: "6 of 6 call sites reached parity on Nemotron · 3 migrated · est. −82% on those 3",
       scope: "−11% across all 6 ($49.24 → $43.86 per 1,000 calls, est.), since 3 stay for review",
@@ -99,7 +106,7 @@ describe("sunset line", () => {
     expect(spelledName("openai/gpt-4o", "GPT-4o retires")).toBe("GPT-4o");
     expect(dayText("2026-11-30")).toBe("30 Nov 2026");
   });
-  it("adds nothing for the recorded demo, which predates retires_on", () => {
+  it("tripwire: adds nothing for the recorded demo, which predates retires_on", () => {
     const byId = Object.fromEntries(demo.sites.map((s) => [s.id, s]));
     expect(sunsetLines(demo.verdicts, byId, "2026-10-21")).toEqual([]);
   });
@@ -151,44 +158,79 @@ describe("KEEP_CLOSED: only the recorded gate", () => {
   });
 });
 
-// The same cases as tests/unit/test_pr_render.py::test_each_recorded_failure_kind_reads_as_one_plain_sentence.
-const EDITED = "with the model's test edits applied,";
-const ALONE = "with Offramp's changes alone,";
-const GREEN = "Its patch passes this repo's checks on its own, but";
-const NEVER = "and Offramp never ships a patch that deletes a test.";
-const SHIPS = "code that ships changed (`app/x.py`), and only Offramp's code may write it.";
-const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
-const M = true;
-const CASES: [PatchFailure, string][] = [
-  [{ kind: "search_miss", files: ["tests/t.py"], model_edit: M }, "The model's edit to `tests/t.py` quotes lines matching no single place there, so none applied."],
-  [{ kind: "deletes_tests", files: ["tests/t.py"], tests: ["tests/t.py::test_o3"], model_edit: M }, `The model's edit deleted the test \`tests/t.py::test_o3\`, ${NEVER}`],
-  [{ kind: "locked_file", files: ["app/x.py"], model_edit: M }, "The model tried to edit `app/x.py`, which ships exactly as Offramp's code wrote it."],
-  [{ kind: "not_editable", files: ["../x.py"], model_edit: M }, "The model's edit to `../x.py` is not allowed for this site."],
-  [{ kind: "does_not_parse", files: ["tests/t.py"], model_edit: M }, "The model's edit left `tests/t.py` unparseable."],
-  [{ kind: "checks_failed", model_edit: M }, `${cap(EDITED)} this repo's checks still failed.`],
-  [{ kind: "backstop", files: ["app/x.py"], model_edit: M }, `${cap(EDITED)} ${SHIPS}`],
-  [{ kind: "probe_mismatch", model_edit: M }, `${cap(EDITED)} the call does not send the request that passed the evaluation.`],
-  [{ kind: "probe_mismatch" }, "Offramp's own rewrite does not send the request that passed the evaluation."],
-  [{ kind: "merge_conflict", files: ["tests/t.py"] }, `${GREEN} it conflicts with another migrated site's patch in \`tests/t.py\`.`],
-  [{ kind: "not_together" }, `${GREEN} not merged with the other migrated sites' patches.`],
-  [{ kind: "merged_drift" }, `${GREEN} on the merged tree its code or its evaluated request changed.`],
-  [{ kind: "repo_red" }, "This repo's own checks fail before any migration patch, so no patch could be checked."],
-  [{ kind: "budget_stop", last: "checks_failed", tries: 0 }, `The run's model budget ran out before the model replied at this site's patch; ${ALONE} this repo's checks fail.`],
-  [{ kind: "budget_stop", last: "deletes_tests", tries: 2, model_edit: M, tests: ["t.py::test_a"] }, `The run's model budget ran out after 2 tries at this site's patch; the model's edit deleted the test \`t.py::test_a\`, ${NEVER}`],
-  [{ kind: "no_edit_block", last: "checks_failed", tries: 4 }, `The model's last reply had no complete edit, so nothing was applied; ${ALONE} this repo's checks fail.`],
-  [{ kind: "no_change", last: "backstop", tries: 2, model_edit: M, files: ["app/x.py"] }, `The model's last repair repeated an edit it had already tried; ${EDITED} ${SHIPS}`],
-];
+// offramp-cases.json is pr_writer's own output (tests/unit/test_web_tables.py writes and checks it): the port must
+// say exactly what the PR says, joining text and names holding "$&", "$1" or "$$" included.
+type ManualCase = { failure: PatchFailure; reason: string; expected: [string, string | null] };
+type KeptCase = { verdict: Partial<Verdict>; task: TaskType; expected: string };
 
-describe("manual-review reason (pr_writer.manual_reason)", () => {
-  it.each(CASES)("%o reads as one plain sentence, raw reason folded", (failure, sentence) => {
-    expect(manualReason(V({ decision: "MANUAL_REVIEW", reason: "raw | output", patch_failure: failure }))).toEqual({
-      sentence,
-      raw: "raw | output",
+describe("the port says what pr_writer says (Python-generated cases)", () => {
+  it.each(cases.manual_reason as ManualCase[])("manual_reason %#", ({ failure, reason, expected }) => {
+    expect(manualReason(V({ decision: "MANUAL_REVIEW", reason, patch_failure: failure }))).toEqual({
+      sentence: expected[0],
+      raw: expected[1],
     });
   });
-  it("without a recorded failure the reason shows as it is (the recorded demo)", () => {
-    const v = demo.verdicts.find((x) => x.decision === "MANUAL_REVIEW")!;
-    expect(manualReason(v)).toEqual({ sentence: v.reason, raw: null });
+  it.each(cases.kept as KeptCase[])("_kept %#", ({ verdict, task, expected }) => {
+    expect(keptText(V({ decision: "KEEP_CLOSED", tier: null, ...verdict }), task, config)).toBe(expected);
+  });
+  it("covers names with replacement patterns", () => {
+    expect((cases.manual_reason as ManualCase[]).some((c) => c.expected[0].includes("$&"))).toBe(true);
+  });
+});
+
+describe("manual-review note on the page", () => {
+  it("tripwire: the recorded demo's raw reasons fold under one line that claims no specific cause", () => {
+    const review = demo.verdicts.filter((v) => v.decision === "MANUAL_REVIEW");
+    expect(review).toHaveLength(3);
+    for (const v of review) {
+      expect(manualReason(v)).toEqual({ sentence: v.reason, raw: null }); // the exact port passes it through
+      expect(reviewNote(v)).toEqual({
+        sentence: "Offramp's automatic patch for this site failed, so it shipped no change.",
+        raw: v.reason,
+      });
+    }
+  });
+  it("a short reason without a recorded kind shows as it is; a recorded kind gives the PR's sentence", () => {
+    const short = "patch not composed: Offramp could not rewrite this call; a model-written call is not shipped";
+    expect(reviewNote(V({ decision: "MANUAL_REVIEW", reason: short }))).toEqual({ sentence: short, raw: null });
+    const long = V({ decision: "MANUAL_REVIEW", tier: null, reason: "x".repeat(200) });
+    expect(reviewNote(long)).toEqual({ sentence: "Offramp stopped at this site without a patch.", raw: long.reason });
+    const kind = V({ decision: "MANUAL_REVIEW", reason: "raw", patch_failure: { kind: "repo_red" } });
+    expect(reviewNote(kind)).toEqual(manualReason(kind));
+  });
+});
+
+describe("calls found but not evaluated", () => {
+  it("tripwire: reads the recorded demo's embedding call back from its log", () => {
+    expect(demo.not_evaluated).toEqual([{ id: "emb_01", kind: "embedding", file: "helphub/search/embed.py" }]);
+    expect(notEvaluatedText(demo.not_evaluated![0])).toBe("found, not evaluated (embedding calls aren't chat calls)");
+  });
+  it("matches only the pipeline's exact line", () => {
+    expect(parseNotEvaluated("emb_02: embedding call in a b/c.py, not evaluated (chat calls only)")).toEqual({
+      id: "emb_02",
+      kind: "embedding",
+      file: "a b/c.py",
+    });
+    expect(parseNotEvaluated("emb_02: embedding call in c.py, not evaluated")).toBeNull();
+    expect(parseNotEvaluated("Stage: Scanned")).toBeNull();
+  });
+  it("restart clears them with the rest of the run", () => {
+    expect(runReducer(applyEvents(initialRunState, []), "reset")).toBe(initialRunState);
+  });
+});
+
+describe("how parity was measured, said once", () => {
+  const auditor = "claude-sonnet-5.5 (via Claude Code; not the repo's source model)";
+  it("names the auditing model once for all the sites it audited", () => {
+    const vs = ["cs_01", "cs_02", "cs_04"].map((id) =>
+      V({ site_id: id, closed_reference_model: auditor, closed_reference_parity_pct: id === "cs_04" ? 90 : null }),
+    );
+    expect(byConstructionLines(vs)).toEqual([
+      `${auditor} is not compared on cs_01, cs_02: it audited those sites' references, so it agrees with every one kept by construction`,
+    ]);
+    expect(byConstructionLines(vs, auditor)[0]).toMatch(/^It is not compared on cs_01, cs_02: /);
+    const a = { checked: 24, agreed: 21, dropped: 3, human_verified: 0, auditor };
+    expect(auditText(a, false)).toBe("24 checked, 21 agreed, 3 dropped, 0 human-verified");
   });
 });
 

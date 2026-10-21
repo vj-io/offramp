@@ -11,18 +11,23 @@ function lineClass(line: string, header: boolean): string {
   return "";
 }
 
+// Lines shown per file; past this the pull request has the rest (a whole-file test rewrite can run to thousands).
+const MAX_LINES = 400;
+
 /** One migrated site's shipped change, folded, its call site's file first; the summary counts files and lines. */
 export function DiffView({
   siteId,
   siteFile,
   tier,
   diff,
+  prUrl,
   open,
 }: {
   siteId: string;
   siteFile: string | undefined;
   tier: Tier | null;
   diff: string;
+  prUrl: string | null;
   open?: boolean;
 }) {
   const files = splitDiff(diff).sort((a, b) => Number(b.path === siteFile) - Number(a.path === siteFile));
@@ -44,13 +49,27 @@ export function DiffView({
         className="max-h-[32rem] overflow-auto border-t-2 border-dashed border-muted font-mono text-xs leading-relaxed"
       >
         <code className="block w-max min-w-full py-2">
-          {files.flatMap((f, fi) =>
-            f.lines.map((line, i) => (
-              <span key={`${fi}-${i}`} className={`block px-4 ${lineClass(line, Boolean(f.path) && i < 2)}`}>
-                {line || " "}
-              </span>
-            )),
-          )}
+          {files.map((f, fi) => (
+            <span key={fi} className="block">
+              {f.lines.slice(0, MAX_LINES).map((line, i) => (
+                <span key={i} className={`block px-4 ${lineClass(line, Boolean(f.path) && i < 2)}`}>
+                  {line || " "}
+                </span>
+              ))}
+              {f.lines.length > MAX_LINES && (
+                <span className="block px-4 py-1 font-hand text-base">
+                  … {f.lines.length - MAX_LINES} more lines of {f.path || "this file"}{" "}
+                  {prUrl ? (
+                    <a href={`${prUrl}/files`} target="_blank" rel="noreferrer" className="text-bluepen underline underline-offset-2">
+                      in the pull request
+                    </a>
+                  ) : (
+                    "in the pull request"
+                  )}
+                </span>
+              )}
+            </span>
+          ))}
         </code>
       </pre>
     </details>

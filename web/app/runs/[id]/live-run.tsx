@@ -8,7 +8,7 @@ import { NoRecording, NoticeNote, PolicyNote, RunLinks, SourceLabel } from "@/co
 import { SiteCard } from "@/components/site-card";
 import { StageStepper } from "@/components/stage-stepper";
 import { TierHeatmap } from "@/components/tier-heatmap";
-import { repoName } from "@/lib/format";
+import { notEvaluatedText, repoName } from "@/lib/format";
 import { pickSource, siteView, stageProgress, type RunSource } from "@/lib/run-state";
 import { API_URL, useRun } from "@/lib/use-run";
 
@@ -52,7 +52,9 @@ function RunBody({ id, source, replay, query }: { id: string; source: RunSource;
           <RunLinks repoUrl={state.config?.repo_url ?? null} prUrl={state.pr?.url ?? null} />
           <SourceLabel source={source} runId={state.runId} apiUrl={API_URL} />
           <ConnectionNote kind={status.kind} onRetry={retry} />
-          {status.kind === "playing" && <ReplayControls playback={playback} />}
+          {source !== "api" && (status.kind === "playing" || status.kind === "ended") && (
+            <ReplayControls playback={playback} ended={status.kind === "ended"} />
+          )}
         </div>
         {hasVerdicts && (
           <Link href={reportHref} className="sketch bg-ink px-4 py-2 font-hand text-xl text-paper hover:opacity-90">
@@ -88,6 +90,16 @@ function RunBody({ id, source, replay, query }: { id: string; source: RunSource;
             <ul className="grid gap-6 sm:grid-cols-2">
               {views.map((v, i) => (
                 <SiteCard key={v.site.id} view={v} index={i} config={state.config} />
+              ))}
+              {state.notEvaluated.map((n) => (
+                <li key={n.id} className="sketch-box flex min-w-0 flex-col gap-1 border-dashed p-4 text-muted">
+                  <h3 className="font-mono text-sm wrap-anywhere">
+                    <span className="font-bold">{n.id}</span> {n.file}
+                  </h3>
+                  <p className="font-hand text-lg leading-snug">
+                    {n.kind} call: {notEvaluatedText(n)}
+                  </p>
+                </li>
               ))}
             </ul>
           )}

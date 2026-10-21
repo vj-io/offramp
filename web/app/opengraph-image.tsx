@@ -1,3 +1,4 @@
+import { cacheLife } from "next/cache";
 import { ImageResponse } from "next/og";
 import { headline } from "@/lib/format";
 import { applyEvents, initialRunState, parseRecording, toSnapshot } from "@/lib/run-state";
@@ -18,10 +19,12 @@ function demoLead(): string[] | null {
   return snap.verdicts.length ? headline(snap.verdicts, snap.totals).lead.split(" · ") : null;
 }
 
-// Google Fonts, subset to the card's text, as next/font fetches them at build; the default font if offline.
-// "use cache" keeps the fetches in the build's prerender, so the card stays a static file.
+// Google Fonts, subset to the card's text, fetched once at build as next/font does (the default font if
+// offline). "use cache" with no revalidation keeps the fetch in the build's prerender: the card is a static file
+// and nothing is fetched at request time.
 async function font(family: string, weight: number, text: string) {
   "use cache";
+  cacheLife({ revalidate: Infinity, expire: Infinity });
   try {
     const q = `family=${family.replaceAll(" ", "+")}:wght@${weight}&text=${encodeURIComponent(text)}`;
     const css = await (await fetch(`https://fonts.googleapis.com/css2?${q}`)).text();

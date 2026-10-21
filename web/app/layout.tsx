@@ -14,6 +14,7 @@ const description =
   "Shows, on held-out cases, which closed-LLM call sites NVIDIA Nemotron on Nebius Token Factory can take over, and opens the pull request.";
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://offramp-seven.vercel.app"),
   title: { default: "Offramp", template: "%s · Offramp" },
   description,
   openGraph: { siteName: "Offramp", title: "Offramp", description, type: "website" },

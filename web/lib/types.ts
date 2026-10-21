@@ -319,6 +319,13 @@ export interface RunConfig {
   live: boolean;
 }
 
+// A call site the scanner found but the run did not evaluate (an embedding call), read back from the run's log.
+export interface NotEvaluated {
+  id: string;
+  kind: string;
+  file: string;
+}
+
 // GET /api/runs/{id} (Global Constraint 13). `config` is null when the snapshot was rebuilt
 // from a recorded event log that does not carry the run config.
 export interface RunSnapshot {
@@ -332,6 +339,7 @@ export interface RunSnapshot {
   artifacts: { pr_url?: string; report_url?: string };
   // Not in GC13's snapshot yet (proposed): filled when the snapshot is rebuilt from the event log.
   case_summaries?: CaseSummary[];
+  not_evaluated?: NotEvaluated[]; // likewise, from the run's log
 }
 
 // GET /api/runs/{id}/report. `diffs`: each migrated site's shipped unified diff, in replays exported with it.

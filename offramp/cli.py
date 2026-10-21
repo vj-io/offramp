@@ -119,7 +119,9 @@ def serve(args: argparse.Namespace) -> int:
 
 def _shipped_diffs(run_dir: Path) -> dict[str, str]:
     """Each migrated site's unified diff as its PR commits it (patch.json), scrubbed like the events. Only
-    MIGRATE sites: a kept site's comment and a manual-review site never reach the report's diff panel."""
+    MIGRATE sites: a kept site's comment and a manual-review site never reach the report's diff panel.
+    scrub() knows only the secret-named variables in this shell's environment (the CLI loads no .env); the
+    diff is the code the public PR already commits."""
     patch = run_dir / "patch.json"
     if not patch.exists():
         return {}

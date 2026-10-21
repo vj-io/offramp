@@ -1,12 +1,14 @@
 // Folds the run's SSE events (Global Constraints 12-14) into dashboard state.
 // Every id-bearing event is an upsert, and events are deduplicated by `seq`, so a reconnect that
 // replays the stream from the start, or a producer that re-emits a result, never duplicates UI.
+import { parseNotEvaluated } from "./format";
 import {
   STAGE_ORDER,
   TIER_ORDER,
   type Adapter,
   type CallSite,
   type CaseSummary,
+  type NotEvaluated,
   type RunConfig,
   type RunEvent,
   type RunReport,
@@ -32,6 +34,7 @@ export interface RunState {
   verdicts: Record<string, Verdict>;
   pr: { url: string; title: string } | null;
   totals: RunTotals | null;
+  notEvaluated: NotEvaluated[]; // calls found but not evaluated (embeddings), from the log
   events: RunEvent[];
 }
 
@@ -49,6 +52,7 @@ export const initialRunState: RunState = {
   verdicts: {},
   pr: null,
   totals: null,
+  notEvaluated: [],
   events: [],
 };
 
@@ -108,11 +112,18 @@ export function applyEvent(s: RunState, e: RunEvent): RunState {
     case "done":
       next.totals = (p.totals as RunTotals) ?? null;
       break;
+    case "log": {
+      const found = parseNotEvaluated(String(p.message ?? ""));
+      if (found && !s.notEvaluated.some((n) => n.id === found.id)) next.notEvaluated = [...s.notEvaluated, found];
+      break;
+    }
   }
   return next;
 }
 
 export const applyEvents = (s: RunState, es: RunEvent[]) => es.reduce(applyEvent, s);
+/** The replay's reducer: events fold in; "reset" starts the run over (Restart). */
+export const runReducer = (s: RunState, a: RunEvent[] | "reset") => (a === "reset" ? initialRunState : applyEvents(s, a));
 
 export type StageStatus = "done" | "current" | "pending" | "failed" | "skipped";
 
@@ -169,6 +180,7 @@ export function toSnapshot(s: RunState): RunSnapshot {
     totals: s.totals,
     artifacts: s.pr ? { pr_url: s.pr.url } : {},
     case_summaries: Object.values(s.cases),
+    not_evaluated: s.notEvaluated,
   };
 }
 

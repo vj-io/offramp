@@ -2,9 +2,9 @@ import type { CSSProperties } from "react";
 import {
   closedReferenceText,
   keepClosedStamp,
-  manualReason,
   referencesText,
   resultBounds,
+  reviewNote,
   scoreText,
   TASK_NAME,
   TIER_NAME,
@@ -18,44 +18,22 @@ import { FilePath } from "./file-path";
 
 const mark = (m: string) => ({ "--mark": m }) as CSSProperties;
 
-// A reason can hold error text, file paths and tokens with no spaces: wrap anywhere, never widen the card.
-// Past this many characters it starts on 3 lines behind a native "more" toggle; the full text stays in the DOM.
-// The text sits outside the <summary>, so the toggle's accessible name stays short; the chip is the `group`, and
-// group-has-[details[open]] means its own <details> is open.
-const LONG_REASON = 120;
-
-// A recorded failure kind reads as the PR's plain sentence, with the raw reason folded under it; an older
-// recording's reason shows as it is.
+// The PR's plain sentence when the patch stage recorded its failure kind; an older recording's long reason (a check
+// dump) folds under one cause-free line, as on the report (format.ts reviewNote). Paths and test ids wrap anywhere.
 function ManualReviewNote({ verdict }: { verdict: Verdict }) {
-  const { sentence, raw } = manualReason(verdict);
-  const text = `Manual review: ${sentence}`;
-  const chip = "hl-chip sketch max-w-full min-w-0 px-2.5 py-0.5 font-hand text-lg wrap-anywhere";
-  if (raw !== null)
-    return (
-      <div className={chip} style={mark(DECISION_HL.MANUAL_REVIEW)}>
-        <CodeText text={text} />
+  const { sentence, raw } = reviewNote(verdict);
+  return (
+    <div
+      className="hl-chip sketch max-w-full min-w-0 px-2.5 py-0.5 font-hand text-lg wrap-anywhere"
+      style={mark(DECISION_HL.MANUAL_REVIEW)}
+    >
+      <CodeText text={`Manual review: ${sentence}`} />
+      {raw !== null && (
         <details className="text-base">
           <summary className="cursor-pointer underline underline-offset-2">Raw failure</summary>
           <p className="mt-1 font-mono text-xs leading-relaxed whitespace-pre-wrap">{raw.replaceAll(" | ", "\n")}</p>
         </details>
-      </div>
-    );
-  if (text.length <= LONG_REASON)
-    return (
-      <span className={chip} style={mark(DECISION_HL.MANUAL_REVIEW)}>
-        {text}
-      </span>
-    );
-  return (
-    <div className={`group ${chip}`} style={mark(DECISION_HL.MANUAL_REVIEW)}>
-      <span className="line-clamp-3 group-has-[details[open]]:line-clamp-none">{text}</span>
-      <details>
-        <summary className="cursor-pointer list-none text-base underline underline-offset-2 [&::-webkit-details-marker]:hidden">
-          <span className="group-has-[details[open]]:hidden">more</span>
-          <span className="hidden group-has-[details[open]]:inline">less</span>
-          <span className="sr-only"> of the manual review reason</span>
-        </summary>
-      </details>
+      )}
     </div>
   );
 }
@@ -104,7 +82,7 @@ export function SiteCard({ view, index, config }: { view: SiteView; index: numbe
         <span className="font-bold">{site.id}</span> <FilePath path={site.file} range={site.lines.join("–")} />
       </h3>
       <p className="font-hand text-lg leading-snug">
-        {task ? TASK_NAME[task] : "unlabelled"} call, source model{" "}
+        {task ? TASK_NAME[task].replace(/ call$/, "") : "unlabelled"} call, source model{" "}
         <span className="font-mono text-sm">{site.source_model ?? "unknown"}</span>
       </p>
       <ul className="flex flex-col gap-1.5" aria-label={`${site.id} results per tier`}>

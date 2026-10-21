@@ -1,8 +1,9 @@
-import tables from "./pr-writer-tables.json";
+import tables from "./offramp-tables.json";
 import type {
   CallSite,
   CaseSummary,
   Decision,
+  NotEvaluated,
   ReferenceAudit,
   RunConfig,
   RunTotals,
@@ -141,20 +142,53 @@ export function manualReason(v: Verdict): { sentence: string; raw: string | null
   const alone = tables.alone as Record<string, string>;
   const table = !f.model_edit && shown in alone ? alone : (tables.cause as Record<string, string>);
   const tests = f.tests ?? [];
-  const cause = (table[shown] ?? "")
-    .replaceAll("{files}", (f.files ?? []).map((p) => `\`${p}\``).join(", ") || "a file")
-    .replaceAll("{tests}", `the test${tests.length !== 1 ? "s" : ""} ` + tests.map((t) => `\`${t}\``).join(", "));
+  const files = (f.files ?? []).map((p) => `\`${p}\``).join(", ") || "a file";
+  const named = `the test${tests.length !== 1 ? "s" : ""} ` + tests.map((t) => `\`${t}\``).join(", ");
+  // Function replacers: a name holding "$&" or "$1" must come out as written, as Python's str.format leaves it.
+  const cause = (table[shown] ?? "").replaceAll("{files}", () => files).replaceAll("{tests}", () => named);
   const ended = (tables.ended as Record<string, string>)[f.kind];
   let sentence: string;
   if (ended) {
     const n = f.tries ?? 0;
     const tries = n ? `after ${n} ${n === 1 ? "try" : "tries"}` : "before the model replied";
-    sentence = ended.replace("{tries}", tries) + (cause ? `; ${cause}` : "");
+    sentence = ended.replace("{tries}", () => tries) + (cause ? `; ${cause}` : "");
   } else sentence = cause.charAt(0).toUpperCase() + cause.slice(1);
   return { sentence: `${sentence}.`, raw: v.reason };
 }
 
+// A manual-review note for the page: the PR's sentence when the patch stage recorded its failure kind. A
+// recording without the kind (made before Task 18) shows a short reason as it is; a long one (a check dump) goes
+// behind the fold under one line that claims only what any patch-stage downgrade means.
+const SHORT_REASON = 160;
+export function reviewNote(v: Verdict): { sentence: string; raw: string | null } {
+  const port = manualReason(v);
+  if (port.raw !== null || (v.reason.length <= SHORT_REASON && !v.reason.includes("\n"))) return port;
+  const sentence =
+    v.tier != null
+      ? "Offramp's automatic patch for this site failed, so it shipped no change."
+      : "Offramp stopped at this site without a patch.";
+  return { sentence, raw: v.reason };
+}
+
 export const PRICE_METHOD: Record<string, string> = tables.price_methods;
+// pr_writer.BOUNDS: what the bracket after a parity figure means, and how to narrow it.
+export const BOUNDS_NOTE: string = tables.bounds;
+
+// The pipeline's log line for a call it found but did not evaluate (pipeline.NOT_EVALUATED), read back.
+const NOT_EVALUATED = new RegExp(
+  "^" +
+    tables.not_evaluated
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      .replace("\\{id\\}", "(?<id>\\S+)")
+      .replace("\\{kind\\}", "(?<kind>\\S+)")
+      .replace("\\{file\\}", "(?<file>.+)") +
+    "$",
+);
+export function parseNotEvaluated(message: string): NotEvaluated | null {
+  const g = NOT_EVALUATED.exec(message)?.groups;
+  return g ? { id: g.id, kind: g.kind, file: g.file } : null;
+}
+export const notEvaluatedText = (n: NotEvaluated) => `found, not evaluated (${n.kind} calls aren't chat calls)`;
 
 // Heatmap tint: lime when the result passed, pink otherwise, deeper the further below the bar.
 // Mixed with white, not paper, so ink #0a0a0a stays readable on it in both themes.
@@ -209,10 +243,22 @@ export function referencesText(c: CaseSummary): string {
   return `${c.references} references${methods.length ? ` (${methods.join(", ")})` : ""}`;
 }
 
-export function auditText(a: ReferenceAudit | undefined): string | null {
+export function auditText(a: ReferenceAudit | undefined, withAuditor = true): string | null {
   if (!a || (a.checked === 0 && a.human_verified === 0)) return null;
   const counts = `${a.checked} checked, ${a.agreed} agreed, ${a.dropped} dropped, ${a.human_verified} human-verified`;
-  return a.auditor ? `${counts}, auditor ${a.auditor}` : counts;
+  return a.auditor && withAuditor ? `${counts}, auditor ${a.auditor}` : counts;
+}
+
+// The closed model that audited references, said once for every site it audited rather than once per site;
+// "It" when the sentence before already named that model (`named`).
+export function byConstructionLines(verdicts: Verdict[], named: string | null = null): string[] {
+  const groups = new Map<string, string[]>();
+  for (const v of verdicts)
+    if (closedByConstructionText(v)) groups.set(v.closed_reference_model!, [...(groups.get(v.closed_reference_model!) ?? []), v.site_id]);
+  return [...groups].map(
+    ([model, ids]) =>
+      `${model === named ? "It" : model} is not compared on ${ids.join(", ")}: it audited ${ids.length === 1 ? "that site's" : "those sites'"} references, so it agrees with every one kept by construction`,
+  );
 }
 
 // GC27(c): the closed reference's parity on the same references, only when the verdict carries it.
