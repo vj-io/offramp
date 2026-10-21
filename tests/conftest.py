@@ -28,10 +28,11 @@ def target_code_here(monkeypatch):
 
 @pytest.fixture
 def unrecorded_patcher_calls_stop(monkeypatch):
-    """A cache-only replay in which an unrecorded patcher repair turn naming deleted tests (new in Task 18)
-    stops its site the way a spent budget does (BudgetExceeded: MANUAL_REVIEW, the last failure kept) instead
-    of failing the whole replay: the demo cassettes hold no reply to cs_05's new repair prompt until the next
-    live re-record. Any other unrecorded call still raises CacheMiss."""
+    """A cache-only replay in which an unrecorded patcher repair turn naming deleted tests (new in Task 18) or
+    showing files as the last checked try left them (new in Task 24) stops its site the way a spent budget
+    does (BudgetExceeded: MANUAL_REVIEW, the last failure kept) instead of failing the whole replay: the demo
+    cassettes hold no reply to cs_04's or cs_05's new repair prompt until the next live re-record. Any other
+    unrecorded call still raises CacheMiss."""
     chat = TFClient.chat
 
     def replay(self, **kw):
@@ -41,7 +42,9 @@ def unrecorded_patcher_calls_stop(monkeypatch):
             if (
                 self.live
                 or kw.get("role") != "patcher"
-                or "Never delete a test" not in kw["messages"][-1]["content"]
+                or not any(
+                    turn in kw["messages"][-1]["content"] for turn in ("Never delete a test", "## Files now")
+                )
             ):
                 raise
             raise BudgetExceeded("no recording of this patcher call") from None
