@@ -1,4 +1,17 @@
-import type { CaseSummary, Decision, ReferenceAudit, RunConfig, Stage, TaskType, Tier, TierResult, Verdict } from "./types";
+import tables from "./pr-writer-tables.json";
+import type {
+  CallSite,
+  CaseSummary,
+  Decision,
+  ReferenceAudit,
+  RunConfig,
+  RunTotals,
+  Stage,
+  TaskType,
+  Tier,
+  TierResult,
+  Verdict,
+} from "./types";
 
 export const TIER_NAME: Record<Tier, string> = {
   lightning: "Nemotron 3.5 Lightning",
@@ -57,13 +70,91 @@ export function thresholdFor(task: TaskType | undefined, config: RunConfig | nul
   return task === "reasoning" ? config.reasoning_threshold : config.threshold;
 }
 
-export function keepClosedStamp(v: Verdict, task: TaskType | undefined, config: RunConfig | null): string {
-  if (v.parity_pct === null) return "NOT MIGRATED";
-  const bar = thresholdFor(task, config);
-  return bar === null
-    ? `NOT MIGRATED · best parity ${pct100(v.parity_pct)}`
-    : `NOT MIGRATED · ${pct100(v.parity_pct)} < ${Math.round(bar * 100)}%`;
+// "9/9, ≥70%": holdout cases passing / evaluated and the Wilson 95% lower bound of that rate, rounded down so it
+// is never overstated (as the PR writes it). JSON extraction's figure is a field match, so its count says "pass".
+// null for recordings made before Task 19, which keep the figure alone.
+export function boundsText(
+  passed: number | null | undefined,
+  cases: number | null | undefined,
+  lower: number | null | undefined,
+  task?: TaskType,
+): string | null {
+  if (!cases || passed == null || lower == null) return null;
+  return `${passed}/${cases}${task === "json_extraction" ? " pass" : ""}, ≥${Math.floor(lower)}%`;
 }
+export const verdictBounds = (v: Verdict, task?: TaskType) =>
+  boundsText(v.holdout_passed, v.holdout_cases, v.parity_lower_pct, task);
+export const resultBounds = (r: TierResult, task?: TaskType) =>
+  task === "free_text"
+    ? r.cases
+      ? `n=${r.cases}`
+      : null
+    : boundsText(r.cases != null ? r.cases - r.failing_case_ids.length : null, r.cases, r.parity_lower_pct, task);
+
+// "100.0% (9/9, ≥70%)", or "100.0%" when the recording has no counts.
+export function parityText(v: Verdict, task?: TaskType): string {
+  if (v.parity_pct == null) return "—";
+  const b = verdictBounds(v, task);
+  return b ? `${pct100(v.parity_pct)} (${b})` : pct100(v.parity_pct);
+}
+
+// Free text: "mean 4.54, lowest 3.0, n=8"; with `failed`, each figure under its bar says so ("mean 3.95 < 4.0").
+// Two decimals, never one: rounding 2.96 to "3.0" would hide a miss of the 3.0 floor.
+const judgeNum = (x: number) => x.toFixed(2).replace(/0$/, "");
+export function judgeText(
+  v: Pick<Verdict, "judge_mean" | "judge_min" | "holdout_cases">,
+  failed = false,
+): string | null {
+  if (v.judge_mean == null) return null;
+  const fig = (name: string, x: number, bar: number) =>
+    `${name} ${judgeNum(x)}${failed && x < bar ? ` < ${bar.toFixed(1)}` : ""}`;
+  const parts = [fig("mean", v.judge_mean, tables.judge_floor)];
+  if (v.judge_min != null) parts.push(fig("lowest", v.judge_min, tables.judge_case_floor));
+  if (v.holdout_cases) parts.push(`n=${v.holdout_cases}`);
+  return parts.join(", ");
+}
+
+// A kept site's figure and only the cause its verdict recorded (failed_gate, ported from pr_writer._kept). A
+// verdict recorded without the gate states its figures and no comparison: a cause is never inferred.
+export function keptText(v: Verdict, task: TaskType | undefined, config: RunConfig | null): string {
+  if (v.failed_gate === "budget") return "not measured: the run's budget stopped it";
+  if (v.parity_pct == null) return "not measured";
+  const judged = task === "free_text" && (v.failed_gate === "judge_mean" || v.failed_gate === "case_floor");
+  const text = (task === "free_text" ? judgeText(v, judged) : null) ?? parityText(v, task);
+  const missed = v.failed_gate ? (tables.missed as Record<string, string>)[v.failed_gate] : undefined;
+  if (missed) return text + missed;
+  if (v.failed_gate !== "threshold") return text;
+  const bar = thresholdFor(task, config);
+  return bar === null ? `${text}, below the parity bar` : `${text} < ${Math.round(bar * 100)}%`;
+}
+
+export const keepClosedStamp = (v: Verdict, task: TaskType | undefined, config: RunConfig | null) =>
+  v.parity_pct == null && v.failed_gate !== "budget" ? "NOT MIGRATED" : `NOT MIGRATED · ${keptText(v, task, config)}`;
+
+// A manual-review verdict as the sentence the PR gives it (pr_writer.manual_reason, same tables), plus the raw
+// reason to fold under it. Built from the patch stage's recorded failure kind, never from the reason's text;
+// without that record (older recordings) the reason shows as it is and raw is null.
+export function manualReason(v: Verdict): { sentence: string; raw: string | null } {
+  const f = v.patch_failure;
+  if (!f) return { sentence: v.reason, raw: null };
+  const shown = f.last ?? f.kind;
+  const alone = tables.alone as Record<string, string>;
+  const table = !f.model_edit && shown in alone ? alone : (tables.cause as Record<string, string>);
+  const tests = f.tests ?? [];
+  const cause = (table[shown] ?? "")
+    .replaceAll("{files}", (f.files ?? []).map((p) => `\`${p}\``).join(", ") || "a file")
+    .replaceAll("{tests}", `the test${tests.length !== 1 ? "s" : ""} ` + tests.map((t) => `\`${t}\``).join(", "));
+  const ended = (tables.ended as Record<string, string>)[f.kind];
+  let sentence: string;
+  if (ended) {
+    const n = f.tries ?? 0;
+    const tries = n ? `after ${n} ${n === 1 ? "try" : "tries"}` : "before the model replied";
+    sentence = ended.replace("{tries}", tries) + (cause ? `; ${cause}` : "");
+  } else sentence = cause.charAt(0).toUpperCase() + cause.slice(1);
+  return { sentence: `${sentence}.`, raw: v.reason };
+}
+
+export const PRICE_METHOD: Record<string, string> = tables.price_methods;
 
 // Heatmap tint: lime when the result passed, pink otherwise, deeper the further below the bar.
 // Mixed with white, not paper, so ink #0a0a0a stays readable on it in both themes.
@@ -151,4 +242,103 @@ export function linkParts(text: string): { text: string; href?: string }[] {
     .split(/(https?:\/\/[^\s,)]+)/)
     .filter(Boolean)
     .map((part) => (/^https?:\/\//.test(part) ? { text: part, href: part } : { text: part }));
+}
+
+// ---------------------------------------------------------------- the report's headline
+
+// "−82%" for a saving, "+5%" for a rise; null when nothing to compare.
+function change(before: number, after: number): string | null {
+  if (!(before > 0)) return null;
+  const p = Math.round((1 - after / before) * 100);
+  return p > 0 ? `−${p}%` : p < 0 ? `+${-p}%` : "±0%";
+}
+
+const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
+
+/** The report's lead, from the verdicts alone: how many sites reached parity (MIGRATE, or a manual review the
+ *  patch stage downgraded, which keeps its passing tier), how many migrated, and the estimated cost change on
+ *  those; then the all-sites figure with its scope. Never hard-coded. */
+export function headline(verdicts: Verdict[], totals: RunTotals | null): { lead: string; scope: string | null } {
+  const n = verdicts.length;
+  const migrated = verdicts.filter((v) => v.decision === "MIGRATE");
+  const reached = verdicts.filter((v) => v.decision !== "KEEP_CLOSED" && v.tier != null && v.parity_pct != null);
+  const m = migrated.length;
+  let lead = `${reached.length} of ${n} call ${plural(n, "site", "sites")} reached parity on Nemotron · ${m || "none"} migrated`;
+  const priced = migrated.every((v) => v.cost_before_per_1k != null && v.cost_after_per_1k != null);
+  const sum = (k: "cost_before_per_1k" | "cost_after_per_1k") => migrated.reduce((a, v) => a + (v[k] ?? 0), 0);
+  const onMigrated = m && priced ? change(sum("cost_before_per_1k"), sum("cost_after_per_1k")) : null;
+  if (onMigrated) lead += ` · est. ${onMigrated} on ${m === n ? `all ${n}` : `${plural(m, "that one", `those ${m}`)}`}`;
+
+  const all = totals ? change(totals.est_cost_before_per_1k, totals.est_cost_after_per_1k) : null;
+  if (!totals || !all || m === n) return { lead, scope: null };
+  const review = verdicts.filter((v) => v.decision === "MANUAL_REVIEW").length;
+  const kept = verdicts.filter((v) => v.decision === "KEEP_CLOSED").length;
+  const why = [
+    review ? `${review} ${plural(review, "stays", "stay")} for review` : "",
+    kept ? `${kept} ${plural(kept, "stays on its source model", "stay on their source models")}` : "",
+  ].filter(Boolean);
+  const money = `${usd(totals.est_cost_before_per_1k)} → ${usd(totals.est_cost_after_per_1k)} per 1,000 calls, est.`;
+  return { lead, scope: `${all} across all ${n} (${money}), since ${why.join(" and ")}` };
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "2026-11-30" -> "30 Nov 2026", read as a calendar date (no time zone shift). */
+export const dayText = (iso: string) => {
+  const [y, mo, d] = iso.split("-").map(Number);
+  return `${d} ${MONTHS[mo - 1]} ${y}`;
+};
+
+/** The model's name as its deprecation notice spells it ("Claude Sonnet 4.5" for claude-sonnet-4-5), else the id. */
+export function spelledName(model: string, notice: string | null | undefined): string {
+  const id = model.split("/").pop() ?? model;
+  const parts = id.split(/[-_.\s]+/).filter(Boolean).map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const found = notice?.match(new RegExp(`\\b${parts.join("[\\s._-]+")}(?![\\w]|\\.\\d)`, "i"));
+  return found ? found[0] : model;
+}
+
+/** "Claude Sonnet 4.5 retires 30 Nov 2026: cs_02, cs_03", one line per date and model, soonest first; "retired"
+ *  once the date has passed. Only verdicts that recorded a retirement date (retires_on) count. */
+export function sunsetLines(verdicts: Verdict[], sites: Record<string, CallSite>, today: string): string[] {
+  const groups = new Map<string, { day: string; name: string; ids: string[] }>();
+  for (const v of verdicts) {
+    if (!v.retires_on) continue;
+    const model = sites[v.site_id]?.source_model;
+    const name = model ? spelledName(model, v.sunset_risk) : "The source model";
+    const key = `${v.retires_on}|${name}`;
+    if (!groups.has(key)) groups.set(key, { day: v.retires_on, name, ids: [] });
+    groups.get(key)!.ids.push(v.site_id);
+  }
+  return [...groups.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, g]) => `${g.name} ${g.day < today ? "retired" : "retires"} ${dayText(g.day)}: ${g.ids.join(", ")}`);
+}
+
+/** "owner/repo" for a GitHub URL, else the URL or path as given. */
+export function repoName(url: string): string {
+  const m = url.match(/^https:\/\/github\.com\/([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/);
+  return m ? m[1] : url;
+}
+
+/** "PR #1" for a GitHub pull request URL, else "the pull request". */
+export const prLabel = (url: string) => {
+  const m = url.match(/\/pull\/(\d+)/);
+  return m ? `PR #${m[1]}` : "the pull request";
+};
+
+/** A unified diff split per file. A file starts at a "--- " line directly followed by "+++ " (a removed line
+ *  reading "-- x" is not a header); `added` and `removed` count the hunk lines, not the headers. */
+export function splitDiff(diff: string): { path: string; lines: string[]; added: number; removed: number }[] {
+  const lines = diff.replace(/\n$/, "").split("\n");
+  const files: { path: string; lines: string[]; added: number; removed: number }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const header = lines[i].startsWith("--- ") && lines[i + 1]?.startsWith("+++ ");
+    if (header) files.push({ path: lines[i + 1].slice(4).replace(/^b\//, ""), lines: [], added: 0, removed: 0 });
+    else if (files.length === 0) files.push({ path: "", lines: [], added: 0, removed: 0 });
+    const f = files[files.length - 1];
+    const body = f.lines.length >= 2 || !f.path; // past this file's two header lines
+    f.lines.push(lines[i]);
+    if (body && !header && lines[i].startsWith("+")) f.added += 1;
+    else if (body && !header && lines[i].startsWith("-")) f.removed += 1;
+  }
+  return files;
 }

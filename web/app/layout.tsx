@@ -10,10 +10,14 @@ const archivo = Archivo({ subsets: ["latin"], variable: "--ff-archivo" });
 const hand = Patrick_Hand({ subsets: ["latin"], weight: "400", variable: "--ff-hand" });
 const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--ff-mono" });
 
+const description =
+  "Shows, on held-out cases, which closed-LLM call sites NVIDIA Nemotron on Nebius Token Factory can take over, and opens the pull request.";
+
 export const metadata: Metadata = {
-  title: "Offramp",
-  description:
-    "Proves which closed-LLM call sites NVIDIA Nemotron on Nebius Token Factory can take over, and opens the pull request.",
+  title: { default: "Offramp", template: "%s · Offramp" },
+  description,
+  openGraph: { siteName: "Offramp", title: "Offramp", description, type: "website" },
+  twitter: { card: "summary_large_image", title: "Offramp", description },
 };
 
 // Applies a saved paper/blackboard choice before first paint.

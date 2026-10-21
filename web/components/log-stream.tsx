@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { DECISION_NAME, pct100, scoreText, STAGE_NAME, TIER_NAME, TIER_SHORT } from "@/lib/format";
+import { DECISION_NAME, pct100, resultBounds, scoreText, STAGE_NAME, TIER_NAME, TIER_SHORT } from "@/lib/format";
 import type {
   Adapter,
   CallSite,
@@ -28,7 +28,8 @@ function describe(e: RunEvent, sites: Record<string, CallSite>): string {
     case "tier_result": {
       const r = p as unknown as TierResult;
       const task = sites[r.site_id]?.contract?.task_type;
-      return `${r.site_id} on ${TIER_SHORT[r.tier]} (${r.split}, adapter v${r.adapter_version}): ${scoreText(r, task)} ${r.passed ? "pass" : "fail"}`;
+      const bounds = resultBounds(r, task);
+      return `${r.site_id} on ${TIER_SHORT[r.tier]} (${r.split}, adapter v${r.adapter_version}): ${scoreText(r, task)}${bounds ? ` (${bounds})` : ""} ${r.passed ? "pass" : "fail"}`;
     }
     case "iteration": {
       const a = p as unknown as Adapter;
@@ -56,11 +57,12 @@ function level(e: RunEvent): "info" | "warn" | "error" {
   return "info";
 }
 
-export function LogStream({ events, sites }: { events: RunEvent[]; sites: Record<string, CallSite> }) {
+// `quiet` while a replay plays: a hundred events in seconds would flood a screen reader's live region.
+export function LogStream({ events, sites, quiet = false }: { events: RunEvent[]; sites: Record<string, CallSite>; quiet?: boolean }) {
   const recent = events.slice(-SHOWN).reverse();
   if (recent.length === 0) return <p className="font-hand text-lg text-muted">Nothing logged yet.</p>;
   return (
-    <ol role="log" tabIndex={0} aria-label="Run log, newest first" className="max-h-96 overflow-y-auto pr-1 font-mono text-[0.8rem] leading-relaxed">
+    <ol role="log" aria-live={quiet ? "off" : "polite"} tabIndex={0} aria-label="Run log, newest first" className="max-h-96 overflow-y-auto pr-1 font-mono text-[0.8rem] leading-relaxed">
       {recent.map((e) => {
         const lvl = level(e);
         return (

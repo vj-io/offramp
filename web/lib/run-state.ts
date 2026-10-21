@@ -172,22 +172,42 @@ export function toSnapshot(s: RunState): RunSnapshot {
   };
 }
 
-// Global Constraint 14: 4x speed, each recorded gap capped at 1.5 s before the speed-up.
-export function replayDelays(es: RunEvent[]): number[] {
+// Global Constraint 14: each recorded gap capped at 1.5 s, then played at `speed` (4x unless the viewer picks).
+export const SPEEDS = [1, 4, 16] as const;
+export type Speed = (typeof SPEEDS)[number];
+export function replayDelays(es: RunEvent[], speed: Speed = 4): number[] {
   return es.map((e, i) =>
-    i === 0 ? 0 : Math.min(Math.max(0, Date.parse(e.ts) - Date.parse(es[i - 1].ts)), 1500) / 4,
+    i === 0 ? 0 : Math.min(Math.max(0, Date.parse(e.ts) - Date.parse(es[i - 1].ts)), 1500) / speed,
   );
 }
 
-/** Events from a replay file (array or {events}). Fixture data is refused (null), so the dev
+// The recordings a page may play (`?replay=<name>`); any other name is refused, never fetched.
+export const REPLAYS: Record<string, { file: string; policy?: string }> = {
+  demo: { file: "/replay/demo-events.json" },
+  "no-ultra": { file: "/replay/no-ultra-events.json", policy: "a team that caps spend below Ultra" },
+};
+export const replayEntry = (name: string | null) =>
+  name !== null && Object.hasOwn(REPLAYS, name) ? REPLAYS[name] : null;
+
+export interface Recording {
+  events: RunEvent[];
+  diffs: Record<string, string>; // site id -> the unified diff its PR ships (exports since Task 21)
+}
+
+/** A replay file: an event array, or {events, diffs?}. Fixture data is refused (null), so the dev
  *  fixture can never play as the recorded demo even if someone copies it to /replay/. */
-export function parseRecording(body: unknown): RunEvent[] | null {
+export function parseRecording(body: unknown): Recording | null {
   const events = Array.isArray(body) ? body : (body as { events?: unknown })?.events;
   if (!Array.isArray(events)) throw new Error("The replay file is not a recorded Offramp event log.");
   const isFixture =
     (body as { fixture?: unknown }).fixture === true ||
     events.some((e: Partial<RunEvent>) => String(e?.run_id ?? "").startsWith("fixture-"));
-  return isFixture ? null : (events as RunEvent[]);
+  if (isFixture) return null;
+  const raw = Array.isArray(body) ? {} : (body as { diffs?: unknown }).diffs;
+  const diffs = Object.fromEntries(
+    Object.entries(raw && typeof raw === "object" ? raw : {}).filter(([, d]) => typeof d === "string"),
+  ) as Record<string, string>;
+  return { events: events as RunEvent[], diffs };
 }
 
 export type RunSource = "api" | "replay" | "fixture";
@@ -196,9 +216,10 @@ export type RunSource = "api" | "replay" | "fixture";
 export const downloadPayload = (report: RunReport, source: RunSource) =>
   source === "fixture" ? { fixture: true, ...report } : report;
 
+// Any ?replay= is a replay; an unknown name is refused when it loads (replayEntry), never sent to the API.
 export function pickSource(q: URLSearchParams): RunSource {
   if (q.get("live") === "1") return "api";
-  if (q.get("replay") === "demo") return "replay";
+  if (q.get("replay") !== null) return "replay";
   if (q.get("fixture") === "dev") return "fixture";
   return "api";
 }

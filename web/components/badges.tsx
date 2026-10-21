@@ -33,6 +33,23 @@ export function LinkedText({ text }: { text: string }) {
   );
 }
 
+/** Text whose `backtick` spans (file paths, test ids, as the PR writes them) render as code. */
+export function CodeText({ text }: { text: string }) {
+  return (
+    <>
+      {text.split("`").map((part, i) =>
+        i % 2 ? (
+          <code key={i} className="font-mono text-[0.85em] wrap-anywhere">
+            {part}
+          </code>
+        ) : (
+          <span key={i}>{part}</span>
+        ),
+      )}
+    </>
+  );
+}
+
 /** The orange "Sunset risk" chip alone, for places where the notice itself goes in a footnote. */
 export function SunsetBadge() {
   return (

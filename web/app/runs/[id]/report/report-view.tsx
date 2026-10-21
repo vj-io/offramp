@@ -1,50 +1,60 @@
 "use client";
 
-import type { CSSProperties } from "react";
+import { Fragment, type CSSProperties } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
-import { BrandBadges, LinkedText, SunsetBadge, SunsetRisk } from "@/components/badges";
+import { BrandBadges, CodeText, LinkedText, SunsetBadge, SunsetRisk } from "@/components/badges";
+import { DiffView } from "@/components/diff-view";
 import { DECISION_NOTE, Note, Stamp, Swipe, TIER_HL } from "@/components/doodle";
 import { FilePath } from "@/components/file-path";
-import { NoRecording, NoticeNote, SourceLabel } from "@/components/run-notices";
+import { NoRecording, NoticeNote, PolicyNote, RunLinks, SourceLabel } from "@/components/run-notices";
 import {
   afterCells,
   auditText,
   closedByConstructionText,
   closedReferenceText,
+  dayText,
+  headline,
+  judgeText,
   keepClosedStamp,
+  keptText,
+  manualReason,
   ms,
+  parityText,
   pct100,
+  PRICE_METHOD,
   referencesText,
   signedMs,
+  sunsetLines,
   TASK_NAME,
-  thresholdFor,
   TIER_NAME,
   TIER_SHORT,
   usd,
+  verdictBounds,
   weakReferencesText,
 } from "@/lib/format";
 import { downloadPayload, pickSource, type RunSource } from "@/lib/run-state";
-import type { CallSite, CaseSummary, RunReport, TierResult, Verdict } from "@/lib/types";
+import type { CallSite, CaseSummary, PriceEvidence, RunReport, TaskType, TierResult, Verdict } from "@/lib/types";
 import { API_URL, useReport } from "@/lib/use-run";
 
 export function ReportView() {
   const { id } = useParams<{ id: string }>();
   const query = useSearchParams().toString();
-  return <ReportBody key={`${id}?${query}`} id={id} source={pickSource(new URLSearchParams(query))} query={query} />;
+  const q = new URLSearchParams(query);
+  return <ReportBody key={`${id}?${query}`} id={id} source={pickSource(q)} replay={q.get("replay")} query={query} />;
 }
 
-function ReportBody({ id, source, query }: { id: string; source: RunSource; query: string }) {
-  const status = useReport(id, source);
+function ReportBody({ id, source, replay, query }: { id: string; source: RunSource; replay: string | null; query: string }) {
+  const status = useReport(id, source, replay);
   if (status.kind === "loading") return <p className="font-hand text-xl text-muted">Loading the report…</p>;
-  if (status.kind === "missing") return <NoRecording />;
+  if (status.kind === "missing") return <NoRecording replay={replay} />;
   if (status.kind === "error")
     return (
       <NoticeNote title="The report could not be loaded" tone="warn">
         {status.message}
       </NoticeNote>
     );
-  return <Report report={status.report} id={id} source={source} query={query} />;
+  return <Report report={status.report} id={id} source={source} replay={replay} query={query} />;
 }
 
 // A kept call's sunset notice already sits in its card above the table; only the others get a footnote under it.
@@ -73,21 +83,34 @@ const EVIDENCE_COLUMNS = [
   "$/1k calls before (est.) → after",
 ];
 
-function Report({ report, id, source, query }: { report: RunReport; id: string; source: RunSource; query: string }) {
+const BACK: Record<RunSource, string> = { api: "Back to the live run", replay: "Back to the replay", fixture: "Back to the run" };
+
+function Report({
+  report,
+  id,
+  source,
+  replay,
+  query,
+}: {
+  report: RunReport;
+  id: string;
+  source: RunSource;
+  replay: string | null;
+  query: string;
+}) {
   const snap = report.snapshot;
   const sites: Record<string, CallSite> = Object.fromEntries(snap.sites.map((s) => [s.id, s]));
   const order = (v: Verdict) => snap.sites.findIndex((s) => s.id === v.site_id);
   const verdicts = [...snap.verdicts].sort((a, b) => order(a) - order(b));
-  const migrated = verdicts.filter((v) => v.decision === "MIGRATE");
   const kept = verdicts.filter((v) => v.decision === "KEEP_CLOSED");
   const review = verdicts.filter((v) => v.decision === "MANUAL_REVIEW");
+  const shipped = verdicts.filter((v) => v.decision === "MIGRATE" && report.diffs?.[v.site_id]);
   const costNotes = verdicts.filter((v) => v.cost_before_note);
   const sunsetNotes = verdicts.filter(hasSunsetFootnote);
   const totals = snap.totals;
-  const saving =
-    totals && totals.est_cost_before_per_1k > 0
-      ? Math.round((1 - totals.est_cost_after_per_1k / totals.est_cost_before_per_1k) * 100)
-      : null;
+  const { lead, scope } = headline(verdicts, totals);
+  const today = new Date().toISOString().slice(0, 10);
+  const sunset = sunsetLines(verdicts, sites, today);
   const liveHref = `/runs/${encodeURIComponent(id)}${query ? `?${query}` : ""}`;
 
   if (verdicts.length === 0)
@@ -95,7 +118,7 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
       <NoticeNote title="No verdicts yet">
         The report fills in once the run reaches the Verdicts stage.{" "}
         <Link href={liveHref} className="text-bluepen underline underline-offset-4">
-          Back to the live run
+          {BACK[source]}
         </Link>
       </NoticeNote>
     );
@@ -103,29 +126,27 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
   return (
     <div className="flex flex-col gap-12">
       <section className="flex flex-col gap-4">
-        <SourceLabel source={source} runId={snap.run_id} apiUrl={API_URL} />
-        <h1 className="max-w-4xl text-4xl leading-[1.02] font-extrabold tracking-tight sm:text-6xl">
-          {migrated.length} of {verdicts.length} LLM calls move to NVIDIA Nemotron on Nebius Token Factory.
+        <SourceLabel source={source} runId={snap.run_id} apiUrl={API_URL} report />
+        <PolicyNote replay={source === "replay" ? replay : null} tiers={snap.config?.tiers ?? null} />
+        <h1 className="max-w-5xl text-4xl leading-[1.05] font-extrabold tracking-tight sm:text-6xl">
+          {lead.split(" · ").map((part, i) => (
+            <span key={i}>
+              {i > 0 && <span className="text-muted"> · </span>}
+              {part.startsWith("est. ") ? <Swipe mark="var(--hl-lime)">{part}</Swipe> : part}
+            </span>
+          ))}
         </h1>
-        <p className="max-w-3xl font-hand text-2xl leading-snug">
-          {kept.length > 0 && (
-            <>
-              {kept.length} {kept.length === 1 ? "stays on its source model" : "stay on their source models"}: Nemotron
-              did not reach the parity bar on held-out reference cases.{" "}
-            </>
-          )}
-          {review.length > 0 && <>{review.length} need a manual review. </>}
-          {totals && saving !== null && (
-            <>
-              Estimated cost per 1,000 calls goes from{" "}
-              <span className="font-mono text-xl">{usd(totals.est_cost_before_per_1k)}</span> (est.) to{" "}
-              <span className="font-mono text-xl">{usd(totals.est_cost_after_per_1k)}</span>:{" "}
-              <Swipe mark="var(--hl-lime)">
-                <span className="font-mono text-xl font-bold">{saving > 0 ? `−${saving}%` : `${-saving}% more`}</span>
-              </Swipe>
-            </>
-          )}
-        </p>
+        {scope && <p className="max-w-3xl font-hand text-2xl leading-snug">{scope}.</p>}
+        {sunset.length > 0 && (
+          <ul className="flex flex-col gap-2" aria-label="Source models retiring">
+            {sunset.map((line) => (
+              <li key={line} className="flex flex-wrap items-center gap-2 font-hand text-xl leading-snug">
+                <SunsetBadge /> {line}
+              </li>
+            ))}
+          </ul>
+        )}
+        <RunLinks repoUrl={snap.config?.repo_url ?? null} prUrl={snap.artifacts.pr_url ?? null} />
         <div className="flex flex-wrap items-center gap-3">
           {snap.artifacts.pr_url ? (
             <a
@@ -147,7 +168,7 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
             Download JSON
           </button>
           <Link href={liveHref} className="font-hand text-lg text-bluepen underline underline-offset-4">
-            Back to the live run
+            {BACK[source]}
           </Link>
         </div>
       </section>
@@ -211,7 +232,7 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
             </thead>
             <tbody>
               {verdicts.map((v) => (
-                <EvidenceRow key={v.site_id} v={v} site={sites[v.site_id]} results={snap.tier_results} report={report} />
+                <EvidenceRow key={v.site_id} v={v} site={sites[v.site_id]} results={snap.tier_results} report={report} today={today} />
               ))}
             </tbody>
           </table>
@@ -242,6 +263,43 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
         )}
       </section>
 
+      {shipped.length > 0 && (
+        <section aria-labelledby="diff-h" className="flex flex-col gap-4">
+          <h2 id="diff-h" className="text-3xl font-extrabold tracking-tight">
+            What changed
+          </h2>
+          <p className="max-w-3xl font-hand text-lg text-muted">
+            The change each migrated call site ships in the pull request, its tests included, from the run&apos;s own
+            patch.
+          </p>
+          <ul className="flex flex-col gap-3">
+            {shipped.map((v, i) => (
+              <li key={v.site_id} className="min-w-0">
+                <DiffView siteId={v.site_id} siteFile={sites[v.site_id]?.file} tier={v.tier} diff={report.diffs![v.site_id]} open={i === 0} />
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {review.length > 0 && (
+        <section aria-labelledby="review-h" className="flex flex-col gap-4">
+          <h2 id="review-h" className="text-3xl font-extrabold tracking-tight">
+            What needs a person
+          </h2>
+          <p className="max-w-3xl font-hand text-lg text-muted">
+            Offramp shipped no change for these sites; each stays on its source model until someone finishes it.
+          </p>
+          <ul className="grid gap-6 md:grid-cols-2">
+            {review.map((v, i) => (
+              <ReviewNote key={v.site_id} v={v} site={sites[v.site_id]} tilt={i % 2 ? 0.6 : -0.6} />
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <PriceEvidencePanel verdicts={verdicts} sites={sites} />
+
       <HowMeasured summaries={snap.case_summaries} verdicts={verdicts} />
 
       <div className="grid gap-12 lg:grid-cols-2">
@@ -255,6 +313,93 @@ function Report({ report, id, source, query }: { report: RunReport; id: string; 
         before was not measured.
       </p>
     </div>
+  );
+}
+
+function ReviewNote({ v, site, tilt }: { v: Verdict; site: CallSite | undefined; tilt: number }) {
+  const { sentence, raw } = manualReason(v);
+  return (
+    <Note as="li" note={DECISION_NOTE.MANUAL_REVIEW} tilt={tilt} className="flex min-w-0 flex-col gap-2 p-5 pt-6">
+      <p className="font-mono text-sm wrap-anywhere">
+        <span className="font-bold">{v.site_id}</span> {site?.file}
+      </p>
+      {v.tier && v.parity_pct != null && (
+        <p className="font-hand text-lg leading-snug">
+          Reached parity on {TIER_NAME[v.tier]}:{" "}
+          <span className="font-mono text-sm">{judgeText(v) ?? parityText(v, site?.contract?.task_type)}</span>.
+        </p>
+      )}
+      {raw === null ? (
+        <p className="font-mono text-xs leading-relaxed wrap-anywhere">{sentence}</p>
+      ) : (
+        <>
+          <p className="font-hand text-lg leading-snug wrap-anywhere">
+            <CodeText text={sentence} />
+          </p>
+          <details className="font-hand text-base">
+            <summary className="cursor-pointer underline underline-offset-2">Raw failure</summary>
+            <p className="mt-1 font-mono text-xs leading-relaxed whitespace-pre-wrap wrap-anywhere">
+              {raw.replaceAll(" | ", "\n")}
+            </p>
+          </details>
+        </>
+      )}
+    </Note>
+  );
+}
+
+// Where each source model's "before" price came from (Task 19): the method, the page, the words on it, the day,
+// and any disagreement. Sites sharing a model and its evidence share a card.
+function PriceEvidencePanel({ verdicts, sites }: { verdicts: Verdict[]; sites: Record<string, CallSite> }) {
+  const groups = new Map<string, { ev: PriceEvidence; model: string | null; ids: string[] }>();
+  for (const v of verdicts) {
+    if (!v.price_evidence) continue;
+    const model = sites[v.site_id]?.source_model ?? null;
+    const key = JSON.stringify([model, v.price_evidence]);
+    if (!groups.has(key)) groups.set(key, { ev: v.price_evidence, model, ids: [] });
+    groups.get(key)!.ids.push(v.site_id);
+  }
+  if (groups.size === 0) return null;
+  return (
+    <section aria-labelledby="tavily-h" className="flex flex-col gap-4">
+      <h2 id="tavily-h" className="text-3xl font-extrabold tracking-tight">
+        Price checked with Tavily
+      </h2>
+      <p className="max-w-3xl font-hand text-lg text-muted">
+        The source model&apos;s price behind each &ldquo;before&rdquo; cost: how Offramp found it, the page it cites
+        and the words on that page.
+      </p>
+      <ul className="grid gap-4 md:grid-cols-2">
+        {[...groups.values()].map(({ ev, model, ids }) => (
+          <li key={ids.join()} className="sketch-box flex min-w-0 flex-col gap-2 bg-note-plain p-4">
+            <p className="font-mono text-sm wrap-anywhere">
+              <span className="font-bold">{ids.join(", ")}</span> {model}
+            </p>
+            <p className="font-hand text-lg">
+              {PRICE_METHOD[ev.method] ?? ev.method}, {dayText(ev.date)}
+            </p>
+            {ev.query && (
+              <p className="font-hand text-base">
+                Query: <span className="font-mono text-xs wrap-anywhere">{ev.query}</span>
+              </p>
+            )}
+            <p className="font-mono text-xs wrap-anywhere">
+              <LinkedText text={ev.url} />
+            </p>
+            {ev.quote && (
+              <blockquote className="border-l-4 border-[var(--hl-lime)] pl-3 font-mono text-xs leading-relaxed wrap-anywhere">
+                {ev.quote}
+              </blockquote>
+            )}
+            {ev.note && (
+              <p className="font-hand text-base leading-snug wrap-anywhere">
+                <span className="font-bold">Note:</span> <LinkedText text={ev.note} />
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -305,10 +450,41 @@ function HowMeasured({ summaries, verdicts }: { summaries: CaseSummary[] | undef
   );
 }
 
-function EvidenceRow({ v, site, results, report }: { v: Verdict; site: CallSite | undefined; results: TierResult[]; report: RunReport }) {
+// The parity cell: free text's judge figures, one unbroken figure per line where it wraps; else the parity
+// figure with its holdout count and lower bound under it.
+function ParityCell({ v, task }: { v: Verdict; task: TaskType | undefined }) {
+  const judged = task === "free_text" ? judgeText(v) : null;
+  if (judged)
+    return judged.split(", ").map((part, i) => (
+      <Fragment key={i}>
+        {i > 0 && ", "}
+        <span className="whitespace-nowrap">{part}</span>
+      </Fragment>
+    ));
+  const bounds = verdictBounds(v, task);
+  return (
+    <>
+      {pct100(v.parity_pct!)}
+      {bounds && <span className="block text-xs whitespace-nowrap">({bounds})</span>}
+    </>
+  );
+}
+
+function EvidenceRow({
+  v,
+  site,
+  results,
+  report,
+  today,
+}: {
+  v: Verdict;
+  site: CallSite | undefined;
+  results: TierResult[];
+  report: RunReport;
+  today: string;
+}) {
   const task = site?.contract?.task_type;
   const r = holdoutResult(results, v);
-  const bar = thresholdFor(task, report.snapshot.config);
   const isKept = v.decision === "KEEP_CLOSED";
   const after = afterCells(v, r?.metrics.p50_ms ?? null);
   return (
@@ -327,6 +503,11 @@ function EvidenceRow({ v, site, results, report }: { v: Verdict; site: CallSite 
           {v.sunset_risk && (
             <span className="flex flex-wrap items-center gap-x-2">
               <SunsetBadge />
+              {v.retires_on && (
+                <span className="font-hand text-base">
+                  {v.retires_on < today ? "retired" : "retires"} {dayText(v.retires_on)}
+                </span>
+              )}
               {hasSunsetFootnote(v) && (
                 <a
                   href={`#sunset-note-${v.site_id}`}
@@ -357,19 +538,13 @@ function EvidenceRow({ v, site, results, report }: { v: Verdict; site: CallSite 
         )}
       </td>
       <td className="px-2 py-3 font-mono text-sm">
-        {v.parity_pct == null ? (
+        {isKept ? (
+          keptText(v, task, report.snapshot.config)
+        ) : v.parity_pct == null ? (
           "—"
-        ) : isKept ? (
-          bar !== null ? (
-            `${pct100(v.parity_pct)} < ${Math.round(bar * 100)}%`
-          ) : (
-            <>
-              {pct100(v.parity_pct)} <span className="font-hand text-base">below the bar</span>
-            </>
-          )
         ) : (
           <>
-            {pct100(v.parity_pct)}
+            <ParityCell v={v} task={task} />
             {v.iterations > 0 && (
               <span className="font-hand text-base">
                 {" "}

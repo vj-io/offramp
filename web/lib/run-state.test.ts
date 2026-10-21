@@ -7,6 +7,7 @@ import {
   parseRecording,
   pickSource,
   replayDelays,
+  replayEntry,
   siteView,
   stageProgress,
   toSnapshot,
@@ -190,9 +191,12 @@ describe("toSnapshot", () => {
 });
 
 describe("replayDelays (Global Constraint 14)", () => {
-  it("caps gaps at 1.5 s and plays at 4x", () => {
+  it("caps gaps at 1.5 s and plays at 4x unless the viewer picks 1x or 16x", () => {
     const at = (s: number) => ({ ...events[0], ts: new Date(Date.UTC(2026, 9, 19, 10, 0, s)).toISOString() });
-    expect(replayDelays([at(0), at(1), at(10), at(10)])).toEqual([0, 250, 375, 0]);
+    const log = [at(0), at(1), at(10), at(10)];
+    expect(replayDelays(log)).toEqual([0, 250, 375, 0]);
+    expect(replayDelays(log, 1)).toEqual([0, 1000, 1500, 0]);
+    expect(replayDelays(log, 16)).toEqual([0, 62.5, 93.75, 0]);
   });
   it("finishes the fixture in under 90 s", () => {
     const total = replayDelays(events).reduce((a, b) => a + b, 0);
@@ -201,10 +205,14 @@ describe("replayDelays (Global Constraint 14)", () => {
 });
 
 describe("parseRecording (replay file)", () => {
-  it("accepts an array or {events}", () => {
+  it("accepts an array or {events, diffs}, keeping only text diffs", () => {
     const real = events.map((e) => ({ ...e, run_id: "run-abc" }));
-    expect(parseRecording(real)).toEqual(real);
-    expect(parseRecording({ events: real })).toEqual(real);
+    expect(parseRecording(real)).toEqual({ events: real, diffs: {} });
+    expect(parseRecording({ events: real })).toEqual({ events: real, diffs: {} });
+    expect(parseRecording({ events: real, diffs: { cs_01: "--- a/x\n", cs_02: 7 } })).toEqual({
+      events: real,
+      diffs: { cs_01: "--- a/x\n" },
+    });
   });
   it("refuses fixture data, so it can never play as the recorded demo", () => {
     expect(parseRecording(fixtureFile)).toBeNull();
@@ -229,8 +237,22 @@ describe("pickSource", () => {
   it("chooses replay, fixture or the API, with ?live=1 forcing the API", () => {
     expect(src("")).toBe("api");
     expect(src("replay=demo")).toBe("replay");
+    expect(src("replay=nope")).toBe("replay"); // refused by name when it loads, never sent to the API
     expect(src("fixture=dev")).toBe("fixture");
     expect(src("replay=demo&live=1")).toBe("api");
+  });
+});
+
+describe("replayEntry (allow-list)", () => {
+  it("plays only the published recordings, each from its own file", () => {
+    expect(replayEntry("demo")?.file).toBe("/replay/demo-events.json");
+    expect(replayEntry("no-ultra")).toEqual({
+      file: "/replay/no-ultra-events.json",
+      policy: "a team that caps spend below Ultra",
+    });
+  });
+  it("refuses any other name, including inherited object keys", () => {
+    for (const name of ["nope", "", "__proto__", "constructor", "toString", "../demo", null]) expect(replayEntry(name)).toBeNull();
   });
 });
 
@@ -241,9 +263,10 @@ describe("KEEP_CLOSED stamp", () => {
     expect(thresholdFor("classification", final.config)).toBe(0.95);
     expect(keepClosedStamp(v, "reasoning", final.config)).toBe("NOT MIGRATED · 71.0% < 90%");
   });
-  it("never shows a threshold the run did not record", () => {
+  it("never shows a threshold the run did not record, nor a cause the verdict did not record", () => {
     expect(thresholdFor("reasoning", null)).toBeNull();
-    expect(keepClosedStamp(v, "reasoning", null)).toBe("NOT MIGRATED · best parity 71.0%");
+    expect(keepClosedStamp(v, "reasoning", null)).toBe("NOT MIGRATED · 71.0%, below the parity bar");
+    expect(keepClosedStamp({ ...v, failed_gate: null }, "reasoning", final.config)).toBe("NOT MIGRATED · 71.0%");
     expect(keepClosedStamp({ ...v, parity_pct: null }, "reasoning", final.config)).toBe("NOT MIGRATED");
   });
 });

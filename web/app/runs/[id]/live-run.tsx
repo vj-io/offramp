@@ -3,10 +3,12 @@
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { LogStream } from "@/components/log-stream";
-import { NoRecording, NoticeNote, SourceLabel } from "@/components/run-notices";
+import { ReplayControls } from "@/components/replay-controls";
+import { NoRecording, NoticeNote, PolicyNote, RunLinks, SourceLabel } from "@/components/run-notices";
 import { SiteCard } from "@/components/site-card";
 import { StageStepper } from "@/components/stage-stepper";
 import { TierHeatmap } from "@/components/tier-heatmap";
+import { repoName } from "@/lib/format";
 import { pickSource, siteView, stageProgress, type RunSource } from "@/lib/run-state";
 import { API_URL, useRun } from "@/lib/use-run";
 
@@ -14,13 +16,14 @@ export function LiveRun() {
   const { id } = useParams<{ id: string }>();
   const query = useSearchParams().toString();
   // Keyed so a different run or mode starts from a clean state.
-  return <RunBody key={`${id}?${query}`} id={id} source={pickSource(new URLSearchParams(query))} query={query} />;
+  const q = new URLSearchParams(query);
+  return <RunBody key={`${id}?${query}`} id={id} source={pickSource(q)} replay={q.get("replay")} query={query} />;
 }
 
-function RunBody({ id, source, query }: { id: string; source: RunSource; query: string }) {
-  const { state, status, retry } = useRun(id, source);
+function RunBody({ id, source, replay, query }: { id: string; source: RunSource; replay: string | null; query: string }) {
+  const { state, status, retry, playback } = useRun(id, source, replay);
 
-  if (status.kind === "missing") return <NoRecording />;
+  if (status.kind === "missing") return <NoRecording replay={replay} />;
   if (status.kind === "error") return <NoticeNote title="This run could not be loaded" tone="warn">{status.message}</NoticeNote>;
 
   const views = Object.keys(state.sites).map((siteId) => siteView(state, siteId));
@@ -30,12 +33,26 @@ function RunBody({ id, source, query }: { id: string; source: RunSource; query: 
   return (
     <div className="flex flex-col gap-8">
       <section className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-2">
+          <PolicyNote replay={source === "replay" ? replay : null} tiers={state.config?.tiers ?? null} />
           <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl">
-            Run <span className="font-mono text-2xl font-bold sm:text-3xl">{state.runId ?? id}</span>
+            {state.config ? (
+              <>
+                Offramp on{" "}
+                <span className="block font-mono text-2xl font-bold wrap-anywhere sm:inline sm:text-3xl">
+                  {repoName(state.config.repo_url)}
+                </span>
+              </>
+            ) : (
+              <>
+                Run <span className="font-mono text-2xl font-bold sm:text-3xl">{state.runId ?? id}</span>
+              </>
+            )}
           </h1>
+          <RunLinks repoUrl={state.config?.repo_url ?? null} prUrl={state.pr?.url ?? null} />
           <SourceLabel source={source} runId={state.runId} apiUrl={API_URL} />
           <ConnectionNote kind={status.kind} onRetry={retry} />
+          {status.kind === "playing" && <ReplayControls playback={playback} />}
         </div>
         {hasVerdicts && (
           <Link href={reportHref} className="sketch bg-ink px-4 py-2 font-hand text-xl text-paper hover:opacity-90">
@@ -58,7 +75,12 @@ function RunBody({ id, source, query }: { id: string; source: RunSource; query: 
         <section aria-labelledby="sites-h" className="min-w-0">
           <h2 id="sites-h" className="mb-5 text-2xl font-extrabold tracking-tight">
             Call sites
-            {views.length > 0 && <span className="ml-2 font-mono text-lg font-bold">{views.length}</span>}
+            {views.length > 0 && (
+              <span className="ml-2 font-mono text-lg font-bold">
+                <span className="sr-only">: </span>
+                {views.length}
+              </span>
+            )}
           </h2>
           {views.length === 0 ? (
             <p className="font-hand text-xl text-muted">The scanner lists every OpenAI and Anthropic call once the repo is cloned.</p>
@@ -86,7 +108,7 @@ function RunBody({ id, source, query }: { id: string; source: RunSource; query: 
             <h2 id="log-h" className="mb-3 text-2xl font-extrabold tracking-tight">
               Log
             </h2>
-            <LogStream events={state.events} sites={state.sites} />
+            <LogStream events={state.events} sites={state.sites} quiet={status.kind === "playing"} />
           </section>
         </div>
       </div>

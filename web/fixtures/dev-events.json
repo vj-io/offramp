@@ -1708,6 +1708,7 @@
     "closed_reference_parity_pct": 88,
     "site_id": "cs_05",
     "decision": "KEEP_CLOSED",
+    "failed_gate": "threshold",
     "reason": "Multi-step refund arithmetic: parity vs reference 71.0% < 90% on Ultra after 3 adapter iterations. Next step: LoRA distillation on Token Factory."
    }
   },
