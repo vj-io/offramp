@@ -156,6 +156,7 @@ export interface TierResult {
 export type PatchFailureKind =
   | "budget_stop"
   | "provider_error"
+  | "internal_check"
   | "no_edit_block"
   | "no_change"
   | "search_miss"

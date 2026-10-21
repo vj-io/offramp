@@ -26,6 +26,7 @@ import ast
 import difflib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -61,6 +62,8 @@ from offramp.tf.budget import BudgetExceeded
 from offramp.tf.client import LLM, _merge, plan_structured
 from offramp.tf.tiers import get_tier, reasoning_params
 
+log = logging.getLogger(__name__)
+
 ROLE = "patcher"
 MAX_TOKENS = 8000
 REPAIR_MAX_TOKENS = 12000  # a complete second set of blocks, with room to spare (a recorded repair ran out)
@@ -84,7 +87,10 @@ NOT_SHOWN = "was not shown again in its current text, so it is not editable in t
 SUPERSEDED = '### {path} (editable): superseded, its current text is under the latest "Files now"'
 ALREADY = "every block of the repair is already"  # its checked blocks re-sent, the one to drop left out
 RETURNED = "the repair returned to a patch already checked"
-NOT_A_REFUSAL = (401, 403, 408, 409, 429)  # auth, and what the SDK itself retries: these fail the run
+# account- or config-wide (auth, out of credit, unknown model) or transient (what the SDK itself retries):
+# these fail the run, which can be resumed; any other 4xx fails only the site whose request it refused
+NOT_A_REFUSAL = (401, 402, 403, 404, 408, 409, 429)
+STALE = "internal: the conversation would show a stale copy of {path}"
 TOO_LARGE = (
     "context length",
     "context window",
@@ -831,18 +837,44 @@ def _repair(
     return text, again, frozenset(left)
 
 
-def _supersede(messages: list[dict[str, Any]], older: dict[str, str]) -> list[dict[str, Any]]:
-    """`messages` with each file's older copy (path -> the text it showed) replaced by a one-line marker: the
-    conversation holds one copy of each file, the one under the latest "Files now" (copies of one file in
-    several versions were what cs_01's repairs blended, live run 6)."""
-    marks = {_file_block(p, "editable", t): SUPERSEDED.format(path=p) for p, t in older.items()}
-    out = []
-    for m in messages:
-        content = m["content"]
-        for block, mark in marks.items() if m["role"] == "user" else ():
-            content = content.replace(block, mark)
-        out.append({**m, "content": content})
+@dataclass
+class _Copy:
+    """One copy of an editable file that Offramp put in the conversation: its message, its text."""
+
+    path: str
+    turn: int  # index of the message holding it
+    text: str
+    superseded: bool = False
+
+
+def _supersede(messages: list[dict[str, Any]], ledger: list[_Copy], paths: set[str]) -> list[dict[str, Any]]:
+    """`messages` with the live copy of each of `paths` replaced by a one-line marker, so the conversation
+    holds one copy of each file: the one under the latest "Files now" (copies of one file in several versions
+    were what cs_01's repairs blended, live run 6). A copy is marked superseded in `ledger` only once its own
+    block was found, and replaced, in its own message."""
+    out = [dict(m) for m in messages]
+    for c in ledger:
+        block = _file_block(c.path, "editable", c.text)
+        if c.path in paths and not c.superseded and out[c.turn]["content"].count(block) == 1:
+            out[c.turn]["content"] = out[c.turn]["content"].replace(block, SUPERSEDED.format(path=c.path))
+            c.superseded = True
     return out
+
+
+def _stale(ledger: list[_Copy], now: dict[str, str], hidden: frozenset[str]) -> str | None:
+    """The rule every model request meets, read from Offramp's own record of the copies it placed (never from
+    the messages' text, which holds the target repo's files): each editable file not left out has exactly one
+    live copy, and it is the file's current text. The first file that breaks it, else None."""
+    for p, text in now.items():
+        live = [c.text for c in ledger if c.path == p and not c.superseded]
+        if p not in hidden and live != [text]:
+            return p
+    return None
+
+
+def _live(ledger: list[_Copy]) -> dict[str, str]:
+    """Each file's live copy's text (what the model sees of it now)."""
+    return {c.path: c.text for c in ledger if not c.superseded}
 
 
 def _resent(edits: list[Edit], applied: list[Edit], base: dict[str, str]) -> tuple[list[Edit], list[Edit]]:
@@ -867,21 +899,6 @@ def _refusal(e: APIStatusError) -> str | None:
         return None
     big = e.status_code == 413 or any(w in f"{e.message} {e.body}".lower() for w in TOO_LARGE)
     return f"the model request was {'too large' if big else 'refused'} (HTTP {e.status_code})"
-
-
-def _visible_problems(
-    messages: list[dict[str, Any]], now: dict[str, str], hidden: frozenset[str]
-) -> list[str]:
-    """The rule every model request meets: each editable file not left out has exactly one copy in the
-    conversation, and it is the file's current text (`now`). An empty list when it holds."""
-    shown = "\n".join(m["content"] for m in messages if m["role"] == "user")
-    out = []
-    for p, text in now.items():
-        copies = shown.count(f"### {p} (editable)\n```python\n")
-        current = _file_block(p, "editable", text) in shown
-        if p not in hidden and (copies != 1 or not current):
-            out.append(f"{p}: {copies} copies" + ("" if current else ", none of its current text"))
-    return out
 
 
 def _apply(
@@ -2462,11 +2479,12 @@ def compose_patches(
         prompt = _prompt(local, tier, shown, read_only, client, client_at, width, calls, done, failure)
         messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
         editable = [p for p in shown if p not in read_only]
-        # the text of each editable file's one copy in the conversation
-        visible = {p: shown[p] for p in editable}
+        ledger = [_Copy(p, 1, shown[p]) for p in editable]  # the copies of editable files in the conversation
         for attempt in range(1 + REPAIRS if failure else 0):
-            bad = _visible_problems(messages, {p: base[p] for p in editable}, hidden)
-            assert not bad, f"{site.id}: a file's one copy in the conversation is not its current text: {bad}"
+            if (stale := _stale(ledger, {p: base[p] for p in editable}, hidden)) is not None:
+                failure, ended = STALE.format(path=stale), "internal_check"
+                log.error("%s: %s; nothing was sent to the model", site.id, failure)
+                break
             try:
                 res = llm.chat(
                     role=ROLE,
@@ -2522,13 +2540,13 @@ def compose_patches(
                     applied += fresh
                 if failure is None:
                     break
-            repair, again, hidden = _repair(failure, {p: base[p] for p in editable}, visible)
+            repair, again, hidden = _repair(failure, {p: base[p] for p in editable}, _live(ledger))
             messages = [
-                *_supersede(messages, {p: visible[p] for p in again}),
+                *_supersede(messages, ledger, set(again)),
                 {"role": "assistant", "content": res.output.text or ""},
                 {"role": "user", "content": repair},
             ]
-            visible.update({p: base[p] for p in again})
+            ledger += [_Copy(p, len(messages) - 1, base[p]) for p in again]
         if failure is not None:
             outer = {"kind": ended, "last": last.kind} if ended else {}
             downgrade(v, failure, last.model_copy(update={**outer, "tries": replies}))
@@ -2641,12 +2659,11 @@ def compose_patches(
         tried, checked, applied, base = [(dict(shown), failure)], failure, [], dict(shown)  # as per site
         sent: list = []
         hidden: frozenset[str] = frozenset()
-        visible = {p: shown[p] for p in editable}
+        ledger = [_Copy(p, 1, shown[p]) for p in editable]
         for _ in range(TOGETHER_REPAIRS):
-            bad = _visible_problems(messages, {p: base[p] for p in editable}, hidden)
-            assert not bad, (
-                f"combined repair: a file's one copy in the conversation is not its current text: {bad}"
-            )
+            if (stale := _stale(ledger, {p: base[p] for p in editable}, hidden)) is not None:
+                log.error("combined repair: %s; nothing was sent to the model", STALE.format(path=stale))
+                return [], STALE.format(path=stale)
             try:
                 res = llm.chat(role=ROLE, tier=Tier.ULTRA, messages=messages, max_tokens=REPAIR_MAX_TOKENS,
                                temperature=0.0, reasoning="off")  # fmt: skip
@@ -2700,11 +2717,11 @@ def compose_patches(
                     for p in changed:
                         write(p, shown[p])
                     applied += fresh
-            repair, again, hidden = _repair(failure, {p: base[p] for p in editable}, visible)
-            messages = [*_supersede(messages, {p: visible[p] for p in again}),
+            repair, again, hidden = _repair(failure, {p: base[p] for p in editable}, _live(ledger))
+            messages = [*_supersede(messages, ledger, set(again)),
                         {"role": "assistant", "content": res.output.text or ""},
                         {"role": "user", "content": repair}]  # fmt: skip
-            visible.update({p: base[p] for p in again})
+            ledger += [_Copy(p, len(messages) - 1, base[p]) for p in again]
         return [], failure
 
     merged, combined = merge([v.site_id for v in to_migrate if v.site_id in versions])

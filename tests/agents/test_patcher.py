@@ -1987,17 +1987,21 @@ def test_a_provider_refusal_fails_only_its_site_with_a_reason_built_by_offramp(e
     assert verdict(result, "cs_03").decision == "MIGRATE"  # the run goes on
 
 
-TRANSIENT_OR_AUTH = [
+TRANSIENT_OR_ACCOUNT = [
     http_error(openai.RateLimitError, 429),
     http_error(openai.InternalServerError, 503),
     http_error(openai.AuthenticationError, 401),
+    http_error(openai.APIStatusError, 402),  # out of credit
     http_error(openai.PermissionDeniedError, 403),
+    http_error(openai.NotFoundError, 404),  # unknown model
     openai.APIConnectionError(request=httpx.Request("POST", URL)),
 ]
 
 
-@pytest.mark.parametrize("error", TRANSIENT_OR_AUTH, ids=["429", "503", "401", "403", "connection"])
-def test_a_transient_or_auth_provider_error_fails_the_run_so_it_can_be_resumed(error):
+@pytest.mark.parametrize(
+    "error", TRANSIENT_OR_ACCOUNT, ids=["429", "503", "401", "402", "403", "404", "connection"]
+)
+def test_a_transient_or_account_wide_provider_error_fails_the_run_so_it_can_be_resumed(error):
     with pytest.raises(type(error)):  # per site
         run(patcher_llm(migrate(GREET, extra=[BREAK_GREET]), error), results=[True, True, False])
     with pytest.raises(type(error)):  # in the combined repair
@@ -2013,6 +2017,46 @@ def test_a_provider_refusal_in_the_combined_repair_fails_only_that_repair():
         "combined repair not composed: the model request was too large (HTTP 400); last failure: repo"
     )
     assert result.combined == ["cs_01", "cs_03"]  # then added one at a time: each passes with the others
+
+
+def no_supersede(messages, ledger, paths):  # stands in for a bookkeeping bug: nothing is ever superseded
+    return messages
+
+
+REAL_REPAIR = patcher_module._repair
+
+
+def no_reshow(failure, now, live):  # another: a changed file is never shown again, its one copy stays stale
+    return REAL_REPAIR(failure, now, live)[0], [], frozenset()
+
+
+@pytest.mark.parametrize(("name", "broken"), [("_supersede", no_supersede), ("_repair", no_reshow)],
+                         ids=["two-live-copies", "one-stale-copy"])  # fmt: skip
+def test_a_stale_copy_ends_the_site_before_any_request(monkeypatch, caplog, name, broken):
+    monkeypatch.setattr(patcher_module, name, broken)
+    llm = patcher_llm(migrate(GREET, extra=[BREAK_GREET]), migrate(SHOUT))
+
+    result = run(llm, results=[True, True, False, True])
+
+    greet = verdict(result, "cs_01")
+    assert greet.reason == f"internal: the conversation would show a stale copy of {TESTS}"
+    assert (greet.patch_failure.kind, greet.patch_failure.tries) == ("internal_check", 1)
+    assert sum("## Call site cs_01" in c["messages"][1]["content"] for c in llm.calls) == 1  # try 1 only
+    assert any(
+        r.levelname == "ERROR" and "nothing was sent to the model" in r.getMessage() for r in caplog.records
+    )
+    assert verdict(result, "cs_03").decision == "MIGRATE"
+
+
+def test_a_stale_copy_ends_the_combined_repair_before_any_request(monkeypatch):
+    monkeypatch.setattr(patcher_module, "_supersede", no_supersede)
+    first = Edit(path=TESTS, search="from types import", replace="# together\nfrom types import")
+    llm = patcher_llm(migrate(GREET), migrate(SHOUT), PatchEdits(edits=[first]))
+
+    result = run(llm, results=[True, True, True, True, False, False, True, True])
+
+    assert result.combined_failure == f"internal: the conversation would show a stale copy of {TESTS}"
+    assert len(llm.calls) == 3  # two tries, one combined repair: its second request never went out
 
 
 MORE = "tests/test_greet_more.py"
@@ -2107,6 +2151,31 @@ def test_a_combined_repair_refuses_a_file_it_had_no_room_to_show(monkeypatch):
 
     assert LEFT_OUT.format(files=f"`{HELPERS}`") in llm.calls[3]["messages"][-1]["content"]
     assert result.combined_failure == f"patch rejected (patch rules): {HELPERS} {NOT_SHOWN}"
+
+
+def test_a_target_file_holding_another_files_header_line_is_not_a_copy_of_it():
+    """Re-review 2, Minor B: the copies are Offramp's own record, never re-parsed from the messages' text."""
+    repo = two_test_files("tiny-lookalike")
+    lookalike = f'DOC = """\n### {TESTS} (editable)\n```python\n"""\n\n\n'
+    (repo / MORE).write_text(MORE_TEXT.replace("def test_greet_", lookalike + "def test_greet_"))
+    llm = patcher_llm(migrate(GREET, extra=[BREAK_GREET]), PatchEdits(edits=[UNBREAK_GREET]), migrate(SHOUT))
+
+    result = run(llm, results=[True, True, False, True, True, True], repo=repo, name="tiny-lookalike-run")
+
+    assert verdict(result, "cs_01").decision == "MIGRATE" and len(llm.calls) == 3
+
+
+def test_a_whole_file_block_for_a_file_left_out_is_refused(monkeypatch):
+    monkeypatch.setattr(patcher_module, "FILES_NOW_CHARS", 1)
+    whole = Edit(path=TESTS, search="", replace=(TINY / TESTS).read_text(), whole=True)  # every test kept
+    tries = [[*migrate(GREET).edits, PIN_MORE, BREAK_GREET], [whole], [UNBREAK_GREET]]
+    llm = patcher_llm(*(PatchEdits(edits=t) for t in tries), migrate(SHOUT))
+
+    result = run(llm, results=[True, True, False, True, True, True], repo=two_test_files("tiny-whole"),
+                 name="tiny-whole-run", output=f"FAILED {MORE}::test_greet_is_a_function")  # fmt: skip
+
+    assert f"{TESTS} {NOT_SHOWN}" in llm.calls[2]["messages"][-1]["content"]
+    assert verdict(result, "cs_01").decision == "MIGRATE"
 
 
 def test_a_block_relabelled_to_a_file_left_out_is_refused_too(monkeypatch):

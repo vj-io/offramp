@@ -22,6 +22,7 @@
  "ended": {
   "budget_stop": "The run's model budget ran out {tries} at this site's patch",
   "provider_error": "Token Factory refused a model request {tries} at this site's patch",
+  "internal_check": "Offramp's own check stopped this site's patch {tries}, before a model request",
   "no_edit_block": "The model's last reply had no complete edit, so nothing was applied",
   "no_change": "The model's last repair repeated an edit it had already tried"
  },
