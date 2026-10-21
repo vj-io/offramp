@@ -636,8 +636,8 @@ def test_keep_comment_format():
 # ---------------------------------------------------------------- demo repo on cassettes
 
 
-# live, 10c fix round 4: cs_04 True and combined [cs_04, cs_06]; Task 24's repair turn is not recorded yet
-DEMO_OUTCOME = ({"cs_04": False, "cs_05": False, "cs_06": True}, ["cs_06"])
+# live, Task 25 (2026-10-21): cs_04 green after one Ultra repair, cs_05 after two, cs_06 on Super's first try
+DEMO_OUTCOME = ({"cs_04": True, "cs_05": True, "cs_06": True}, ["cs_04", "cs_05", "cs_06"])
 CS05_SUFFIX = (
     "\n\nReply with the final refund amount in the customer's currency alone on the last line as "
     "`ANSWER: <number>` (digits and a decimal point only: no currency symbol, no thousands separator)."
@@ -697,13 +697,12 @@ def test_record_demo_patches():
     print({v.site_id: (v.decision, v.reason) for v in result.verdicts})
 
 
-def test_demo_patches_keep_the_demo_repo_green(unrecorded_patcher_calls_stop):
-    """Task 12's MIGRATE set, recorded live (Super). Each site is checked alone against the same base, then
-    all green ones together; the outcome below is what the recording produced (see the task-10 report).
-    Task 18 changed the repair turn after a deleted test: cs_05's Ultra repair is not recorded for it yet, so
-    the replay stops cs_05 there, with the recorded first try's failure kept. Task 24 shows a repair the files
-    as its last checked try left them: cs_04's recorded Ultra repair (it went green) is not recorded for that
-    turn yet, so the replay stops cs_04 on its first try's checked failure."""
+def test_demo_patches_keep_the_demo_repo_green():
+    """Task 12's MIGRATE set, recorded live (Super first tries, Ultra repairs; re-recorded in Task 25). Each
+    site is checked alone against the same base, then all green ones together; the outcome below is what the
+    recording produced. cs_04's first try failed the repo's pytest and one Ultra repair fixed the test;
+    cs_05's first try deleted a test (rejected), its first Ultra repair failed the repo's pytest and the
+    second passed; cs_06 passed on Super's first try. All three pass together."""
     result = run_demo(live=False)
 
     assert result.client_path == (None if not result.combined else "helphub/offramp_client.py")
@@ -718,13 +717,10 @@ def test_demo_patches_keep_the_demo_repo_green(unrecorded_patcher_calls_stop):
     for path, text in result.files.items():  # E501 never reaches the PR
         assert max(map(len, text.splitlines()), default=0) <= 100, path
     assert DEMO_OUTCOME == ({s: result.alone[s] for s in sorted(result.alone)}, result.combined)
-    assert verdict(result, "cs_05").reason == (
-        "patch not composed: no recording of this patcher call; last failure: patch rejected (patch rules): "
-        "patch removes tests from tests/test_call_sites.py: "
-        "['test_openai_reasoning_site_follows_the_o3_parameter_rules']"
-    )
-    assert verdict(result, "cs_04").reason.startswith(
-        "patch not composed: no recording of this patcher call; last failure: repo checks failed on the patch"
+    # cs_05 went green by fixing the test its first try deleted, not by deleting it
+    assert (
+        "def test_openai_reasoning_site_follows_the_o3_parameter_rules():"
+        in result.files["tests/test_call_sites.py"]
     )
 
 

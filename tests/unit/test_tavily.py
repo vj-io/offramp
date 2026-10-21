@@ -1061,6 +1061,11 @@ FELL_BACK = [
     "gpt-4o",
     "o3",
 ]  # Tavily returned no page printing this model's own price; Super answered from memory
+# Recorded 2026-10-21: one advanced Tavily Extract each for FELL_BACK (extract/<model>.json). What it gave:
+EXTRACTED = {
+    "gpt-4o": "tavily extract",  # its model page prints Input $2.50 / Output $10.00, pricing.yaml's price
+    "o3": "pricing.yaml",  # its page says "o3 is succeeded by GPT-5" before the price, ending the o3 stretch
+}
 
 
 @pytest.mark.parametrize("model", VERIFIED_LIVE)
@@ -1098,9 +1103,9 @@ def test_recorded_searches_with_no_notice_have_no_sunset_risk(model, tmp_path):
 @pytest.mark.parametrize("model", FELL_BACK)
 def test_recorded_searches_where_super_answered_from_memory_are_rejected(model, tmp_path):
     """The search's price is rejected, so Tavily Extract reads the vendor's own pages: its recording verifies
-    the published price, or (no page printing one, or no recording yet) pricing.yaml is used and says so."""
+    the published price, or (no page printing one for exactly this model) pricing.yaml is used and says so."""
     info = replay(model, tmp_path)
-    assert info.via in ("tavily extract", "pricing.yaml")
+    assert info.via == EXTRACTED[model]
     assert (info.input_usd_per_m, info.output_usd_per_m) == pricing.price(model)
     if info.via == "tavily extract":
         assert info.price_source_url in tavily._extract_urls(model) and info.price_quote
