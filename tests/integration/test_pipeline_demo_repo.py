@@ -40,12 +40,14 @@ DEMO_COMMIT = "8d76134"  # offramp-demo-app: six call sites + the refund oracle
 DEMO_ORIGIN = "https://github.com/vj-io/offramp-demo-app.git"  # the PR names this repo, as a real run does
 RUN_ID = "test-demo-run"
 # Recorded live 2026-10-20 on the fixture dataset ($0.47 of Token Factory credit). cs_01-03 reached no parity
-# on any tier; cs_04-06 reached it on Lightning. Patch stage re-recorded with the Task 10c fix-round-4 patcher
-# (code that ships is Offramp's code only: each migrated module and its callers rewritten by code; Super may
-# edit only tests and fakes, Ultra repairs): cs_04's patch (one Ultra repair) and cs_06's (Super alone) pass
-# the demo repo's own ruff + pytest alone and together and ship; Super's cs_05 patch deleted a test of
-# tests/test_call_sites.py and Ultra repeated it, so cs_05 needs a manual review. The PR writer's prose was
-# not re-recorded in that round (its live calls went to the patch stage), so the snapshot has no prose.
+# on any tier; cs_04-06 reached it on Lightning. Patch stage and PR prose re-recorded live in Task 25
+# (2026-10-21) with the Task 18/23/24 patcher (code that ships is Offramp's code only: each migrated module
+# and its callers rewritten by code; Super may edit only tests and fakes, Ultra repairs, each shown the files
+# as its last checked try left them): cs_04's patch (one Ultra repair), cs_05's (Super's first try deleted a
+# test and was rejected; the second Ultra repair passed) and cs_06's (Super alone) pass the demo repo's own
+# ruff + pytest alone and together and ship. The patcher replies are the same live recordings as
+# tests/agents/test_patcher.py (identical requests, so identical cassette keys); the PR writer's prose is this
+# run's own recording.
 # The fixture's seed references are NOT audited, and some are known to be wrong: cs_01:009 (a pricing and
 # charge question labelled `general`; every tier answers `billing`, which is right) and both cs_03 holdout
 # references (cs_03:005 takes the email's Date header as order_date, cs_03:009 leaves customer_email null
@@ -57,8 +59,8 @@ RECORDED = {
     "cs_01": "KEEP_CLOSED",
     "cs_02": "KEEP_CLOSED",
     "cs_03": "KEEP_CLOSED",
-    "cs_04": "MANUAL_REVIEW",  # recorded MIGRATE: Task 24 changed its Ultra repair turn (not re-recorded)
-    "cs_05": "MANUAL_REVIEW",
+    "cs_04": "MIGRATE",
+    "cs_05": "MIGRATE",
     "cs_06": "MIGRATE",
 }
 DATASET_COMMAND = (
@@ -135,11 +137,8 @@ def test_record_demo_run(tmp_path, monkeypatch):
     print({k: (v["decision"], v["reason"]) for k, v in verdicts(log).items()})
 
 
-def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch, unrecorded_patcher_calls_stop):
-    """Task 18 changed the patcher's repair turn after a deleted test, so cs_05's Ultra repair is not recorded
-    for it yet: the replay stops cs_05 there (see the fixture), with its recorded first try's failure kept.
-    Task 24 shows a repair the files as the last checked try left them, so cs_04's Ultra repair (recorded
-    green) is not recorded for that turn yet: the replay stops cs_04 on its first try's checked failure.
+def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch):
+    """The patch stage replays Task 25's live recording: cs_04, cs_05 and cs_06 ship (see RECORDED).
     The free-text per-case floor (holdout only) changes nothing here: no recorded holdout case is below 3."""
     log = run_demo(tmp_path, monkeypatch, live=False)
     snap = pipeline.snapshot(log.run_id, log.events)
@@ -151,31 +150,32 @@ def test_demo_run_on_recorded_cassettes(tmp_path, monkeypatch, unrecorded_patche
         v = found[site_id]
         assert v["best_tier"] == "lightning" and v["parity_pct"] < 95
         assert f"parity vs reference {v['parity_pct']:.1f}% < 95%" in v["reason"]
-    # cs_05, the reasoning canary, reached parity on Lightning here (12 of 12 oracle answers) but its patch
-    # did not pass, and the site was re-announced for review (cs_04 too, in this replay); cs_06's patch passed
+    # cs_05, the reasoning canary, reached parity on Lightning here (12 of 12 oracle answers) and its patch
+    # passed after two Ultra repairs; cs_04's after one, cs_06's on Super's first try: none was re-announced
     routed = {
         sid: [(e.payload["decision"], e.payload["tier"]) for e in log.events
               if e.type == "verdict" and e.call_site_id == sid]
         for sid in ("cs_04", "cs_05", "cs_06")
     }  # fmt: skip
     assert routed == {
-        "cs_04": [("MIGRATE", "lightning"), ("MANUAL_REVIEW", "lightning")],
-        "cs_05": [("MIGRATE", "lightning"), ("MANUAL_REVIEW", "lightning")],
+        "cs_04": [("MIGRATE", "lightning")],
+        "cs_05": [("MIGRATE", "lightning")],
         "cs_06": [("MIGRATE", "lightning")],
     }
-    assert found["cs_05"]["reason"] == (
-        "patch not composed: no recording of this patcher call; last failure: patch rejected (patch rules): "
-        "patch removes tests from tests/test_call_sites.py: "
-        "['test_openai_reasoning_site_follows_the_o3_parameter_rules']"
-    )
-    assert found["cs_04"]["reason"].startswith(
-        "patch not composed: no recording of this patcher call; last failure: repo checks failed on the patch"
-    )
-    # cs_06's patch passed the demo repo's own ruff + pytest (recorded live: cs_04's too, alone and together)
+    # the three patches passed the demo repo's own ruff + pytest, alone and together
     patch = json.loads((log.dir / "patch.json").read_text())
-    assert (patch["alone"], patch["combined"]) == ({"cs_04": False, "cs_05": False, "cs_06": True}, ["cs_06"])
-    assert "helphub/summaries/summarize.py" in patch["files"]
-    assert not {"helphub/qa/rag_answer.py", "helphub/refunds/plan.py"} & set(patch["files"])
+    assert (patch["alone"], patch["combined"]) == (
+        {"cs_04": True, "cs_05": True, "cs_06": True},
+        ["cs_04", "cs_05", "cs_06"],
+    )
+    assert {"helphub/qa/rag_answer.py", "helphub/refunds/plan.py", "helphub/summaries/summarize.py"} <= set(
+        patch["files"]
+    )
+    # cs_05 went green by fixing the test its first try deleted, not by deleting it
+    assert (
+        "def test_openai_reasoning_site_follows_the_o3_parameter_rules():"
+        in patch["files"]["tests/test_call_sites.py"]
+    )
     assert snap.totals.sites == 6 and snap.totals.cases == sum(c.dev + c.holdout for c in snap.case_summaries)
     # cache-only: every response came from the cassettes, nothing was spent
     assert (snap.totals.tokens_in, snap.totals.tokens_out, snap.totals.tf_spend_usd) == (0, 0, 0.0)

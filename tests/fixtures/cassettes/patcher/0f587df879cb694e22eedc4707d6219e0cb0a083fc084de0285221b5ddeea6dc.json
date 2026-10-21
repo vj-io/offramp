@@ -16,7 +16,7 @@
       },
       {
         "role": "user",
-        "content": "Your edits were not accepted: patch rejected (patch rules): patch removes tests from tests/test_call_sites.py: ['test_openai_reasoning_site_follows_the_o3_parameter_rules']\nReply with SEARCH/REPLACE edit blocks only, no analysis or explanation, then the NOTES line. Each file you name is taken as shown in my first message with your new blocks applied, so give every block that file needs, not only the fix; a file you do not name keeps your previous edits. Begin with `FILE:`."
+        "content": "Your edits were not accepted: patch rejected (patch rules): patch removes tests from tests/test_call_sites.py: ['test_openai_reasoning_site_follows_the_o3_parameter_rules']\nReply with SEARCH/REPLACE edit blocks only, no analysis or explanation, then the NOTES line. Your blocks apply to each file as it is now: as shown under \"Files now\" below where it changed since my first message (your checked edits, the imports Offramp added and the repo's formatting are in it) or where a SEARCH missed, else as shown in my first message. Copy every SEARCH from that text and give only the blocks still needed: edits already checked stay in, and leaving one out does not drop it; to drop one, send a block that restores the earlier text. Begin with `FILE:`.\n\nYour patch deletes `tests/test_call_sites.py::test_openai_reasoning_site_follows_the_o3_parameter_rules`. Never delete a test: keep each one under its name and rewrite it so it asserts the new Nemotron request (the model ID, keyword arguments and message layout Offramp now sends) where it pinned the old provider's."
       }
     ],
     "params": {
@@ -30,25 +30,25 @@
     }
   },
   "response": {
-    "id": "chatcmpl-a8163bb6122495fc",
+    "id": "chatcmpl-9daa89a06e7d007efda09c9e38daae93",
     "choices": [
       {
         "finish_reason": "stop",
         "index": 0,
         "message": {
-          "content": "FILE: tests/test_call_sites.py\n<<<<<<< SEARCH\n# file -> (model, module-level constant holding the prompt)\nCHAT_SITES = {\n    \"inbox/triage.py\": (\"gpt-4o-mini\", \"TRIAGE_SYSTEM_PROMPT\"),  # cs_01\n    \"ops/agent_step.py\": (\"claude-sonnet-4-5\", \"AGENT_SYSTEM_PROMPT\"),  # cs_02\n    \"orders/extract.py\": (\"claude-sonnet-4-5\", \"EXTRACT_SYSTEM_PROMPT\"),  # cs_03\n    \"qa/rag_answer.py\": (\"gpt-4o\", \"RAG_SYSTEM_PROMPT\"),  # cs_04\n    \"refunds/plan.py\": (\"o3\", \"REFUND_POLICY\"),  # cs_05\n    \"summaries/summarize.py\": (\"claude-haiku-4-5\", \"SUMMARY_SYSTEM_PROMPT\"),  # cs_06\n}\n=======\n# file -> (model, module-level constant holding the prompt)\nCHAT_SITES = {\n    \"inbox/triage.py\": (\"gpt-4o-mini\", \"TRIAGE_SYSTEM_PROMPT\"),  # cs_01\n    \"ops/agent_step.py\": (\"claude-sonnet-4-5\", \"AGENT_SYSTEM_PROMPT\"),  # cs_02\n    \"orders/extract.py\": (\"claude-sonnet-4-5\", \"EXTRACT_SYSTEM_PROMPT\"),  # cs_03\n    \"qa/rag_answer.py\": (\"gpt-4o\", \"RAG_SYSTEM_PROMPT\"),  # cs_04\n    \"refunds/plan.py\": (\"nvidia/Nemotron-3_5-Lightning\", \"REFUND_POLICY\"),  # cs_05\n    \"summaries/summarize.py\": (\"claude-haiku-4-5\", \"SUMMARY_SYSTEM_PROMPT\"),  # cs_06\n}\n>>>>>>> REPLACE\nFILE: tests/test_call_sites.py\n<<<<<<< SEARCH\ndef test_openai_reasoning_site_follows_the_o3_parameter_rules():\n    ((_, call),) = llm_calls(PACKAGE / \"refunds/plan.py\")\n    kwargs = keywords(call)\n\n    assert \"max_completion_tokens\" in kwargs\n    assert \"temperature\" not in kwargs and \"max_tokens\" not in kwargs\n=======\ndef test_openai_reasoning_site_follows_the_nemotron_parameter_rules():\n    ((_, call),) = llm_calls(PACKAGE / \"refunds/plan.py\")\n    kwargs = keywords(call)\n\n    assert \"max_tokens\" in kwargs\n    assert \"temperature\" in kwargs and kwargs[\"temperature\"].value == 0.0\n    assert \"extra_body\" in kwargs\n>>>>>>> REPLACE\nFILE: tests/test_refund_plan.py\n<<<<<<< SEARCH\n    assert call[\"model\"] == \"o3\"\n    assert \"max_completion_tokens\" in call\n    assert \"temperature\" not in call and \"max_tokens\" not in call\n=======\n    assert call[\"model\"] == \"nvidia/Nemotron-3_5-Lightning\"\n    assert \"max_tokens\" in call\n    assert \"temperature\" in call and call[\"temperature\"] == 0.0\n    assert \"extra_body\" in call\n>>>>>>> REPLACE\nFILE: tests/test_refund_plan.py\n<<<<<<< SEARCH\n    user = call[\"messages\"][1][\"content\"]\n=======\n    user = call[\"messages\"][-1][\"content\"]\n>>>>>>> REPLACE\nNOTES: Updated test pins for the migrated call site: changed model ID, adjusted parameter assertions to match the new OpenAI-compatible call (max_tokens, temperature, extra_body), and corrected message indexing to read the user message as the last message. All other call sites remain unchanged.",
+          "content": "FILE: tests/test_call_sites.py\n<<<<<<< SEARCH\ndef test_openai_reasoning_site_follows_the_o3_parameter_rules():\n    ((_, call),) = llm_calls(PACKAGE / \"refunds/plan.py\")\n    kwargs = keywords(call)\n\n    assert \"max_completion_tokens\" in kwargs\n    assert \"temperature\" not in kwargs and \"max_tokens\" not in kwargs\n=======\ndef test_openai_reasoning_site_follows_the_o3_parameter_rules():\n    ((_, call),) = llm_calls(PACKAGE / \"refunds/plan.py\")\n    kwargs = keywords(call)\n\n    assert \"max_tokens\" in kwargs\n    assert \"temperature\" in kwargs and kwargs[\"temperature\"].value == 0.0\n    assert \"extra_body\" in kwargs\n    assert \"max_completion_tokens\" not in kwargs\n>>>>>>> REPLACE\nNOTES: Updated the test to assert the new Nemotron request parameters (max_tokens, temperature=0.0, extra_body) instead of the old o3 parameters (max_completion_tokens, no temperature/max_tokens).",
           "role": "assistant"
         }
       }
     ],
-    "created": 1792493168,
+    "created": 1792582033,
     "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
     "object": "chat.completion",
     "system_fingerprint": "vllm-0.1.dev1+g93e2486b7-tp8-062d09e8",
     "usage": {
-      "completion_tokens": 882,
-      "prompt_tokens": 12273,
-      "total_tokens": 13155,
+      "completion_tokens": 239,
+      "prompt_tokens": 12410,
+      "total_tokens": 12649,
       "completion_tokens_details": {
         "reasoning_tokens": 0
       },
@@ -56,13 +56,13 @@
         "cached_tokens": 0
       },
       "prompt_cache_hit_tokens": 0,
-      "prompt_cache_miss_tokens": 12273
+      "prompt_cache_miss_tokens": 12410
     }
   },
-  "latency_ms": 4567,
+  "latency_ms": 4069,
   "usage": {
-    "prompt_tokens": 12273,
-    "completion_tokens": 882
+    "prompt_tokens": 12410,
+    "completion_tokens": 239
   },
-  "created_at": "2026-10-20T10:46:12.066364+00:00"
+  "created_at": "2026-10-21T11:27:15.333180+00:00"
 }
