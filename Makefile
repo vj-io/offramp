@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install lint test cov web-test web-build ci api web demo cassettes-clear live docker vendor-scan
+.PHONY: help install lint test cov web-test web-build ci api web demo cassettes-clear live docker vendor-scan sandbox-prune
 
 API_PORT ?= 8000
 WEB_PORT ?= 3000
@@ -58,6 +58,10 @@ live: cassettes-clear ## Re-record the cassettes against Token Factory (needs NE
 
 docker: ## Build the API image
 	docker build -t offramp-api .
+
+KEEP ?= 10
+sandbox-prune: ## Remove the sandbox images (offramp-sandbox) but the newest KEEP (default 10)
+	docker images offramp-sandbox --format '{{.Repository}}:{{.Tag}}' | tail -n +$$(( $(KEEP) + 1 )) | xargs -r docker rmi
 
 # What /api/scan imports (web/api/scan.py). The Vercel deploy uploads web/ only, so these are copied into it;
 # tests/unit/test_scan_vendor.py fails when the copy differs from offramp/.

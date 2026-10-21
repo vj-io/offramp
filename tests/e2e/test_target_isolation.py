@@ -132,7 +132,7 @@ def test_the_local_opt_in_keeps_offramps_secrets_out_of_the_target_environment(t
     for names in (probe["env"], oracle_env):
         no_secret(names)
     assert {"PATH", "HOME", "PYTHONPATH"} <= set(probe["env"])
-    assert probe["mount"] == "writable" and (repo / "shop" / "ran.txt").exists()  # it ran here
+    assert probe["mount"] == "writable" and not (repo / "shop" / "ran.txt").exists()  # it ran on a copy
 
 
 @pytest.mark.skipif(not sandbox.docker_available(), reason="needs docker")
@@ -169,3 +169,111 @@ def test_a_relative_repo_path_reaches_uv_as_an_absolute_project(tmp_path, monkey
     project = command[command.index("--project") + 1]
     assert project == str((tmp_path / "target").resolve())
     assert all(case_gen.Path(p).is_absolute() for p in env["PYTHONPATH"].split(case_gen.os.pathsep))
+
+
+# Task 23 fix round 1b: target code runs on the repo's tracked files only. A local checkout's ignored files
+# (here .env, .netrc and .aws/credentials) must reach neither a schema nor an oracle's answers: both flow into
+# eval files and into prompts sent to Token Factory. Fix round 2: nor a git-crypt file, tracked as plaintext
+# in an unlocked checkout; and the local opt-in runs on the same copy.
+CANARY = "canary-secret-123"
+READS = """import json, pathlib
+
+def _read():
+    found = {}
+    for name in (".env", ".netrc", ".aws/credentials", "secrets/prod.env"):
+        root = pathlib.Path(__file__).resolve().parents[2]
+        for base in (pathlib.Path.cwd(), root, pathlib.Path.home()):
+            try:
+                found[str(base / name)] = (base / name).read_text()
+            except OSError:
+                found[str(base / name)] = "absent"
+    return json.dumps(found)
+"""
+GREEDY_PROBE = (
+    READS
+    + """
+from pydantic import BaseModel, Field
+
+
+class Order(BaseModel):
+    order_id: str = Field(description=_read())
+"""
+)
+GREEDY_ORACLE = (
+    READS
+    + """
+SITE_FILE = "shop/orders.py"
+
+
+def answer(params):
+    return _read()
+
+
+def sample(seed, n, hard=False):
+    return [{"read": _read()}]
+"""
+)
+
+
+def greedy_checkout(tmp_path):
+    import subprocess
+
+    repo = tmp_path / "target"
+    files = {"shop/__init__.py": "", "shop/orders.py": GREEDY_PROBE, "requirements.txt": "pydantic>=2.8\n",
+             "evals/reference/orders_oracle.py": GREEDY_ORACLE, ".gitignore": ".env\n.netrc\n.aws/\n",
+             ".gitattributes": "secrets/** filter=git-crypt diff=git-crypt\n",
+             "secrets/prod.env": f"TOKEN={CANARY}\n"}  # fmt: skip
+    for path, text in files.items():
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(text)
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com"]
+    for step in (["init", "-q"], ["add", "."], ["commit", "-qm", "init"]):
+        subprocess.run([*git, *step], check=True)
+    for path in (".env", ".netrc", ".aws/credentials"):
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(f"TOKEN={CANARY}\n")
+    return repo, repo / "evals" / "reference" / "orders_oracle.py"
+
+
+@pytest.mark.parametrize("docker", [True, False], ids=["docker", "local-opt-in"])
+def test_target_code_never_reads_a_checkouts_ignored_or_git_crypt_secrets(tmp_path, monkeypatch, docker):
+    if docker and not sandbox.docker_available():
+        pytest.skip("needs docker")
+    monkeypatch.delenv(sandbox.UNTRACKED_OPT_IN)
+    monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(sandbox, "docker_available", lambda: docker)
+    monkeypatch.setenv(sandbox.LOCAL_OPT_IN, "1")  # Docker wins over it
+    repo, oracle = greedy_checkout(tmp_path)
+
+    schemas = case_gen.resolved_schemas(SITE, repo)
+    answers = case_gen._oracle(repo, oracle, {"op": "answer", "params": [{}]})
+    samples = case_gen._oracle(repo, oracle, {"op": "sample", "seed": 1, "n": 1, "hard": False})
+
+    reads = json.loads(schemas["Order"]["properties"]["order_id"]["description"])
+    assert reads and all(v == "absent" for v in reads.values())  # it ran, and found nothing to read
+    assert CANARY not in json.dumps([schemas, answers, samples])
+
+
+def test_a_plain_directory_runs_no_target_code_without_the_opt_in(tmp_path, monkeypatch):
+    monkeypatch.delenv(sandbox.UNTRACKED_OPT_IN)
+    repo, oracle = target(tmp_path, monkeypatch, docker=True, opt_in=False)
+
+    with pytest.raises(RuntimeError, match="is not a git checkout"):
+        case_gen.resolved_schemas(SITE, repo)
+    with pytest.raises(RuntimeError, match="is not a git checkout"):
+        case_gen._oracle(repo, oracle, {"op": "answer", "params": [{}]})
+
+
+def test_an_untracked_oracle_is_named_as_such(tmp_path, monkeypatch):
+    """The copy target code runs on holds tracked files only: an oracle not yet added is not in it."""
+    repo, oracle = greedy_checkout(tmp_path)
+    new = oracle.with_name("new_oracle.py")
+    new.write_text(GREEDY_ORACLE)
+
+    with pytest.raises(case_gen.OracleError) as raised:
+        case_gen._oracle(repo, new, {"op": "answer", "params": [{}]})
+
+    assert (
+        str(raised.value)
+        == "evals/reference/new_oracle.py is not tracked by git, so the sandbox can't see it"
+    )

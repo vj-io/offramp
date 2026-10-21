@@ -3,8 +3,10 @@
 Per run, on a sandbox copy of the target repo:
 0. copy the repo without following symlinks (a link leaving the repo is dropped, with a warning) and check the
    untouched copy with the repo's own ruff + pytest;
-1. add the Token Factory client module (`<pkg>/offramp_client.py` inside the package holding the migrated
-   sites, so it ships with it; else `offramp/client.py`) and mark KEEP_CLOSED calls with
+1. add the Token Factory client module beside the migrated sites (`<pkg>/offramp_client.py` inside the
+   package holding them, so it ships with it; see `client_location`; with an async client too when an async
+   site is migrated), declare the openai SDK where the repo declares the one it replaces, and mark
+   KEEP_CLOSED calls with
    `# offramp: kept on <model> — parity <p>% < <threshold>%`; check again;
 2. for each MIGRATE site, against that same base (so no site depends on another's patch): the request
    parameters come from `build_request` (Task 6, the function the eval runner used), so what ships is what was
@@ -24,13 +26,14 @@ Per run, on a sandbox copy of the target repo:
 
 import ast
 import difflib
+import fnmatch
 import io
 import json
 import logging
-import os
 import re
 import shutil
 import string
+import sys
 import textwrap
 import tokenize
 import tomllib
@@ -41,12 +44,21 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from openai import APIStatusError
+from packaging.requirements import InvalidRequirement, Requirement
 from pydantic import BaseModel, Field
 
 from offramp.agents.pr_writer import TIER_NAMES, is_test_path, threshold
 from offramp.agents.translate import UnresolvedCallSite, build_request
 from offramp.evals.baselines import load_cases
-from offramp.sandbox import NO_SANDBOX, CheckResult, Sandbox
+from offramp.sandbox import (
+    NO_SANDBOX,
+    NOT_COPIED,
+    OPENAI_REQUIREMENT,
+    CheckResult,
+    Sandbox,
+    copy_repo,
+    git_files,
+)
 from offramp.schemas import (
     Adapter,
     AdapterSpec,
@@ -107,18 +119,17 @@ FILE: {path}
 every line of the new file
 >>>>>>> WHOLE FILE
 Every test in it stays: rewritten where it pins the old provider, never deleted."""
-ROOT_CLIENT = ("offramp/client.py", "offramp.client")  # when the sites are not inside one package
+ROOT_CLIENT = ("offramp_client.py", "offramp_client")  # when no one package or folder holds the sites
 TEMPLATE = Path(__file__).parents[1] / "templates" / "client.py.tmpl"
-NOT_COPIED = (".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", ".tox",
-              "node_modules")  # fmt: skip
-IGNORE = shutil.ignore_patterns(*NOT_COPIED, ".env", ".env.*")
 SKIP_PARTS = {".git", ".venv", "venv", "__pycache__", "node_modules", "offramp"}
 
 BuildRequest = Callable[[AdapterSpec, EvalCase, Tier], dict[str, Any]]
 # Names a patch may use without importing them; added mechanically, like an editor's auto-import.
 AUTO_IMPORTS = {
     "token_factory_client": "from {client} import token_factory_client",
+    "token_factory_async_client": "from {client} import token_factory_async_client",
     "OpenAI": "from openai import OpenAI",
+    "AsyncOpenAI": "from openai import AsyncOpenAI",
     "json": "import json",
     "ChatCompletion": "from openai.types.chat import ChatCompletion",
     "Completions": "from openai.resources.chat.completions import Completions",
@@ -222,6 +233,19 @@ class Unsupported(ValueError):
 TRANSLATED_KWARGS = {"model", "messages", "system", "tools", "tool_choice", "response_format", "max_tokens",
                      "max_completion_tokens", "temperature", "reasoning_effort", "stream"}  # fmt: skip
 CARRIED_KWARGS = ("timeout", "extra_headers")
+# The only client classes a rewrite replaces, resolved through the module's imports (aliases too), -> the
+# Token Factory client function that replaces each (an async client stays async). Any other client (Bedrock,
+# Vertex, Azure, a helper's, an attribute) is a manual review: nothing ships on a client the rewrite does not
+# know.
+CLIENT_CLASSES = {
+    "openai.OpenAI": "token_factory_client",
+    "anthropic.Anthropic": "token_factory_client",
+    "openai.AsyncOpenAI": "token_factory_async_client",
+    "anthropic.AsyncAnthropic": "token_factory_async_client",
+}
+OLD_CLIENTS = {k.split(".")[1]: v for k, v in CLIENT_CLASSES.items()}  # by class name, as tests fake them
+PROVIDER_KEYS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}  # the replaced SDK's key name
+CLIENT_OPTIONS = ("timeout", "max_retries")  # options of an old client that the async Token Factory one takes
 
 
 UNCHANGED = "the code Offramp wrote, unchanged"  # how a shipped site's request was checked, when not run
@@ -243,55 +267,96 @@ class PatchResult(BaseModel):
     combined_failure: str | None = None  # why the merged tree stayed red (then sites were dropped one by one)
     verification: dict[str, str] = Field(default_factory=dict)  # shipped site -> how its request was checked
     warnings: list[str] = Field(default_factory=list)  # e.g. symlinks dropped from the sandbox copy
+    linted: bool = True  # the checks ran the repo's ruff (only a repo that configures ruff gets it)
+    sandbox_notes: list[str] = Field(default_factory=list)  # Sandbox.notes: the PR states them
+    async_client: bool = False  # the client module also holds token_factory_async_client
+    client_packaged: bool = True  # the client module sits inside a package (it ships in its wheel)
+    change_notes: list[str] = Field(default_factory=list)  # dependency edits, lockfiles, key reads left as is
 
 
 def client_location(repo: Path, files: list[str]) -> tuple[str, str] | None:
-    """(path, module) of the client: `<pkg>/offramp_client.py` in the one top-level package that holds every
-    migrated site, so it ships in that package's wheel; else `offramp/client.py` at the repository root.
+    """(path, module) of the client, beside the migrated sites; never a top-level `offramp` package (Offramp's
+    own name, and perhaps the target's):
+    - one top-level package holds every site: `<pkg>/offramp_client.py`, imported as `<pkg>.offramp_client`,
+      so it ships in that package's wheel;
+    - one plain folder (no `__init__.py`) holds them: `<folder>/offramp_client.py`, imported the way the
+      folder's modules import each other: by bare name when the folder is an import root (the repository root,
+      `src/`) or one of them imports a sibling so (`import db` beside db.py: the folder is on sys.path), else
+      by the folder's dotted path;
+    - else `offramp_client.py` at the import root (`src/` when every site is under it), by bare name.
 
     None when a site sits directly in a repository root that is itself a package (`__init__.py`): there is
-    no package below the root to hold the module, and the root's own import name is not known here."""
+    no package below the root to hold the module, and the root's own import name is not known here.
+    Unsupported when a bare `offramp_client` import may not find this module: another `offramp_client.py` in
+    the repo could shadow it, or sites in several folders share the root's while one of those folders runs
+    with itself on sys.path (its modules import each other by bare name)."""
+    place = _client_place(repo, files)
+    if place is None or place[1] != ROOT_CLIENT[1]:
+        return place
+    root = repo.resolve()
+    for other in sorted(p.relative_to(root) for p in root.rglob(ROOT_CLIENT[0])):
+        if other.as_posix() != place[0] and not set(NOT_COPIED) & set(other.parts[:-1]):
+            why = "which the sites import by bare name `offramp_client`: remove or rename it, then run again"
+            raise Unsupported(f"`{other.as_posix()}` could shadow this run's `{place[0]}`, {why}")
+    return place
+
+
+def _client_place(repo: Path, files: list[str]) -> tuple[str, str] | None:
+    """`client_location` before its shadowing check."""
     repo = repo.resolve()
-    tops = set()
+    tops, folders = set(), set()
     for f in files:
         top = (repo / f).resolve().parent
-        if top == repo:
-            return None if (repo / "__init__.py").is_file() else ROOT_CLIENT
-        if not (top / "__init__.py").is_file():
-            return ROOT_CLIENT
+        if top == repo and (repo / "__init__.py").is_file():
+            return None
+        if top == repo or not (top / "__init__.py").is_file():
+            folders.add(top)
+            continue
         while top.parent != repo and (top.parent / "__init__.py").is_file():  # never climb to the root
             top = top.parent
         tops.add(top)
-    if len(tops) != 1:
-        return ROOT_CLIENT
-    top = tops.pop()
-    return f"{top.relative_to(repo).as_posix()}/offramp_client.py", f"{top.name}.offramp_client"
+
+    def root(folder: Path) -> Path:  # the folder an import starts from: src/ for a src layout
+        return repo / "src" if folder == repo / "src" or (repo / "src") in folder.parents else repo
+
+    if len(tops) == 1 and not folders:
+        top = tops.pop()
+        return f"{top.relative_to(repo).as_posix()}/offramp_client.py", f"{top.name}.offramp_client"
+    if len(folders) == 1 and not tops:
+        folder = folders.pop()
+        path = (folder / "offramp_client.py").relative_to(repo).as_posix()
+        if folder == root(folder) or _imports_siblings(folder):
+            return path, "offramp_client"
+        return path, ".".join([*folder.relative_to(root(folder)).parts, "offramp_client"])
+    roots = {root(f) for f in tops | folders}
+    base = roots.pop() if len(roots) == 1 else repo
+    on_path = sorted(f.relative_to(repo).as_posix() for f in folders if f != base and _imports_siblings(f))
+    if on_path:  # its scripts run with that folder first on sys.path, perhaps without the import root
+        why = "it runs with itself on sys.path, where the import may miss it"
+        raise Unsupported(f"the sites span several folders, which would share one `offramp_client` module "
+                          f"at the import root by bare name, but `{on_path[0]}/` imports its own modules by "
+                          f"bare name: {why}")  # fmt: skip
+    return (base / "offramp_client.py").relative_to(repo).as_posix(), "offramp_client"
 
 
-def copy_repo(src: Path, dst: Path) -> list[str]:
-    """Copy without following symlinks; keep a link only if it resolves inside the copy. A link to a host
-    file (e.g. /proc/self/environ) would otherwise copy its content in, for the repo's tests to print."""
-    shutil.copytree(src, dst, ignore=IGNORE, symlinks=True)
-    root, warnings = dst.resolve(), []
-    for dirpath, dirnames, filenames in os.walk(dst):
-        for name in [*dirnames, *filenames]:
-            path = Path(dirpath) / name
-            if not path.is_symlink():
+def _imports_siblings(folder: Path) -> bool:
+    """Whether a module in this plain folder imports another one by bare name (`import db` beside db.py), so
+    the folder is on sys.path when its code runs."""
+    for f in folder.glob("*.py"):
+        try:
+            tree = ast.parse(f.read_text())
+        except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+            continue
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Import):
+                names = [a.name for a in n.names]
+            elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
+                names = [n.module]
+            else:
                 continue
-            why = None
-            try:
-                path.resolve(strict=True)  # 3.12 raises RuntimeError on a loop, 3.13 OSError (ELOOP)
-            except FileNotFoundError:  # dangling: judged by where it points
-                pass
-            except (OSError, RuntimeError):
-                why = "it is a symlink loop"
-            # os.path.realpath never raises on a loop; 3.12's non-strict Path.resolve can (dangling + loop)
-            if why is None and not Path(os.path.realpath(path)).is_relative_to(root):
-                why = "it points outside the repository"
-            if why:
-                path.unlink()
-                warnings.append(f"dropped symlink {path.relative_to(dst).as_posix()}: {why}")
-    return sorted(warnings)
+            if any((folder / f"{name.split('.')[0]}.py").is_file() for name in names):
+                return True
+    return False
 
 
 # ---------------------------------------------------------------- request parameters
@@ -460,7 +525,14 @@ def _module_values(tree: ast.Module) -> dict[str, Any]:
 SCHEMA_PARAMS = {"tools": "NEMOTRON_TOOLS", "response_format": "NEMOTRON_RESPONSE_FORMAT"}  # long: constants
 
 
-def _prepare(source: str, site: CallSite, spec: AdapterSpec, params: dict[str, Any], width: int):
+def _prepare(
+    source: str,
+    site: CallSite,
+    spec: AdapterSpec,
+    params: dict[str, Any],
+    width: int,
+    client: str = ROOT_CLIENT[1],  # import path of the Token Factory client module
+):
     """Write the evaluated request into the site's module, mechanically. Returns (source, constants,
     system_name, rewritten, fixed): constants maps "few_shot", "prefix", "suffix", "tools",
     "response_format" -> module constant name; system_name holds the system prompt; rewritten: the call
@@ -508,7 +580,7 @@ def _prepare(source: str, site: CallSite, spec: AdapterSpec, params: dict[str, A
         at = min([top.lineno, *(d.lineno for d in getattr(top, "decorator_list", []))]) - 1
         lines = source.splitlines(keepends=True)
         source = "".join(lines[:at]) + "\n\n".join(blocks) + "\n\n\n" + "".join(lines[at:])
-    rewritten = _rewrite_call(source, site, constants, system_name, params, width)
+    rewritten = _rewrite_call(source, site, constants, system_name, params, width, client)
     if rewritten is None:
         return source, constants, system_name, False, False
     mapped = _map_reply(rewritten, site)
@@ -535,12 +607,15 @@ def _rewrite_call(
     system_name: str | None,
     params: dict[str, Any],
     width: int,
+    client: str = ROOT_CLIENT[1],
 ) -> str | None:
     """The site's call rewritten to `<client>.chat.completions.create(model=..., <every evaluated parameter as
     a literal keyword argument, schemas by constant name>, messages=[system, *few-shot, ...the call's own
     messages, the last user content wrapped in prefix/suffix])`, from an OpenAI `chat.completions.create` or
-    an Anthropic `messages.create` (its `system=` becomes the first message). None when the call is not a
-    single call with a literal `messages=[...]` list: the model then writes it."""
+    an Anthropic `messages.create` (its `system=` becomes the first message); `await` stays as it was. When
+    the function builds the old SDK client itself, that becomes the Token Factory client (`_built_client`).
+    None when the call is not a single call with a literal `messages=[...]` list, or its built client serves
+    other code too: then nobody writes it."""
     tree = ast.parse(source)
     scope = _function(tree, site) if site.function else tree
     if scope is None:
@@ -565,6 +640,40 @@ def _rewrite_call(
 
     def seg(node: ast.AST) -> str:
         return ast.get_source_segment(source, node)
+
+    lines = source.splitlines(keepends=True)
+    spans: list[tuple[int, int, str]] = []  # (start, end, new text) besides the call itself
+
+    def put(node: ast.AST, text: str) -> None:
+        start = _offset(lines, node.lineno, node.col_offset)
+        spans.append((start, _offset(lines, node.end_lineno, node.end_col_offset), text))
+
+    head_text = seg(receiver)
+    built = _built_client(tree, scope, receiver, source)
+    if built is not None:
+        factory = CLIENT_CLASSES[_client_class(built, tree, scope)]
+        if built is receiver:  # `AsyncAnthropic().messages.create(...)`
+            head_text = _factory_call(built, factory, source)
+        else:  # `client = AsyncAnthropic(...)` in the function
+            put(built, _factory_call(built, factory, source))
+        root = getattr(built.func.value if isinstance(built.func, ast.Attribute) else built.func, "id", None)
+        imports = [n for n in ast.walk(scope) if isinstance(n, ast.Import | ast.ImportFrom)
+                   and any((a.asname or a.name).split(".")[0] == root for a in n.names)]  # fmt: skip
+        reads = [
+            n
+            for n in ast.walk(scope)
+            if isinstance(n, ast.Name) and n.id == root and isinstance(n.ctx, ast.Load)
+        ]
+        if len(imports) == 1 and len(imports[0].names) == 1 and len(reads) == 1:
+            put(imports[0], f"from {client} import {factory}")  # imported where the SDK was: lazily too
+    # the function's own checks of the old provider's key (`os.environ.get("ANTHROPIC_API_KEY")`, `in
+    # os.environ`) check the Token Factory key: the literal names only, outside the call and its old client
+    key, skip = PROVIDER_KEYS.get(site.sdk), {*ast.walk(call), *(ast.walk(built) if built else ())}
+    body = [n for stmt in scope.body for n in ast.walk(stmt)] if key and scope is not tree else []
+    skip |= {v for n in body if isinstance(n, ast.JoinedStr) for v in ast.walk(n)}  # an f-string's text stays
+    for n in body:  # the body only: a decorator's or a parameter default's literal stays (listed in the PR)
+        if isinstance(n, ast.Constant) and n.value == key and n not in skip and key in (seg(n) or ""):
+            put(n, seg(n).replace(key, "NEBIUS_API_KEY"))
 
     def system_text(node: ast.expr) -> str:  # what translate.system_message sent: a string, or blocks joined
         text = isinstance(node, ast.JoinedStr) or (
@@ -605,7 +714,6 @@ def _rewrite_call(
         if "suffix" in constants:
             content = f"{content} + {constants['suffix']}"
         body[users[-1]] = f'{{"role": "user", "content": {content}}}'
-    lines = source.splitlines(keepends=True)
     start = _offset(lines, call.lineno, call.col_offset)
     end = _offset(lines, call.end_lineno, call.end_col_offset)
     indent = re.match(r"[ \t]*", lines[call.lineno - 1]).group(0)
@@ -616,13 +724,138 @@ def _rewrite_call(
         for k, v in params.items()
     )
     args += "".join(f"{i1}{k}={seg(kw[k])},\n" for k in CARRIED_KWARGS if k in kw)  # as the code wrote them
-    text = f"{seg(receiver)}.chat.completions.create(\n{args}{i1}messages=[\n{entries}{i1}],\n{indent})"
-    rewritten = source[:start] + text + source[end:]
+    text = f"{head_text}.chat.completions.create(\n{args}{i1}messages=[\n{entries}{i1}],\n{indent})"
+    rewritten = source
+    for a, b, new in sorted([*spans, (start, end, text)], reverse=True):  # bottom first: offsets stay valid
+        rewritten = rewritten[:a] + new + rewritten[b:]
     try:
         ast.parse(rewritten)
     except SyntaxError:
         return None
     return rewritten
+
+
+def _imported_names(tree: ast.Module, scope: ast.AST) -> dict[str, str]:
+    """Local name -> the dotted name it imports (`Claude` -> `anthropic.AsyncAnthropic` for `from anthropic
+    import AsyncAnthropic as Claude`), from the module's top-level imports and the function's own (which
+    shadow them). A name the module or the function also binds another way (a parameter too) is left out: it
+    may not be the import. `X = None` (an optional import's fallback) does not count."""
+    imports, rebound, stack = {}, set(), list(tree.body)
+    nodes = []
+    while stack:  # module level, outside functions and classes
+        n = stack.pop()
+        nodes.append(n)
+        if not isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            stack.extend(ast.iter_child_nodes(n))
+    nodes += list(ast.walk(scope)) if scope is not tree else []
+    if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef):
+        rebound |= {a.arg for a in [*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs]}
+    fallback = {t for n in nodes if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
+                and n.value.value is None for t in n.targets}  # fmt: skip
+    for n in nodes:
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                imports[a.asname or a.name.split(".")[0]] = a.name if a.asname else a.name.split(".")[0]
+        elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
+            imports |= {a.asname or a.name: f"{n.module}.{a.name}" for a in n.names}
+        elif isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Load) and n not in fallback:
+            rebound.add(n.id)
+        elif isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            rebound.add(n.name)
+    return {k: v for k, v in imports.items() if k not in rebound}
+
+
+def _client_class(node: ast.AST | None, tree: ast.Module, scope: ast.AST) -> str | None:
+    """The dotted name of what a call constructs, resolved through the imports (`anthropic.AsyncAnthropic`
+    for `anthropic.AsyncAnthropic(...)`, `Claude(...)` or `a.AsyncAnthropic(...)`); None when it does not
+    resolve to an import."""
+    if not isinstance(node, ast.Call):
+        return None
+    parts, func = [], node.func
+    while isinstance(func, ast.Attribute):
+        parts.append(func.attr)
+        func = func.value
+    base = _imported_names(tree, scope).get(func.id) if isinstance(func, ast.Name) else None
+    return ".".join([base, *reversed(parts)]) if base else None
+
+
+def _built_client(tree: ast.Module, scope: ast.AST, receiver: ast.expr, source: str) -> ast.Call | None:
+    """The constructor of the client the site's call is made on, when the function builds it from a class in
+    CLIENT_CLASSES: the receiver itself (`AsyncAnthropic().messages.create(...)`) or the one plain assignment
+    to the receiver's name in the function. None when the client is a parameter of the function with no
+    default but None: its callers hand it one (`rewrite_callers`; `conformance` checks every one of them).
+    Unsupported for every other client, so nothing ships on a client the rewrite does not know: another class
+    (`AsyncAnthropicBedrock`, `AsyncAzureOpenAI`), a helper's result, an attribute (`self.client`), a
+    module-level or class-level client, a parameter's default, one built by `with`, by an annotated
+    assignment or more than once, or one that also serves other code in the function."""
+
+    def unrecognised(expr: ast.AST, why: str = "") -> Unsupported:
+        text = (ast.get_source_segment(source, expr) or ast.unparse(expr)).replace("\n", " ")
+        return Unsupported(f"client type not recognised: `{text[:80]}`{why}")
+
+    function = isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef)
+    if isinstance(receiver, ast.Call):
+        if function and _client_class(receiver, tree, scope) in CLIENT_CLASSES:
+            return receiver
+        raise unrecognised(receiver)
+    if not function or not isinstance(receiver, ast.Name):
+        raise unrecognised(receiver)
+    name = receiver.id
+    if name in {a.arg for a in [*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs]}:
+        if not _no_default(scope, name):
+            raise unrecognised(_default(scope, name), f" (the default of its `{name}` parameter)")
+        return None
+
+    def binds(n: ast.AST) -> bool:  # `n` binds the receiver's name
+        if isinstance(n, ast.Assign):
+            return any(isinstance(t, ast.Name) and t.id == name for t in n.targets)
+        if isinstance(n, ast.AnnAssign | ast.NamedExpr | ast.For | ast.AsyncFor):
+            return isinstance(n.target, ast.Name) and n.target.id == name
+        return (
+            isinstance(n, ast.withitem)
+            and isinstance(n.optional_vars, ast.Name)
+            and n.optional_vars.id == name
+        )
+
+    local = [n for n in ast.walk(scope) if binds(n)]
+    if not local:  # a module-level (or global) client
+        raise unrecognised(receiver, " (built outside the function)")
+    if len(local) != 1 or not isinstance(local[0], ast.Assign) or len(local[0].targets) != 1:
+        why = "Offramp rewrites a client the function builds once, or one it is given"
+        raise Unsupported(
+            f"its client `{name}` is built by `with`, an annotated assignment or more than once: {why}"
+        )
+    value = local[0].value
+    if _client_class(value, tree, scope) not in CLIENT_CLASSES:
+        raise unrecognised(value)
+    uses = [
+        n for n in ast.walk(scope) if isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Load)
+    ]
+    if uses != [receiver]:
+        why = "which the Token Factory client would not answer the same way"
+        raise Unsupported(f"its client `{name}` also serves other code in the function, {why}")
+    return value
+
+
+def _factory_call(built: ast.Call, factory: str, source: str) -> str:
+    """The Token Factory client call replacing a client constructor: `api_key=` goes (the client reads
+    NEBIUS_API_KEY); `timeout=` and `max_retries=` stay as the code wrote them (async client only)."""
+    name = ast.unparse(built.func)
+    if built.args or any(k.arg is None for k in built.keywords):
+        raise Unsupported(f"its `{name}` client is built with positional or ** arguments")
+    if other := [k.arg for k in built.keywords if k.arg not in ("api_key", *CLIENT_OPTIONS)]:
+        names = ", ".join(f"`{k}=`" for k in other)
+        raise Unsupported(
+            f"its `{name}` client is built with {names}, which the Token Factory client does not take"
+        )
+    options = [
+        f"{k.arg}={ast.get_source_segment(source, k.value)}" for k in built.keywords if k.arg != "api_key"
+    ]
+    if options and factory == "token_factory_client":
+        option = options[0].partition("=")[0]
+        raise Unsupported(f"its `{name}` client is built with `{option}=`, and the sync Token Factory client "
+                          "takes no options")  # fmt: skip
+    return f"{factory}({', '.join(options)})"
 
 
 def _calls(fn: ast.AST) -> list[ast.Call]:
@@ -698,13 +931,18 @@ def _text_read(node: ast.AST, reply: str) -> bool:
             and all(_is_type(c, var, "text") for c in gen.generators[0].ifs))  # fmt: skip
 
 
+def _awaited(node: ast.expr) -> ast.expr:
+    return node.value if isinstance(node, ast.Await) else node
+
+
 def _map_reply(source: str, site: CallSite) -> str | None:
     """The migrated function reads the reply the OpenAI way, by code. An OpenAI site already does. For an
-    Anthropic site: `"".join(b.text for b in r.content if b.type == "text")` and `r.content[0].text` become
-    `(r.choices[0].message.content or "")`; a `for b in r.content:` loop over tool_use blocks walks
-    `r.choices[0].message.tool_calls or []` (`b.type == "tool_use"` -> `"function"`, `b.name` ->
-    `b.function.name`, `b.input` -> `json.loads(b.function.arguments)`); an `Anthropic` annotation of a
-    parameter becomes `OpenAI`. None when the reply is used any other way: the model maps it then."""
+    Anthropic site (`r = client.messages.create(...)`, awaited or not): `"".join(b.text for b in r.content if
+    b.type == "text")` and `r.content[0].text` become `(r.choices[0].message.content or "")`; a `for b in
+    r.content:` loop over tool_use blocks walks `r.choices[0].message.tool_calls or []` (`b.type ==
+    "tool_use"` -> `"function"`, `b.name` -> `b.function.name`, `b.input` -> `json.loads(b.function.
+    arguments)`); an `Anthropic` (`AsyncAnthropic`) annotation of a parameter becomes `OpenAI`
+    (`AsyncOpenAI`). None when the reply is used any other way: the model maps it then."""
     if site.sdk == "openai":
         return source
     tree = ast.parse(source)
@@ -712,7 +950,9 @@ def _map_reply(source: str, site: CallSite) -> str | None:
     calls = _calls(fn) if fn else []
     if len(calls) != 1:
         return None
-    holder = next((n for n in ast.walk(fn) if isinstance(n, ast.Assign) and n.value is calls[0]), None)
+    holder = next(
+        (n for n in ast.walk(fn) if isinstance(n, ast.Assign) and _awaited(n.value) is calls[0]), None
+    )
     if holder is None or len(holder.targets) != 1 or not isinstance(holder.targets[0], ast.Name):
         return None
     reply = holder.targets[0].id
@@ -748,8 +988,8 @@ def _map_reply(source: str, site: CallSite) -> str | None:
                     new = "function.name" if attr.attr == "name" else None
                     put(attr, f"{block}.{new}" if new else f"json.loads({block}.function.arguments)")
     for arg in [*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs]:
-        if isinstance(arg.annotation, ast.Name) and arg.annotation.id == "Anthropic":
-            put(arg.annotation, "OpenAI")
+        if isinstance(arg.annotation, ast.Name) and arg.annotation.id in ("Anthropic", "AsyncAnthropic"):
+            put(arg.annotation, arg.annotation.id.replace("Anthropic", "OpenAI"))
     spans.sort()
     if any(a[1] > b[0] for a, b in zip(spans, spans[1:], strict=False)):
         return None
@@ -989,12 +1229,26 @@ def _bound(tree: ast.Module) -> set[str]:
     return bound
 
 
+def _free_reads(tree: ast.Module) -> set[str]:
+    """Names read where no import in their own function (or one enclosing it) binds them."""
+    out, stack = set(), [(tree, frozenset())]
+    while stack:
+        node, local = stack.pop()
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            local = local | {(a.asname or a.name).split(".")[0] for n in ast.walk(node)
+                             if isinstance(n, ast.Import | ast.ImportFrom) for a in n.names}  # fmt: skip
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in local:
+            out.add(node.id)
+        stack.extend((child, local) for child in ast.iter_child_nodes(node))
+    return out
+
+
 def add_imports(source: str, client: str, extra: dict[str, str] | None = None) -> str:
     """Import AUTO_IMPORTS names (and `extra`'s, name -> import line) the module uses but never binds, after
     its last top-level import; `client` is the module path of the Token Factory client."""
     tree = ast.parse(source)
     bound = _bound(tree)
-    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+    used = _free_reads(tree)
     known = {**{name: line.format(client=client) for name, line in AUTO_IMPORTS.items()}, **(extra or {})}
     missing = [line for name, line in known.items() if name in used - bound]
     if not missing:
@@ -1055,42 +1309,155 @@ def add_fixtures(source: str) -> str:
     return "".join(lines)
 
 
-OLD_CLIENTS = ("OpenAI", "Anthropic")
+def _dotted(path: str) -> list[str]:
+    """Every dotted name a module file may be imported as: `a.b.c`, `b.c` and `c` for a/b/c.py (`a.b`, `b`
+    for a/b/__init__.py). Which folder is an import root is not known here, so every suffix counts; a module
+    elsewhere that shares one only errs toward a manual review."""
+    parts = Path(path).with_suffix("").parts
+    parts = parts[:-1] if parts[-1:] == ("__init__",) else parts
+    return [".".join(parts[i:]) for i in range(len(parts))]
 
 
-def rewrite_callers(source: str, function: str, client: str) -> str:
-    """In a caller module: an `OpenAI()` / `Anthropic()` built right in a call of the migrated function
-    becomes `token_factory_client()` (imported from `client`). Calls of other functions keep their client."""
-    tree = ast.parse(source)
-    lines = source.splitlines(keepends=True)
-    spans = []
-    for call in ast.walk(tree):
-        if (
-            not isinstance(call, ast.Call)
-            or getattr(call.func, "id", getattr(call.func, "attr", None)) != function
-        ):
-            continue
-        for arg in [*call.args, *(k.value for k in call.keywords)]:
-            if (isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name) and arg.func.id in OLD_CLIENTS
-                    and not arg.args and not arg.keywords):  # fmt: skip
-                spans.append(
-                    (
-                        _offset(lines, arg.lineno, arg.col_offset),
-                        _offset(lines, arg.end_lineno, arg.end_col_offset),
+def _imported(node: ast.ImportFrom, path: str) -> str:
+    """The module a `from ... import` in the file at `path` names; a relative one resolved against the file's
+    own folder, as a dotted path from the repository root."""
+    if not node.level:
+        return node.module or ""
+    package = Path(path).parent.parts
+    return ".".join([*package[: max(len(package) - node.level + 1, 0)], *filter(None, [node.module])])
+
+
+def _parsed(source: str) -> ast.Module | None:
+    try:
+        return ast.parse(source)
+    except SyntaxError:
+        return None
+
+
+def _targets(sources: dict[str, str], site_file: str, function: str) -> set[str]:
+    """Every dotted name the site's module-level `function` is importable as: `<its module>.<function>`,
+    and `<module>.<name>` for each module that imports it as `name` (a re-export, such as a package
+    `__init__`'s `from .summarize import summarize`, or a star import), to a fixed point."""
+    targets = {f"{d}.{function}" for d in _dotted(site_file)}
+    trees = [(path, _parsed(text)) for path, text in sources.items()]
+    imports = [
+        (path, n) for path, tree in trees if tree for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+    ]
+    size = 0
+    while size != len(targets):
+        size = len(targets)
+        for path, node in imports:
+            base = _imported(node, path)
+            for a in node.names:
+                if a.name == "*":
+                    names = [t.rpartition(".")[2] for t in targets if t.rpartition(".")[0] == base]
+                else:
+                    names = [a.asname or a.name] if f"{base}.{a.name}" in targets else []
+                targets |= {f"{d}.{name}" for d in _dotted(path) for name in names}
+    return targets
+
+
+def _references(path: str, tree: ast.Module, targets: set[str], defined: str | None) -> list[ast.expr]:
+    """The expressions in a module that refer to the function `targets` names, resolved through the module's
+    imports, never by name alone: a name a `from ... import` (or a star import) binds to it, an attribute
+    chain through an imported module (`s.summarize` after `import app.summarize as s`), and its own name in
+    the module that defines it (`defined`)."""
+    names, modules = {defined} - {None}, {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                top = a.name.partition(".")[0]
+                modules[a.asname or top] = a.name if a.asname else top
+        elif isinstance(node, ast.ImportFrom):
+            base = _imported(node, path)
+            for a in node.names:
+                if a.name == "*":
+                    names |= {t.rpartition(".")[2] for t in targets if t.rpartition(".")[0] == base}
+                elif f"{base}.{a.name}" in targets:
+                    names.add(a.asname or a.name)
+                else:  # perhaps a module: `from app import summarize as s`, then `s.summarize`
+                    modules[a.asname or a.name] = f"{base}.{a.name}"
+
+    def chain(n: ast.expr) -> str | None:  # `app.summarize.summarize` for an attribute chain on a module
+        attrs = []
+        while isinstance(n, ast.Attribute):
+            attrs.append(n.attr)
+            n = n.value
+        return (
+            ".".join([modules[n.id], *reversed(attrs)])
+            if isinstance(n, ast.Name) and n.id in modules
+            else None
+        )
+
+    def refers(n: ast.AST) -> bool:
+        if isinstance(n, ast.Name):
+            return isinstance(n.ctx, ast.Load) and n.id in names
+        return isinstance(n, ast.Attribute) and chain(n) in targets
+
+    return [n for n in ast.walk(tree) if refers(n)]
+
+
+def _function_references(
+    sources: dict[str, str], site_file: str, function: str
+) -> dict[str, tuple[ast.Module | None, list[ast.expr]]]:
+    """path -> (its module, None when it does not parse; the expressions in it that refer to the site's
+    function). A module-level function's are resolved through imports (`_targets`, `_references`). A
+    method's or a nested function's, which only an object or the enclosing code reaches, are matched by
+    name (`<name>`, `x.<name>`), which errs toward a manual review."""
+    last = function.rpartition(".")[2]
+    targets = set() if "." in function else _targets(sources, site_file, function)
+
+    def by_name(n: ast.AST) -> bool:
+        if isinstance(n, ast.Name):
+            return isinstance(n.ctx, ast.Load) and n.id == last
+        return isinstance(n, ast.Attribute) and n.attr == last
+
+    out = {}
+    for path, text in sources.items():
+        tree = _parsed(text)
+        if tree is None:
+            out[path] = (None, [])
+        elif "." in function:
+            out[path] = (tree, [n for n in ast.walk(tree) if by_name(n)])
+        else:
+            out[path] = (tree, _references(path, tree, targets, function if path == site_file else None))
+    return out
+
+
+def rewrite_callers(sources: dict[str, str], site_file: str, function: str, client: str) -> dict[str, str]:
+    """In each module of `sources` (path -> source: the repo's non-test code, the site's own module
+    included): an `OpenAI()` / `Anthropic()` built right in a call of the migrated function, the call found
+    through the module's imports (aliases too, `_function_references`), becomes `token_factory_client()`
+    (an `AsyncOpenAI()` / `AsyncAnthropic()`: `token_factory_async_client()`), imported from `client`.
+    Returns the modules it changed."""
+    out = {}
+    for path, (tree, refs) in _function_references(sources, site_file, function).items():
+        heads, source, spans = {id(r) for r in refs}, sources[path], []
+        lines = source.splitlines(keepends=True)
+        for call in ast.walk(tree) if tree else ():
+            if not isinstance(call, ast.Call) or id(call.func) not in heads:
+                continue
+            for arg in [*call.args, *(k.value for k in call.keywords)]:
+                cls = _client_class(arg, tree, tree)
+                if cls in CLIENT_CLASSES and not arg.args and not arg.keywords:
+                    start = _offset(lines, arg.lineno, arg.col_offset)
+                    spans.append(
+                        (start, _offset(lines, arg.end_lineno, arg.end_col_offset), CLIENT_CLASSES[cls])
                     )
-                )
-    if not spans:
-        return source
-    for start, end in sorted(spans, reverse=True):
-        source = source[:start] + "token_factory_client()" + source[end:]
-    return add_imports(source, client)
+        for start, end, factory in sorted(spans, reverse=True):
+            source = source[:start] + f"{factory}()" + source[end:]
+        if spans:
+            out[path] = add_imports(source, client)
+    return out
 
 
-def mirror_fakes(source: str, modules: set[str], old: str = "OpenAI") -> str:
+def mirror_fakes(
+    source: str, modules: set[str], old: str = "OpenAI", new: str = "token_factory_client"
+) -> str:
     """In a test: `monkeypatch.setattr(<module>, "<old>", <fake>)` for a module whose code now builds
-    `token_factory_client()` gets a twin for `token_factory_client`, with the same fake. An OpenAI fake
-    fits the Token Factory client as it is; an Anthropic fake does once `convert_fakes` taught it the
-    OpenAI call."""
+    `<new>()` (`token_factory_client()`, or `token_factory_async_client()` for an async client) gets a twin
+    for `<new>`, with the same fake. An OpenAI fake fits the Token Factory client as it is; an Anthropic fake
+    does once `convert_fakes` taught it the OpenAI call."""
     tree = ast.parse(source)
     lines = source.splitlines(keepends=True)
     setattrs = [c for c in ast.walk(tree) if isinstance(c, ast.Call) and len(c.args) == 3
@@ -1106,13 +1473,11 @@ def mirror_fakes(source: str, modules: set[str], old: str = "OpenAI") -> str:
         if (ast.unparse(call.func).endswith("monkeypatch.setattr") and len(call.args) == 3
                 and isinstance(call.args[0], ast.Name) and call.args[0].id in modules
                 and isinstance(call.args[1], ast.Constant) and call.args[1].value == old
-                and (call.args[0].id, "token_factory_client") not in present):  # fmt: skip
+                and (call.args[0].id, new) not in present):  # fmt: skip
             head = ast.get_source_segment(source, call.func)
             fake = ast.get_source_segment(source, call.args[2])
             indent = re.match(r"[ \t]*", lines[stmt.lineno - 1]).group(0)
-            inserts.append(
-                (stmt.end_lineno, f'{indent}{head}({call.args[0].id}, "token_factory_client", {fake})\n')
-            )
+            inserts.append((stmt.end_lineno, f'{indent}{head}({call.args[0].id}, "{new}", {fake})\n'))
     for row, text in sorted(inserts, reverse=True):
         lines.insert(row, text)
     return "".join(lines)
@@ -1497,8 +1862,9 @@ def probe_parameters(source: str, site: CallSite) -> tuple[list[str], list[str],
 
 
 PROBE = r"""
-import asyncio, importlib, inspect, json, sys, types
+import asyncio, importlib, inspect, json, os, sys, types
 sys.path[:0] = [".", "src"]
+os.environ.setdefault("NEBIUS_API_KEY", "offramp-probe")  # a key check in the function lets the call through
 JOBS, MARK = json.loads(%(jobs)r), %(mark)r
 
 
@@ -1517,15 +1883,15 @@ out = {}
 for job in JOBS:
     box = []
     try:
-        mod = importlib.import_module(job["module"])
-        holders = [mod]
         try:
-            holders.append(importlib.import_module(job["client_module"]))
-        except ImportError:  # e.g. no openai package: the function gets the recorder as its client anyway
-            pass
-        for holder in holders:
-            if hasattr(holder, "token_factory_client"):
-                holder.token_factory_client = lambda box=box: _recorder(box)
+            client = importlib.import_module(job["client_module"])
+        except ImportError:  # e.g. no openai package here: a stand-in, as a test's fake module would be
+            client = sys.modules[job["client_module"]] = types.ModuleType(job["client_module"])
+        mod = importlib.import_module(job["module"])
+        for holder in (mod, client):  # the site's module may have imported a factory by name
+            for name in ("token_factory_client", "token_factory_async_client"):
+                if holder is client or hasattr(holder, name):
+                    setattr(holder, name, lambda box=box, **options: _recorder(box))
         fn = getattr(mod, job["function"])
         args = {}
         for name, param in inspect.signature(fn).parameters.items():
@@ -1612,6 +1978,123 @@ def _module_name(path: str) -> str:
     return path.removeprefix("src/").removesuffix(".py").replace("/", ".").removesuffix(".__init__")
 
 
+def _default(fn: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> ast.expr | None:
+    """The default value of the function's parameter `name`; None when it has none."""
+    a = fn.args
+    positional = [p.arg for p in [*a.posonlyargs, *a.args]]
+    defaults = dict(zip(positional[len(positional) - len(a.defaults) :], a.defaults, strict=True))
+    kw = {p.arg: d for p, d in zip(a.kwonlyargs, a.kw_defaults, strict=True) if d is not None}
+    return (defaults | kw).get(name)
+
+
+def _no_default(fn: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:
+    """The parameter has no default, or None: only a caller's argument is ever the client."""
+    default = _default(fn, name)
+    return default is None or (isinstance(default, ast.Constant) and default.value is None)
+
+
+def _handed_clients(
+    scope: ast.AST, site: CallSite, receiver: ast.expr, callers: dict[str, str]
+) -> list[str] | None:
+    """None unless the call's client is a parameter the function never rebinds. Then, each place in
+    `callers` (path -> source as it ships: the repo's non-test code) that does not hand the function a
+    Token Factory client, as `path:line` and what it does. Every reference to the function is found through
+    each module's imports, aliases and re-exports included (`_function_references`), and must be a call
+    handing `token_factory_client()` / `token_factory_async_client(...)` written in it (`rewrite_callers`
+    makes one of an inline `OpenAI()` / `Anthropic()`). Not known: a variable, an attribute, a helper's
+    result, a parameter passed on, `*args` / `**kwargs`, an omitted argument; the function used as a value
+    (passed, stored, wrapped); a lookup by a literal name (`getattr(m, "summarize")`, `importlib`); a module
+    `__getattr__` where the function lives. A lookup by a computed name cannot be seen (the PR says so)."""
+    if not isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef) or not isinstance(receiver, ast.Name):
+        return None
+    a, name = scope.args, receiver.id
+    if name not in {p.arg for p in [*a.posonlyargs, *a.args, *a.kwonlyargs]} or any(
+        isinstance(n, ast.Name) and n.id == name and not isinstance(n.ctx, ast.Load) for n in ast.walk(scope)
+    ):
+        return None
+    positional = [p.arg for p in [*a.posonlyargs, *a.args]]
+    method = "." in (site.function or "") and "staticmethod" not in map(ast.unparse, scope.decorator_list)
+    function = site.function or scope.name
+    targets = set() if "." in function else _targets(callers, site.file, function)
+    literal = {scope.name, *_dotted(site.file)}  # names a lookup by string would use
+
+    def handed(call: ast.Call) -> ast.expr | str:  # the argument bound to `name`, or how it is not known
+        if name in (kw := {k.arg: k.value for k in call.keywords if k.arg}):
+            return kw[name]
+        shift = method and isinstance(call.func, ast.Attribute)  # a bound method's `self` is not in the call
+        at = positional.index(name) - shift if name in positional else -1
+        if at >= 0 and any(isinstance(x, ast.Starred) for x in call.args[: at + 1]):
+            return "hands it on through `*`"
+        if 0 <= at < len(call.args):
+            return call.args[at]
+        return "hands it on through `**`" if any(k.arg is None for k in call.keywords) else f"omits `{name}`"
+
+    found: list[tuple[str, int, str]] = []  # (path, line, what), sorted below
+    for path, (tree, refs) in _function_references(callers, site.file, function).items():
+        if tree is None:
+            found.append((path, 0, "does not parse"))
+            continue
+        calls = {id(c.func): c for c in ast.walk(tree) if isinstance(c, ast.Call)}
+        for ref in refs:
+            if (call := calls.get(id(ref))) is None:  # passed, stored or wrapped: other code calls it
+                found.append((path, ref.lineno, f"uses `{ast.unparse(ref)}` without calling it"))
+                continue
+            got = handed(call)
+            if isinstance(got, ast.Call) and isinstance(got.func, ast.Name) and got.func.id in FACTORIES:
+                continue
+            what = got if isinstance(got, str) else f"hands `{ast.unparse(got)}`"
+            found.append((path, call.lineno, f"`{ast.unparse(ref)}(...)` {what}"))
+        for call in calls.values():  # getattr(m, "summarize"), importlib.import_module("app.summarize")
+            lookup = ast.unparse(call.func).rpartition(".")[2] in ("getattr", "import_module", "__import__")
+            names = [x.value for x in call.args if isinstance(x, ast.Constant) and x.value in literal]
+            if lookup and names:
+                found.append((path, call.lineno, f"looks up `{names[0]}` by name"))
+        exports = path == site.file or any(t.rpartition(".")[0] in _dotted(path) for t in targets)
+        for node in tree.body if exports else ():
+            if isinstance(node, ast.FunctionDef) and node.name == "__getattr__":
+                what = f"defines a module `__getattr__`, which may hand out `{scope.name}` under any name"
+                found.append((path, node.lineno, what))
+    return [f"`{path}{f':{line}' if line else ''}` {what}" for path, line, what in sorted(found)]
+
+
+def _client_parameter(source: str, site: CallSite) -> bool:
+    """Whether the site's migrated call is made on a parameter of its function: its callers hand it the
+    client (`_handed_clients`)."""
+    tree = ast.parse(source)
+    fn = _function(tree, site) if site.function else None
+    calls = _calls(fn) if fn else []
+    if len(calls) != 1:
+        return False
+    receiver = calls[0].func.value.value.value  # <receiver>.chat.completions.create
+    return _handed_clients(fn, site, receiver, {}) is not None
+
+
+def _token_factory_client(receiver: ast.expr, scope: ast.AST) -> bool:
+    """Whether a call's client is the Token Factory client: a `token_factory_client()` /
+    `token_factory_async_client(...)` call, a name bound once to one, or a parameter of the function with no
+    default but None that the code never rebinds (its callers hand it one: `_handed_clients`)."""
+
+    def factory(n: ast.AST | None) -> bool:
+        return isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in FACTORIES
+
+    if factory(receiver):
+        return True
+    if not isinstance(receiver, ast.Name):
+        return False
+    bound = [n for n in ast.walk(scope) if isinstance(n, ast.Name) and n.id == receiver.id
+             and not isinstance(n.ctx, ast.Load)]  # fmt: skip
+    values = [n.value for n in ast.walk(scope) if isinstance(n, ast.Assign) and len(n.targets) == 1
+              and isinstance(n.targets[0], ast.Name) and n.targets[0].id == receiver.id]  # fmt: skip
+    if bound:
+        return len(bound) == 1 and len(values) == 1 and factory(values[0])
+    args = scope.args if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef) else None
+    return (
+        args is not None
+        and receiver.id in {a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs]}
+        and _no_default(scope, receiver.id)
+    )
+
+
 def conformance(
     source: str,
     site: CallSite,
@@ -1619,8 +2102,10 @@ def conformance(
     constants: dict[str, str],
     system_name: str | None,
     carried: dict[str, str] | None = None,  # the source call's transport options -> their AST, kept as is
+    callers: dict[str, str] | None = None,  # the repo's non-test code calling the function, as it ships
 ) -> list[str]:
-    """Problems with the patched site file: the call must pass exactly the evaluated parameters as written-out
+    """Problems with the patched site file: the call must be made on the Token Factory client (one a caller
+    hands the function too, checked in `callers`) and pass exactly the evaluated parameters as written-out
     keyword arguments (a schema may be a module constant holding it) plus messages, and use the prompt
     constants."""
     tree = ast.parse(source)
@@ -1632,7 +2117,18 @@ def conformance(
         return [f"the old messages.create call is still in {where}"]
     if len(tf) != 1:
         return [f"expected one chat.completions.create call in {where}, found {len(tf)}"]
+    sdk = next(
+        (c for n in calls if (c := _client_class(n, tree, scope)) and c.split(".")[0] in PROVIDER_KEYS), None
+    )
+    if sdk:
+        return [f"an SDK client (`{sdk}`) is still built in {where}"]
     call, problems = tf[0], []
+    receiver = call.func.value.value.value  # <receiver>.chat.completions.create
+    if not _token_factory_client(receiver, scope):
+        problems.append(f"the call's client `{ast.unparse(receiver)}` is not the Token Factory client")
+    elif callers is not None and (unknown := _handed_clients(scope, site, receiver, callers)):
+        problems.append(f"the client `{ast.unparse(receiver)}` its callers hand `{site.function}` is not "
+                        f"known to be the Token Factory client: {'; '.join(unknown)}")  # fmt: skip
     if call.args or any(k.arg is None for k in call.keywords):
         problems.append("the call takes written-out keyword arguments only: no positional arguments, no **")
     named = {k.arg: k.value for k in call.keywords if k.arg}
@@ -1797,6 +2293,7 @@ def _prompt(
             failing = "this repo's checks fail:\n- " + failing.partition("): ")[2].replace(" | ", "\n- ")
         call += ["", "## What fails now", f"With Offramp's changes alone, {failing}", "Make these pass."]
     task = site.contract.task_type if site.contract else "unknown"
+    factories = ", ".join(f for f in FACTORIES if f"def {f}(" in client)
     lines = [
         f"## Call site {site.id}",
         f"`{site.file}` lines {site.lines[0]}-{site.lines[-1]}, function `{site.function}`: {site.sdk} "
@@ -1806,7 +2303,7 @@ def _prompt(
         "## The call",
         *call,
         "",
-        f"Token Factory client: `from {client_at[1]} import token_factory_client` (module shown below).",
+        f"Token Factory client: `from {client_at[1]} import {factories}` (module shown below).",
         f"Repo ruff line length: {width}.",
         "",
         "## Files",
@@ -2086,9 +2583,361 @@ def _diff(before: dict[str, str | None], after: dict[str, str]) -> str:
     return "".join(out)
 
 
-def client_module() -> str:
+ASYNC_CLIENT = '''
+
+def token_factory_async_client(**options) -> AsyncOpenAI:
+    """Async Token Factory client for the call sites that were async (they
+    still await the call): reads NEBIUS_API_KEY (and NEBIUS_BASE_URL).
+    `options` are the replaced client's own, such as timeout=.
+
+    A test fakes it the way it faked the old SDK client: patch
+    `token_factory_async_client` where a module imports it by name, or, for a
+    call site that imports it inside the function, put a module holding a
+    fake one in sys.modules["$module"] (patch.dict).
+    """
+    return AsyncOpenAI(
+        api_key=os.environ["NEBIUS_API_KEY"],
+        base_url=os.environ.get("NEBIUS_BASE_URL", NEBIUS_BASE_URL),
+        **options,
+    )
+'''
+
+
+# OPENAI_REQUIREMENT (sandbox.py): the floor Offramp's own pyproject declares; the client module and the
+# evaluated calls ran on it (the API they use, OpenAI / AsyncOpenAI with base_url and extra_body, is older).
+COMPILED = re.compile(
+    r"autogenerated by (pip-compile|uv)|uv pip compile|pip-compile", re.I
+)  # lockfile header
+LOCKS = {"uv.lock": "uv lock", "poetry.lock": "poetry lock"}  # lockfile -> the command that regenerates it
+
+
+def _requirement_name(spec: str) -> str | None:
+    """The normalised project name of a requirement (`Anthropic[vertex]>=1` -> `anthropic`); None for a
+    comment, an option line (`-r`, `--index-url`) or a blank."""
+    m = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", spec)
+    return re.sub(r"[-_.]+", "-", m[1]).lower() if m and not spec.lstrip().startswith(("#", "-")) else None
+
+
+def _requirement_places(data: dict) -> dict[tuple[str, ...], list | dict]:
+    """pyproject's requirement declarations: [project] dependencies, optional dependencies and dependency
+    groups (lists of requirement strings), and Poetry's dependency tables (name -> version spec)."""
+    project, poetry = data.get("project", {}), data.get("tool", {}).get("poetry", {})
+    out = {("project", "dependencies"): project.get("dependencies")}
+    out |= {
+        ("project", "optional-dependencies", k): v
+        for k, v in project.get("optional-dependencies", {}).items()
+    }
+    out |= {("dependency-groups", k): v for k, v in data.get("dependency-groups", {}).items()}
+    out |= {("tool", "poetry", "dependencies"): poetry.get("dependencies")}
+    out |= {
+        ("tool", "poetry", "group", g, "dependencies"): v.get("dependencies")
+        for g, v in poetry.get("group", {}).items()
+        if isinstance(v, dict)
+    }
+    return {k: v for k, v in out.items() if isinstance(v, list | dict)}
+
+
+def _names(place: list | dict) -> list[str | None]:
+    return [_requirement_name(x) if isinstance(x, str) else None for x in place]  # a table's keys are names
+
+
+def _pyproject_with_openai(text: str, sdks: set[str]) -> tuple[str, list[tuple[str, ...]]]:
+    """pyproject text with openai added to each requirement declaration naming a replaced SDK and not openai,
+    right after that SDK's entry and in the file's own layout: in a list, an entry per line or inline; in a
+    Poetry table, a `openai = ">=..."` line. The declarations it changed come back too. One whose text this
+    cannot change exactly (checked by parsing the result) is left as it is."""
+    data = tomllib.loads(text)
+    for key, place in _requirement_places(data).items():
+        names = _names(place)
+        at = next((i for i, n in enumerate(names) if n in sdks), None)
+        if at is None or "openai" in names:
+            continue
+        want = tomllib.loads(text)
+        target = want
+        for part in key[:-1]:
+            target = target[part]
+        if isinstance(place, dict):  # Poetry: `anthropic = "^0.40"` -> a line after it
+            sdk = list(place)[at]
+            target[key[-1]] = {**place, "openai": OPENAI_REQUIREMENT.removeprefix("openai")}
+            found = re.finditer(rf"^[ \t]*([\"']?){re.escape(sdk)}\1[ \t]*=.*$", text, re.M)
+            line = 'openai = "' + OPENAI_REQUIREMENT.removeprefix("openai") + '"'
+            candidates = [  # a CRLF file keeps its line endings: `.*` took the line's \r
+                text[: m.end()] + "\n" + line + ("\r" if m[0].endswith("\r") else "") + text[m.end() :]
+                for m in found
+            ]
+        else:
+            items = place
+            target[key[-1]] = [*items[: at + 1], OPENAI_REQUIREMENT, *items[at + 1 :]]
+            candidates = []
+            for m in re.finditer(rf"([\"']){re.escape(items[at])}\1", text):
+                line_end = text.find("\n", m.end())
+                rest = text[m.end() : len(text) if line_end < 0 else line_end]
+                quote, line_start = m[1], text.rfind("\n", 0, m.start()) + 1
+                indent = re.match(r"[ \t]*", text[line_start:]).group(0)
+                if text[line_start : m.start()].strip() == "" and re.fullmatch(r"\s*,?\s*(#.*)?", rest):
+                    comma = "" if rest.lstrip().startswith(",") else ","  # the last entry gets one
+                    cr = "\r" if rest.endswith("\r") else ""  # a CRLF file keeps its line endings
+                    entry = f"\n{indent}{quote}{OPENAI_REQUIREMENT}{quote},{cr}"
+                    candidates.append(text[: m.end()] + comma + rest + entry + text[m.end() + len(rest) :])
+                else:  # an inline list
+                    candidates.append(
+                        text[: m.end()] + f", {quote}{OPENAI_REQUIREMENT}{quote}" + text[m.end() :]
+                    )
+        for new in candidates:
+            try:
+                if tomllib.loads(new) == want:
+                    text = new
+                    break
+            except tomllib.TOMLDecodeError:
+                continue
+    places = _requirement_places(data)
+    changed = [k for k, v in _requirement_places(tomllib.loads(text)).items() if v != places.get(k)]
+    return text, changed
+
+
+def _logical_lines(lines: list[str]) -> list[tuple[int, int, str]]:
+    """(first, last physical index, the joined text) of each logical line of a requirements file: a line
+    ending in a backslash continues on the next."""
+    out, start = [], 0
+    for i, line in enumerate(lines):
+        if not line.rstrip("\r\n").endswith("\\") or i == len(lines) - 1:
+            out.append((start, i, "".join(x.rstrip("\r\n").removesuffix("\\") for x in lines[start : i + 1])))
+            start = i + 1
+    return out
+
+
+def _parses(line: str) -> bool:
+    """A requirements line (its comment stripped) that packaging reads as one requirement."""
+    try:
+        Requirement(re.sub(r"(^|\s)#.*$", "", line).strip())
+    except InvalidRequirement:
+        return False
+    return True
+
+
+def _compile_command(text: str, kind: str) -> str:
+    """The command a compiled requirements file's header names (`pip-compile ...`, `uv pip compile ...`)."""
+    lines = [ln.lstrip("#").strip() for ln in text.splitlines()[:20] if ln.startswith("#")]
+    at = next((i for i, ln in enumerate(lines) if ln.endswith("following command:")), None)
+    found = next((ln for ln in lines[at + 1 :] if ln), None) if at is not None else None
+    return found or ("uv pip compile" if kind == "uv" else "pip-compile")
+
+
+def _requirements_with_openai(
+    repo: Path, path: Path, text: str, sdks: set[str]
+) -> tuple[str | None, list[str]]:
+    """A requirements file with OPENAI_REQUIREMENT as a new logical line after the replaced SDK's (its
+    continuation lines, comment and markers kept whole, its line endings too), checked by re-reading the
+    logical lines and parsing the SDK's; (None, a note) when it must not or cannot be edited exactly. A
+    compiled file (a pip-compile or uv header, or a sibling .in) and a hashed one are lockfiles: never
+    edited, the note says which line to add where and how to recompile."""
+    rel, named = path.relative_to(repo).as_posix(), ", ".join(f"`{s}`" for s in sorted(sdks))
+    lines = text.splitlines(keepends=True)
+    logical = _logical_lines(lines)
+    at = next(k for k, (*_, t) in enumerate(logical) if _requirement_name(t) in sdks)
+    source = path.with_suffix(".in")
+    header = COMPILED.search("".join(lines[:20]))
+    if header or source.is_file():
+        kind = "uv" if header and "uv" in header[0].lower() else "pip-compile"
+        where = (
+            f"`{source.relative_to(repo).as_posix()}`" if source.is_file() else "the file it is compiled from"
+        )
+        return None, [f"`{rel}` is compiled ({kind}), so Offramp did not edit it: add the line "
+                      f"`{OPENAI_REQUIREMENT}` to {where} beside {named}, then recompile with "
+                      f"`{_compile_command(text, kind)}`"]  # fmt: skip
+    if "--hash" in text:
+        return None, [f"`{rel}` pins hashes, so Offramp did not edit it: add `{OPENAI_REQUIREMENT}` with its "
+                      "`--hash` values (pip requires a hash on every line of such a file)"]  # fmt: skip
+    _, last, sdk_line = logical[at]
+    nl = "\r\n" if lines[last].endswith("\r\n") else "\n"
+    new_lines = [*lines[:last], lines[last] if lines[last].endswith("\n") else lines[last] + nl,
+                 OPENAI_REQUIREMENT + nl, *lines[last + 1 :]]  # fmt: skip
+    old = [t for *_, t in logical]
+    if [t for *_, t in _logical_lines(new_lines)] == [
+        *old[: at + 1],
+        OPENAI_REQUIREMENT,
+        *old[at + 1 :],
+    ] and (_parses(sdk_line)):
+        return "".join(new_lines), []
+    return None, [f"`{rel}` declares {named} in a line Offramp cannot extend exactly: add "
+                  f"`{OPENAI_REQUIREMENT}` to it by hand"]  # fmt: skip
+
+
+def declare_openai(repo: Path, sdks: set[str]) -> tuple[dict[str, str], list[str], bool]:
+    """The migrated code imports the openai SDK (through the client module). Wherever the repo declares a
+    replaced SDK and not openai, the same declaration gains OPENAI_REQUIREMENT: a requirements*.txt file
+    (`_requirements_with_openai`) or a pyproject declaration (`_pyproject_with_openai`). A file declaring
+    openai anywhere already is left as it is (its own pin may conflict with the floor). Lockfiles (uv.lock,
+    poetry.lock, compiled or hashed requirements) are never edited: a note says what to add and how to
+    regenerate them. Line endings are kept. Returns (path -> new text, notes for the PR, whether the file the
+    sandbox image installs declares a replaced SDK: pyproject.toml, else the root requirements.txt)."""
+    sdks = sdks - {"openai"}  # a replaced openai SDK is declared already
+    edits, notes, declared, direct = {}, [], False, False
+    installed = repo / ("pyproject.toml" if (repo / "pyproject.toml").is_file() else "requirements.txt")
+    named = ", ".join(f"`{s}`" for s in sorted(sdks))
+    reqs = sorted(f for f in repo.rglob("requirements*.txt") if f.is_file() and not f.is_symlink()
+                  and not set(NOT_COPIED) & set(f.relative_to(repo).parts[:-1]))  # fmt: skip
+    for f in reqs:
+        try:
+            text = f.read_bytes().decode()  # not read_text(): a CRLF file stays CRLF
+        except (OSError, UnicodeDecodeError):
+            continue
+        names = [_requirement_name(t) for *_, t in _logical_lines(text.splitlines(keepends=True))]
+        if not sdks & set(names):
+            continue
+        declared, direct = True, direct or f == installed
+        if "openai" in names:
+            continue
+        new, why = _requirements_with_openai(repo, f, text, sdks)
+        if new is not None:
+            edits[f.relative_to(repo).as_posix()] = new
+        notes += why
+    pyproject = repo / "pyproject.toml"
+    if pyproject.is_file() and not pyproject.is_symlink():
+        try:
+            original = pyproject.read_bytes().decode()
+            data = tomllib.loads(original)
+            text, changed = _pyproject_with_openai(original, sdks)
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            data, text, changed = {}, "", []
+        names = {k: set(_names(v)) for k, v in _requirement_places(data).items()}
+        declared |= any(sdks & n for n in names.values())
+        direct |= any(sdks & n for n in names.values())
+        elsewhere = [".".join(k) for k, n in names.items() if "openai" in n]
+        if changed and not elsewhere:
+            edits["pyproject.toml"] = text
+            locks = [(lock, cmd) for lock, cmd in LOCKS.items() if (repo / lock).is_file()]
+            notes += [f"`{lock}` is not regenerated by Offramp: run `{cmd}` before merging, so the lockfile "
+                      f"includes `{OPENAI_REQUIREMENT}`" for lock, cmd in locks]  # fmt: skip
+        missed = [k for k, n in names.items() if sdks & n and "openai" not in n]
+        if elsewhere:
+            notes += [f"`pyproject.toml` `{'.'.join(k)}` declares {named} but not openai, which "
+                      f"`{elsewhere[0]}` declares: Offramp left the file as it is (that openai pin decides); "
+                      "check the migrated code's environment installs it" for k in missed]  # fmt: skip
+        else:
+            notes += [f"`pyproject.toml` `{'.'.join(k)}` declares {named}, but Offramp could not add "
+                      f"`{OPENAI_REQUIREMENT}` to it exactly: add it by hand"
+                      for k in missed if k not in changed]  # fmt: skip
+    added, why = [], "since the migrated code imports the OpenAI SDK through Offramp's client module"
+    for p in sorted(edits):
+        added.append(f"`{p}`: added `{OPENAI_REQUIREMENT}` beside {named}, {why}")
+        if repo / p != installed:  # the checks never installed the edit: say what they ran on
+            ran = f"ran on the environment from `{installed.name}`, which does not install that file"
+            ran = (
+                ran
+                if installed.is_file()
+                else "ran without it: the sandbox image installs no dependency file"
+            )
+            added.append(f"`{p}` gains `{OPENAI_REQUIREMENT}`; the checks {ran}")
+    notes[:0] = added
+    if sdks and not declared:
+        why = "since the migrated code imports it"
+        notes.append(f"No requirements*.txt or pyproject.toml here declares {named}: add "
+                     f"`{OPENAI_REQUIREMENT}` where this repo declares its dependencies, {why}")  # fmt: skip
+    return edits, notes, direct
+
+
+def client_module(asynchronous: bool = False, module: str = ROOT_CLIENT[1]) -> str:
+    """The Token Factory client module; with `asynchronous`, also `token_factory_async_client` (an async site
+    was migrated), documented for its import path `module`. Without it, the module is exactly as before."""
     ids = {t.name.lower(): get_tier(t).model_id for t in Tier}
-    return string.Template(TEMPLATE.read_text()).substitute(ids)
+    text = string.Template(TEMPLATE.read_text()).substitute(ids)
+    if not asynchronous:
+        return text
+    text = text.replace("from openai import OpenAI\n", "from openai import AsyncOpenAI, OpenAI\n", 1)
+    return text + ASYNC_CLIENT.replace("$module", module)
+
+
+FACTORIES = ("token_factory_client", "token_factory_async_client")
+
+
+def _built_note(site: CallSite, code: str, original: str, client: str) -> str | None:
+    """For the patcher prompt: the site's function now builds a Token Factory client where it built the old
+    SDK client, and how a test fakes it the way it faked that SDK."""
+    factory = next((f for f in FACTORIES if f"{f}(" in code and f not in original), None)
+    if factory is None:
+        return None
+    if re.search(rf"^[ \t]+from {re.escape(client)} import {factory}$", code, re.M):  # inside the function
+        how = (f"imported inside the function as the SDK was; a test fakes it the same way, e.g. "
+               f'`patch.dict("sys.modules", {{"{client}": fake_module}})` with `fake_module.{factory}` '
+               "returning the fake client")  # fmt: skip
+    else:
+        module = _module_name(site.file)
+        how = f'a test fakes it by name, e.g. `monkeypatch.setattr({module}, "{factory}", fake)`'
+    return (
+        f"`{site.file}`: `{site.function}` builds its client with `{factory}(...)` from `{client}` where "
+        f"it built the old SDK client, {how}; the fake client's `chat.completions.create` returns an OpenAI "
+        "chat completion"
+    )
+
+
+CONFIG_FILES = ("*.yaml", "*.yml", "*.toml", "*.cfg", "*.ini", "*.json", "*.sh", "Dockerfile*", "Procfile",
+                "docker-compose*", "*.example", "*.sample")  # fmt: skip  # where a deployment sets its keys
+
+
+def _key_reads(repo: Path, keys: set[str]) -> list[str]:
+    """Where the repo (tests aside) still names a replaced provider's key, as PR notes: Offramp renames it
+    only inside the migrated functions. Code: each exact read, at most 10, then a count. Deployment and config
+    files (CONFIG_FILES) that mention it, and the .py files that could not be read here, are named too."""
+    found, unread, configs = [], [], []
+    for f in sorted(repo.rglob("*")) if keys else []:
+        path = f.relative_to(repo).as_posix()
+        if (f.is_symlink() or not f.is_file() or set(NOT_COPIED) & set(f.relative_to(repo).parts[:-1])
+                or path == "offramp_client.py" or f.name == "offramp_client.py"):  # fmt: skip
+            continue
+        if f.suffix != ".py":
+            if any(fnmatch.fnmatch(f.name, g) for g in CONFIG_FILES):
+                text = f.read_bytes()[:1_000_000].decode(errors="replace")
+                configs += [(path, k) for k in sorted(keys) if re.search(rf"\b{k}\b", text)]
+            continue
+        if is_test_path(path):
+            continue
+        try:
+            tree = ast.parse(f.read_text())
+        except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+            unread.append(path)
+            continue
+        defs = _defs(tree)
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Constant) and n.value in keys:
+                inside = [
+                    (d.end_lineno - d.lineno, q) for q, d in defs if d.lineno <= n.lineno <= d.end_lineno
+                ]
+                where = f"in `{min(inside)[1]}`" if inside else "at module level"
+                found.append((path, n.lineno, f"`{path}:{n.lineno}` ({where}) still reads `{n.value}`"))
+    notes = [text for *_, text in sorted(found)]
+    tail = [f"and {len(notes) - 10} more such reads"] if len(notes) > 10 else []
+    why = "Offramp renamed the key to `NEBIUS_API_KEY` only inside the migrated functions"
+    out = [f"{note}: {why}" for note in notes[:10]] + tail
+    out += [f"`{path}` mentions `{k}`: wherever this repo deploys, set `NEBIUS_API_KEY` for the migrated code"
+            for path, k in configs]  # fmt: skip
+    if unread:
+        version = ".".join(map(str, sys.version_info[:2]))
+        named = ", ".join(f"`{u}`" for u in unread[:5])
+        out.append(f"{len(unread)} .py file(s) could not be parsed here (Python {version}), so key reads in "
+                   f"them are not listed: {named}")  # fmt: skip
+    return out
+
+
+def _sdk_left(source: str, site: CallSite) -> list[str]:
+    """What the migrated function still reads from the anthropic SDK (`anthropic.APIError` in a handler)."""
+    tree = ast.parse(source)
+    fn = _function(tree, site)
+    names = _imported_names(tree, fn) if fn else {}
+    sdk = {k for k, v in names.items() if v.split(".")[0] == "anthropic"}
+    attrs = {ast.unparse(n) for n in ast.walk(fn) if isinstance(n, ast.Attribute)
+             and isinstance(n.value, ast.Name) and n.value.id in sdk} if fn else set()  # fmt: skip
+    bare = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name) and n.id in sdk
+            and names[n.id] != "anthropic"} if fn else set()  # fmt: skip
+    return sorted(attrs | bare)
+
+
+def is_async_site(source: str, site: CallSite) -> bool:
+    """Whether the site's function is async (its callers then hand it an async client) or builds one."""
+    tree = ast.parse(source)
+    fn = _function(tree, site) if site.function else None
+    built = (CLIENT_CLASSES.get(_client_class(n, tree, fn or tree) or "") for n in ast.walk(fn or tree))
+    return isinstance(fn, ast.AsyncFunctionDef) or "token_factory_async_client" in built
 
 
 @dataclass
@@ -2217,7 +3066,16 @@ def compose_patches(
 ) -> PatchResult:
     repo = Path(work_dir) / "repo"
     shutil.rmtree(repo, ignore_errors=True)
-    warnings = copy_repo(repo_dir, repo)
+    listing = git_files(Path(repo_dir))  # a git checkout: only its tracked files reach the sandbox
+    tracked_list, filtered = listing or (None, [])
+    warnings = copy_repo(repo_dir, repo, tracked_list)
+    paths = ", ".join(f"`{p}`" for p in filtered[:10]) + (
+        f" and {len(filtered) - 10} more" * (len(filtered) > 10)
+    )
+    left_out = (  # paths only, never content
+        f"Offramp left {len(filtered)} tracked file(s) out of the sandbox, which git filters (a `filter` "
+        f"attribute, such as git-crypt's; a fresh clone holds them encrypted): {paths}"
+    )
     width = line_length(repo)
     originals: dict[str, str | None] = {}
 
@@ -2252,6 +3110,7 @@ def compose_patches(
     site_files: dict[str, list[str]] = {}
     box = sandbox_factory(repo)
     to_migrate = sorted((v for v in verdicts if v.decision == "MIGRATE"), key=lambda v: v.site_id)
+    box.files = tracked_list  # the copy holds those files only; a plain directory needs the sandbox's opt-in
 
     def downgrade(v: Verdict, reason: str, failure: PatchFailure | None = None) -> None:
         update = {"decision": "MANUAL_REVIEW", "reason": reason, "patch_failure": failure}
@@ -2262,27 +3121,43 @@ def compose_patches(
             downgrade(v, reason, failure)
         verdicts_out = [decided.get(v.site_id, v) for v in verdicts]
         return PatchResult(files={}, diffs={}, site_files={}, verdicts=verdicts_out, adapters=adapters,
-                           sandbox_mode=box.mode, warnings=warnings)  # fmt: skip
+                           sandbox_mode=box.mode, warnings=warnings, linted=box.ruff,
+                           sandbox_notes=box.notes)  # fmt: skip
 
     if box.mode == "none":
         return stop(NO_SANDBOX)
     untouched = box.check()
     if not untouched.ok:
         return stop(
-            f"repo checks fail on the untouched repo ({untouched.mode}): {_summary(untouched.output)}",
+            f"repo checks fail on the untouched repo ({untouched.mode}): {_summary(untouched.output)}"
+            + (f"; {left_out}" if filtered else ""),
             PatchFailure(kind="repo_red"),
         )
 
-    client_at = client_location(repo, [by_id[v.site_id].file for v in to_migrate if v.site_id in by_id])
+    try:
+        client_at = client_location(repo, [by_id[v.site_id].file for v in to_migrate if v.site_id in by_id])
+    except Unsupported as e:
+        return stop(f"no place for Offramp's client module: {e}")
     if client_at is None:
         return stop(
             "no package to hold Offramp's client module: the migrated call sites sit in the repository root, "
             "which is itself a Python package (it has __init__.py)"
         )
-    client = client_module()
+    asynchronous = any(  # an async site is migrated: the client module holds the async client too
+        is_async_site(text, by_id[v.site_id])
+        for v in to_migrate
+        if v.site_id in by_id and by_id[v.site_id].file in tracked and (text := read(by_id[v.site_id].file))
+    )
+    client = client_module(asynchronous, client_at[1])
+    replaced = read(client_at[0])  # a module of that name already there (an earlier run's, or the repo's own)
     write(client_at[0], client)
-    if client_at == ROOT_CLIENT and read("offramp/__init__.py") is None:
-        write("offramp/__init__.py", "")
+    sdks = {by_id[v.site_id].sdk for v in to_migrate if v.site_id in by_id}
+    dependencies, change_notes, direct = declare_openai(repo, sdks)  # code-written like the client module
+    box.sdks = sdks & {"anthropic"} if direct else set()  # the patched checks' image: see OPENAI_LAYER
+    if replaced not in (None, client):
+        change_notes.insert(0, f"`{client_at[0]}` existed and was replaced by this run's client module")
+    for path, text in dependencies.items():
+        write(path, text)
     kept = [by_id[v.site_id] for v in verdicts if v.decision == "KEEP_CLOSED" and v.site_id in by_id]
     for site in sorted(kept, key=lambda s: (s.file, -s.lines[0])):  # bottom-up: line numbers stay valid
         v = next(v for v in verdicts if v.site_id == site.id)
@@ -2306,6 +3181,9 @@ def compose_patches(
     formatted = box.formatted()  # the repo keeps `ruff format` clean: so do the patches
 
     base_code = shipped_code(repo)  # the base's code (client module and kept-site comments in): read-only
+    base_code |= {
+        p: read(p) for p in dependencies
+    }  # the dependency edit too: the backstop keeps it as written
     qual_of: dict[str, CallSite] = {}  # MIGRATE site -> the site with its function's qualified name
     for v in to_migrate:
         site = by_id.get(v.site_id)
@@ -2399,7 +3277,7 @@ def compose_patches(
             continue
         try:
             prepared, constants, system_name, rewritten, fixed = _prepare(
-                original, local, adapter.spec, params, width
+                original, local, adapter.spec, params, width, client_at[1]
             )
         except Unsupported as e:
             downgrade(v, f"patch not composed: {e}")
@@ -2413,10 +3291,12 @@ def compose_patches(
             continue
         context = _context(repo, site, client_at[0])
         code = {site.file: add_imports(prepared, client_at[1])}  # what ships for it: Offramp's code only
-        for p in context:  # mechanical: callers hand the migrated function a Token Factory client
-            if p != site.file and not is_test_path(p) and site.function:
-                if (caller := rewrite_callers(read(p), site.function, client_at[1])) != read(p):
-                    code[p] = caller
+        own = code[site.file]  # before its own callers are rewired
+        modules = {p: text for p in sorted(tracked) if not is_test_path(p) and p != client_at[0]
+                   and (text := read(p)) is not None} | code  # fmt: skip  # the repo's code, as it would ship
+        if site.function:  # mechanical: callers hand the migrated function a Token Factory client
+            code |= rewrite_callers(modules, site.file, local.function, client_at[1])
+        context += [p for p in code if p not in context]  # a caller reached through an alias is shown too
         base = {p: read(p) for p in code}
         for p, text in code.items():
             (repo / p).write_text(text)
@@ -2428,7 +3308,10 @@ def compose_patches(
         carried_of[site.id] = {k: ast.dump(node) for k, node in carried.items()}
         literal = {k: _literal(node) for k, node in carried.items()}
         carried_values[site.id] = {k: x for k, x in literal.items() if x is not ...}
-        problems = conformance(code[site.file], local, params, constants, system_name, carried_of[site.id])
+        callers = modules | code  # every module that may call it, as it ships
+        problems = conformance(
+            code[site.file], local, params, constants, system_name, carried_of[site.id], callers
+        )
         if problems:
             why = f"Offramp's own rewrite does not carry the evaluated request: {'; '.join(problems)}"
             downgrade(v, f"patch not composed: {why}")
@@ -2438,7 +3321,14 @@ def compose_patches(
             verification[site.id] = f"{UNCHANGED}; not probed: {unprobed}"
         shown = {p: code[p] if p in code else read(p) for p in context}
         changed_callers = {Path(p).stem for p in code if p != site.file}
-        done = [f"`{p}` passes `token_factory_client()` to `{site.function}`" for p in code if p != site.file]
+        done = [
+            f"`{p}` passes `{' / '.join(f'{f}()' for f in FACTORIES if f'{f}()' in code[p])}` to "
+            f"`{site.function}`"
+            for p in code
+            if p != site.file
+        ]
+        if site.function and (note := _built_note(site, own, original, client_at[1])):
+            done.append(note)
         old = "OpenAI" if site.sdk == "openai" else "Anthropic"
         handles = {site.function or ""}.union(
             *(reach_handles(code[p], site.function) for p in code if p != site.file)
@@ -2452,10 +3342,12 @@ def compose_patches(
                 shown[p] = converted
                 done.append(f"`{p}`: its Anthropic fake also answers `chat.completions.create`, with the "
                             "same canned blocks as an OpenAI chat completion")  # fmt: skip
-            if changed_callers and (mirrored := mirror_fakes(shown[p], changed_callers, old)) != shown[p]:
-                twins[p] = set(mirrored.splitlines(keepends=True)) - set(shown[p].splitlines(keepends=True))
-                shown[p] = mirrored
-                done.append(f"`{p}` also fakes `token_factory_client` where it faked `{old}`")
+            for name in (n for n in OLD_CLIENTS if n.endswith(old)) if changed_callers else ():  # sync, async
+                if (mirrored := mirror_fakes(shown[p], changed_callers, name, OLD_CLIENTS[name])) != shown[p]:
+                    added = set(mirrored.splitlines(keepends=True)) - set(shown[p].splitlines(keepends=True))
+                    twins[p] = twins.get(p, set()) | added
+                    shown[p] = mirrored
+                    done.append(f"`{p}` also fakes `{OLD_CLIENTS[name]}` where it faked `{name}`")
         before = {p: read(p) for p in shown}
         probe = (lambda sid=site.id: verify([sid]).get(sid)) if probed else None
         names = [*constants.values(), *([system_name] if (system_name or "").startswith("NEMOTRON_") else [])]
@@ -2783,10 +3675,38 @@ def compose_patches(
     migrated = len(combined)
 
     files = {p: text for p in originals if (text := read(p)) is not None and text != originals[p]}
-    if not migrated:  # nothing uses the client module
-        files.pop(client_at[0], None)
-        if originals.get("offramp/__init__.py", "") is None:  # added for the root client only
-            files.pop("offramp/__init__.py", None)
+    files |= {p: text for p, text in dependencies.items() if p in files}  # as written: a CRLF file stays CRLF
+    if not migrated:  # nothing uses the client module, nor the openai SDK it imports
+        for path in [client_at[0], *dependencies]:
+            files.pop(path, None)
+        change_notes = []
+    keys = {PROVIDER_KEYS[by_id[sid].sdk] for sid in combined if by_id[sid].sdk in PROVIDER_KEYS}
+    for sid in combined:  # the migrated function's own key checks, renamed by `_rewrite_call`
+        site, key = qual_of[sid], PROVIDER_KEYS.get(by_id[sid].sdk, "")
+        if by_id[sid].sdk == "anthropic" and (left := _sdk_left(code_of[sid][site.file], site)):
+            why = "the Token Factory client raises openai's errors, which a handler for anthropic's misses"
+            refs = ", ".join(f"`{x}`" for x in left)
+            change_notes.append(f"`{site.function}` (`{site.file}`) still refers to {refs}: {why}")
+        if (
+            key
+            and "NEBIUS_API_KEY" in code_of[sid][site.file]
+            and "NEBIUS_API_KEY" not in befores[sid][site.file]
+        ):
+            now = f"now checks `NEBIUS_API_KEY` where it checked `{key}`"
+            why = "so its Nemotron call runs when the Token Factory key is set"
+            change_notes.append(f"`{site.function}` (`{site.file}`) {now}, {why}")
+    change_notes += _key_reads(repo, keys)
+    handed = [
+        qual_of[sid] for sid in combined if _client_parameter(code_of[sid][by_id[sid].file], qual_of[sid])
+    ]
+    if handed:  # their callers were checked (`_handed_clients`): say how far that goes
+        names = ", ".join(f"`{s.function}`" for s in handed)
+        reflection = "getattr, importlib, sys.modules, vars/__dict__"
+        change_notes.append(f"{names} get{'s' * (len(handed) == 1)} the client from callers: callers were "
+                            f"checked statically; lookups through reflection ({reflection}) were not, except "
+                            "the literal getattr/import_module forms Offramp refuses")  # fmt: skip
+    if filtered:
+        change_notes.append(left_out)
     return PatchResult(
         files=files,
         diffs=diffs,
@@ -2801,4 +3721,10 @@ def compose_patches(
         combined_failure=together_failure,
         verification={sid: verification.get(sid, UNCHANGED) for sid in combined},
         warnings=warnings,
+        linted=box.ruff,
+        sandbox_notes=box.notes,
+        async_client=any(FACTORIES[1] in text for p, text in files.items() if p != client_at[0]),
+        client_packaged=(repo / client_at[0]).parent != repo
+        and ((repo / client_at[0]).parent / "__init__.py").is_file(),
+        change_notes=change_notes,
     )

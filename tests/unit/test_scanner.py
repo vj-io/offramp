@@ -764,3 +764,40 @@ def test_an_enomem_os_error_counts_as_out_of_memory(tmp_path, monkeypatch):
     (tmp_path / "ok.py").write_text(OPENAI_FILE)
     with pytest.raises(MemoryError):
         scan_repo(tmp_path)
+
+
+ASYNC_BUILT_INSIDE = """import os
+
+PROMPT = "Return a JSON array of search queries."
+
+
+async def keywords(idea: str):
+    try:
+        import anthropic
+
+        client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=30.0)
+        message = await client.messages.create(
+            model="claude-haiku-4-5",
+            temperature=0,
+            max_tokens=200,
+            system=PROMPT,
+            messages=[{"role": "user", "content": idea}],
+        )
+        return message.content[0].text.strip()
+    except Exception:
+        return None
+"""
+
+
+def test_an_async_site_that_imports_and_builds_its_client_inside_is_found(tmp_path):
+    """Task 23: the real app's shape (an SDK imported inside the async function, its client built there)."""
+    (site,) = _scan_module(tmp_path, ASYNC_BUILT_INSIDE)
+
+    assert (site.sdk, site.call, site.function, site.source_model) == (
+        "anthropic",
+        "client.messages.create",
+        "keywords",
+        "claude-haiku-4-5",
+    )
+    assert site.prompt_ref == "PROMPT" and site.params["system"] == "Return a JSON array of search queries."
+    assert site.params["max_tokens"] == 200 and site.params["temperature"] == 0
