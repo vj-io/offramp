@@ -29,6 +29,7 @@ def prepared(tmp_path_factory) -> Path:
     with pytest.MonkeyPatch.context() as mp:  # the oracle runs on this machine, as conftest.target_code_here
         mp.setattr(sandbox, "docker_available", lambda: False)
         mp.setenv(sandbox.LOCAL_OPT_IN, "1")
+        mp.setenv(sandbox.UNTRACKED_OPT_IN, "1")  # a plain fixture directory: local mode copies it now too
         client = TFClient(cache_dir=CASSETTES, live=False)
         cg.prepare_repo(repo, scan, client, target=8, adversarial=2, seed=0)
     return repo / "evals"

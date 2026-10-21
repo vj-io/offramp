@@ -286,7 +286,23 @@ def client_location(repo: Path, files: list[str]) -> tuple[str, str] | None:
     - else `offramp_client.py` at the import root (`src/` when every site is under it), by bare name.
 
     None when a site sits directly in a repository root that is itself a package (`__init__.py`): there is
-    no package below the root to hold the module, and the root's own import name is not known here."""
+    no package below the root to hold the module, and the root's own import name is not known here.
+    Unsupported when a bare `offramp_client` import may not find this module: another `offramp_client.py` in
+    the repo could shadow it, or sites in several folders share the root's while one of those folders runs
+    with itself on sys.path (its modules import each other by bare name)."""
+    place = _client_place(repo, files)
+    if place is None or place[1] != ROOT_CLIENT[1]:
+        return place
+    root = repo.resolve()
+    for other in sorted(p.relative_to(root) for p in root.rglob(ROOT_CLIENT[0])):
+        if other.as_posix() != place[0] and not set(NOT_COPIED) & set(other.parts[:-1]):
+            why = "which the sites import by bare name `offramp_client`: remove or rename it, then run again"
+            raise Unsupported(f"`{other.as_posix()}` could shadow this run's `{place[0]}`, {why}")
+    return place
+
+
+def _client_place(repo: Path, files: list[str]) -> tuple[str, str] | None:
+    """`client_location` before its shadowing check."""
     repo = repo.resolve()
     tops, folders = set(), set()
     for f in files:
@@ -314,6 +330,12 @@ def client_location(repo: Path, files: list[str]) -> tuple[str, str] | None:
         return path, ".".join([*folder.relative_to(root(folder)).parts, "offramp_client"])
     roots = {root(f) for f in tops | folders}
     base = roots.pop() if len(roots) == 1 else repo
+    on_path = sorted(f.relative_to(repo).as_posix() for f in folders if f != base and _imports_siblings(f))
+    if on_path:  # its scripts run with that folder first on sys.path, perhaps without the import root
+        why = "it runs with itself on sys.path, where the import may miss it"
+        raise Unsupported(f"the sites span several folders, which would share one `offramp_client` module "
+                          f"at the import root by bare name, but `{on_path[0]}/` imports its own modules by "
+                          f"bare name: {why}")  # fmt: skip
     return (base / "offramp_client.py").relative_to(repo).as_posix(), "offramp_client"
 
 
@@ -760,10 +782,11 @@ def _client_class(node: ast.AST | None, tree: ast.Module, scope: ast.AST) -> str
 def _built_client(tree: ast.Module, scope: ast.AST, receiver: ast.expr, source: str) -> ast.Call | None:
     """The constructor of the client the site's call is made on, when the function builds it from a class in
     CLIENT_CLASSES: the receiver itself (`AsyncAnthropic().messages.create(...)`) or the one plain assignment
-    to the receiver's name in the function. None when the client is a parameter of the function (its callers
-    hand it one: `rewrite_callers`). Unsupported for every other client, so nothing ships on a client the
-    rewrite does not know: another class (`AsyncAnthropicBedrock`, `AsyncAzureOpenAI`), a helper's result, an
-    attribute (`self.client`), a module-level or class-level client, one built by `with`, by an annotated
+    to the receiver's name in the function. None when the client is a parameter of the function with no
+    default but None: its callers hand it one (`rewrite_callers`; `conformance` checks every one of them).
+    Unsupported for every other client, so nothing ships on a client the rewrite does not know: another class
+    (`AsyncAnthropicBedrock`, `AsyncAzureOpenAI`), a helper's result, an attribute (`self.client`), a
+    module-level or class-level client, a parameter's default, one built by `with`, by an annotated
     assignment or more than once, or one that also serves other code in the function."""
 
     def unrecognised(expr: ast.AST, why: str = "") -> Unsupported:
@@ -779,6 +802,8 @@ def _built_client(tree: ast.Module, scope: ast.AST, receiver: ast.expr, source: 
         raise unrecognised(receiver)
     name = receiver.id
     if name in {a.arg for a in [*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs]}:
+        if not _no_default(scope, name):
+            raise unrecognised(_default(scope, name), f" (the default of its `{name}` parameter)")
         return None
 
     def binds(n: ast.AST) -> bool:  # `n` binds the receiver's name
@@ -1841,10 +1866,81 @@ def _module_name(path: str) -> str:
     return path.removeprefix("src/").removesuffix(".py").replace("/", ".").removesuffix(".__init__")
 
 
+def _default(fn: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> ast.expr | None:
+    """The default value of the function's parameter `name`; None when it has none."""
+    a = fn.args
+    positional = [p.arg for p in [*a.posonlyargs, *a.args]]
+    defaults = dict(zip(positional[len(positional) - len(a.defaults) :], a.defaults, strict=True))
+    kw = {p.arg: d for p, d in zip(a.kwonlyargs, a.kw_defaults, strict=True) if d is not None}
+    return (defaults | kw).get(name)
+
+
+def _no_default(fn: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:
+    """The parameter has no default, or None: only a caller's argument is ever the client."""
+    default = _default(fn, name)
+    return default is None or (isinstance(default, ast.Constant) and default.value is None)
+
+
+def _handed_clients(scope: ast.AST, site: CallSite, receiver: ast.expr, callers: dict[str, str]) -> list[str]:
+    """When the call's client is a parameter the function never rebinds: each place in `callers` (path ->
+    source as it ships) that calls the function without handing it a Token Factory client, as `path:line`
+    and what it hands. Only `token_factory_client()` / `token_factory_async_client(...)` written in the call
+    is known (`rewrite_callers` makes one of an inline `OpenAI()` / `Anthropic()`). A variable, an attribute,
+    a helper's result, a pass-through parameter, `*args` / `**kwargs`, an omitted argument, or a reference to
+    the function that does not call it are not."""
+    if not isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef) or not isinstance(receiver, ast.Name):
+        return []
+    a, name = scope.args, receiver.id
+    if name not in {p.arg for p in [*a.posonlyargs, *a.args, *a.kwonlyargs]} or any(
+        isinstance(n, ast.Name) and n.id == name and not isinstance(n.ctx, ast.Load) for n in ast.walk(scope)
+    ):
+        return []
+    positional = [p.arg for p in [*a.posonlyargs, *a.args]]
+    method = "." in (site.function or "") and "staticmethod" not in map(ast.unparse, scope.decorator_list)
+
+    # ponytail: matched by name, as `rewrite_callers` does: an unrelated `x.summarize(...)` is refused too (a
+    # needless manual review, never a pass); resolve imports if that shows up on real repos
+    def names_it(n: ast.AST) -> bool:  # `summarize` or `<anything>.summarize`
+        return (isinstance(n, ast.Name) and n.id == scope.name) or (
+            isinstance(n, ast.Attribute) and n.attr == scope.name
+        )
+
+    def handed(call: ast.Call) -> ast.expr | str:  # the argument bound to `name`, or how it is not known
+        if name in (kw := {k.arg: k.value for k in call.keywords if k.arg}):
+            return kw[name]
+        shift = method and isinstance(call.func, ast.Attribute)  # a bound method's `self` is not in the call
+        at = positional.index(name) - shift if name in positional else -1
+        if at >= 0 and any(isinstance(x, ast.Starred) for x in call.args[: at + 1]):
+            return "hands it on through `*`"
+        if 0 <= at < len(call.args):
+            return call.args[at]
+        return "hands it on through `**`" if any(k.arg is None for k in call.keywords) else f"omits `{name}`"
+
+    out = []
+    for path, source in sorted(callers.items()):
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            out.append(f"`{path}` does not parse")
+            continue
+        calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and names_it(n.func)]
+        heads = {id(c.func) for c in calls}
+        for n in ast.walk(tree):  # handed to other code, which calls it with a client of its own
+            if names_it(n) and isinstance(n.ctx, ast.Load) and id(n) not in heads:
+                out.append(f"`{path}:{n.lineno}` refers to `{scope.name}` without calling it")
+        for call in calls:
+            got = handed(call)
+            if isinstance(got, ast.Call) and isinstance(got.func, ast.Name) and got.func.id in FACTORIES:
+                continue
+            what = got if isinstance(got, str) else f"hands `{ast.unparse(got)}`"
+            out.append(f"`{path}:{call.lineno}` {what}")
+    return out
+
+
 def _token_factory_client(receiver: ast.expr, scope: ast.AST) -> bool:
     """Whether a call's client is the Token Factory client: a `token_factory_client()` /
-    `token_factory_async_client(...)` call, a name bound once to one, or a parameter of the function the code
-    never rebinds (its callers hand it one)."""
+    `token_factory_async_client(...)` call, a name bound once to one, or a parameter of the function with no
+    default but None that the code never rebinds (its callers hand it one: `_handed_clients`)."""
 
     def factory(n: ast.AST | None) -> bool:
         return isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in FACTORIES
@@ -1860,9 +1956,11 @@ def _token_factory_client(receiver: ast.expr, scope: ast.AST) -> bool:
     if bound:
         return len(bound) == 1 and len(values) == 1 and factory(values[0])
     args = scope.args if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef) else None
-    return args is not None and receiver.id in {
-        a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs]
-    }
+    return (
+        args is not None
+        and receiver.id in {a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs]}
+        and _no_default(scope, receiver.id)
+    )
 
 
 def conformance(
@@ -1872,8 +1970,10 @@ def conformance(
     constants: dict[str, str],
     system_name: str | None,
     carried: dict[str, str] | None = None,  # the source call's transport options -> their AST, kept as is
+    callers: dict[str, str] | None = None,  # the repo's non-test code calling the function, as it ships
 ) -> list[str]:
-    """Problems with the patched site file: the call must pass exactly the evaluated parameters as written-out
+    """Problems with the patched site file: the call must be made on the Token Factory client (one a caller
+    hands the function too, checked in `callers`) and pass exactly the evaluated parameters as written-out
     keyword arguments (a schema may be a module constant holding it) plus messages, and use the prompt
     constants."""
     tree = ast.parse(source)
@@ -1894,6 +1994,9 @@ def conformance(
     receiver = call.func.value.value.value  # <receiver>.chat.completions.create
     if not _token_factory_client(receiver, scope):
         problems.append(f"the call's client `{ast.unparse(receiver)}` is not the Token Factory client")
+    elif callers is not None and (unknown := _handed_clients(scope, site, receiver, callers)):
+        problems.append(f"the client `{ast.unparse(receiver)}` its callers hand `{site.function}` is not "
+                        f"known to be the Token Factory client: {'; '.join(unknown)}")  # fmt: skip
     if call.args or any(k.arg is None for k in call.keywords):
         problems.append("the call takes written-out keyword arguments only: no positional arguments, no **")
     named = {k.arg: k.value for k in call.keywords if k.arg}
@@ -2528,13 +2631,14 @@ def _requirements_with_openai(
                   f"`{OPENAI_REQUIREMENT}` to it by hand"]  # fmt: skip
 
 
-def declare_openai(repo: Path, sdks: set[str]) -> tuple[dict[str, str], list[str]]:
+def declare_openai(repo: Path, sdks: set[str]) -> tuple[dict[str, str], list[str], bool]:
     """The migrated code imports the openai SDK (through the client module). Wherever the repo declares a
     replaced SDK and not openai, the same declaration gains OPENAI_REQUIREMENT: a requirements*.txt file
     (`_requirements_with_openai`) or a pyproject declaration (`_pyproject_with_openai`). A file declaring
     openai anywhere already is left as it is (its own pin may conflict with the floor). Lockfiles (uv.lock,
     poetry.lock, compiled or hashed requirements) are never edited: a note says what to add and how to
-    regenerate them. Line endings are kept. Returns (path -> new text, notes for the PR)."""
+    regenerate them. Line endings are kept. Returns (path -> new text, notes for the PR, whether the repo
+    declares a replaced SDK directly)."""
     sdks = sdks - {"openai"}  # a replaced openai SDK is declared already
     edits, notes, declared = {}, [], False
     named = ", ".join(f"`{s}`" for s in sorted(sdks))
@@ -2586,7 +2690,7 @@ def declare_openai(repo: Path, sdks: set[str]) -> tuple[dict[str, str], list[str
         why = "since the migrated code imports it"
         notes.append(f"No requirements*.txt or pyproject.toml here declares {named}: add "
                      f"`{OPENAI_REQUIREMENT}` where this repo declares its dependencies, {why}")  # fmt: skip
-    return edits, notes
+    return edits, notes, declared
 
 
 def client_module(asynchronous: bool = False, module: str = ROOT_CLIENT[1]) -> str:
@@ -2855,7 +2959,6 @@ def compose_patches(
     box = sandbox_factory(repo)
     to_migrate = sorted((v for v in verdicts if v.decision == "MIGRATE"), key=lambda v: v.site_id)
     box.files = git_files  # the copy holds those files only; a plain directory needs the sandbox's own opt-in
-    box.sdks = {by_id[v.site_id].sdk for v in to_migrate if v.site_id in by_id} & {"anthropic", "openai"}
 
     def downgrade(v: Verdict, reason: str, failure: PatchFailure | None = None) -> None:
         update = {"decision": "MANUAL_REVIEW", "reason": reason, "patch_failure": failure}
@@ -2878,7 +2981,10 @@ def compose_patches(
             PatchFailure(kind="repo_red"),
         )
 
-    client_at = client_location(repo, [by_id[v.site_id].file for v in to_migrate if v.site_id in by_id])
+    try:
+        client_at = client_location(repo, [by_id[v.site_id].file for v in to_migrate if v.site_id in by_id])
+    except Unsupported as e:
+        return stop(f"no place for Offramp's client module: {e}")
     if client_at is None:
         return stop(
             "no package to hold Offramp's client module: the migrated call sites sit in the repository root, "
@@ -2893,7 +2999,8 @@ def compose_patches(
     replaced = read(client_at[0])  # a module of that name already there (an earlier run's, or the repo's own)
     write(client_at[0], client)
     sdks = {by_id[v.site_id].sdk for v in to_migrate if v.site_id in by_id}
-    dependencies, change_notes = declare_openai(repo, sdks)  # code-written like the client module
+    dependencies, change_notes, direct = declare_openai(repo, sdks)  # code-written like the client module
+    box.sdks = sdks & {"anthropic"} if direct else set()  # the patched checks' image: see OPENAI_LAYER
     if replaced not in (None, client):
         change_notes.insert(0, f"`{client_at[0]}` existed and was replaced by this run's client module")
     for path, text in dependencies.items():
@@ -3046,7 +3153,10 @@ def compose_patches(
         carried_of[site.id] = {k: ast.dump(node) for k, node in carried.items()}
         literal = {k: _literal(node) for k, node in carried.items()}
         carried_values[site.id] = {k: x for k, x in literal.items() if x is not ...}
-        problems = conformance(code[site.file], local, params, constants, system_name, carried_of[site.id])
+        callers = {p: text for p in context if not is_test_path(p) and (text := code.get(p) or read(p))}
+        problems = conformance(
+            code[site.file], local, params, constants, system_name, carried_of[site.id], callers
+        )
         if problems:
             why = f"Offramp's own rewrite does not carry the evaluated request: {'; '.join(problems)}"
             downgrade(v, f"patch not composed: {why}")

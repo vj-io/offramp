@@ -27,7 +27,8 @@ checked by rendering every fixture). Synthetic records render through the same r
 Target-repo code (Pydantic schemas, oracles) runs in the Docker sandbox (offramp.sandbox: the target's
 dependencies installed at image build time, then network off, no host environment, the repo mounted
 read-only). Without Docker it runs on this machine only under OFFRAMP_ALLOW_LOCAL_SANDBOX=1, in the target's
-own environment with no Offramp secret in it; without either it does not run (_run_in_repo).
+own environment with no Offramp secret in it; without either it does not run (_run_in_repo). Both run it on a
+copy of the repo's tracked files.
 """
 
 from __future__ import annotations
@@ -56,7 +57,7 @@ from pydantic import BaseModel
 from offramp.evals import baselines
 from offramp.evals.scorers import score_case
 from offramp.evals.scorers.json_schema import _infer_schema
-from offramp.sandbox import LOCAL_OPT_IN, Sandbox, copy_repo, tracked_or_opted_in
+from offramp.sandbox import LOCAL_OPT_IN, Sandbox, copy_repo, tracked_files, tracked_or_opted_in
 from offramp.schemas import (
     BaselineResult,
     CallSite,
@@ -229,11 +230,15 @@ def _run_in_repo(repo: Path, code: str, *args: str, stdin: str | None = None) ->
     """Stdout of `python -B -c code *args` run against the target repo, with cwd at its root (so relative
     paths in `args` work in both places below):
 
-    - Docker: in the sandbox, on a copy of the repo's tracked files only (a plain directory needs
-      OFFRAMP_ALLOW_UNTRACKED_SANDBOX=1), its import roots inside the repo on sys.path (a local path source
-      outside the repo is not mounted, so it does not import);
+    Either way the code runs on a copy of the repo's tracked files only (a plain directory needs
+    OFFRAMP_ALLOW_UNTRACKED_SANDBOX=1), as in the patch stage: its schemas and an oracle's answers flow into
+    eval files and prompts, so no untracked, ignored or git-crypt-decrypted file may reach it.
+
+    - Docker: in the sandbox, its import roots inside the repo on sys.path (a local path source outside the
+      repo is not copied, so it does not import);
     - else, only under OFFRAMP_ALLOW_LOCAL_SANDBOX=1: on this machine, in the target's own environment (see
-      _target_python; the env setup gets SETUP_TIMEOUT_S);
+      _target_python; the env setup gets SETUP_TIMEOUT_S), cwd and PYTHONPATH on the copy. Not isolated:
+      the code can still read this machine's files;
     - else nothing runs: RuntimeError(NO_TARGET_SANDBOX).
 
     Raises CalledProcessError on failure, TimeoutExpired after RUN_TIMEOUT_S on this machine."""
@@ -241,17 +246,16 @@ def _run_in_repo(repo: Path, code: str, *args: str, stdin: str | None = None) ->
     box = Sandbox(repo, timeout_s=RUN_TIMEOUT_S)
     if box.mode == "none":
         raise RuntimeError(NO_TARGET_SANDBOX)
-    if box.mode == "local":
-        command, env = _target_python(repo)
-        return _run([*command, "-B", "-c", code, *args], repo, stdin=stdin, env=env)
     roots = [str(PurePosixPath("/repo", r.relative_to(repo).as_posix())) for r in _import_roots(repo)
              if r.is_relative_to(repo)]  # fmt: skip
     files = tracked_or_opted_in(repo)  # a plain directory needs the opt-in: untracked files may be secrets
     with tempfile.TemporaryDirectory(prefix="offramp-target-") as scratch:
-        # the code runs on a copy of the repo's tracked files only, as in the patch stage: its schemas and an
-        # oracle's answers flow into eval files and prompts, so no untracked or ignored file may reach it
         copy = Path(scratch) / repo.name
         copy_repo(repo, copy, files)
+        if box.mode == "local":
+            command, env = _target_python(repo)  # the env stays keyed to the repo's path: no re-sync per call
+            env["PYTHONPATH"] = os.pathsep.join(str(p) for p in _import_roots(copy))
+            return _run([*command, "-B", "-c", code, *args], copy, stdin=stdin, env=env)
         box = Sandbox(copy, timeout_s=RUN_TIMEOUT_S, docker=True)
         box.files = files
         status, out, err = box.python(f"import sys\nsys.path[:0] = {roots!r}\n{code}", *args, stdin=stdin)
@@ -2194,6 +2198,8 @@ class OracleError(RuntimeError):
 def _oracle(repo: Path, path: Path, request: dict[str, Any]) -> Any:
     try:
         where = path.resolve().relative_to(repo.resolve()).as_posix()  # cwd is the repo, here or in Docker
+        if (files := tracked_files(repo)) is not None and where not in files:  # the copy target code runs on
+            raise OracleError(f"{where} is not tracked by git, so the sandbox can't see it")
         return json.loads(_run_in_repo(repo, _ORACLE_CODE, where, stdin=json.dumps(request)))
     except subprocess.CalledProcessError as e:
         raise OracleError(f"oracle {path.name} failed: {(e.stderr or '').strip()[-500:]}") from e

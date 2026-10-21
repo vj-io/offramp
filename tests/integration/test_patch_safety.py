@@ -284,6 +284,7 @@ def test_a_checkouts_image_holds_none_of_its_untracked_or_ignored_secrets(monkey
     )  # ours only
     assert "/repo/tests/test_ok.py" in listing
     assert CANARY not in listing and not any(f"/repo/{p}" in listing for p in SECRETS), listing
+    assert "/repo/secrets/prod.env" not in listing  # tracked, but git-crypt's (re-review R1-I2)
 
 
 PKG_PYPROJECT = (

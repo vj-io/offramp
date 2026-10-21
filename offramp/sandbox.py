@@ -2,7 +2,8 @@
 
 Docker: the repo's dependencies, then the project itself (as its CI's `uv sync` installs it, editable at
 /repo), are installed into a throwaway image while the network is still on (cached per build-context hash; the
-context takes only a git checkout's tracked regular files, or a plain directory's under an explicit opt-in);
+context takes only a git checkout's tracked regular files, never one git-crypt or another filter decrypts,
+or a plain directory's under an explicit opt-in);
 the checks then run with no network, 2 CPUs, 2 GB, 256 pids, no
 capabilities and no privilege escalation, the copy mounted read-only over /repo (so the editable install runs
 the mounted code), under a 10-minute cap. It gets no host environment. ruff runs only when the repo configures
@@ -72,7 +73,7 @@ RUN if [ -f pyproject.toml ]; then \\
         || uv pip install --python /opt/venv/bin/python -r requirements.txt ); \\
     fi \\
  && uv pip install --python /opt/venv/bin/python pytest ruff
-{openai}ENV PATH=/opt/venv/bin:$PATH VIRTUAL_ENV=/opt/venv PYTHONDONTWRITEBYTECODE=1 HOME=/tmp
+ENV PATH=/opt/venv/bin:$PATH VIRTUAL_ENV=/opt/venv PYTHONDONTWRITEBYTECODE=1 HOME=/tmp
 
 FROM deps AS project
 COPY repo/ ./
@@ -84,10 +85,12 @@ RUN if [ -f pyproject.toml ]; then \\
 """
 
 
-# When the dependencies installed a replaced SDK, the migration's own dependency edit declares openai beside
-# it, so the repo's CI installs openai after the merge: the image does too (a locked `uv sync` would not read
-# the edit). An SDK the image does not install leaves openai out, as CI would.
-OPENAI_LAYER = """RUN if ( {sdks} ) && ! /opt/venv/bin/python -c "import openai" 2>/dev/null; then \\
+# The patched checks' image only (`Sandbox.sdks`, set once the untouched repo was checked): the repo declares
+# a replaced SDK directly, so the migration's dependency edit declares openai beside it and the repo's CI
+# installs openai after the merge. The image does too (a locked `uv sync` would not read the edit). An SDK the
+# image does not install leaves openai out, as CI would.
+OPENAI_LAYER = """FROM {image}
+RUN if ( {sdks} ) && ! /opt/venv/bin/python -c "import openai" 2>/dev/null; then \\
       uv pip install --python /opt/venv/bin/python "{requirement}"; \\
     fi
 """
@@ -99,25 +102,29 @@ OPENAI_REQUIREMENT = "openai>=1.50"
 
 
 def tracked_files(repo: Path) -> list[str] | None:
-    """The tracked files of a git checkout whose top is `repo` (`git ls-files`); None for anything else,
-    including a folder inside another checkout. git gets a minimal environment (no GIT_* variable, no key) and
-    no fsmonitor hook."""
+    """The files git tracks under `repo`, relative to it (`git ls-files --recurse-submodules`): a checkout's,
+    an initialised submodule's included, or a monorepo subfolder's own. A file whose `filter` attribute is
+    anything but `lfs` is left out: git-crypt, transcrypt and other smudge filters leave tracked plaintext
+    secrets in an unlocked work tree. None outside any work tree, and for a folder git tracks nothing in (an
+    untracked or ignored folder inside another checkout). git gets a minimal environment (no GIT_* variable,
+    no key) and no fsmonitor hook."""
     env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG") if k in os.environ}
     git = ["git", "-c", "core.fsmonitor=false", "-C", str(repo)]
+    run = {"capture_output": True, "text": True, "errors": "surrogateescape", "timeout": 120, "env": env}
     try:
-        top = subprocess.run(
-            [*git, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=30, env=env
-        )
-        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != Path(repo).resolve():
+        out = subprocess.run([*git, "ls-files", "-z", "--recurse-submodules"], **run)
+        files = sorted(p for p in out.stdout.split("\0") if p)
+        if out.returncode != 0 or not files:
             return None
-        out = subprocess.run([*git, "ls-files", "-z"], capture_output=True, timeout=120, env=env)
+        attrs = subprocess.run([*git, "check-attr", "-z", "--stdin", "filter"], input="\0".join(files), **run)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return (
-        sorted(p for p in out.stdout.decode(errors="surrogateescape").split("\0") if p)
-        if out.returncode == 0
-        else None
-    )
+    if attrs.returncode != 0:
+        return None
+    fields = attrs.stdout.split("\0")  # path, "filter", value; repeated
+    kept = ("unspecified", "unset", "lfs")  # an LFS pointer or object is no secret
+    filtered = {fields[i] for i in range(0, len(fields) - 2, 3) if fields[i + 2] not in kept}
+    return [f for f in files if f not in filtered]
 
 
 def _shippable(repo: Path, path: str) -> bool:
@@ -252,7 +259,7 @@ class Sandbox:
         self.ruff = configures_ruff(self.repo)
         self.notes: list[str] = [] if self.ruff else [NO_LINTER]  # what the PR states about these checks
         self.files: list[str] | None = None  # set by whoever copied the repo from its tracked files
-        self.sdks: set[str] = set()  # SDKs a migration replaces: see OPENAI_LAYER
+        self.sdks: set[str] = set()  # replaced SDKs the repo declares, for the patched checks: OPENAI_LAYER
 
     def check(self) -> CheckResult:
         """ruff (when the repo configures it), then pytest; the first failure ends the check. One 10-minute
@@ -344,6 +351,7 @@ class Sandbox:
         if self.mode == "docker":
             try:
                 image = self._ensure_image()
+                image = self._with_openai(image) if self.sdks else image
             except (RuntimeError, subprocess.TimeoutExpired) as e:  # no image, no check: report, never crash
                 return 1, "", str(e)
             user = ["--user", f"{os.getuid()}:{os.getgid()}"] if hasattr(os, "getuid") else []
@@ -411,8 +419,6 @@ class Sandbox:
     def _build(self, python: str, present: list[str], files: list[str], deadline: float) -> str:
         """Build (or reuse) the image for one Python: the dependencies stage first; when only the project's
         own install fails, that stage alone, with a note. RuntimeError when the dependencies do not build."""
-        sdks = " || ".join(f'/opt/venv/bin/python -c "import {m}" 2>/dev/null' for m in sorted(self.sdks))
-        layer = OPENAI_LAYER.format(sdks=sdks, requirement=OPENAI_REQUIREMENT) if sdks else ""
         with tempfile.TemporaryDirectory(prefix="offramp-image-") as ctx:  # never beside a local checkout
             (Path(ctx) / "deps").mkdir()
             for f in present:
@@ -421,7 +427,7 @@ class Sandbox:
                 (Path(ctx) / "repo" / f).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(self.repo / f, Path(ctx) / "repo" / f)
             (Path(ctx) / "repo").mkdir(exist_ok=True)
-            (Path(ctx) / "Dockerfile").write_text(DOCKERFILE.format(python=python, openai=layer))
+            (Path(ctx) / "Dockerfile").write_text(DOCKERFILE.format(python=python))
             digest = hashlib.sha256()
             for f in sorted(p for p in Path(ctx).rglob("*") if p.is_file()):
                 digest.update(f.relative_to(ctx).as_posix().encode() + b"\0" + f.read_bytes() + b"\0")
@@ -441,4 +447,20 @@ class Sandbox:
         if p.returncode != 0:
             self.notes.append(NOT_INSTALLED)
             return f"{tag}-deps"
+        return tag
+
+    def _with_openai(self, image: str) -> str:
+        """`image` plus OPENAI_LAYER, built once (network on, as any build) and cached by its Dockerfile."""
+        sdks = " || ".join(f'/opt/venv/bin/python -c "import {m}" 2>/dev/null' for m in sorted(self.sdks))
+        dockerfile = OPENAI_LAYER.format(image=image, sdks=sdks, requirement=OPENAI_REQUIREMENT)
+        tag = f"offramp-sandbox:{hashlib.sha256(dockerfile.encode()).hexdigest()[:16]}-openai"
+        if subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode == 0:
+            return tag
+        with tempfile.TemporaryDirectory(prefix="offramp-image-") as ctx:
+            (Path(ctx) / "Dockerfile").write_text(dockerfile)
+            p = subprocess.run(["docker", "build", "-q", "-t", tag, ctx], capture_output=True, text=True,
+                               timeout=BUILD_TIMEOUT_S)  # fmt: skip
+        if p.returncode != 0:
+            why = (p.stdout + p.stderr)[-OUTPUT_TAIL:]
+            raise RuntimeError(f"sandbox image build failed (the openai layer):\n{why}")
         return tag
