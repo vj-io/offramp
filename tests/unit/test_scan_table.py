@@ -176,3 +176,26 @@ def test_table_checks_the_deadline(tmp_path):
     result = scan_repo(tmp_path)
     with pytest.raises(TimeoutError):
         scan_table.table(result, deadline=time.monotonic() - 1)
+
+
+def test_every_field_is_capped_at_its_source(tmp_path):
+    # A model id is a short identifier: past 200 characters it is not one. A path is kept by its tail.
+    deep = tmp_path / ("d" * 120) / ("e" * 120) / ("f" * 120)
+    deep.mkdir(parents=True)
+    (deep / "app.py").write_text(
+        "from openai import OpenAI\n\nclient = OpenAI()\nM = " + repr("m" * 5000) + "\n"
+        'client.chat.completions.create(model=M, messages=[{"role": "user", "content": "hi"}])\n'
+    )
+    [row] = scan_table.table(scan_repo(tmp_path))["rows"]
+    assert row["model"] is None and row["price_note"] == "model id over 200 characters"
+    assert len(row["file"]) == scan_table.MAX_FIELD
+    assert row["file"].startswith("…") and row["file"].endswith("/app.py")
+
+
+def test_warnings_are_capped_in_length(tmp_path):
+    from offramp.schemas import ScanResult
+
+    long = "skipped " + "x" * 5000 + ".py: over 1 MB"
+    out = scan_table.table(ScanResult(repo="r", sites=[], warnings=[long]))
+    [warning] = out["warnings"]
+    assert len(warning) == scan_table.MAX_FIELD and warning.endswith(".py: over 1 MB")

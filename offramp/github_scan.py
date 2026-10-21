@@ -6,6 +6,7 @@ outside the destination) and runs the static scanner over them. The code is read
 
 from __future__ import annotations
 
+import errno
 import io
 import re
 import tarfile
@@ -88,6 +89,8 @@ def download(owner: str, repo: str, ref: str, deadline: float, max_bytes: int = 
     except TimeoutError:
         raise ScanError(504, "timeout", "GitHub did not answer in time.") from None
     except OSError as exc:
+        if exc.errno == errno.ENOMEM:
+            raise MemoryError from exc
         raise ScanError(502, "github_error", f"Could not reach GitHub ({type(exc).__name__}).") from None
     return b"".join(chunks)
 
@@ -129,10 +132,14 @@ def extract_python(
                     files -= 1
                     skipped.append(f"skipped {rel}: a path outside the repository")
                 except OSError as exc:  # a name too long for the filesystem, a file/directory clash
+                    if exc.errno == errno.ENOMEM:
+                        raise MemoryError from exc
                     files -= 1
                     skipped.append(f"skipped {rel}: could not be written ({type(exc).__name__})")
             commit = tar.pax_headers.get("comment")  # git archive puts the commit SHA here
     except (tarfile.TarError, EOFError, zlib.error, OSError) as exc:
+        if isinstance(exc, OSError) and exc.errno == errno.ENOMEM:  # out of memory, not a bad archive
+            raise MemoryError from exc
         why = f"GitHub sent an archive that could not be read ({type(exc).__name__})."
         raise ScanError(502, "bad_archive", why) from None
     return files, commit, skipped

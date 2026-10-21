@@ -17,6 +17,8 @@ from offramp.schemas import TIER_ORDER, CallSite, ScanResult
 
 RATIO_LABEL = "list-price ratio, not measured parity"
 PROMPT_READ = 4096  # characters of a prompt the shape guess reads
+MAX_MODEL = 200  # characters: a longer "model id" is not one, and is shown as unknown
+MAX_FIELD = 300  # characters of a path or a warning in a row; longer ones keep their tail behind "…"
 JSON_ASK = re.compile(r"\bjson\b", re.IGNORECASE)
 CLASSIFY_ASK = re.compile(
     r"\b(classif(y|ies|ication)|categori[sz]e|exactly one of|one of the following)\b", re.IGNORECASE
@@ -58,15 +60,19 @@ def _shape(site: CallSite) -> tuple[str, bool]:
     return "free text", True
 
 
+def _clip(text: str) -> str:
+    return text if len(text) <= MAX_FIELD else "…" + text[1 - MAX_FIELD :]
+
+
 def _ratio(
-    site: CallSite, refs: list[dict[str, Any]]
+    site: CallSite, model: str | None, refs: list[dict[str, Any]]
 ) -> tuple[dict[str, dict[str, float]] | None, str | None]:
     if site.kind == "embedding":
         return None, "no Nemotron embedding tier"
-    if not site.source_model:
-        return None, "model set at runtime"
+    if not model:
+        return None, "model id over 200 characters" if site.source_model else "model set at runtime"
     try:
-        e = entry(site.source_model)
+        e = entry(model)
     except KeyError:
         return None, "no list price on file"
     return {
@@ -88,17 +94,18 @@ def table(result: ScanResult, deadline: float | None = None) -> dict[str, Any]:
             raise TimeoutError("the table passed its deadline")
         shape, guessed = _shape(s)
         stream = s.params.get("stream")
-        ratio, note = _ratio(s, refs)
+        model = s.source_model if s.source_model and len(s.source_model) <= MAX_MODEL else None
+        ratio, note = _ratio(s, model, refs)
         flags = ["streams"] if stream is True else ["may stream"] if stream == EXPR else []
         if "NEEDS_RUNTIME_CAPTURE" in s.flags:
             flags.append("prompt built at runtime")
         rows.append(
             {
                 "id": s.id,
-                "file": s.file,
+                "file": _clip(s.file),
                 "line": s.lines[0],
                 "sdk": s.sdk,
-                "model": s.source_model,
+                "model": model,
                 "shape": shape,
                 "shape_guessed": guessed,
                 "streaming": True if stream is True else None if stream == EXPR else False,
@@ -107,7 +114,8 @@ def table(result: ScanResult, deadline: float | None = None) -> dict[str, Any]:
                 "price_note": note,
             }
         )
-    return {"references": refs, "ratio_label": RATIO_LABEL, "rows": rows, "warnings": result.warnings}
+    warnings = [_clip(w) for w in result.warnings]
+    return {"references": refs, "ratio_label": RATIO_LABEL, "rows": rows, "warnings": warnings}
 
 
 def _x(v: float) -> str:

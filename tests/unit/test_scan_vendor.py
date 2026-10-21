@@ -25,7 +25,7 @@ def test_vendored_scanner_is_a_byte_for_byte_copy_of_offramp():
 # Runs in a fresh interpreter with the venv's editable offramp install still on the path, so a module missing
 # from web/pyvendor fails the import (the vendored package shadows the install) instead of loading offramp/.
 PROBE = """
-import importlib.util, io, json, os, resource, sys, tarfile, threading, time, urllib.request
+import importlib.util, io, json, os, resource, sys, tarfile, tempfile, threading, time, urllib.request
 from http.server import HTTPServer
 
 spec = importlib.util.spec_from_file_location("scan_function", sys.argv[1])
@@ -98,8 +98,61 @@ scale = 1 if sys.platform == "darwin" else 1024  # ru_maxrss: bytes on macOS, Ki
 out["amplifier"] = [status, len(body.get("rows", [])), body.get("warnings", []), body.get("error"),
                     resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * scale]
 if os.path.exists("/proc/self/statm"):  # Linux enforces RLIMIT_AS: a tight limit makes the same file a 413
-    fn.MEMORY_LIMIT = 64 << 20
+    fn.MEMORY_LIMIT, limit = 64 << 20, fn.MEMORY_LIMIT
     out["amplifier_tight"] = post(url, ip="9.9.9.12")
+    fn.MEMORY_LIMIT = limit
+
+
+def serve(files):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.PAX_FORMAT) as tar:
+        for name, text in files.items():
+            data = text.encode()
+            info = tarfile.TarInfo("r-abc/" + name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    served[0] = buf.getvalue()
+
+
+def rss():
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * scale
+
+
+# The re-review 2 inputs: answers that would be large row by row. Neither may grow this (the parent) process.
+work = tempfile.mkdtemp()
+tempfile.tempdir = work  # the parent's per-request directories land here, so leaks show
+head = "from openai import OpenAI\\nc = OpenAI()\\n"
+model_call = "c.chat.completions.create(model=M, messages=[])\\n"
+serve({"m.py": head + "M = " + repr("m" * 99_000) + "\\n" + model_call * 2000})
+before = rss()
+status, body = post(url, ip="9.9.9.13")
+out["long_model"] = [status, len(json.dumps(body)), rss() - before, body.get("error")]
+deep = "/".join(["d" * 250] * 15)  # a 3.8 KB directory path
+one_call = 'c.chat.completions.create(model="gpt-4o", messages=[])\\n'
+serve({f"{deep}/f{i}.py": head + one_call for i in range(2000)})
+before = rss()
+status, body = post(url, ip="9.9.9.14")
+out["deep_paths"] = [status, len(json.dumps(body)), rss() - before, body.get("error")]
+
+serve({"app.py": head + one_call})
+fn.MAX_ANSWER_BYTES, cap = 500, fn.MAX_ANSWER_BYTES  # the byte cap on the child's answer
+out["byte_cap"] = post(url, ip="9.9.9.15")
+fn.MAX_ANSWER_BYTES = cap
+fn._one_scan.acquire()  # a scan already running in this instance
+out["busy"] = post(url, ip="9.9.9.16")
+fn._one_scan.release()
+fork = os.fork
+os.fork = lambda: (_ for _ in ()).throw(OSError(12, "Cannot allocate memory"))  # the parent cannot fork
+out["no_fork"] = post(url, ip="9.9.9.17")
+os.fork = fork
+# an mmap refused in the child by RLIMIT_AS
+fn.scan_github = lambda u: (_ for _ in ()).throw(OSError(12, "Cannot allocate memory"))
+out["enomem"] = post(url, ip="9.9.9.18")
+fn.scan_github = lambda u: os.abort()  # a crash with no answer (SIGABRT, like a Rust allocation failure)
+out["abort"] = post(url, ip="9.9.9.20")
+fn.scan_github = real_scan
+out["leftovers"] = os.listdir(work)
+out["after"] = post(url, ip="9.9.9.19")[0]  # the lock and the instance are fine afterwards
 print(json.dumps(out))
 """
 
@@ -142,3 +195,23 @@ def test_function_serves_the_vendored_scanner(tmp_path):
     if "amplifier_tight" in out:  # Linux only: RLIMIT_AS is enforced there, and on Vercel
         status, body = out["amplifier_tight"]
         assert (status, body["error"]) == (413, "too_large_or_complex")
+
+    # Answers stay small (field caps, 4 MB byte cap), and the parent does not grow with the input.
+    for case in ("long_model", "deep_paths"):
+        status, size, parent_growth, error = out[case]
+        assert status == 200 or (status, error) == (413, "too_large_or_complex"), case
+        assert size < 4_000_000 and parent_growth < 100 * 2**20, (case, size, parent_growth)
+    status, body = out["byte_cap"]
+    assert (status, body["error"]) == (413, "too_large_or_complex")
+    status, body = out["busy"]
+    assert (status, body["error"]) == (503, "busy") and "try again" in body["message"]
+    status, body = out["no_fork"]  # a failure in the parent: JSON 500, not a dropped connection
+    assert (status, body["error"]) == (500, "internal")
+    status, body = out["enomem"]  # an mmap refused by RLIMIT_AS raises OSError(ENOMEM): still a 413
+    assert (status, body["error"]) == (413, "too_large_or_complex")
+    status, body = out["abort"]
+    assert (status, body["error"]) == (413, "too_large_or_complex")
+    assert out["leftovers"] == [] and out["after"] == 200
+    # The server log says why each child gave no answer.
+    for why in ("killed at the 0.5s deadline", "passed 500 bytes", "killed by signal 6"):
+        assert why in proc.stderr, why

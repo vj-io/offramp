@@ -287,3 +287,14 @@ def test_rows_and_warnings_are_capped_so_the_response_stays_small(monkeypatch):
     out = scan_github("https://github.com/a/b")
     assert [r["file"] for r in out["rows"]] == ["a.py", "b.py"] and out["rows_total"] == 3
     assert len(out["warnings"]) == 1 and out["warnings_total"] == 2
+
+
+def test_running_out_of_memory_while_unpacking_is_a_memory_error_not_a_bad_archive(tmp_path, monkeypatch):
+    import errno
+
+    def no_memory(*args, **kwargs):
+        raise OSError(errno.ENOMEM, "Cannot allocate memory")
+
+    monkeypatch.setattr(tarfile.TarFile, "extract", no_memory)
+    with pytest.raises(MemoryError):  # /api/scan answers it 413, like any memory refusal
+        extract_python(tarball({"app.py": CALL}), tmp_path, time.monotonic() + 5)

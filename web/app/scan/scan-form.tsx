@@ -132,9 +132,13 @@ function ScanTable({ result }: { result: ScanResult }) {
                   {r.id}
                 </th>
                 <td className="min-w-[10rem] px-2 py-2.5 font-mono text-sm wrap-anywhere">
-                  <a href={fileUrl(result.repo, at, r.file, r.line)} className="underline decoration-ink/30 underline-offset-4">
+                  {r.file.startsWith("…") ? ( // a path clipped to its tail by the scan: no link to guess
                     <FilePath path={r.file} range={String(r.line)} />
-                  </a>
+                  ) : (
+                    <a href={fileUrl(result.repo, at, r.file, r.line)} className="underline decoration-ink/30 underline-offset-4">
+                      <FilePath path={r.file} range={String(r.line)} />
+                    </a>
+                  )}
                 </td>
                 <td className="px-2 py-2.5 font-mono text-sm">
                   {r.sdk} {r.model ?? <span className="text-muted">(model set at runtime)</span>}

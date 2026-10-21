@@ -750,3 +750,17 @@ def test_running_out_of_memory_stops_the_scan_instead_of_skipping_a_file(tmp_pat
     (tmp_path / "ok.py").write_text(OPENAI_FILE)
     with pytest.raises(MemoryError):
         scan_repo(tmp_path)
+
+
+def test_an_enomem_os_error_counts_as_out_of_memory(tmp_path, monkeypatch):
+    import errno
+
+    from offramp.agents import scanner
+
+    def no_memory(*args, **kwargs):
+        raise OSError(errno.ENOMEM, "Cannot allocate memory")  # how an mmap refused by RLIMIT_AS surfaces
+
+    monkeypatch.setattr(scanner._Module, "sites", no_memory)
+    (tmp_path / "ok.py").write_text(OPENAI_FILE)
+    with pytest.raises(MemoryError):
+        scan_repo(tmp_path)

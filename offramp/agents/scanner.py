@@ -7,6 +7,7 @@ Rendered prompts use str.format syntax: `{name}` placeholders with literal brace
 from __future__ import annotations
 
 import ast
+import errno
 import json
 import logging
 import operator
@@ -124,6 +125,8 @@ def scan_repo(path: str | Path, deadline: float | None = None) -> ScanResult:
         except RecursionError:
             warnings.append(f"skipped {rel}: nested too deeply to analyse (RecursionError)")
         except Exception as exc:  # one file never stops the scan, whatever it holds
+            if isinstance(exc, OSError) and exc.errno == errno.ENOMEM:  # an mmap refused by RLIMIT_AS
+                raise MemoryError from exc
             warnings.append(f"skipped {rel}: could not be analysed ({type(exc).__name__})")
     if len(found) > MAX_SITES:
         found = found[:MAX_SITES]
