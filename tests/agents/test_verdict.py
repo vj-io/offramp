@@ -1211,6 +1211,16 @@ def test_a_holdout_the_securing_pass_measured_is_stated_when_the_stop_comes_befo
     assert v.reason.endswith("failed the holdout: parity vs reference 53.3% < 95%")
 
 
+def test_a_budget_stopped_site_keeps_the_matrix_cells_measured_on_its_record():
+    """Task 29 E: cs_05 of run 20261022-065443547-22ed36 had Super and Ultra measured by the matrix (2.84,
+    3.59) but an empty tier_results list in its results file: routing measured nothing before the cap."""
+    table = {(L, "dev"): "budget", (S, "dev"): 0.4, (U, "dev"): 0.6}
+    prior = {k: r for k, r in matrix_cells(table, FREE_TEXT).items() if k[0] != L}  # its judge failed
+    out, runner, it = route(table, site=FREE_TEXT, prior=prior)
+    assert out.verdict.failed_gate == "budget" and runner.calls == [(L, "dev", 0)]
+    assert [(r.tier, r.split) for r in out.results] == [(S, "dev"), (U, "dev")]
+
+
 def test_a_budget_stop_counts_the_iterations_of_the_best_adapter():
     table = {(L, "dev"): 0.5, (L, "dev", 1): 0.9, (L, "dev", 2): "budget"}
     out, runner, it = route(table)

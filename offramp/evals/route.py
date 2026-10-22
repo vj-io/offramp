@@ -276,7 +276,10 @@ def _route(
             tier, _, i = top
             measured = holdouts.get((tier, i))
             holdout = measured[0] if measured else prior.get((tier, i, "holdout")) if i == 0 else None
-        return SiteRoute(budget_stopped(site, reason, top, config, holdout), None, results)
+        # its record keeps every cell measured for it, the matrix's included: routing may have run none
+        ran = {(r.tier, r.adapter_version, r.split) for r in results}
+        kept = [r for key, r in prior.items() if key not in ran]
+        return SiteRoute(budget_stopped(site, reason, top, config, holdout), None, kept + results)
     except (MissingReference, UnresolvedCallSite) as e:
         return SiteRoute(stopped(site, "MANUAL_REVIEW", f"cannot evaluate: {e}"), None, results)
 

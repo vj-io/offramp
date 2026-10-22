@@ -140,12 +140,18 @@ def _prompt(items: list[tuple[EvalCase, str, str | None]]) -> str:
 
 
 def _ask(
-    client: LLM, items: list[tuple[EvalCase, str, str | None]], paired: bool, again: bool = True
+    client: LLM,
+    items: list[tuple[EvalCase, str, str | None]],
+    paired: bool,
+    again: bool = True,
+    room: int = 1,
 ) -> dict[int, Any]:
     """One batched Ultra call: {1-based case number: item} with every case of the batch scored, or
-    ProviderError. A batch reply that skips cases is asked once more about just those cases (a new
-    request, so not the cached reply); still skipped is ProviderError. (TFClient's one repair retry
-    applies on the json_object path; with json_schema the reply is decoded against the schema.)"""
+    ProviderError. A reply that does not match the rubric schema (live: notes so long the JSON was cut off
+    at max_tokens) is asked once more with twice the room, and a batch reply that skips cases is asked once
+    more about just those cases: each a new request, so not the cached reply; a second miss is ProviderError.
+    (TFClient's one repair retry applies on the json_object path; with json_schema the reply is decoded
+    against the schema.)"""
     try:
         result = client.chat(
             role=JUDGE_ROLE,
@@ -154,13 +160,15 @@ def _ask(
                 {"role": "system", "content": SYSTEM.format(answers=_ANSWERS[paired], keys=_KEYS[paired])},
                 {"role": "user", "content": _prompt(items)},
             ],
-            max_tokens=MAX_TOKENS_BASE + MAX_TOKENS_PER_CASE * len(items),
+            max_tokens=(MAX_TOKENS_BASE + MAX_TOKENS_PER_CASE * len(items)) * room,
             temperature=0.0,
             response_model=PairBatch if paired else SingleBatch,
             reasoning="off",
         )
     except openai.APIError as e:  # after the SDK's retries; any kind: the judge is not under test
         raise provider_error(e, "judge: ") from e
+    if result.parsed is None and room == 1:
+        return _ask(client, items, paired, again, room=2)
     if result.parsed is None:
         raise ProviderError("judge: reply does not match the rubric schema")
     by_case: dict[int, Any] = {}

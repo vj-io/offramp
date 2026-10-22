@@ -49,6 +49,7 @@ from offramp.agents.pr_writer import PRContext, reference_summary, write_pr
 from offramp.agents.scanner import label_contracts, scan_repo
 from offramp.agents.verdict import pricing_yaml_price
 from offramp.evals import baselines
+from offramp.evals.errors import ProviderError
 from offramp.evals.route import route_site, secure_holdouts
 from offramp.evals.runner import run_tier
 from offramp.evals.scorers.aggregate import Thresholds
@@ -724,6 +725,10 @@ class Pipeline:
                 self.log.emit("tier_result", result, call_site_id=site_id)
             elif entry["kind"] == "error" and entry["error_type"] == "CacheMiss":
                 raise CacheMiss(f"{cell}: {entry['message']}")
+            elif entry["kind"] == "error" and entry["error_type"] == "ProviderError":
+                # never a silently empty cell: the run fails, and a resume runs the matrix again (free
+                # where cached); the judge has already asked once more (judge._ask)
+                raise ProviderError(f"{cell}: {entry['message']}")
             else:
                 why = entry.get("reason") or f"{entry['error_type']}: {entry['message']}"
                 self._log("warn", f"{cell}: {why}"[:300], site_id)

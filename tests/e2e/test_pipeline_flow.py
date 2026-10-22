@@ -677,6 +677,33 @@ def test_a_cache_miss_in_the_eval_matrix_is_a_run_error(tmp_path):
     assert not (log.dir / "matrix.json").exists()  # a resume runs the matrix again
 
 
+def test_a_matrix_cell_the_judge_could_not_score_fails_the_run_resumably(tmp_path):
+    """Task 29 D: run 20261022-065443547-22ed36 left cs_05's Lightning dev cell empty after a judge reply off
+    the rubric schema, with a warning only. A cell is never left silently empty: the run fails, and a resume
+    runs the matrix again (cached cells are free)."""
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo)
+    cell = {"kind": "error", "site_id": "cs_01", "tier": "lightning", "split": "dev"}
+    judge = cell | {"error_type": "ProviderError", "message": "judge: reply does not match the rubric schema"}
+    llm = FakeLLM(
+        {
+            "scanner": [ContractLabel(contract=CONTRACT, confidence=0.9)],
+            "adapter": [{"reasoning": "off", "output_mode": "text"}],
+        }
+    )
+
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=Recorder(matrix_entries=[judge]).eval_matrix).execute()
+        == Stage.FAILED
+    )
+    error = log.events[-1].payload
+    assert error["stage"] == "EVALUATING"
+    assert (
+        error["reason"] == "ProviderError: cs_01 lightning dev: judge: reply does not match the rubric schema"
+    )
+    assert not (log.dir / "matrix.json").exists()  # a resume runs the matrix again
+
+
 def test_a_budget_stop_keeps_the_site_closed_without_a_comparison(tmp_path):
     repo = make_repo(tmp_path)
     log, _ = start(tmp_path, repo)
