@@ -177,6 +177,11 @@ a `length` finish leaves it truncated and invalid (next section).
   replies: 4 with finish_reason `length`.
 - **Repair retries.** 3 calls were repair retries ("Your previous reply is not valid"): 2 answered a synthetic
   reply (the excluded hand-cut ones, so not provider failures) and 1 a real reply that failed validation.
+- **Judge replies deleted before this count.** 5 judge requests carry twice the judge's `max_tokens` for their
+  batch (`20261022-153359255-7bea7c`: 5). The judge sends one only after the first reply to the same batch did
+  not match the rubric schema, and Offramp deleted that first reply from the cache, so the replies that did
+  not parse are in none of the counts here. (Offramp now keeps a first reply when the retry succeeds, and
+  deletes both when it fails.)
 - **Run errors.** Runs that ended FAILED: `20261019-220847641-43d3df` at ITERATING: ProviderError: judge: left
   1 case(s) unscored: cs_04:020. Warning events: `20261019-220847641-43d3df`: cs_04 super dev: ProviderError:
   judge: left 1 case(s) unscored: cs_04:020; `20261019-220847641-43d3df`: cs_04 ultra dev: ProviderError:

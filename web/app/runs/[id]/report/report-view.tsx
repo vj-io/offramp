@@ -312,8 +312,8 @@ function HowMeasured({ summaries, verdicts }: { summaries: CaseSummary[] | undef
         How parity was measured
       </h2>
       <p className="mt-2 font-hand text-xl leading-snug">
-        Parity is agreement with reference answers whose ground truth is known, scored on held-out cases. The source
-        model&apos;s own outputs were never recorded.
+        Parity is agreement with reference answers (seeded, computed by code, or written by another model family),
+        scored on held-out cases. The source model&apos;s own outputs were never recorded.
       </p>
       {withBounds && (
         <p id="bounds-note" className="mt-2 font-hand text-xl leading-snug">

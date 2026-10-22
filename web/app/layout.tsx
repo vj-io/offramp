@@ -45,6 +45,18 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           </div>
         </header>
         <main className="mx-auto max-w-6xl px-4 pt-4 pb-16 sm:px-6">{children}</main>
+        <footer className="mx-auto flex max-w-6xl flex-wrap gap-x-5 gap-y-1 px-4 pb-8 font-hand text-lg text-muted sm:px-6">
+          <a href="https://github.com/vj-io/offramp" className="text-bluepen underline underline-offset-4">
+            Source code
+          </a>
+          <a
+            href="https://github.com/vj-io/offramp/blob/main/docs/FEEDBACK.md"
+            className="text-bluepen underline underline-offset-4"
+          >
+            Feedback on Token Factory and Nemotron
+          </a>
+          {/* The demo video's link goes here once it is uploaded. */}
+        </footer>
       </body>
     </html>
   );
