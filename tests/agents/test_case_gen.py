@@ -1207,16 +1207,20 @@ class CachedWriter:
     """The writer at temperature 0 behind Offramp's response cache: one prompt, one reply, always. Each prompt
     gets records of its own, so records repeat only when a prompt does. `copy_first` makes the adversarial
     writer's first reply start with the first bulk record (cs_01:022 of the run equals cs_01:005);
-    `exhausted` makes every adversarial call after the first raise the Ultra cap."""
+    `copy_in_bulk` does the same to the second bulk batch; `replacement_repeats` makes the reply to a
+    replacement call (a write call's first batch told what is already written) repeat the second bulk
+    record; `exhausted` makes every adversarial call after the first raise the Ultra cap."""
 
-    def __init__(self, copy_first: bool = False, exhausted: bool = False):
+    def __init__(self, copy_first=False, exhausted=False, copy_in_bulk=False, replacement_repeats=False):
         self.prompts: list[tuple[str, str]] = []
         self.replies: dict[str, list[dict]] = {}
         self.copy_first, self.exhausted = copy_first, exhausted
+        self.copy_in_bulk, self.replacement_repeats = copy_in_bulk, replacement_repeats
 
     def chat(self, *, role, tier, messages, **_):
         prompt = messages[-1]["content"]
         adversarial = [p for r, p in self.prompts if r == cg.ROLE_ADVERSARIAL]
+        bulk = [p for r, p in self.prompts if r == cg.ROLE]
         if role == cg.ROLE_ADVERSARIAL and adversarial and self.exhausted:
             raise BudgetExceeded("Ultra agent call cap reached (40)")
         self.prompts.append((role, prompt))
@@ -1225,8 +1229,11 @@ class CachedWriter:
             tag = hashlib.sha256(prompt.encode()).hexdigest()[:8]
             records = [{"idea_text": f"A tool that tracks idea {tag}-{i}"} for i in range(n)]
             if role == cg.ROLE_ADVERSARIAL and self.copy_first and not adversarial:
-                first_bulk = self.replies[next(p for r, p in self.prompts if r == cg.ROLE)][0]
-                records[0] = dict(first_bulk)
+                records[0] = dict(self.replies[bulk[0]][0])
+            if role == cg.ROLE and self.copy_in_bulk and len(bulk) == 1:
+                records[0] = dict(self.replies[bulk[0]][0])
+            if self.replacement_repeats and "Batch 1 of" in prompt:
+                records[0] = dict(self.replies[bulk[0]][1])
             self.replies[prompt] = records
         records = self.replies[prompt]
         info = get_tier(tier)
@@ -1268,6 +1275,26 @@ def test_a_case_whose_input_repeats_an_earlier_one_is_dropped_and_replaced(tmp_p
     assert Counter(c.source for c in cases) == {"synthetic": 20, "adversarial": 4}
     assert [c.source for c in cases] == ["synthetic"] * 20 + ["adversarial"] * 4
     assert any("1 case dropped: its input repeats an earlier case" in n for n in summary["notes"])
+
+
+def test_a_replacement_that_repeats_a_kept_input_is_dropped_too(tmp_path):
+    """Review M6 (mutant M30): replacements are checked against the inputs already kept."""
+    cases, summary = dup_prepare(tmp_path, CachedWriter(copy_first=True, replacement_repeats=True))
+
+    assert len(cases) == 23 and len({b.input_key(c.input_messages) for c in cases}) == 23
+    assert "1 replacement(s) repeated an earlier input too: dropped" in summary["notes"]
+
+
+def test_a_replacement_is_numbered_with_its_own_kind(tmp_path):
+    """Review M6 (mutant M31): case ids follow the order fixtures, synthetic, adversarial, and ids decide the
+    splits: a synthetic replacement comes before the adversarial cases, not after them."""
+    llm = CachedWriter(copy_in_bulk=True)
+    cases, summary = dup_prepare(tmp_path, llm)
+
+    bulk = [p for r, p in llm.prompts if r == cg.ROLE]
+    assert len(bulk) == 4 and "Batch 1 of 1" in bulk[3]  # three batches, then the replacement
+    assert [c.source for c in cases] == ["synthetic"] * 20 + ["adversarial"] * 4
+    assert cases[19].variables["idea_text"] == llm.replies[bulk[3]][0]["idea_text"]
 
 
 def test_without_budget_for_a_replacement_the_duplicate_is_still_dropped(tmp_path):
