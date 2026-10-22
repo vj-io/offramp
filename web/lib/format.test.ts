@@ -142,9 +142,17 @@ describe("KEEP_CLOSED: only the recorded gate", () => {
     expect(keptText({ ...kept, failed_gate: "threshold" }, "reasoning", config)).toBe("71.4% (5/7, ≥35%) < 90%");
     expect(keptText({ ...kept, failed_gate: "threshold" }, "reasoning", null)).toBe("71.4% (5/7, ≥35%), below the parity bar");
     expect(keptText({ ...kept, failed_gate: "dev" }, "reasoning", config)).toBe("71.4% (5/7, ≥35%); holdout passed, dev did not");
-    expect(keptText({ ...kept, failed_gate: "budget" }, "reasoning", config)).toBe("not measured: the run's budget stopped it");
+    expect(keptText({ ...kept, failed_gate: "budget" }, "reasoning", config)).toBe(
+      "71.4% (5/7, ≥35%): holdout failed; the run's budget stopped the rest",
+    );
+    expect(keptText({ ...kept, parity_pct: null, failed_gate: "budget" }, "reasoning", config)).toBe(
+      "not measured: the run's budget stopped it",
+    );
     const ft = { ...kept, judge_mean: 3.95, judge_min: 3.2, holdout_cases: 8 };
     expect(keptText({ ...ft, failed_gate: "judge_mean" }, "free_text", config)).toBe("mean 3.95 < 4.0, lowest 3.2, n=8");
+    expect(keptText({ ...ft, failed_gate: "budget" }, "free_text", config)).toBe(
+      "mean 3.95 < 4.0, lowest 3.2, n=8: holdout failed; the run's budget stopped the rest",
+    );
     expect(keptText({ ...ft, failed_gate: "reference_margin" }, "free_text", config)).toBe(
       "mean 3.95, lowest 3.2, n=8, more than 0.3 below the references' judge mean",
     );

@@ -49,7 +49,7 @@ from offramp.agents.pr_writer import PRContext, reference_summary, write_pr
 from offramp.agents.scanner import label_contracts, scan_repo
 from offramp.agents.verdict import pricing_yaml_price
 from offramp.evals import baselines
-from offramp.evals.route import route_site
+from offramp.evals.route import route_site, secure_holdouts
 from offramp.evals.runner import run_tier
 from offramp.evals.scorers.aggregate import Thresholds
 from offramp.evals.serverless_job.matrix import Matrix, MatrixResults, absorb_usage, remaining_caps
@@ -482,6 +482,7 @@ class Pipeline:
     def _steps(self) -> None:
         clone = self._artifact("clone.json", self._clone)
         repo = Path(clone["path"])
+        self._check_dataset(repo / "evals")
         scan = self._artifact("scan.json", lambda: self._scan(repo))
         sites = [CallSite.model_validate(s) for s in scan["sites"]]
         chat = [s for s in sites if s.kind == "chat"]
@@ -491,13 +492,22 @@ class Pipeline:
         adapters = self._artifact("adapters.json", lambda: self._adapters(chat, unfit, scan["schemas"]))
         stopped = {k: Verdict.model_validate(v) for k, v in adapters["stopped"].items()}
         adapters = {k: Adapter.model_validate(v) for k, v in adapters["adapters"].items()}
-        self._artifact("matrix.json", lambda: self._matrix(chat, adapters, evals))
-        routes = self._routes(chat, adapters, stopped, evals, scan["schemas"])
+        matrix = self._artifact("matrix.json", lambda: self._matrix(chat, adapters, evals))
+        routes = self._routes(chat, adapters, stopped, evals, scan["schemas"], matrix)
         verdicts = self._artifact("verdicts.json", lambda: self._verdicts(chat, routes))
         patch = self._artifact("patch.json", lambda: self._patch(repo, chat, verdicts, routes))
         write_results(self.dir, routes, patch["verdicts"])
         self._artifact("pr.json", lambda: self._pr(repo, chat, patch, routes, evals, cases))
         self._finish(chat, cases, patch)
+
+    def _check_dataset(self, evals: Path) -> None:
+        """Before anything is spent: an input in both dev and holdout refuses the run (ValueError, the run's
+        error); inputs repeated within one split are a warning with their count."""
+        baselines.refuse_leaks(evals)
+        _, within = baselines.dataset_duplicates(evals)
+        if within:
+            text = baselines.duplicates_text(within, "repeat within one split")
+            self._log("warn", f"{text}: each counts more than once; re-run `offramp prepare` to drop them")
 
     def _artifact(self, name: str, make: Callable[[], Any]) -> Any:
         """The step's artifact: loaded when an earlier attempt finished the step, else made and saved."""
@@ -567,8 +577,10 @@ class Pipeline:
         sites, stale, notes = [], [], []
         for s in labelled:
             p = prepared.get(s.id)
-            if p is None or s.kind != "chat":
+            if s.kind != "chat":
                 sites.append(s)
+            elif p is None:  # a contract from this run's labelling, not the one the other sites were prepared
+                sites.append(s.model_copy(update={"contract": None}) if prepared else s)  # with: unknown
             elif (p.file, p.function) != (s.file, s.function):
                 stale.append(s.id)
                 sites.append(s)
@@ -578,7 +590,10 @@ class Pipeline:
                 if s.contract and p.contract and s.contract.task_type != p.contract.task_type:
                     notes.append(f"{s.id}: labelled {s.contract.task_type} now, prepared as "
                                  f"{p.contract.task_type}; evaluating as prepared")  # fmt: skip
-                sites.append(p.model_copy(update={"lines": s.lines}))  # the code's current position
+                # the code's current position, and how it parses the reply now (read from code, not labelled)
+                found = s.contract.reply_json if s.contract else None
+                contract = p.contract.model_copy(update={"reply_json": found}) if p.contract else None
+                sites.append(p.model_copy(update={"lines": s.lines, "contract": contract}))
         chat = [s for s in sites if s.kind == "chat"]
         self._stage(Stage.SCANNED, f"{len(chat)} call sites found")
         for message in scan.warnings + notes:
@@ -645,12 +660,15 @@ class Pipeline:
         """Why the site cannot be evaluated at all (a MANUAL_REVIEW verdict), if it cannot."""
         if site.id in stale:
             return "evals/ was prepared for a different call at this id: run `offramp prepare` again"
-        if site.contract is None:
+        summary = summaries.get(site.id) or {"dev": 0, "holdout": 0}
+        missing = [s for s in ("dev", "holdout") if not summary[s]]
+        if missing and (why := case_gen.runtime_only(site)):  # prepare again can't help: it skipped it
+            return why
+        # no contract and no flag: labelled by this run only, its label dropped (_scan); prepare labels it
+        if site.contract is None and (not missing or "MANUAL_REVIEW" in site.flags):
             return "no contract: the site was never labelled"
         if "MANUAL_REVIEW" in site.flags:
             return "scanner flagged MANUAL_REVIEW (streaming call or unlabelled site)"
-        summary = summaries.get(site.id) or {"dev": 0, "holdout": 0}
-        missing = [s for s in ("dev", "holdout") if not summary[s]]
         return f"no {missing[0]} cases: run `offramp prepare` on the repo" if missing else None
 
     def _adapters(
@@ -721,10 +739,34 @@ class Pipeline:
         stopped: dict[str, Verdict],
         evals: Path,
         schemas: dict[str, Any],
+        matrix: dict[str, Any],
     ) -> dict[str, dict[str, Any]]:
-        """Route each site (Task 9) to its verdict. evals/results/<site>.json is written per site, so a
-        resumed run routes only the sites it had not finished (write_results adds the final verdict after the
-        patch stage). Verdicts are announced together at VERDICTS."""
+        """Route each site (Task 9) to its verdict, given the cells the eval matrix measured (reused, never
+        judged again). evals/results/<site>.json is written per site, so a resumed run routes only the sites
+        it had not finished (write_results adds the final verdict after the patch stage). Verdicts are
+        announced together at VERDICTS."""
+        cells: dict[str, dict[tuple[Tier, int, str], TierResult]] = {}
+        for entry in matrix.get("results", []):
+            if entry["kind"] == "tier_result":
+                r = TierResult.model_validate(entry["result"])
+                cells.setdefault(r.site_id, {})[r.tier, r.adapter_version, r.split] = r
+        done = {s.id for s in chat if (self.dir / "evals" / "results" / f"{s.id}.json").exists()}
+        for site in chat:  # verdict first: every site's securing holdout before any site iterates
+            if site.id in done or site.id in stopped or site.id not in cells:
+                continue
+            self._stage(Stage.ITERATING)
+            cells[site.id] |= secure_holdouts(
+                site,
+                baselines.load_cases(evals, site.id),
+                baselines.baselines_for(evals, site.id),
+                adapters[site.id],
+                self.client,
+                self.config,
+                cells[site.id],
+                runner=self._runner(site),
+                on_event=lambda t, p, sid=site.id: self.log.emit(t, p, call_site_id=sid),
+            )
+        self._save_budget()
         out = {}
         for site in chat:
             path = self.dir / "evals" / "results" / f"{site.id}.json"
@@ -737,30 +779,25 @@ class Pipeline:
                         "tier_results": [],
                     }
                 else:
-                    result = self._route_site(site, adapters[site.id], evals, schemas.get(site.id) or None)
+                    result = self._route_site(
+                        site, adapters[site.id], evals, schemas.get(site.id) or None, cells.get(site.id, {})
+                    )
                 _write_json(path, {"site": site.model_dump(mode="json"), **result})
                 self._save_budget()
             out[site.id] = json.loads(path.read_text(encoding="utf-8"))
         return out
 
     def _route_site(
-        self, site: CallSite, adapter: Adapter, evals: Path, schemas: dict | None
+        self,
+        site: CallSite,
+        adapter: Adapter,
+        evals: Path,
+        schemas: dict | None,
+        prior: dict[tuple[Tier, int, str], TierResult],
     ) -> dict[str, Any]:
         def on_event(event_type: str, payload: dict[str, Any]) -> None:
             if event_type != "verdict":  # announced at VERDICTS
                 self.log.emit(event_type, payload, call_site_id=site.id)
-
-        def runner(*args: Any, **kwargs: Any) -> Any:
-            """run_tier, plus each measured (site, tier, split) as a LangSmith experiment (GC23; no-op without
-            a key). route_site calls it with (site, cases, refs, adapter, tier, client, split, config)."""
-            out = run_tier(*args, **kwargs)
-            result, calls = out if isinstance(out, tuple) else (out, [])
-            if isinstance(result, TierResult) and calls:
-                cases = {c.id: c for c in args[1]}
-                scores = {s.case_id: s for s in result.case_scores}
-                rows = [langsmith.CaseResult(cases[c.case_id], c, scores[c.case_id]) for c in calls]
-                langsmith.log_experiment(site, result.tier, result.split, rows, run_id=self.log.run_id)
-            return out
 
         closed = baselines.load_closed(evals, site.id)
         circular = self._closed_auditors(evals, site, closed)
@@ -777,9 +814,10 @@ class Pipeline:
             self.config,
             closed=None if circular else closed,  # GC27c: no comparison row (nor reason clause) when circular
             schemas=schemas,
-            runner=runner,
+            runner=self._runner(site),
             price_lookup=self.price_lookup,
             on_event=on_event,
+            prior=prior,
         )
         verdict = route.verdict
         if circular and route.adapter is not None:  # compared, but not with the closed model: say which one
@@ -789,6 +827,21 @@ class Pipeline:
             "adapter": route.adapter.model_dump(mode="json") if route.adapter else None,
             "tier_results": [r.model_dump(mode="json") for r in route.results],
         }
+
+    def _runner(self, site: CallSite) -> Callable[..., Any]:
+        def runner(*args: Any, **kwargs: Any) -> Any:
+            """run_tier, plus each measured (site, tier, split) as a LangSmith experiment (GC23; no-op without
+            a key). Routing calls it with (site, cases, refs, adapter, tier, client, split, config)."""
+            out = run_tier(*args, **kwargs)
+            result, calls = out if isinstance(out, tuple) else (out, [])
+            if isinstance(result, TierResult) and calls:
+                cases = {c.id: c for c in args[1]}
+                scores = {s.case_id: s for s in result.case_scores}
+                rows = [langsmith.CaseResult(cases[c.case_id], c, scores[c.case_id]) for c in calls]
+                langsmith.log_experiment(site, result.tier, result.split, rows, run_id=self.log.run_id)
+            return out
+
+        return runner
 
     @staticmethod
     def _closed_auditors(evals: Path, site: CallSite, closed: dict[str, Any]) -> str | None:

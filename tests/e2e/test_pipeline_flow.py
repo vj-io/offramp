@@ -161,26 +161,34 @@ def tier_result(site_id: str, tier: Tier, split: str = "dev", passed: bool = Tru
     )
 
 
+def matrix_cell(m: Matrix, site_id: str, tier: Tier, passed: bool = True) -> TierResult:
+    dev = [c for c in m.cases if c.site_id == site_id and c.split == "dev"]
+    rows = [CaseScore(case_id=c.id, passed=passed, score=float(passed)) for c in dev]
+    return tier_result(site_id, tier, passed=passed).model_copy(
+        update={"case_scores": rows, "failing_case_ids": [r.case_id for r in rows if not passed]}
+    )
+
+
 class Recorder:
     """The injected stages, recording what they were given."""
 
-    def __init__(self, matrix_entries: list[dict] | None = None):
+    def __init__(self, matrix_entries: list[dict] | None = None, passed: bool = True):
         self.matrices: list[Matrix] = []
         self.patches: list[dict] = []
         self.prs: list[dict] = []
-        self.matrix_entries = matrix_entries
+        self.matrix_entries, self.passed = matrix_entries, passed
 
     def eval_matrix(self, m: Matrix) -> MatrixResults:
         self.matrices.append(m)
         rows = self.matrix_entries
-        if rows is None:
+        if rows is None:  # every dev case passing (or failing), scored per case as run_tier scores them
             rows = [
                 {
                     "kind": "tier_result",
                     "site_id": s.id,
                     "tier": t.value,
                     "split": "dev",
-                    "result": tier_result(s.id, t).model_dump(mode="json"),
+                    "result": matrix_cell(m, s.id, t, self.passed).model_dump(mode="json"),
                 }
                 for s in m.sites
                 for t in m.tiers
@@ -348,6 +356,129 @@ def test_only_the_migrated_tiers_are_priced(tmp_path):
 
 def pr_url(log: pipeline.RunLog) -> str:
     return next(e.payload["url"] for e in log.events if e.type == "pr")
+
+
+def test_the_routing_loop_gets_the_cells_the_eval_matrix_measured(tmp_path):
+    """Their scores are reused, never judged again (run 20261022-023459043-590031 re-judged them), and the dev
+    cells tell the loop which tier's holdout secures a verdict first."""
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo)
+    llm, stub, seen = llm_for_full_run(*split_counts(repo)), Recorder(), []
+
+    def route(site, cases, refs, adapter, client, config, **kw):
+        seen.append(kw["prior"])
+        return SiteRoute(Verdict(site_id=site.id, decision="MANUAL_REVIEW", reason="stub"), None, [])
+
+    pipeline.Pipeline(
+        log, llm, eval_matrix=stub.eval_matrix, route=route, patch=stub.patch, pr=stub.pr
+    ).execute()
+
+    (prior,) = seen
+    (m,) = stub.matrices
+    assert prior == {(t, 0, "dev"): matrix_cell(m, "cs_01", t) for t in RunConfig(repo_url="x").tiers}
+
+
+def test_every_site_secures_its_verdict_before_any_site_is_routed(tmp_path):
+    """Routing goes site by site, so one site's iterations could spend the Ultra cap another site's holdout
+    needed (run 20261022-023459043-590031: cs_01 iterated first, cs_04 never ran its holdout). The holdouts
+    of tiers that passed dev above a failing one run first; routing gets them with the matrix's cells."""
+    repo = make_repo(tmp_path)
+    n_dev, n_holdout = split_counts(repo)
+    log, _ = start(tmp_path, repo)
+    llm, seen = llm_for_full_run(n_dev, n_holdout), []
+
+    class Matrix(Recorder):  # Lightning failed dev, Super and Ultra passed
+        def eval_matrix(self, m):
+            self.matrix_entries = [
+                {"kind": "tier_result", "site_id": "cs_01", "tier": t.value, "split": "dev",
+                 "result": matrix_cell(m, "cs_01", t, passed=t != Tier.LIGHTNING).model_dump(mode="json")}
+                for t in m.tiers
+            ]  # fmt: skip
+            return super().eval_matrix(m)
+
+    def route(site, cases, refs, adapter, client, config, **kw):
+        seen.append(kw["prior"])
+        return SiteRoute(Verdict(site_id=site.id, decision="MANUAL_REVIEW", reason="stub"), None, [])
+
+    stub = Matrix()
+    pipeline.Pipeline(
+        log, llm, eval_matrix=stub.eval_matrix, route=route, patch=stub.patch, pr=stub.pr
+    ).execute()
+
+    (prior,) = seen
+    holdout = prior[Tier.SUPER, 0, "holdout"]
+    assert holdout.passed and holdout.cases == n_holdout and (Tier.ULTRA, 0, "holdout") not in prior
+    assert [c["role"] for c in llm.calls].count("eval_target") == n_holdout
+
+
+def test_a_prepared_site_gets_how_its_code_parses_the_reply_from_the_code_as_it_is_now(tmp_path):
+    """Contract.reply_json is read from the code, not labelled: a run takes it from its own scan, also for a
+    site whose contract comes from evals/sites.json (prepared before the code, or Offramp, changed)."""
+    repo = make_repo(tmp_path)
+    app = repo / "app" / "triage.py"
+    app.write_text(
+        "import json\n\n"
+        + APP.replace(
+            "return resp.choices[0].message.content", "return json.loads(resp.choices[0].message.content)"
+        )
+    )
+    git(repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qam", "json reply")
+    log, _ = start(tmp_path, repo)
+    llm, stub = llm_for_full_run(*split_counts(repo)), Recorder()
+
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr).execute()
+        == Stage.DONE
+    )
+
+    (site,) = [e.payload for e in log.events if e.type == "site"]
+    assert site["contract"]["task_type"] == "classification" and site["contract"]["reply_json"] == "exact"
+    adapter = pipeline.json.loads((log.dir / "adapters.json").read_text())["adapters"]["cs_01"]
+    assert "Reply with the JSON only" in adapter["spec"]["user_suffix"]
+
+
+def duplicate_inputs(repo: Path, *, across_splits: bool) -> None:
+    """Give one case the input of another, as `offramp prepare` did before it dropped repeats (run
+    20261022-023459043-590031): across dev and holdout, or within one split."""
+    cases = baselines.load_cases(repo / "evals", "cs_01")
+    first = cases[0]
+    other = next(c for c in cases[1:] if (c.split != first.split) == across_splits)
+    rows = [
+        c.model_copy(update={"input_messages": first.input_messages}) if c.id == other.id else c
+        for c in cases
+    ]
+    (repo / "evals" / "cases" / "cs_01.jsonl").write_text("".join(c.model_dump_json() + "\n" for c in rows))
+    baselines.write_manifest(repo / "evals")
+    git(repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qam", "duplicate input")
+
+
+def test_a_run_on_a_dataset_with_an_input_in_both_splits_refuses_to_start(tmp_path):
+    """Review M4: the Iterator would tune on inputs the holdout verdict then reads; a warning let it run."""
+    repo = make_repo(tmp_path)
+    duplicate_inputs(repo, across_splits=True)
+    log, _ = start(tmp_path, repo)
+    llm = FakeLLM()  # nothing may be spent on it: any call fails the test
+
+    assert pipeline.Pipeline(log, llm, eval_matrix=Recorder().eval_matrix).execute() == Stage.FAILED
+    reason = log.events[-1].payload["reason"]
+    assert reason.startswith(
+        "ValueError: re-run `offramp prepare`: 1 duplicate input spans dev and holdout (cs_01:"
+    )
+    assert llm.calls == [] and log.events[-1].payload["stage"] == "CLONED"
+
+
+def test_inputs_repeated_within_one_split_are_a_warning_with_their_count(tmp_path):
+    repo = make_repo(tmp_path)
+    duplicate_inputs(repo, across_splits=False)
+    log, _ = start(tmp_path, repo)
+    llm, stub = llm_for_full_run(*split_counts(repo)), Recorder()
+
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr).execute()
+        == Stage.DONE
+    )
+    warnings = [e.payload["message"] for e in log.events if e.type == "log" and e.payload["level"] == "warn"]
+    assert any(m.startswith("1 duplicate input repeats within one split (cs_01: cs_01:") for m in warnings)
 
 
 def test_a_failed_run_resumes_after_its_last_finished_step(tmp_path):
@@ -805,10 +936,11 @@ def test_a_closed_model_that_did_not_audit_the_references_is_compared(tmp_path):
 FREE_TEXT = Contract(task_type="free_text", output="text")
 
 
-def pr_body(tmp_path: Path, repo: Path, llm: FakeLLM, route=None) -> str:
-    """Run the pipeline with the real PR writer (no GitHub: open_pr=False) and return the body it rendered."""
+def pr_body(tmp_path: Path, repo: Path, llm: FakeLLM, route=None, passed: bool = True) -> str:
+    """Run the pipeline with the real PR writer (no GitHub: open_pr=False) and return the body it rendered.
+    `passed`: whether the eval matrix found every tier passing dev (the routing loop reuses its cells)."""
     log, _ = start(tmp_path, repo, open_pr=False, max_iterations=0)
-    stub = Recorder()
+    stub = Recorder(passed=passed)
     llm.add("pr_writer", {"summary": "", "sites": []})
     run = pipeline.Pipeline(
         log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, **({"route": route} if route else {})
@@ -833,7 +965,7 @@ def keep_closed_llm(repo: Path) -> FakeLLM:
 @pytest.mark.parametrize("auditor", [AUDITOR, "blind:nvidia/Nemotron-3-Ultra-550b-a55b"])
 def test_the_pr_body_lists_only_the_rows_compared_and_no_circular_closed_row(tmp_path, auditor):
     repo = make_repo(tmp_path, closed=True, auditor=auditor)  # closed answers incl. dropped case cs_01:099
-    body = pr_body(tmp_path, repo, keep_closed_llm(repo))
+    body = pr_body(tmp_path, repo, keep_closed_llm(repo), passed=False)
 
     assert "stays on gpt-4o-mini: " in body  # a kept site: the PR prints its whole reason
     assert "| cs_01 | reference:seed × 20 |" in body  # what the cases were compared against, nothing else
@@ -843,6 +975,37 @@ def test_the_pr_body_lists_only_the_rows_compared_and_no_circular_closed_row(tmp
         assert "closed reference" not in body
     else:
         assert clause in body
+
+
+RUNTIME_PROMPT = """
+
+def ask(messages: list[dict]) -> str:
+    return client.chat.completions.create(model="gpt-4o-mini", messages=messages).choices[0].message.content
+"""
+
+
+def test_a_call_whose_prompt_is_built_at_runtime_says_why_it_has_no_cases_and_borrows_no_label(tmp_path):
+    """idea-reality-mcp's cs_03 (run 20261022-023459043-590031): prepare skipped it, its prompt being built at
+    runtime, yet the run told the user to run `offramp prepare`, and the PR table showed the run's own label
+    for it (json_extraction) beside the labels the other sites were prepared with (free_text)."""
+    repo = make_repo(tmp_path)  # evals/ prepared for cs_01 only, as prepare leaves a repo with such a call
+    with (repo / "app" / "triage.py").open("a") as f:
+        f.write(RUNTIME_PROMPT)
+    git(repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qam", "runtime prompt")
+    llm = llm_for_full_run(*split_counts(repo))
+    llm.add(
+        "scanner", ContractLabel(contract=Contract(task_type="json_extraction", output="json"), confidence=1)
+    )
+
+    body = pr_body(tmp_path, repo, llm)
+
+    assert "| cs_02 | `app/triage.py` | unknown | gpt-4o-mini | **MANUAL REVIEW** |" in body
+    (line,) = [ln for ln in body.splitlines() if ln.startswith("- **cs_02**")]
+    assert line.endswith(
+        "needs manual review: Offramp can't render this call's prompt statically, so it has no eval cases; "
+        "runtime capture isn't supported yet"
+    )
+    assert "| cs_01 | `app/triage.py` | classification |" in body  # the prepared site keeps its label
 
 
 def test_the_pr_body_names_the_closed_references_of_a_free_text_site(tmp_path):

@@ -236,8 +236,10 @@ def summarize(evals_dir: Path) -> dict[str, dict[str, Any]]:
 
 
 def audit_repo(evals_dir: str | Path, llm: LLM | None = None, site_ids: list[str] | None = None):
-    """Audit every prepared site (or `site_ids`), then write audit.json and refresh the manifest."""
+    """Audit every prepared site (or `site_ids`), then write audit.json and refresh the manifest. A dataset
+    with an input in both splits is refused before anything is written (baselines.refuse_leaks)."""
     evals_dir = Path(evals_dir)
+    baselines.refuse_leaks(evals_dir)
     for site in baselines.load_sites(evals_dir):
         if (site_ids is None or site.id in site_ids) and site.contract.task_type != "free_text":
             audit_site(evals_dir, site, llm)
@@ -359,6 +361,7 @@ def ingest_blind_audit(
     known = {c.id for s in baselines.load_sites(evals) for c in baselines.load_cases(evals, s.id)}
     rows = [json.loads(line) for line in answers_file.read_text().splitlines() if line.strip()]
     stored = [r for r in rows if r["case_id"] in known]
+    baselines.refuse_leaks(evals)  # before storing anything: a refused ingest leaves the dataset as it was
     import_closed(evals, stored, model)
     return {
         "stored": len(stored),

@@ -207,7 +207,7 @@ def _facts(
         "site": site.model_dump(
             mode="json", include={"id", "file", "function", "sdk", "source_model", "template", "params"}
         ),
-        "contract": site.contract.model_dump(mode="json"),
+        "contract": site.contract.shown(),
         "output_schema_known": site_schema(site, schemas) is not None,
         "current_adapter": {"version": adapter.version, "spec": spec, "last_change_log": adapter.change_log},
         "failing_dev_cases": {

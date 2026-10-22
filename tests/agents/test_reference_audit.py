@@ -3,6 +3,7 @@ Tendem export/ingest (GC24)."""
 
 import importlib.util
 import json
+import re
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -347,6 +348,55 @@ def test_blind_bundle_holds_inputs_and_formats_but_never_references(tmp_path, mo
         json.loads((out / "cs_02.json").read_text())["response_schema"] == extract_site().contract.json_schema
     )
     assert "case_id" in (out / "INSTRUCTIONS.md").read_text()
+
+
+def test_a_refused_ingest_writes_nothing(tmp_path):
+    """Review M3: on a dataset written before the split guard (one input in dev and holdout), ingesting blind
+    answers was refused only after the answers were stored, leaving them outside the manifest. The leak is
+    now checked first: nothing is stored and the manifest is untouched."""
+    repo = tmp_path / "repo"
+    evals = repo / "evals"
+    site = triage_site()
+    cases = dataset(evals, site, ["billing"] * 12)
+    dev = next(c for c in cases if c.split == "dev")
+    hold = next(c for c in cases if c.split == "holdout")
+    leaky = [
+        c.model_copy(update={"input_messages": dev.input_messages}) if c.id == hold.id else c for c in cases
+    ]
+    (evals / "cases" / "cs_01.jsonl").write_text("".join(c.model_dump_json() + "\n" for c in leaky))
+    b.write_manifest(evals)
+    manifest = (evals / "manifest.json").read_bytes()
+    answers = repo / "answers.jsonl"
+    answers.write_text(
+        "".join(json.dumps({"case_id": c.id, "output": {"text": "billing"}}) + "\n" for c in cases)
+    )
+
+    pair = " and ".join(sorted([dev.id, hold.id]))
+    words = f"re-run `offramp prepare`: 1 duplicate input spans dev and holdout (cs_01: {pair})"
+    with pytest.raises(ValueError, match=re.escape(words)):
+        ra.ingest_blind_audit(answers, repo)
+    assert b.load_closed(evals, "cs_01") == {} and (evals / "manifest.json").read_bytes() == manifest
+
+
+def test_an_audit_of_a_dataset_where_one_site_leaks_writes_nothing(tmp_path):
+    """Re-review R1-d (mutant R12): the first site would be audited and rewritten before the second site's
+    leak stopped the audit; the leak is refused before any site is written."""
+    dataset(tmp_path, triage_site(), ["billing", "shipping", "other"])
+    b.save_closed(tmp_path, "cs_01", closed("cs_01", {1: "billing", 2: "shipping", 3: "other"}))
+    second = dataset(tmp_path, triage_site("cs_02"), ["billing"] * 12)
+    dev = next(c for c in second if c.split == "dev")
+    leaky = [
+        c.model_copy(update={"input_messages": dev.input_messages}) if c.split == "holdout" else c
+        for c in second
+    ]
+    (tmp_path / "cases" / "cs_02.jsonl").write_text("".join(c.model_dump_json() + "\n" for c in leaky))
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+    with pytest.raises(
+        ValueError, match=r"re-run `offramp prepare`: \d+ duplicate inputs? spans? dev and holdout \(cs_02:"
+    ):
+        ra.audit_repo(tmp_path)
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
 
 def test_ingest_blind_audit_scores_answers_with_the_exact_model_label(tmp_path, monkeypatch):

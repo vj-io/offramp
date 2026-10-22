@@ -43,6 +43,9 @@ export interface Contract {
   reasoning_heavy: boolean;
   labels: string[];
   json_schema: Record<string, unknown> | null;
+  // read from the code: the calling code runs json.loads on the reply, as is or after stripping a ``` fence,
+  // with strict=False when "_lenient"
+  reply_json?: "exact" | "fence_stripped" | "exact_lenient" | "fence_stripped_lenient" | null;
 }
 
 export interface PromptTemplate {
@@ -220,6 +223,7 @@ export interface Verdict {
   parity_pct: number | null; // holdout parity 0..100
   best_tier: Tier | null;
   best_score: number | null;
+  best_score_split?: "dev" | "holdout" | null; // where best_score was measured (dev when a budget stop came first)
   iterations: number;
   latency_delta_ms: number | null; // p50 after - before; null when "before" was never measured
   cost_before_per_1k: number | null;

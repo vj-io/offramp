@@ -68,15 +68,25 @@ from offramp.schemas import (
     Tier,
     ToolCall,
 )
+from offramp.tf.budget import BudgetExceeded
 from offramp.tf.client import LLM
 
 ROLE, ROLE_ADVERSARIAL = "case_gen", "case_gen_adversarial"
 SEED, ORACLE, FIXTURE = "reference:seed", "reference:oracle", "reference:fixture"
 DEFAULT_TARGET, DEFAULT_ADVERSARIAL = 24, 4  # PRD §6.2: 20-30 cases per site, 3-5 of them adversarial
 BATCH = 8  # records written per LLM call
+DIGEST_CHARS = 160  # of each record already written, as a later batch's prompt lists it
 RUN_TIMEOUT_S = 60  # one run of target code (schema import, oracle)
 SETUP_TIMEOUT_S = 600  # building the target's environment the first time
 NEEDS_RUNTIME_CAPTURE = "NEEDS_RUNTIME_CAPTURE"
+NO_STATIC_PROMPT = (
+    "Offramp can't render this call's prompt statically, so it has no eval cases; runtime capture isn't "
+    "supported yet"
+)
+NO_STATIC_CALL = (
+    "Offramp can't resolve this call statically (flagged NEEDS_RUNTIME_CAPTURE), so it has no eval cases; "
+    "runtime capture isn't supported yet"
+)
 NO_TARGET_SANDBOX = (
     "target code not run: Offramp imports the target repo's Pydantic schemas and runs its oracles only in "
     f"the network-off Docker sandbox, and Docker is unavailable. Start Docker, or set {LOCAL_OPT_IN}=1 to "
@@ -2039,9 +2049,19 @@ class _Writer:
         richest = max(self.examples, key=lambda r: len(json.dumps(r)))
         return _infer_schema({f: richest[f] for f in self.fields})
 
+    def digest(self, record: dict[str, Any]) -> str:
+        """A written record, shortened: how a later prompt lists what was already written."""
+        return _clip({f: record.get(f) for f in self.fields}, DIGEST_CHARS)
+
     def prompt(
-        self, items: list[tuple[Seed | None, str]], adversarial: bool, rejected: list[str] | None = None
+        self,
+        items: list[tuple[Seed | None, str]],
+        adversarial: bool,
+        rejected: list[str] | None = None,
+        written: tuple[int, int, list[str]] | None = None,
     ) -> str:
+        """`written`: (this batch's number, the number of batches, digests of the records already written);
+        without it (a call's first batch) the prompt is what it always was, so recorded cassettes replay."""
         site, kind = self.site, self.site.contract.task_type
         examples = (
             "\n".join(_clip({f: r[f] for f in self.fields}, 2500) for r in self.examples[:3]) or "(none)"
@@ -2085,6 +2105,14 @@ class _Writer:
                 "Include whatever earlier tool results the policy requires before that call (e.g. a "
                 "lookup before a refund), with values consistent with the expected arguments."
             )
+        already = ""
+        if written:  # at temperature 0 behind the cache, an identical prompt would return identical records
+            number, total, digests = written
+            listed = chr(10).join(f"- {d}" for d in digests)
+            already = (
+                f"\n\n## Already written: write different inputs\nBatch {number} of {total}. Every new "
+                f"record must differ from these, in topic and wording:\n{listed}"
+            )
         return f"""## The call's system message
 {site.template.system or "(none)"}
 
@@ -2095,25 +2123,30 @@ class _Writer:
 {examples}
 
 ## Items
-{chr(10).join(lines)}
+{chr(10).join(lines)}{already}
 
 ## Rules
 {chr(10).join(f"- {r}" for r in rules)}"""
 
     def write(
-        self, items: list[tuple[Seed | None, str]], adversarial: bool, check: Any
+        self,
+        items: list[tuple[Seed | None, str]],
+        adversarial: bool,
+        check: Any,
+        avoid: list[str] | None = None,
     ) -> list[dict[str, Any] | None]:
         """Records for `items`. A record `check(seed, record)` rejects is asked for once more, with reason,
-        and dropped (None, with a note) if the rewrite is rejected too."""
+        and dropped (None, with a note) if the rewrite is rejected too. `avoid`: digests of records written
+        before this call, which every batch is told to differ from."""
         role = ROLE_ADVERSARIAL if adversarial else ROLE
-        records = self._ask(items, adversarial)
+        records = self._ask(items, adversarial, avoid=avoid)
         problems = [
             check(seed, r) if r is not None else "was missing"
             for (seed, _), r in zip(items, records, strict=True)
         ]
         bad = [i for i, p in enumerate(problems) if p]
         if bad:
-            again = self._ask([items[i] for i in bad], adversarial, [problems[i] for i in bad])
+            again = self._ask([items[i] for i in bad], adversarial, [problems[i] for i in bad], avoid)
             for i, record in zip(bad, again, strict=True):
                 problem = check(items[i][0], record) if record is not None else "was missing"
                 records[i] = None if problem else record
@@ -2122,8 +2155,15 @@ class _Writer:
         return records
 
     def _ask(
-        self, items: list[tuple[Seed | None, str]], adversarial: bool, rejected: list[str] | None = None
+        self,
+        items: list[tuple[Seed | None, str]],
+        adversarial: bool,
+        rejected: list[str] | None = None,
+        avoid: list[str] | None = None,
     ) -> list[dict[str, Any] | None]:
+        """One call per BATCH items. Every batch after the first (and the first too, given `avoid`) is told
+        its number and the records already written: the items cycle the styles, so without that two batches
+        can be the same prompt, and the cache returns the same records for both."""
         role, tier = (ROLE_ADVERSARIAL, Tier.ULTRA) if adversarial else (ROLE, Tier.SUPER)
         reply_schema = {
             "type": "object",
@@ -2131,15 +2171,18 @@ class _Writer:
             "required": ["records"],
         }
         out: list[dict[str, Any] | None] = []
+        written = list(avoid or [])
+        total = -(-len(items) // BATCH)
         for start in range(0, len(items), BATCH):
             batch = items[start : start + BATCH]
             reasons = rejected[start : start + BATCH] if rejected else None
+            shown = (start // BATCH + 1, total, written) if written else None
             result = self.llm.chat(
                 role=role,
                 tier=tier,
                 messages=[
                     {"role": "system", "content": _WRITER_SYSTEM},
-                    {"role": "user", "content": self.prompt(batch, adversarial, reasons)},
+                    {"role": "user", "content": self.prompt(batch, adversarial, reasons, shown)},
                 ],
                 max_tokens=800 * len(batch) + 800,
                 temperature=0.0,
@@ -2156,7 +2199,9 @@ class _Writer:
             records = [r if isinstance(r, dict) else None for r in (parsed or {}).get("records", [])]
             if len(records) != len(batch):
                 self.notes.append(f"{role}: asked for {len(batch)} records, got {len(records)}")
-            out += (records + [None] * len(batch))[: len(batch)]
+            records = (records + [None] * len(batch))[: len(batch)]
+            written = written + [self.digest(r) for r in records if r is not None]
+            out += records
         return out
 
 
@@ -2218,6 +2263,42 @@ class _Row:
     output: ModelOutput | None = None
     model: str | None = None
     verified_by: list[str] = field(default_factory=list)
+    item: tuple[Seed | None, str] | None = None  # a written row's (seed, style): what a replacement asks for
+
+
+SOURCES = ("repo_fixture", "synthetic", "adversarial")  # the order a site's cases are numbered in
+
+
+def _written(item: tuple[Seed | None, str], record: dict[str, Any], adversarial: bool) -> _Row:
+    seed, style = item
+    tags = (["adversarial"] if adversarial else []) + [style] + (seed.tags if seed else [])
+    source = "adversarial" if adversarial else "synthetic"
+    return _Row(record, source, tags, seed.output if seed else None, SEED if seed else None, item=item)
+
+
+def _rendered(
+    site: CallSite, recipes: list[Recipe], rows: list[_Row], notes: list[str], seen: set[str]
+) -> tuple[list[tuple[_Row, dict[str, str], list[dict[str, Any]]]], list[_Row]]:
+    """(row, variables, messages) for each row whose rendered input is not in `seen` (which it extends), in
+    order, and the rows whose input repeats one: a repeated input is one case counted twice, and at most one
+    of them may sit in each split. A row that does not render is noted and skipped."""
+    kept, repeats = [], []
+    for row in rows:
+        try:
+            variables, messages = render(site, recipes, row.record)
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
+            notes.append(
+                f"{row.source} record {row.record.get('id', '?')} does not render ({type(e).__name__}: "
+                f"{e}); skipped"
+            )
+            continue
+        key = baselines.input_key(messages)
+        if key in seen:
+            repeats.append(row)
+            continue
+        seen.add(key)
+        kept.append((row, variables, messages))
+    return kept, repeats
 
 
 def _expected_output(value: Any, kind: str) -> ModelOutput:
@@ -2290,6 +2371,11 @@ def _generate_site(
     records = fixtures.get(mapping.fixture, []) if mapping.fixture else []
     oracle = find_oracle(repo, site)
 
+    writer: _Writer | None = None  # who writes this site's synthetic records, when Super/Ultra do
+
+    def check(seed: Seed | None, record: dict[str, Any]) -> str | None:
+        return record_problem(site, mapping.recipes, seed, record)
+
     oracle_answers = None  # record index -> oracle answer, for fixtures that carry an expected output
     if oracle and kind != "text":
         idx = [i for i, r in enumerate(records) if any(k in r for k in EXPECTED_KEYS)]
@@ -2335,9 +2421,6 @@ def _generate_site(
         styles = _cycle(list(STYLES), len(seeds), rng)
         writer = _Writer(site, mapping, records, llm, used_models, notes)
 
-        def check(seed: Seed | None, record: dict[str, Any]) -> str | None:
-            return record_problem(site, mapping.recipes, seed, record)
-
         split_at = len(seeds) - adversarial if seeds else 0
         for adv, part in (
             (False, list(zip(seeds, styles, strict=True))[:split_at]),
@@ -2345,31 +2428,39 @@ def _generate_site(
         ):
             if not part:
                 continue
-            for (s, style), record in zip(part, writer.write(part, adv, check), strict=True):
-                if record is None:
-                    continue
-                tags = (["adversarial"] if adv else []) + [style] + (s.tags if s else [])
-                rows.append(
-                    _Row(
-                        record,
-                        "adversarial" if adv else "synthetic",
-                        tags,
-                        s.output if s else None,
-                        SEED if s else None,
-                    )
-                )
+            for item, record in zip(part, writer.write(part, adv, check), strict=True):
+                if record is not None:
+                    rows.append(_written(item, record, adv))
+
+    kept, repeats = _rendered(site, mapping.recipes, rows, notes, set())
+    if repeats:
+        n = len(repeats)
+        its = "their" if n > 1 else "its"
+        notes.append(f"{n} case{'s' * (n > 1)} dropped: {its} input repeats an earlier case")
+    redo = [r for r in repeats if r.item is not None]
+    if redo and writer is not None:  # written rows get one more try, told what is already there
+        avoid = [writer.digest(row.record) for row, _, _ in kept]
+        for adv in (False, True):
+            part = [r.item for r in redo if (r.source == "adversarial") == adv]
+            if not part:
+                continue
+            try:
+                again = writer.write(part, adv, check, avoid)
+            except BudgetExceeded as e:  # the cap ends replacing, never the site: the duplicates stay out
+                notes.append(f"no replacement for the dropped duplicates: {e}")
+                break
+            new = [_written(item, record, adv) for item, record in zip(part, again, strict=True) if record]
+            seen = {baselines.input_key(messages) for *_, messages in kept}
+            more, still = _rendered(site, mapping.recipes, new, notes, seen)
+            if still:
+                notes.append(f"{len(still)} replacement(s) repeated an earlier input too: dropped")
+            kept += more
+            avoid += [writer.digest(row.record) for row, _, _ in more]
+        kept.sort(key=lambda k: SOURCES.index(k[0].source))  # replacements join their own kind
 
     cases, refs = [], []
     now = datetime.now(UTC)
-    for row in rows:
-        try:
-            variables, messages = render(site, mapping.recipes, row.record)
-        except (KeyError, IndexError, TypeError, ValueError, AttributeError) as e:
-            notes.append(
-                f"{row.source} record {row.record.get('id', '?')} does not render ({type(e).__name__}: "
-                f"{e}); skipped"
-            )
-            continue
+    for row, variables, messages in kept:
         case_id = f"{site.id}:{len(cases) + 1:03d}"
         cases.append(
             EvalCase(
@@ -2396,13 +2487,21 @@ def _generate_site(
     return cases, refs, notes
 
 
+def runtime_only(site: CallSite) -> str | None:
+    """Why no case can be generated for this site from the code alone, if none can: the prompt is built at
+    runtime, or the scan flagged what it could not resolve. Only runtime capture (not built) would help."""
+    if site.template is None or site.prompt_source == "dynamic":
+        return NO_STATIC_PROMPT
+    if NEEDS_RUNTIME_CAPTURE in site.flags:
+        return NO_STATIC_CALL
+    return None
+
+
 def _skip_reason(site: CallSite) -> str | None:
     if site.kind != "chat":
         return "embeddings call site: never migrated"
-    if site.template is None or site.prompt_source == "dynamic":
-        return "dynamic prompt: needs runtime capture"
-    if NEEDS_RUNTIME_CAPTURE in site.flags:
-        return "flagged NEEDS_RUNTIME_CAPTURE"
+    if why := runtime_only(site):
+        return why
     if site.contract is None:
         return "no contract (run the scanner's contract labelling first)"
     return None
@@ -2443,7 +2542,8 @@ def prepare_repo(
 
     Writes cases/<site>.jsonl, references/<site>.jsonl (none for free-text sites), sites.json and
     manifest.json. Returns {site_id: {"skipped", "cases", "references", "methods", "notes"}}. Errors from the
-    LLM (BudgetExceeded, CacheMiss) propagate: a partial dataset is not written for the failing site.
+    LLM (BudgetExceeded, CacheMiss) propagate: a partial dataset is not written for the failing site. Only
+    replacing cases dropped as duplicates stops quietly at a cap, with a note: the site keeps the rest.
     """
     repo = Path(repo_path)
     evals = Path(out_dir) if out_dir else repo / "evals"

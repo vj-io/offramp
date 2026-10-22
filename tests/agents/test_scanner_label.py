@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from offramp.agents.scanner import ContractLabel, label_contracts, scan_repo
+from offramp.agents.scanner import ContractLabel, json_reply, label_contracts, scan_repo
 from offramp.schemas import CallSite, Contract, Tier
 from offramp.tf.client import TFClient
 from offramp.tf.fake import FakeLLM
@@ -200,3 +200,64 @@ def test_helphub_labels_replay_from_cassette():
     by_id = _label_helphub(live=False)
     assert {site_id: by_id[site_id].contract.task_type for site_id in DEMO_TASK_TYPES} == DEMO_TASK_TYPES
     assert by_id["cs_03"].contract.json_schema is None  # set later from the resolved Pydantic model (Task 7)
+
+
+JSON_REPLY = FIXTURES / "scanner" / "json_reply"
+
+
+def test_a_reply_parsed_with_json_loads_is_recorded_on_the_contract():
+    """idea-reality-mcp's cs_01, cs_02 and cs_04 run json.loads on the reply, but they were judged as free
+    text, so a reply the code cannot parse showed only in a rubric. Reading each site's function now records
+    it on the contract: "fence_stripped" where the reply's own flow strips a ``` fence first, else "exact".
+    Conservative (task 28 review, I2): only json.loads of the reply text itself (stripped or unfenced) counts,
+    and not where the code falls back to the text; a missed site is still judged, a wrong one fails good
+    replies."""
+    scan = scan_repo(JSON_REPLY)
+    chat = [s for s in scan.sites if s.kind == "chat"]
+    llm = fake(ContractLabel(contract=FREE_TEXT, confidence=0.9), n=len(chat))
+    found = {s.function: s.contract.reply_json for s in label_contracts(scan.sites, llm, root=JSON_REPLY)}
+    assert found == {
+        "extract_keywords": "fence_stripped",  # cs_01
+        "pivot_hints": "fence_stripped",  # cs_02
+        "search_angles": "fence_stripped",  # cs_04
+        "tags_direct": "exact",
+        "tags_through_a_helper": "exact",
+        "summary": None,  # its json.loads never sees the reply
+        "lookup_order": None,  # tool-call arguments are not the reply text
+        "fallback_to_text": None,  # the except branch returns the text: the code accepts prose
+        "regex_extracts_object": None,  # json.loads of a regex match out of the reply
+        "slices_from_brace": None,  # json.loads of a slice of the reply
+        "logs_the_response_object": None,  # json.loads of the response object's own JSON
+        "wraps_then_loads": None,  # json.loads of a document built around the reply
+        "reply_as_lookup_key": None,  # the reply (lower-cased) is only a key
+        "summarise": None,  # an attribute store of the reply; json.loads reads settings
+        "call_in_try_parse_after": "exact",  # the call sits deeper in the tree than the parse
+        "strip_in_its_own_statement": "exact",
+        "fence_in_prompt_only": "exact",  # the ``` is in the prompt, not a step on the reply
+        # re-review 1 (R1-b, R1-c, R1-d): only steps the gate replays exactly count
+        "single_quotes_to_double": None,  # replace without a fence
+        "drops_comment_lines": None,  # a line filter for another reason
+        "lowered_then_stripped": None,  # a transform two names back
+        "strips_backticks": None,  # a fence removal other than the guarded line filter
+        "re_sub_fence": None,
+        "handler_falls_through": None,
+        "removeprefix_only": None,
+        "prefix_and_suffix": None,
+        "unguarded_line_filter": None,  # drops fence lines from a reply that does not start with one too
+        "if_else_one_branch_transforms": None,
+        "optional_content_or_empty": None,  # missed on purpose: `or ""` is not a strip
+        "retry_loop_continue": None,
+        "anthropic_three_statements": "exact",
+        "lenient_strict_false": "exact_lenient",
+        "loads_with_a_hook": None,
+        "guarded_filter_without_strip": None,  # a near miss of the replayed filter: not replayed exactly
+    }
+    # the labeller is never asked for it: its request schema is what the cassettes recorded
+    assert all("reply_json" not in json.dumps(c["response_model"].model_json_schema()) for c in llm.calls)
+
+
+def test_tool_call_arguments_are_never_the_reply_text():
+    """lookup_order's tools= settles it as a tool call before json_reply is asked; read directly, its
+    json.loads of the call's arguments is still not a json.loads of the reply."""
+    (site,) = [s for s in scan_repo(JSON_REPLY).sites if s.function == "lookup_order"]
+    assert json_reply(JSON_REPLY, site) is None

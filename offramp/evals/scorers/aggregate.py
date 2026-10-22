@@ -18,6 +18,7 @@ from offramp.evals.scorers.json_schema import INVALID_CATEGORIES
 from offramp.schemas import CaseScore, RunConfig, TaskType
 
 CANDIDATE_ERROR = "candidate_error"  # the candidate call itself failed: no output to validate
+NOT_JSON = "not_json"  # the calling code runs json.loads on the reply (Contract.reply_json) and it fails
 JUDGE_MARGIN = 0.3  # free_text with a reference mean: judge mean >= reference mean - 0.3 ...
 JUDGE_FLOOR = 4.0  # ... and >= 4.0 on the 1-5 rubric ...
 JUDGE_CASE_FLOOR = 3.0  # ... and, on holdout, no case below 3.0 (a mean can hide a plainly wrong answer)

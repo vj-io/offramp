@@ -11,6 +11,7 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 
 class Tier(StrEnum):
@@ -57,6 +58,17 @@ class Contract(BaseModel):
     reasoning_heavy: bool = False
     labels: list[str] = Field(default_factory=list)  # classification label set, when known
     json_schema: dict[str, Any] | None = None  # expected output schema, when known
+    # Read from the code, never asked of the labeller (so not in its schema): the function around the call
+    # runs json.loads on the reply as it is ("exact") or after stripping a ``` fence ("fence_stripped"),
+    # with strict=False when the value ends in "_lenient".
+    reply_json: SkipJsonSchema[
+        Literal["exact", "fence_stripped", "exact_lenient", "fence_stripped_lenient"] | None
+    ] = None
+
+    def shown(self) -> dict[str, Any]:
+        """The contract as agent prompts show it: reply_json only when set, so a site without it gets the
+        prompt it always got (its recorded cassettes replay)."""
+        return self.model_dump(mode="json", exclude=None if self.reply_json else {"reply_json"})
 
 
 class PromptTemplate(BaseModel):
@@ -281,7 +293,8 @@ class AfterPrice(BaseModel):
     source: str  # "Token Factory model API, 2026-10-21" or "pricing.yaml as of 2026-10-21; <why>"
 
 
-# Why a KEEP_CLOSED verdict keeps the site: "budget" when the run's budget stopped it before a measurement;
+# Why a KEEP_CLOSED verdict keeps the site: "budget" when the run's budget stopped it before a verdict (its
+# holdout figures are set only if the best adapter's holdout was measured, and failed);
 # "dev" when dev never passed (holdout may have); else the bar its holdout missed: the parity threshold, every
 # output schema-valid, enough JSON cases passing whole, the judge mean of 4.0, no holdout case below 3.0, or a
 # judge mean within 0.3 of the references'.
@@ -297,7 +310,10 @@ class Verdict(BaseModel):
     model: str | None = None  # Token Factory model id when MIGRATE
     parity_pct: float | None = None  # holdout parity (0..100) of the chosen/best tier
     best_tier: Tier | None = None  # KEEP_CLOSED: best tier tried
-    best_score: float | None = None
+    best_score: float | None = None  # that tier's score on best_score_split (a judge mean for free text)
+    best_score_split: Split | None = (
+        None  # "holdout" when measured there; "dev" when a budget stop came first
+    )
     iterations: int = 0  # adapter iterations used for the chosen/best tier
     latency_delta_ms: int | None = None  # p50 after - before; None when "before" was never measured
     cost_before_per_1k: float | None = None

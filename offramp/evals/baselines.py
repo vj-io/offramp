@@ -55,8 +55,76 @@ def load_cases(evals_dir: Path, site_id: str) -> list[EvalCase]:
     return _read_jsonl(Path(evals_dir) / "cases" / f"{site_id}.jsonl", EvalCase)
 
 
+def input_key(messages: list[dict[str, Any]]) -> str:
+    """A case's rendered input with case and whitespace normalised: two cases with one key are one input."""
+    parts = []
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, str):
+            content = json.dumps(content, sort_keys=True, ensure_ascii=False)
+        parts.append([m.get("role"), " ".join(content.split()).casefold()])
+    return json.dumps(parts, ensure_ascii=False)
+
+
+def duplicate_inputs(cases: Iterable[EvalCase]) -> tuple[list[list[str]], list[list[str]]]:
+    """Case ids that share one input: (groups spanning dev and holdout, groups within one split). The first
+    leak GC10 forbids (the Iterator would tune on inputs the holdout verdict then reads); the second counts
+    one case more than once."""
+    by_input: dict[str, list[EvalCase]] = {}
+    for c in sorted(cases, key=lambda c: c.id):
+        by_input.setdefault(input_key(c.input_messages), []).append(c)
+    groups = [g for g in by_input.values() if len(g) > 1]
+    span = [[c.id for c in g] for g in groups if len({c.split for c in g}) > 1]
+    within = [[c.id for c in g] for g in groups if len({c.split for c in g}) == 1]
+    return span, within
+
+
+def listed(groups: list[list[str]], shown: int = 5) -> str:
+    """'a and b; c and d; 2 more': the first `shown` groups and how many more there are."""
+    text = "; ".join(" and ".join(g) for g in groups[:shown])
+    return text + (f"; {len(groups) - shown} more" if len(groups) > shown else "")
+
+
+def _leaks(cases: Iterable[EvalCase]) -> str | None:
+    span, _ = duplicate_inputs(cases)
+    n = len(span)
+    return f"{n} input{'s' * (n != 1)} in both dev and holdout ({listed(span)})" if span else None
+
+
 def save_cases(evals_dir: Path, site_id: str, cases: Iterable[EvalCase]) -> None:
-    _write_jsonl(Path(evals_dir) / "cases" / f"{site_id}.jsonl", sorted(cases, key=lambda c: c.id))
+    """Refuses (ValueError, nothing written) cases whose input is in both splits."""
+    cases = sorted(cases, key=lambda c: c.id)
+    if leak := _leaks(cases):
+        raise ValueError(f"{site_id}: {leak}: drop the duplicates")
+    _write_jsonl(Path(evals_dir) / "cases" / f"{site_id}.jsonl", cases)
+
+
+def dataset_duplicates(evals_dir: Path) -> tuple[dict[str, list[list[str]]], dict[str, list[list[str]]]]:
+    """duplicate_inputs per site of a dataset: ({site: groups across splits}, {site: groups within one})."""
+    span, within = {}, {}
+    for path in sorted((Path(evals_dir) / "cases").glob("*.jsonl")):
+        across, inside = duplicate_inputs(_read_jsonl(path, EvalCase))
+        if across:
+            span[path.stem] = across
+        if inside:
+            within[path.stem] = inside
+    return span, within
+
+
+def duplicates_text(groups: dict[str, list[list[str]]], where: str) -> str:
+    """'15 duplicate inputs span dev and holdout (cs_01: a and b; ...)', `where` being the verb phrase."""
+    n = sum(len(g) for g in groups.values())
+    verb = where if n != 1 else where.replace("span ", "spans ").replace("repeat ", "repeats ")
+    sites = "; ".join(f"{site}: {listed(g)}" for site, g in groups.items())
+    return f"{n} duplicate input{'s' * (n != 1)} {verb} ({sites})"
+
+
+def refuse_leaks(evals_dir: Path) -> None:
+    """ValueError when a dataset (one written before save_cases refused it) puts an input in both splits:
+    nothing should read it, nor write to it, until `offramp prepare` regenerates it."""
+    span, _ = dataset_duplicates(evals_dir)
+    if span:
+        raise ValueError(f"re-run `offramp prepare`: {duplicates_text(span, 'span dev and holdout')}")
 
 
 def load_references(evals_dir: Path, site_id: str) -> dict[str, BaselineResult]:
@@ -163,7 +231,8 @@ def write_manifest(evals_dir: Path, generator_models: dict[str, str] | None = No
 
 
 def verify_manifest(evals_dir: Path) -> list[str]:
-    """Problems found (empty = the dataset is exactly what the manifest records)."""
+    """Problems found (empty = the dataset is exactly what the manifest records, and no input of a site is in
+    both of its splits)."""
     evals_dir = Path(evals_dir)
     if not (evals_dir / MANIFEST).exists():
         return [f"no {MANIFEST} in {evals_dir}"]
@@ -176,4 +245,7 @@ def verify_manifest(evals_dir: Path) -> list[str]:
         for rel in sorted(present & set(recorded))
         if _sha256(evals_dir / rel) != recorded[rel]
     ]
+    for path in sorted((evals_dir / "cases").glob("*.jsonl")):  # written before save_cases refused leaks
+        if leak := _leaks(_read_jsonl(path, EvalCase)):
+            problems.append(f"cases/{path.name}: {leak}")
     return problems

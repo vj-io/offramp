@@ -53,6 +53,62 @@ def test_cases_and_references_round_trip(tmp_path):
     assert b.load_cases(tmp_path, "cs_09") == [] and b.load_references(tmp_path, "cs_09") == {}
 
 
+def test_an_input_in_both_dev_and_holdout_is_refused_and_nothing_is_written(tmp_path):
+    """Run 20261022-023459043-590031: identical inputs under different case ids landed in both splits, so the
+    Iterator tuned on inputs the holdout verdict then read. The writer refuses that, whatever wrote the cases;
+    case and whitespace do not make an input different."""
+    dev = case(1).model_copy(update={"input_messages": [{"role": "user", "content": "AI code review bot"}]})
+    holdout = case(9).model_copy(
+        update={"split": "holdout", "input_messages": [{"role": "user", "content": " ai  code review BOT"}]}
+    )
+    with pytest.raises(ValueError, match="cs_01:001 and cs_01:009"):
+        b.save_cases(tmp_path, "cs_01", [dev, holdout, case(2)])
+    assert b.load_cases(tmp_path, "cs_01") == []
+
+    b.save_cases(tmp_path, "cs_01", [dev, holdout.model_copy(update={"split": "dev"})])  # one split: allowed
+    assert len(b.load_cases(tmp_path, "cs_01")) == 2
+
+
+def test_a_dataset_written_before_the_guard_fails_verification_where_it_leaks(tmp_path):
+    """Such as the evals/ committed to the idea-reality-mcp fork from run 20261022-023459043-590031's prepare:
+    a run reads it through verify_manifest, whose problems it logs."""
+    rows = [
+        case(5).model_copy(update={"input_messages": [{"role": "user", "content": "AI code review bot"}]}),
+        case(13).model_copy(
+            update={"split": "holdout", "input_messages": [{"role": "user", "content": "AI code review bot"}]}
+        ),
+    ]
+    path = tmp_path / "cases" / "cs_01.jsonl"
+    path.parent.mkdir()
+    path.write_text("".join(c.model_dump_json() + "\n" for c in rows))
+    b.write_manifest(tmp_path)
+
+    assert b.verify_manifest(tmp_path) == [
+        "cases/cs_01.jsonl: 1 input in both dev and holdout (cs_01:005 and cs_01:013)"
+    ]
+
+
+def test_duplicate_messages_count_every_group_and_show_the_first_five(tmp_path):
+    """Review M4: the fork's cs_04 has 7 groups across the splits; the message listed 5 and no count."""
+    text = lambda i: [{"role": "user", "content": f"idea {i}"}]  # noqa: E731
+    cases = [case(i).model_copy(update={"input_messages": text(i)}) for i in range(1, 8)]
+    cases += [
+        case(i + 10).model_copy(update={"split": "holdout", "input_messages": text(i)}) for i in range(1, 8)
+    ]
+    cases += [case(30).model_copy(update={"input_messages": text(1)})]  # a third copy, in dev
+    cases += [case(40 + i).model_copy(update={"input_messages": text(99)}) for i in range(2)]  # within dev
+    span, within = b.duplicate_inputs(cases)
+    assert (
+        len(span) == 7
+        and span[0] == ["cs_01:001", "cs_01:011", "cs_01:030"]
+        and within == [["cs_01:040", "cs_01:041"]]
+    )
+    with pytest.raises(
+        ValueError, match=r"cs_01: 7 inputs in both dev and holdout \(cs_01:001 and .*; 2 more\)"
+    ):
+        b.save_cases(tmp_path, "cs_01", cases)
+
+
 def test_legacy_baselines_are_read_and_references_override_them(tmp_path):
     legacy = tmp_path / "baselines" / "cs_01.jsonl"
     legacy.parent.mkdir()

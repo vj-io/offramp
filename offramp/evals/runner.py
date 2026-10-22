@@ -9,12 +9,15 @@ Every TierResult number shown anywhere comes from here, so the rules are strict:
   `reasoning` per AdapterSpec.reasoning, so enable_thinking is always explicit (Global Constraint 25);
 - cost is tokens x get_tier(tier) prices (an OFFRAMP_MODEL_* override keeps the tier price);
 - a per-run cap (BudgetExceeded, from an eval call or the judge) ends the tier with a BudgetStop result that
-  the routing loop turns into KEEP_CLOSED("budget ..."); it never escapes as an exception.
+  the routing loop turns into KEEP_CLOSED("budget ..."); it never escapes as an exception;
+- free text whose calling code runs json.loads on the reply (Contract.reply_json): a reply that json.loads
+  would reject fails its case as NOT_JSON (1.0, the rubric's floor) and is not judged.
 """
 
 from __future__ import annotations
 
 import contextvars
+import json
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -36,6 +39,7 @@ from offramp.evals.scorers import score_case
 from offramp.evals.scorers.aggregate import (
     CANDIDATE_ERROR,
     DEFAULT_THRESHOLDS,
+    NOT_JSON,
     Thresholds,
     lower_pct,
     site_pass,
@@ -92,6 +96,7 @@ def run_tier(
     *,
     build_request: BuildRequest | None = None,
     return_candidates: bool = False,
+    scored: TierResult | None = None,
 ) -> TierResult | BudgetStop | tuple[TierResult | BudgetStop, list[CandidateResult]]:
     """Evaluate `adapter` on `tier` over the `split` cases of `site`.
 
@@ -102,7 +107,14 @@ def run_tier(
 
     return_candidates=True returns (result, the CandidateResult of every case in case order) so the
     Iterator can show failing outputs; ([] with a BudgetStop).
+
+    `scored`: this cell's result as already measured (the eval matrix's, for this adapter version, tier and
+    split). It is returned as is: the calls are replayed (cached) only for their outputs, and nothing is
+    judged or scored again, so one set of outputs never gets two scores (or costs two judge calls).
     """
+    key = (site.id, Tier(tier), adapter.version, split)
+    if scored is not None and (scored.site_id, scored.tier, scored.adapter_version, scored.split) != key:
+        raise ValueError(f"the result given as scored is for another cell than {key}")
     contract = site.contract
     if contract is None:
         raise ValueError(f"site {site.id} has no contract: label it before evaluating")
@@ -127,8 +139,10 @@ def run_tier(
     ]
     try:
         results = _run_calls(client, requests, selected, tier, adapter.version)
+        if scored is not None:
+            return (scored, results) if return_candidates else scored
         if free_text:
-            scores, reference_mean = _judge_scores(client, selected, results, refs)
+            scores, reference_mean = _judge_scores(client, selected, results, refs, contract.reply_json)
         else:
             scores = [
                 score_case(c, refs[c.id].output, r.output, contract)
@@ -217,10 +231,36 @@ def _run_calls(
     return results
 
 
+def json_loads_accepts(text: str | None, how: str) -> bool:
+    """Whether the calling code's json.loads takes this reply (Contract.reply_json): as it is ("exact"), or
+    after the ``` fence lines are dropped the way that code drops them ("fence_stripped"); with
+    strict=False (control characters inside strings) when `how` ends in "_lenient"."""
+    text = (text or "").strip()
+    if how.startswith("fence_stripped") and text.startswith("```"):
+        text = "\n".join(ln for ln in text.split("\n") if not ln.strip().startswith("```")).strip()
+    try:
+        json.loads(text, strict=not how.endswith("_lenient"))
+    except ValueError:
+        return False
+    return True
+
+
 def _judge_scores(
-    client: LLM, cases: list[EvalCase], results: list[CandidateResult], refs: Mapping[str, BaselineResult]
+    client: LLM,
+    cases: list[EvalCase],
+    results: list[CandidateResult],
+    refs: Mapping[str, BaselineResult],
+    reply_json: str | None = None,
 ) -> tuple[list[CaseScore], float | None]:
     ok = [(c, r) for c, r in zip(cases, results, strict=True) if r.output is not None]
+    not_json = set()
+    if reply_json:  # a reply the calling code cannot parse breaks the call, however well it reads
+        not_json = {
+            c.id
+            for c, r in ok
+            if (r.output.text or "").strip() and not json_loads_accepts(r.output.text, reply_json)
+        }
+        ok = [(c, r) for c, r in ok if c.id not in not_json]
     judged = judge(
         client,
         [c for c, _ in ok],
@@ -231,6 +271,17 @@ def _judge_scores(
     scores = []
     for case in cases:
         s = by_id.get(case.id)
+        if case.id in not_json:
+            scores.append(
+                CaseScore(
+                    case_id=case.id,
+                    passed=False,
+                    score=1.0,
+                    detail="the reply is not JSON, and the calling code runs json.loads on it",
+                    error_category=NOT_JSON,
+                )
+            )
+            continue
         if s is None:  # the call failed: nothing to judge
             scores.append(
                 CaseScore(

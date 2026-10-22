@@ -8,6 +8,7 @@ import pytest
 from offramp.agents.adapter import (
     ADAPTER_MAX_TOKENS,
     INVALID_OUTPUT,
+    JSON_ONLY,
     LIGHTNING_LEAK,
     LIGHTNING_TOOL_CHOICE,
     AdapterDecision,
@@ -143,6 +144,30 @@ def test_json_modes_are_ignored_where_the_code_does_not_parse_json(sid):
     adapter = adapt(SITES[sid], FakeLLM().add("adapter", decision(output_mode="json_schema")), SCHEMAS)
     assert adapter.spec.response_format is None and adapter.spec.json_mode_fallback is False
     assert any(n.startswith("output_mode json_schema: ignored") for n in adapter.notes)
+
+
+def test_a_reply_the_code_json_loads_is_asked_for_as_json_and_the_agent_is_told():
+    """idea-reality-mcp's cs_01, cs_02 and cs_04: the contract records that the code json.loads the reply,
+    so the adapter asks for JSON alone (no JSON mode: the replies are arrays; json_object forces objects)."""
+    contract = SITES["cs_06"].contract.model_copy(update={"reply_json": "fence_stripped"})
+    site = SITES["cs_06"].model_copy(update={"contract": contract})
+    llm = FakeLLM().add("adapter", decision(output_mode="json_object"))
+    adapter = adapt(site, llm)
+    assert json.loads(llm.calls[0]["messages"][1]["content"])["contract"]["reply_json"] == "fence_stripped"
+    assert adapter.spec.user_suffix == "\n\n" + JSON_ONLY and adapter.spec.response_format is None
+    assert any("json.loads" in n for n in adapter.notes)
+    asked = decision(user_suffix="Return the JSON array only.")  # the agent's own JSON request is kept
+    assert adapt(site, FakeLLM().add("adapter", asked)).spec.user_suffix == "\n\nReturn the JSON array only."
+    suffix = decision(
+        user_suffix="Keep it short."
+    )  # one that does not ask for JSON gets the request after it
+    assert adapt(site, FakeLLM().add("adapter", suffix)).spec.user_suffix == f"\n\nKeep it short. {JSON_ONLY}"
+
+    llm = FakeLLM().add(
+        "adapter", decision()
+    )  # without it: no key in the facts (cassettes replay), no suffix
+    assert adapt(SITES["cs_06"], llm).spec.user_suffix == ""
+    assert "reply_json" not in json.loads(llm.calls[0]["messages"][1]["content"])["contract"]
 
 
 def test_tool_site_keeps_translated_tools():

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from offramp.agents.adapter import LIGHTNING_LEAK
+from offramp.agents.adapter import JSON_ONLY, LIGHTNING_LEAK
 from offramp.agents.iterator import (
     ITERATOR_MAX_TOKENS,
     ITERATOR_ROLE,
@@ -357,6 +357,15 @@ def test_json_modes_are_ignored_where_the_code_does_not_parse_json():
         adapter, site, failing, tier
     )
     assert new.spec.response_format is None and any("ignored" in n for n in new.notes)
+
+
+def test_a_rewrite_never_drops_the_json_request_where_the_code_json_loads_the_reply():
+    site, adapter, failing, tier = dev_cases("cs_01")
+    site = site.model_copy(update={"contract": site.contract.model_copy(update={"reply_json": "exact"})})
+    llm = FakeLLM({ITERATOR_ROLE: [decision(user_suffix="Answer briefly.")]})
+    new = Iterator(llm, SCHEMAS)(adapter, site, failing, tier)
+    assert new.spec.user_suffix == f"\n\nAnswer briefly. {JSON_ONLY}"
+    assert json.loads(llm.calls[0]["messages"][1]["content"])["contract"]["reply_json"] == "exact"
 
 
 def test_records_every_case_id_it_saw_and_shows_at_most_ten():

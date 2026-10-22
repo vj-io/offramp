@@ -35,6 +35,7 @@ LIGHTNING_TOOL_CHOICE = (
 INVALID_OUTPUT = (
     "adapter_agent_invalid_output: Adapter Agent reply invalid after one repair; spec is the translation"
 )
+JSON_ONLY = "Reply with the JSON only: no other text and no code fence."  # contract.reply_json sites
 
 ADAPTER_SYSTEM = f"""You are Offramp's Adapter Agent. Offramp moves one LLM call site in a Python repo \
 from a closed model (OpenAI or Anthropic SDK) to NVIDIA Nemotron on Nebius Token Factory, an \
@@ -98,7 +99,7 @@ def _facts(site: CallSite, tr: Translation, schemas: dict[str, dict[str, Any]] |
                 "flags",
             },
         ),
-        "contract": site.contract.model_dump(mode="json"),
+        "contract": site.contract.shown(),
         "spec_v0": tr.spec.model_dump(mode="json"),
         "translation_notes": tr.notes,
         "translation_risk_flags": tr.risk_flags,
@@ -122,6 +123,11 @@ def _apply(
         notes.append("reasoning: kept on (contract is reasoning_heavy)")
     if decision.user_suffix.strip():
         spec.user_suffix = "\n\n" + decision.user_suffix.strip()
+    if contract.reply_json and not spec.tools and "json" not in spec.user_suffix.lower():
+        spec.user_suffix = (
+            f"{spec.user_suffix} {JSON_ONLY}" if spec.user_suffix.strip() else f"\n\n{JSON_ONLY}"
+        )
+        notes.append("user_suffix: asks for JSON alone (the calling code runs json.loads on the reply)")
 
     mode = decision.output_mode
     json_reply = contract.task_type == "json_extraction" or contract.output in ("json", "json_schema")
