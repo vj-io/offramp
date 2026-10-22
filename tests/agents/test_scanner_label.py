@@ -234,6 +234,23 @@ def test_a_reply_parsed_with_json_loads_is_recorded_on_the_contract():
         "call_in_try_parse_after": "exact",  # the call sits deeper in the tree than the parse
         "strip_in_its_own_statement": "exact",
         "fence_in_prompt_only": "exact",  # the ``` is in the prompt, not a step on the reply
+        # re-review 1 (R1-b, R1-c, R1-d): only steps the gate replays exactly count
+        "single_quotes_to_double": None,  # replace without a fence
+        "drops_comment_lines": None,  # a line filter for another reason
+        "lowered_then_stripped": None,  # a transform two names back
+        "strips_backticks": None,  # a fence removal other than the guarded line filter
+        "re_sub_fence": None,
+        "handler_falls_through": None,
+        "removeprefix_only": None,
+        "prefix_and_suffix": None,
+        "unguarded_line_filter": None,  # drops fence lines from a reply that does not start with one too
+        "if_else_one_branch_transforms": None,
+        "optional_content_or_empty": None,  # missed on purpose: `or ""` is not a strip
+        "retry_loop_continue": None,
+        "anthropic_three_statements": "exact",
+        "lenient_strict_false": "exact_lenient",
+        "loads_with_a_hook": None,
+        "guarded_filter_without_strip": None,  # a near miss of the replayed filter: not replayed exactly
     }
     # the labeller is never asked for it: its request schema is what the cassettes recorded
     assert all("reply_json" not in json.dumps(c["response_model"].model_json_schema()) for c in llm.calls)

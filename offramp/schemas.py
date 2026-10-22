@@ -59,8 +59,11 @@ class Contract(BaseModel):
     labels: list[str] = Field(default_factory=list)  # classification label set, when known
     json_schema: dict[str, Any] | None = None  # expected output schema, when known
     # Read from the code, never asked of the labeller (so not in its schema): the function around the call
-    # runs json.loads on the reply as it is ("exact") or after stripping a ``` fence ("fence_stripped").
-    reply_json: SkipJsonSchema[Literal["exact", "fence_stripped"] | None] = None
+    # runs json.loads on the reply as it is ("exact") or after stripping a ``` fence ("fence_stripped"),
+    # with strict=False when the value ends in "_lenient".
+    reply_json: SkipJsonSchema[
+        Literal["exact", "fence_stripped", "exact_lenient", "fence_stripped_lenient"] | None
+    ] = None
 
     def shown(self) -> dict[str, Any]:
         """The contract as agent prompts show it: reply_json only when set, so a site without it gets the

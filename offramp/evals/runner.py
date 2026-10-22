@@ -232,13 +232,14 @@ def _run_calls(
 
 
 def json_loads_accepts(text: str | None, how: str) -> bool:
-    """Whether the calling code's json.loads takes this reply: as it is ("exact"), or after the ``` fence
-    lines are dropped the way such code drops them ("fence_stripped")."""
+    """Whether the calling code's json.loads takes this reply (Contract.reply_json): as it is ("exact"), or
+    after the ``` fence lines are dropped the way that code drops them ("fence_stripped"); with
+    strict=False (control characters inside strings) when `how` ends in "_lenient"."""
     text = (text or "").strip()
-    if how == "fence_stripped" and text.startswith("```"):
+    if how.startswith("fence_stripped") and text.startswith("```"):
         text = "\n".join(ln for ln in text.split("\n") if not ln.strip().startswith("```")).strip()
     try:
-        json.loads(text)
+        json.loads(text, strict=not how.endswith("_lenient"))
     except ValueError:
         return False
     return True

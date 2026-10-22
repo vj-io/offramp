@@ -1185,6 +1185,32 @@ def test_a_budget_stop_before_any_holdout_names_the_best_tier_and_score_reached(
     )
 
 
+def test_a_tier_whose_securing_holdout_failed_is_not_called_not_fully_tried():
+    """Re-review R1-a (P4): Super passed dev, its securing holdout failed, so its tries were over (a holdout
+    failure moves on without iterating); Ultra secured the verdict; the cap hit on Lightning's Iterator."""
+    table = {(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): 0.5, (U, "dev"): 1.0, (U, "holdout"): 1.0}
+    out, runner, it = route(table, prior=matrix_cells(table), iterator=StubIterator(error=ULTRA_CAP))
+    v = out.verdict
+    assert runner.calls == [(L, "dev", 0), (S, "holdout", 0), (U, "holdout", 0)]
+    assert (v.decision, v.tier) == ("MIGRATE", U)
+    assert v.reason.endswith("; Lightning not fully tried (budget: Ultra agent call cap reached (40)).")
+
+
+def test_a_holdout_the_securing_pass_measured_is_stated_when_the_stop_comes_before_routing_reached_it():
+    """Re-review R1-d (mutant R2): the matrix has no Lightning cell, so routing measures Lightning's dev
+    first, and the cap stops it there, before routing's own securing step. Ultra's holdout was measured by
+    the pipeline's securing pass; it is in `prior` only, and the verdict still states it."""
+    table = {(L, "dev"): "budget", (S, "dev"): 0.5, (U, "dev"): 1.0, (U, "holdout"): 0.5}
+    prior = {k: r for k, r in matrix_cells(table).items() if k[0] != L}  # its matrix cell errored
+    refs = {c.id: ref(c.id, "billing") for c in ROUTE_CASES}
+    config = RunConfig(repo_url="x")
+    prior |= secure_holdouts(SITE, ROUTE_CASES, refs, V0, FakeLLM(), config, prior, runner=Runner(table))
+    out, runner, it = route(table, prior=prior)
+    v = out.verdict
+    assert runner.calls == [(L, "dev", 0)] and (v.best_tier, v.best_score_split) == (U, "holdout")
+    assert v.reason.endswith("failed the holdout: parity vs reference 53.3% < 95%")
+
+
 def test_a_budget_stop_counts_the_iterations_of_the_best_adapter():
     table = {(L, "dev"): 0.5, (L, "dev", 1): 0.9, (L, "dev", 2): "budget"}
     out, runner, it = route(table)

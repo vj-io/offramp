@@ -378,6 +378,27 @@ def test_a_refused_ingest_writes_nothing(tmp_path):
     assert b.load_closed(evals, "cs_01") == {} and (evals / "manifest.json").read_bytes() == manifest
 
 
+def test_an_audit_of_a_dataset_where_one_site_leaks_writes_nothing(tmp_path):
+    """Re-review R1-d (mutant R12): the first site would be audited and rewritten before the second site's
+    leak stopped the audit; the leak is refused before any site is written."""
+    dataset(tmp_path, triage_site(), ["billing", "shipping", "other"])
+    b.save_closed(tmp_path, "cs_01", closed("cs_01", {1: "billing", 2: "shipping", 3: "other"}))
+    second = dataset(tmp_path, triage_site("cs_02"), ["billing"] * 12)
+    dev = next(c for c in second if c.split == "dev")
+    leaky = [
+        c.model_copy(update={"input_messages": dev.input_messages}) if c.split == "holdout" else c
+        for c in second
+    ]
+    (tmp_path / "cases" / "cs_02.jsonl").write_text("".join(c.model_dump_json() + "\n" for c in leaky))
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+
+    with pytest.raises(
+        ValueError, match=r"re-run `offramp prepare`: \d+ duplicate inputs? spans? dev and holdout \(cs_02:"
+    ):
+        ra.audit_repo(tmp_path)
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+
+
 def test_ingest_blind_audit_scores_answers_with_the_exact_model_label(tmp_path, monkeypatch):
     monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path / "data"))
     repo = tmp_path / "repo"

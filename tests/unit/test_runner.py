@@ -14,7 +14,7 @@ import openai
 import pytest
 
 from offramp.evals.errors import MissingReference, ProviderError
-from offramp.evals.runner import MAX_CONCURRENCY, BudgetStop, run_tier
+from offramp.evals.runner import MAX_CONCURRENCY, BudgetStop, json_loads_accepts, run_tier
 from offramp.evals.scorers.aggregate import CANDIDATE_ERROR, NOT_JSON, Thresholds
 from offramp.pricing import load_pricing
 from offramp.schemas import (
@@ -616,6 +616,21 @@ def test_a_reply_the_calling_code_cannot_json_loads_fails_its_case_without_a_jud
     client = CaseClient(replies, judge_replies=(one,))
     result = _run(client, cases, [], site=_parsed_as_json("exact"))  # json.loads on the reply as it is
     assert [c.error_category for c in result.case_scores] == [None, NOT_JSON, NOT_JSON]
+
+
+@pytest.mark.parametrize(
+    "reply, how, accepted",
+    [
+        ('{"a": "line1\nline2"}', "exact", False),  # json.loads rejects a raw newline inside a string ...
+        ('{"a": "line1\nline2"}', "exact_lenient", True),  # ... json.loads(..., strict=False) takes it
+        ('```json\n{"a": "x\ny"}\n```', "fence_stripped_lenient", True),
+        ('```json\n{"a": "x\ny"}\n```', "exact_lenient", False),
+        ("```json\n[1, 2]\n```", "fence_stripped", True),
+    ],
+)
+def test_the_gate_parses_as_the_calling_code_does(reply, how, accepted):
+    """Re-review R1-b: code that passes strict=False accepts control characters inside strings."""
+    assert json_loads_accepts(reply, how) is accepted
 
 
 def test_budget_exceeded_in_judge_returns_budget_stop():

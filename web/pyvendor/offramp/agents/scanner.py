@@ -829,15 +829,12 @@ REPLY_ATTRS = {
     "text",
     "output_text",
 }  # the attribute a chain from the response ends in at the text
-STRIPS = {"strip", "lstrip", "rstrip"}
-UNFENCE = {"removeprefix", "removesuffix", "replace"}  # a step of the reply's flow only with a ``` argument
+STRIPS = {"strip", "lstrip", "rstrip"}  # with no argument, or whitespace only
 FENCE = "```"
-
-
-def _has_fence(node: ast.AST) -> bool:
-    return any(
-        isinstance(n, ast.Constant) and isinstance(n.value, str) and FENCE in n.value for n in ast.walk(node)
-    )
+# The one fence removal the gate replays exactly (runner.json_loads_accepts), idea-reality-mcp's: under
+# `if raw.startswith("```"):`, split on "\n", drop lines starting with ``` once stripped, join with "\n".
+FENCE_GUARD = "{}.startswith('```')"
+FENCE_FILTER = "not {}.strip().startswith('```')"
 
 
 def _own_nodes(fn: ast.AST) -> Iterator[ast.AST]:
@@ -886,35 +883,27 @@ class _Flow:
         return isinstance(e, ast.Attribute | ast.Subscript) and self.is_resp(e.value)
 
     def text_of(self, e: ast.AST) -> bool | None:
-        """Whether `e` is the reply text itself (stripped, or with a ``` fence removed): None if it is not,
-        else whether a fence step is on its flow."""
+        """Whether `e` is the reply text itself (stripped, or through the gate's own fence removal): None if
+        it is not, else whether that fence removal is on its flow. Any other step (a fence removed another
+        way, replace, lower, a slice) is not replayed by the gate, so it makes `e` no reply at all."""
         if isinstance(e, ast.Name):
             return self.text.get(e.id)
         if isinstance(e, ast.Attribute) and e.attr in REPLY_ATTRS and self.is_resp(e.value):
             return False
-        if not (isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute)):
+        if not (isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute) and not e.keywords):
             return None
         method, base = e.func.attr, e.func.value
-        if method in STRIPS and (inner := self.text_of(base)) is not None:
-            return inner or any(_has_fence(a) or "`" in str(getattr(a, "value", "")) for a in e.args)
-        if method in UNFENCE and e.args and _has_fence(e.args[0]) and self.text_of(base) is not None:
-            return True
-        if method == "join" and isinstance(base, ast.Constant) and len(e.args) == 1:
+        if method in STRIPS and all(_whitespace(a) for a in e.args):
+            return self.text_of(base)
+        if method == "join" and _constant(base, "\n") and len(e.args) == 1:
             return self.lines_of(e.args[0])
-        if method == "sub" and isinstance(base, ast.Name) and base.id == "re" and len(e.args) >= 3:
-            if _has_fence(e.args[0]) and self.text_of(e.args[2]) is not None:
-                return True
         return None
 
     def lines_of(self, e: ast.AST) -> bool | None:
         if isinstance(e, ast.Name):
             return self.lines.get(e.id)
-        if (
-            isinstance(e, ast.Call)
-            and isinstance(e.func, ast.Attribute)
-            and e.func.attr in ("split", "splitlines")
-        ):
-            return self.text_of(e.func.value)
+        if isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute) and e.func.attr == "split":
+            return self.text_of(e.func.value) if len(e.args) == 1 and _constant(e.args[0], "\n") else None
         if isinstance(e, ast.ListComp | ast.GeneratorExp) and len(e.generators) == 1:
             g = e.generators[0]
             if not (
@@ -922,10 +911,22 @@ class _Flow:
             ):
                 return None  # each line changed: not a filter
             inner = self.lines_of(g.iter)
-            if inner is None or (g.ifs and not all(_has_fence(c) for c in g.ifs)):
-                return None  # dropping lines for another reason than a fence changes the reply
+            if (
+                inner is None
+                or g.ifs
+                and [ast.unparse(c) for c in g.ifs] != [FENCE_FILTER.format(g.target.id)]
+            ):
+                return None  # dropping lines another way changes the reply in a way the gate does not
             return inner or bool(g.ifs)
         return None
+
+
+def _constant(node: ast.AST, value: str) -> bool:
+    return isinstance(node, ast.Constant) and node.value == value
+
+
+def _whitespace(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, str) and not node.value.strip()
 
 
 def _flow(fn: ast.AST, call: ast.AST | None, seeds: set[str]) -> _Flow:
@@ -965,11 +966,15 @@ def _flow(fn: ast.AST, call: ast.AST | None, seeds: set[str]) -> _Flow:
     return flow
 
 
+def _parents(fn: ast.AST) -> dict[int, ast.AST]:
+    return {id(c): p for p in [fn, *_own_nodes(fn)] for c in ast.iter_child_nodes(p)}
+
+
 def _tolerated(fn: ast.AST, node: ast.AST, flow: _Flow) -> bool:
     """Whether `node` sits in the body of a try whose handler accepts a reply that is not JSON: it returns or
     stores the reply text, or carries on after the try. Only a handler ending in raise, or in a return of
     something else, gives the call up (logging the reply on the way is no use of it)."""
-    parents = {id(c): p for p in [fn, *_own_nodes(fn)] for c in ast.iter_child_nodes(p)}
+    parents = _parents(fn)
     reply = set(flow.text) | set(flow.lines)
 
     def keeps_reply(handler: ast.ExceptHandler) -> bool:
@@ -992,19 +997,43 @@ def _tolerated(fn: ast.AST, node: ast.AST, flow: _Flow) -> bool:
     return False
 
 
-def _parses_reply(fn: ast.AST, call: ast.AST | None, seeds: set[str], loads: tuple[set[str], set[str]]):
-    """True/False (a ``` fence step on the reply's flow or not) when `fn` runs json.loads on the reply text
-    itself, directly or through a helper defined inside it, where a reply that is not JSON breaks the code;
-    None otherwise. ponytail: one function's local names only; a missed site is still judged."""
+def _guarded(fn: ast.AST, flow: _Flow) -> bool:
+    """Whether every fence filter on the reply's flow runs only under `if <reply>.startswith("```"):`, as
+    the gate's own fence removal does: unguarded, it would also drop fence lines from a reply that does not
+    start with one, which the gate keeps."""
+    parents = _parents(fn)
+    guards = {FENCE_GUARD.format(n) for n in flow.text}
+    for node in _own_nodes(fn):
+        if not (isinstance(node, ast.ListComp | ast.GeneratorExp) and node.generators[0].ifs):
+            continue
+        if flow.lines_of(node) is not True:
+            continue
+        child, parent = node, parents.get(id(node))
+        while parent is not None and not (
+            isinstance(parent, ast.If) and child in parent.body and ast.unparse(parent.test) in guards
+        ):
+            child, parent = parent, parents.get(id(parent))
+        if parent is None:
+            return False
+    return True
+
+
+def _parses_reply(
+    fn: ast.AST, call: ast.AST | None, seeds: set[str], loads: tuple[set[str], set[str]]
+) -> tuple[bool, bool] | None:
+    """(fenced, lenient) when `fn` runs json.loads on the reply text itself, directly or through a helper
+    defined inside it, where a reply that is not JSON breaks the code: fenced when the gate's fence removal
+    is on the reply's flow, lenient when json.loads gets strict=False. None otherwise, including json.loads
+    with any other keyword. ponytail: one function's local names only; a missed site is still judged."""
     flow = _flow(fn, call, seeds)
     modules, functions = loads
     helpers = {
-        h.name: fenced
+        h.name: found
         for h in _own_nodes(fn)
         if isinstance(h, Fn) and h.args.args
-        if (fenced := _parses_reply(h, None, {h.args.args[0].arg}, loads)) is not None
+        if (found := _parses_reply(h, None, {h.args.args[0].arg}, loads)) is not None
     }
-    found: list[bool] = []
+    found: list[tuple[bool, bool]] = []
     for node in _own_nodes(fn):
         if not (isinstance(node, ast.Call) and node.args):
             continue
@@ -1015,12 +1044,22 @@ def _parses_reply(fn: ast.AST, call: ast.AST | None, seeds: set[str], loads: tup
             and isinstance(f.value, ast.Name)
             and f.value.id in modules
         )
-        helper = isinstance(f, ast.Name) and f.id in helpers
+        helper = helpers.get(f.id) if isinstance(f, ast.Name) else None
         if not (is_loads or helper) or (fenced := flow.text_of(node.args[0])) is None:
             continue
+        lenient = [k for k in node.keywords if k.arg == "strict" and _constant_false(k.value)]
+        if is_loads and len(lenient) != len(node.keywords):
+            return None  # another keyword: a parse the gate does not replay
         if not _tolerated(fn, node, flow):
-            found.append(fenced or (helper and helpers[f.id]))
-    return any(found) if found else None
+            h_fenced, h_lenient = helper or (False, False)
+            found.append((fenced or h_fenced, bool(lenient) or h_lenient))
+    if not found or not _guarded(fn, flow):
+        return None
+    return any(f for f, _ in found), any(lenient for _, lenient in found)
+
+
+def _constant_false(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value is False
 
 
 def _json_loads_names(tree: ast.Module) -> tuple[set[str], set[str]]:
@@ -1036,10 +1075,12 @@ def _json_loads_names(tree: ast.Module) -> tuple[set[str], set[str]]:
 
 def json_reply(root: str | Path, site: CallSite) -> str | None:
     """How the function around `site`'s call parses the reply, read from the code: "exact" when it runs
-    json.loads on the reply text itself (stripped at most), "fence_stripped" when a ``` fence is removed
-    from that text first; None when it never does, parses something else (a regex match, a slice, a
-    document built around the reply), falls back to the text when json.loads fails, or cannot be read.
-    Conservative on purpose: a site it misses is still judged; one it flags wrongly fails good replies."""
+    json.loads on the reply text itself (stripped at most), "fence_stripped" when idea-reality's guarded
+    line filter removes a ``` fence first (the one removal the gate replays), either with "_lenient" when
+    json.loads gets strict=False. None when it never does, parses something else (a regex match, a slice,
+    a document built around the reply), removes a fence another way, falls back to the text when json.loads
+    fails, or cannot be read. Conservative on purpose: a site it misses is still judged; one it flags
+    wrongly fails good replies."""
     try:
         with catch_warnings():
             simplefilter("ignore", SyntaxWarning)
@@ -1058,8 +1099,11 @@ def json_reply(root: str | Path, site: CallSite) -> str | None:
     )
     if found is None or found[1] is None:
         return None
-    fenced = _parses_reply(found[1], found[0], set(), _json_loads_names(tree))
-    return None if fenced is None else "fence_stripped" if fenced else "exact"
+    parsed = _parses_reply(found[1], found[0], set(), _json_loads_names(tree))
+    if parsed is None:
+        return None
+    fenced, lenient = parsed
+    return ("fence_stripped" if fenced else "exact") + ("_lenient" if lenient else "")
 
 
 def _describe(site: CallSite, root: str | Path | None) -> str:

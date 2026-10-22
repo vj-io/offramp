@@ -188,6 +188,7 @@ def _route(
             if holdouts[tier, 0][0].passed:
                 secured = (tier, dev)
                 return
+            finished.add(tier)  # its holdout failed: routing moves on from it without iterating
 
     # the adapter with the highest dev score so far: (score, tier, its history index, its dev result)
     best: tuple[float, Tier, int, TierResult] | None = None
