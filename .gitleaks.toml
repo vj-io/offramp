@@ -35,3 +35,14 @@ paths = [
   '''^tests/fixtures/cassettes/.*\.json$''',
   '''^\.env\.example$''',
 ]
+
+# One test placeholder, not a key: tests/e2e/test_cli.py sets NEBIUS_API_KEY to "tf-secret-0123456789" to
+# check that export-replay scrubs it (first committed in 1ee0ec8). Only generic-api-key, only that file, and
+# only that exact value (path AND secret must both match), so any other value there still fails the build.
+[[allowlists]]
+description = "tests/e2e/test_cli.py: the scrub test's placeholder key"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^tests/e2e/test_cli\.py$''']
+regexTarget = "secret"
+regexes = ['''^tf-secret-0123456789$''']

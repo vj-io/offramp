@@ -308,7 +308,9 @@ const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
 /** The report's lead, from the verdicts alone: how many sites reached parity (MIGRATE, or a manual review the
  *  patch stage downgraded, which keeps its passing tier), how many migrated, and the estimated cost change on
- *  those; then the all-sites figure with its scope. Never hard-coded. */
+ *  those; then the run totals' figure with its scope. The totals sum only the sites with a cost estimate (a
+ *  "before", and an "after" too when migrated; pipeline.totals), so the scope names how many those are when
+ *  not all. Never hard-coded. */
 export function headline(verdicts: Verdict[], totals: RunTotals | null): { lead: string; scope: string | null } {
   const n = verdicts.length;
   const migrated = verdicts.filter((v) => v.decision === "MIGRATE");
@@ -322,14 +324,22 @@ export function headline(verdicts: Verdict[], totals: RunTotals | null): { lead:
 
   const all = totals ? change(totals.est_cost_before_per_1k, totals.est_cost_after_per_1k) : null;
   if (!totals || !all || m === n) return { lead, scope: null };
-  const review = verdicts.filter((v) => v.decision === "MANUAL_REVIEW").length;
-  const kept = verdicts.filter((v) => v.decision === "KEEP_CLOSED").length;
+  const inTotals = verdicts.filter(
+    (v) => v.cost_before_per_1k != null && (v.decision !== "MIGRATE" || v.cost_after_per_1k != null),
+  );
+  const k = inTotals.length;
+  const review = inTotals.filter((v) => v.decision === "MANUAL_REVIEW").length;
+  const kept = inTotals.filter((v) => v.decision === "KEEP_CLOSED").length;
   const why = [
     review ? `${review} ${plural(review, "stays", "stay")} for review` : "",
     kept ? `${kept} ${plural(kept, "stays on its source model", "stay on their source models")}` : "",
   ].filter(Boolean);
   const money = `${usd(totals.est_cost_before_per_1k)} → ${usd(totals.est_cost_after_per_1k)} per 1,000 calls, est.`;
-  return { lead, scope: `${all} across all ${n} (${money}), since ${why.join(" and ")}` };
+  const across = k === n ? `across all ${n}` : `across the ${k} priced ${plural(k, "site", "sites")}`;
+  let scope = `${all} ${across} (${money})`;
+  if (why.length) scope += `, since ${why.join(" and ")}`;
+  if (k < n) scope += `; the other ${n - k} ${plural(n - k, "has", "have")} no cost estimate`;
+  return { lead, scope };
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

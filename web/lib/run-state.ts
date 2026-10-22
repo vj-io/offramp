@@ -1,7 +1,7 @@
 // Folds the run's SSE events (Global Constraints 12-14) into dashboard state.
 // Every id-bearing event is an upsert, and events are deduplicated by `seq`, so a reconnect that
 // replays the stream from the start, or a producer that re-emits a result, never duplicates UI.
-import { parseNotEvaluated } from "./format";
+import { parseNotEvaluated, TIER_SHORT } from "./format";
 import {
   STAGE_ORDER,
   TIER_ORDER,
@@ -148,6 +148,7 @@ export interface SiteView {
   currentTier: Tier | null;
   iterations: number;
   verdict: Verdict | null;
+  status: string; // the card's line under the tier rows
 }
 
 export function siteView(s: RunState, siteId: string): SiteView {
@@ -159,6 +160,16 @@ export function siteView(s: RunState, siteId: string): SiteView {
   const currentTier = verdict?.tier ?? verdict?.best_tier ?? results.at(-1)?.tier ?? null;
   // The router iterates on each tier it tries; like Verdict.iterations, count the current tier only.
   const onTier = s.iterations.filter((a) => a.site_id === siteId && a.tier === currentTier && a.version > 0);
+  // Case summaries arrive together, so a site still without one once they are in has no eval cases (prepare
+  // skipped it) and will never run: it is not "waiting". Its verdict, when it comes, carries the reason.
+  const noCases = !s.cases[siteId] && (verdict !== null || Object.keys(s.cases).length > 0);
+  const status = currentTier
+    ? `On ${TIER_SHORT[currentTier]}`
+    : noCases
+      ? "No eval cases, so not evaluated"
+      : verdict
+        ? "Not evaluated"
+        : "Waiting for the first eval";
   return {
     site: s.sites[siteId],
     cases: s.cases[siteId] ?? null,
@@ -166,6 +177,7 @@ export function siteView(s: RunState, siteId: string): SiteView {
     currentTier,
     iterations: verdict ? verdict.iterations : onTier.length,
     verdict,
+    status,
   };
 }
 

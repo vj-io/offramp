@@ -115,7 +115,7 @@ export function SiteCard({ view, index, config }: { view: SiteView; index: numbe
         })}
       </ul>
       <p className="font-hand text-base leading-snug text-muted">
-        {currentTier ? <>On {TIER_SHORT[currentTier]}</> : "Waiting for the first eval"}
+        {view.status}
         {iterations > 0 && (
           <>
             , <span className="font-mono text-sm">{iterations}</span> adapter iteration{iterations === 1 ? "" : "s"}
