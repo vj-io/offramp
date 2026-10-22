@@ -4,6 +4,34 @@ Written while building Offramp (Nebius x NVIDIA Global AI Hackathon, 2026-10-19 
 
 Evidence paths are all in this repo. Recorded responses and tests replay offline (`uv run pytest -q`); where the only record of a live call is the project's build log, a plain-text extract is committed under `docs/evidence/`. Every probe row is a single call at `temperature=0`, so read the numbers as observations, not benchmarks.
 
+## Top asks
+
+Ranked by how many Token Factory users we think each one reaches. P1 means it breaks a correct client today; P2 means it costs time to find; P3 is polish.
+
+| Priority | Ask | Who it affects | Item |
+|---|---|---|---|
+| P1 | Give reasoning its own budget, or say in `finish_reason` that reasoning used up `max_tokens` | every client that sends `max_tokens` with thinking on (the default) | [2](#2-reasoning-tokens-count-toward-max_tokens-and-an-exhausted-budget-returns-nothing) |
+| P1 | Publish per-model latency, or a status page: Lightning answered ~58-token replies in a median 78 s on 2026-10-22, against 1.5 s on 2026-10-19 | anyone who calls Lightning with a client timeout | [19](#19-lightning-was-about-50-times-slower-on-2026-10-22-than-on-2026-10-19) |
+| P2 | Stop forced tool calls on Lightning after one call, or reject `tool_choice="required"` with a 400 | agents that force a tool call | [4](#4-lightning-with-tool_choicerequired-loops-until-max_tokens) |
+| P2 | Document `chat_template_kwargs.enable_thinking` with the request parameters | every structured-output client | [1](#1-reasoning-is-on-by-default-the-off-switch-is-a-chat-template-kwarg) |
+| P2 | Say that a `json_schema` reply cut at `max_tokens` is not valid JSON, and support `maxLength` | batch judges and extractors | [20](#20-a-json_schema-reply-cut-at-max_tokens-is-invalid-json) |
+| P3 | Make the price list public, or document the `pricing` field of `/v1/models?verbose=true` | cost tools, readers without an account | [7](#7-the-token-factory-price-page-is-login-gated) |
+| P3 | Let hackathon credits fund a small AI Cloud job, or say up front that they cannot | hackathon participants | [14](#14-token-factory-credits-cannot-fund-ai-cloud-so-we-could-not-run-a-real-serverless-job) |
+
+## Token Factory by the numbers
+
+From [`docs/evidence/tf-production.md`](evidence/tf-production.md): 1,768 distinct chat completions that Offramp recorded between 2026-10-19 and 2026-10-22 (UTC), from 15 pipeline runs on two repos, their case generation, and the committed test cassettes. Latency is client-side wall time. Failed requests leave no record, so the error rate is unknown, not zero.
+
+| Model | Calls | Latency p50 / p95 | `finish_reason: length` | Structured replies that were valid JSON |
+|---|---|---|---|---|
+| Lightning | 532 | 3.1 s / 110.8 s | 2 (0.4%) | 83 of 83 |
+| Super | 583 | 3.1 s / 12.5 s | 3 (0.5%) | 197 of 197 |
+| Ultra | 653 | 3.8 s / 11.0 s | 4 (0.6%) | 282 of 286 |
+
+Lightning's p95 comes from the calls of 2026-10-22 (item 19). The 4 invalid Ultra replies all ended on `length`. Provider prompt-cache hits, from `prompt_cache_hit_tokens`: Ultra 409,088 of 2,566,410 input tokens (15.9%), Super 912 of 813,222 (0.1%), Lightning none.
+
+## All items
+
 | # | Item | Where it bit us | Our workaround |
 |---|---|---|---|
 | 1 | Reasoning is on by default, and the off switch is not a standard parameter | every structured call | always send `chat_template_kwargs.enable_thinking` |
@@ -18,13 +46,15 @@ Evidence paths are all in this repo. Recorded responses and tests replay offline
 | 10 | Super invented a schema reference in a free-form JSON field | call-site labelling | schema comes from the code |
 | 11 | An Ultra judge batch left a case unscored | first live demo run failed | re-ask about skipped cases alone |
 | 12 | Super dropped spec details when writing call-site patches | patch stage, 5 of 6 sites | code writes the call; the model edits tests only |
-| 13 | Ultra repair replies broke the edit-block format | 3 repairs on 2 sites | none: the site goes to manual review |
+| 13 | Ultra repair replies broke the edit-block format | 3 repairs on 2 sites | the two slips seen are now read as format only |
 | – | Tavily answers picked other models' prices | price lookup | verify on the cited page |
 | 14 | Token Factory credits cannot fund AI Cloud Serverless Jobs | eval matrix on Nebius | local worker, job path tested against a fake CLI |
 | 15 | A fresh CLI profile lists no tenant, with no hint why | AI Cloud setup | open the console once |
 | 16 | `iam v2 project list --all` fails with an invalid `parentId` | AI Cloud setup | none found |
 | 17 | Console onboarding created a project in each of 9 regions | AI Cloud setup | none |
 | 18 | Without a bucket, Serverless Jobs move data only through 64 KiB injected files and logs (per the CLI reference) | job path design | chunked input files, results as base64 lines in the log |
+| 19 | Lightning was about 50 times slower on 2026-10-22 than on 2026-10-19 | every Lightning eval on the open-source repo | a tier must answer within the call's own timeout |
+| 20 | A `json_schema` reply cut at `max_tokens` is invalid JSON | an Ultra judge batch on the open-source repo | ask once more with twice the room |
 
 ## Token Factory API behaviour
 
@@ -43,6 +73,22 @@ Lightning with `response_format=json_schema`, `max_tokens=400` and thinking on r
 - Workaround: thinking off for structured calls; when thinking is on, at least 2000 tokens of budget.
 - Ask: a separate reasoning budget (for example `max_reasoning_tokens`), or at least a `finish_reason` that says the reasoning ate the answer's budget, plus the partial `reasoning_content`.
 - Evidence: `docs/plan/tf-probe.md` (rows `lightning/json_schema`, `super/json_schema`, `ultra/json_schema`); `docs/evidence/live-observations.md` (E1, the patch-writer rounds).
+- Repro (one Lightning call, the probe's request from `scripts/probe_tf.py`; needs `NEBIUS_API_KEY`). On 2026-10-19 it printed `'' length 400`:
+
+  ```bash
+  uv run python - <<'EOF'
+  import os
+  from openai import OpenAI
+  c = OpenAI(base_url="https://api.tokenfactory.nebius.com/v1", api_key=os.environ["NEBIUS_API_KEY"])
+  schema = {"name": "lbl", "strict": True, "schema": {"type": "object", "properties": {"label": {"type": "string", "enum": ["billing", "bug"]}}, "required": ["label"], "additionalProperties": False}}
+  r = c.chat.completions.create(
+      model="nvidia/Nemotron-3_5-Lightning", max_tokens=400, temperature=0,
+      messages=[{"role": "user", "content": "Ticket: 'I was charged twice for invoice 991.' Classify."}],
+      response_format={"type": "json_schema", "json_schema": schema},
+  )
+  print(repr(r.choices[0].message.content), r.choices[0].finish_reason, r.usage.completion_tokens)
+  EOF
+  ```
 
 ### 3. Lightning put reasoning prose into `content`
 
@@ -59,6 +105,19 @@ On the demo app's tool-calling agent step (cs_02), Lightning with `tool_choice="
 - Workaround: `build_request` sends `"auto"` to Lightning when the source code said `"required"`, and the PR flags the substitution (`lightning_tool_choice_auto`).
 - Ask: fix the stop condition for forced tool calls on Lightning, or reject the combination with a 400.
 - Evidence: `tests/agents/test_adapter.py::test_required_tool_choice_on_token_factory` (the looping and the no-effect of `parallel_tool_calls=false`, with the markup visible in two of the cassettes in `tests/fixtures/cassettes/adapter/`) and `test_adapted_requests_run_on_token_factory[cs_02]` (`"auto"` gives one correct call).
+- Repro (sends the recorded request again, one Lightning call of about 900 input tokens; needs `NEBIUS_API_KEY`). The recorded reply printed `length 10 512`:
+
+  ```bash
+  uv run python - <<'EOF'
+  import json, os, pathlib
+  from openai import OpenAI
+  path = "tests/fixtures/cassettes/adapter/e7dde4783f07a856afaf4ce54a6795418fb3e42c250aa469e6df377368446eba.json"
+  req = json.loads(pathlib.Path(path).read_text())["request"]
+  c = OpenAI(base_url="https://api.tokenfactory.nebius.com/v1", api_key=os.environ["NEBIUS_API_KEY"])
+  r = c.chat.completions.create(model=req["model"], messages=req["messages"], **req["params"])
+  print(r.choices[0].finish_reason, len(r.choices[0].message.tool_calls or []), r.usage.completion_tokens)
+  EOF
+  ```
 
 ### 5. `reasoning_effort="low"` has a different effect on each tier
 
@@ -125,7 +184,7 @@ The judge scores a whole (site, tier, split) batch in one Ultra call, and the re
 
 In the second live run (`20261019-222942730-2c0f0b`, whose evaluation the demo uses), Nemotron 3 Super wrote each migrated call site from the evaluated adapter: model id, `extra_body` with the thinking switch, few-shot constant, and the test edits. All 6 sites had passed parity, and 5 of the 6 patches were rejected, 4 by our patch checks and 1 by the repo's own tests. The few-shot constant was defined but not used (cs_01, cs_04), the old `messages.create` call stayed in place (cs_02), the model id was not the evaluated tier's and `extra_body` was missing (cs_04), two SEARCH blocks overlapped (cs_03), and a test that checks the prompt failed (cs_06). Only cs_05 was patched. Each rejection was a lost migration, not a wrong one, because the checks caught every bad patch.
 
-- Workaround: code now writes the evaluated request into the call site (an AST rewrite, with the request as literal keyword arguments), and the model may edit only tests and test fakes. Every non-test file must match the code-written tree. With that change, the final runs patched 3 sites.
+- Workaround: code now writes the evaluated request into the call site (an AST rewrite, with the request as literal keyword arguments), and the model may edit only tests and test fakes. Every non-test file must match the code-written tree. With that change, the 2026-10-20 runs patched 3 sites. As shipped: after later patcher fixes (repairs applied to the files the model last saw, tolerated format slips, cleanup of imports Offramp's rewrite left unused), the final demo run `20261022-014146107-57cca9` patched 5 of 6.
 - Ask: guidance on the edit format Super handles best (unified diff, SEARCH/REPLACE blocks, whole files). Ours was a guess.
 - Evidence: `docs/evidence/live-observations.md` (E6, the rejection reasons quoted from that run's report).
 
@@ -133,7 +192,7 @@ In the second live run (`20261019-222942730-2c0f0b`, whose evaluation the demo u
 
 When the repo's checks reject a patch, Nemotron 3 Ultra (thinking off, `max_tokens=12000`) gets the failure and replies with new edit blocks. The prompt shows the format and says to begin with `FILE:`. A reply counts only if it holds complete `FILE:` / `<<<<<<< SEARCH` / `=======` / `>>>>>>> REPLACE` blocks. Three replies did not, on the two sites that ended in manual review. The cs_01 repair in the fourth live run began with `FILES:` instead of `FILE:`. Both cs_03 repairs (third and fourth runs) ended their block with a bare `REPLACE` line instead of `>>>>>>> REPLACE`; each was one block whose SEARCH part (144 and 171 lines) started at the top of `tests/fakes.py`. All three ended with `finish_reason: "stop"` at 670, 1,826 and 2,924 completion tokens, far below the cap, so they were not truncated.
 
-- Workaround: none that we ship. A reply with no complete block counts as a failed repair, and the site goes to manual review with that reason in the PR.
+- Workaround, as shipped: the two slips seen (`FILES:`, and a bare `REPLACE` closing line) are read as format only, so the edit inside still applies and every check still runs on it. Any other reply with no complete block counts as a failed repair, and the site goes to manual review with that reason in the PR. In the 2026-10-20 runs we had no workaround.
 - Ask: a constrained-output option for non-JSON formats (a regex or grammar `response_format`), so a fixed edit syntax can be enforced the way `json_schema` is.
 - Evidence: the reasons in the PR body's "What Offramp did NOT change" section (`offramp/api/replay/demo-events.pr.md`); reply extracts in `docs/evidence/live-observations.md` (E7).
 
@@ -143,7 +202,7 @@ When the repo's checks reject a patch, Nemotron 3 Ultra (thinking off, `max_toke
 
 Offramp looks up each source model's price and deprecation notice with Tavily at run time (7 basic searches while building it, 5 kept as recordings).
 
-- The `answer` field cannot be trusted for prices. In the recorded `o3` search (`tests/fixtures/tavily/o3.json`) Tavily's `answer` gives an output price of $80.00, which is `o3-pro`'s, and none of the 20 pages it returned prints `o3`'s own price: 6 are other o-series model pages (`o3-pro`, `o3-mini`, `o3-deep-research`), 13 are the o3/o4-mini launch post and its anchors, and the one pricing page came back as an excerpt that never mentions `o3`. A model extracting numbers can copy such a figure, so the extractor sees only the retrieved pages, and a price is accepted only if the cited page prints it against that exact model, not a similarly named one; otherwise we fall back to the price file and say so. `gpt-4o` and `o3` ended on that fallback because no returned page printed their own price.
+- The `answer` field cannot be trusted for prices. In the recorded `o3` search (`tests/fixtures/tavily/o3.json`) Tavily's `answer` gives an output price of $80.00, which is `o3-pro`'s, and none of the 20 pages it returned prints `o3`'s own price: 6 are other o-series model pages (`o3-pro`, `o3-mini`, `o3-deep-research`), 13 are the o3/o4-mini launch post and its anchors, and the one pricing page came back as an excerpt that never mentions `o3`. A model extracting numbers can copy such a figure, so the extractor sees only the retrieved pages, and a price is accepted only if the cited page prints it against that exact model, not a similarly named one; otherwise we fall back to the price file and say so. In the 2026-10-20 run, `gpt-4o` and `o3` ended on that fallback because no returned page printed their own price. As shipped: when the search results print no such price, one Tavily Extract of the vendor's own model page follows, and its price may only confirm the checked-in one. In the final demo run (2026-10-22) all six source-model prices were checked this way: two by search, four by Extract.
 - Ranking favours newer models: in the recorded `claude-sonnet-4-5` search (`tests/fixtures/tavily/claude-sonnet-4-5.json`), even with the model's table spelling in the query, 17 of the 20 results are Sonnet 5 pages and 2 are Sonnet 4.5 pages (ranked first). Our verifier has to tell them apart.
 - `include_domains` matches subdomains, so `community.openai.com` (user posts, one with the wrong price) entered a real `gpt-4o-mini` search. We now send `exclude_domains` and also drop those results locally.
 - Ask: an exact-domain option for `include_domains`, and the source passage behind each `answer`.
@@ -191,3 +250,63 @@ No Serverless Job ran on Nebius. We wrote the job path for the eval matrix (`off
 - **What only a real account can confirm.** Whether a real job accepts our flags as we use them (`--args` split on spaces, several `--inject-file`), the CPU platform and preset names (`cpu-d3`, `4vcpu-16gb`; the default is a GPU platform, and this work is network-bound), the field names of `nebius ai job get --format json`, and the log line format. Ask: a validate or dry-run mode for `nebius ai job create` that works before billing is set up, and an example CPU job in the docs.
 
 Evidence: the module docstrings of `offramp/evals/serverless_job/submit.py` and `offramp/evals/serverless_job/transport.py`, `tests/integration/test_serverless_job.py` (the fake CLI), and the log line in `web/public/replay/demo-events.json` (event 18).
+
+## Found on a real open-source repo (2026-10-22)
+
+Offramp also ran on a fork of [`mnemox-ai/idea-reality-mcp`](https://github.com/mnemox-ai/idea-reality-mcp) (MIT). Each of its five Anthropic call sites builds `AsyncAnthropic(timeout=30.0)` inside the function, so every call has a 30 s budget in production. Two items come from those runs.
+
+### 19. Lightning was about 50 times slower on 2026-10-22 than on 2026-10-19
+
+On 2026-10-19, the demo app's Lightning eval calls with thinking off took a median 1.5 s (219 calls; median 441 input and 58 output tokens). On 2026-10-22, between 02:00 and 08:00 UTC, the open-source repo's Lightning eval calls with thinking off took a median 78.0 s (160 calls; median 439.5 input and 57.5 output tokens). The median sizes were nearly the same; the time was not. Per (site, adapter) cell, Lightning's dev median ran from 39.7 s to 109.1 s in the two runs that made those calls (`20261022-023459043-590031` and `20261022-065443547-22ed36`), and one cell's p95 was 485.7 s. Super and Ultra answered in a median 4.0 s and 4.7 s on the same day, with longer replies (median 172 and 426.5 output tokens).
+
+The repo's own client gives up after 30 s, so at that speed Lightning could not serve these calls. Offramp now fails a tier whose holdout p50 is over the call's own timeout, and skips iterating a tier whose dev p50 is over twice it. In the final run, `20261022-153359255-7bea7c`, Lightning was not iterated on 4 sites (dev medians 64.3, 71.0, 76.7 and 97.5 s, measured on 2026-10-22 and served from the cache).
+
+- Limits of the measurement: latency is the client's wall time, so it includes queueing in Offramp's own pool (at most 8 eval calls in flight, on both days) and the SDK's retries. Failed requests leave no record. It is one six-hour window, so we cannot say whether it lasted.
+- Ask: per-model latency on a public status page, and a timing header on each response that splits queue time from generation time.
+- Evidence: [`docs/evidence/live-observations.md`](evidence/live-observations.md) (E8, the per-day medians from the response cache); [`docs/evidence/tf-production.md`](evidence/tf-production.md) ("Run errors" lists the four "Lightning not iterated" lines); each migrated or kept site's line in <https://github.com/vj-io/idea-reality-mcp/pull/1>; `tests/agents/test_verdict.py::test_a_tier_whose_dev_median_is_over_twice_the_timeout_is_not_iterated`.
+- Repro (three short calls, one per tier; needs `NEBIUS_API_KEY`). On 2026-10-19 the same Lightning request took 0.7 s for 60 tokens (`docs/plan/tf-probe.md`, row `lightning/think_off`):
+
+  ```bash
+  uv run python - <<'EOF'
+  import os, time
+  from openai import OpenAI
+  c = OpenAI(base_url="https://api.tokenfactory.nebius.com/v1", api_key=os.environ["NEBIUS_API_KEY"])
+  msg = [{"role": "user", "content": "Ticket: 'I was charged twice for invoice 991.' Classify."}]
+  for model in ["nvidia/Nemotron-3_5-Lightning", "nvidia/nemotron-3-super-120b-a12b", "nvidia/Nemotron-3-Ultra-550b-a55b"]:
+      t = time.time()
+      r = c.chat.completions.create(model=model, messages=msg, max_tokens=400, temperature=0,
+                                    extra_body={"chat_template_kwargs": {"enable_thinking": False}})
+      print(model, f"{time.time() - t:.1f} s", r.usage.completion_tokens, "tokens")
+  EOF
+  ```
+
+### 20. A `json_schema` reply cut at `max_tokens` is invalid JSON
+
+The Ultra judge scores a batch of cases in one call, with a `json_schema` response format (not strict) and thinking off. In run `20261022-065443547-22ed36`, the batch for the open-source repo's cs_05 Lightning dev cell (14 cases, 24,864 prompt tokens) stopped at `max_tokens` 2,500 with `finish_reason: "length"`. The prompt asks for a "note" of one short sentence per case. The 8 complete notes ran from 204 to 1,931 characters, and the JSON was cut inside the ninth entry. The reply did not parse, our response cache had stored it, and the cell was left unscored. It is the one `length` finish among the 141 recorded judge calls.
+
+- Workaround: the judge asks once more with twice the `max_tokens`, as a new request, so the cache cannot serve the cut reply; a reply that does not parse is deleted from the cache; a second miss fails the run, which can be resumed.
+- Ask: (a) say in the docs that a `length` finish voids the schema, or return an error rather than half a document; (b) support `maxLength` on string fields in `json_schema` decoding, so a note's length can be held. Our schema did not set `maxLength`, so we do not know whether it is honoured today. (c) Ultra wrote notes up to 1,931 characters where the prompt asked for one short sentence; guidance on length instructions would help.
+- Evidence: `tests/fixtures/judge/truncated_reply_run_22ed36.json` (the cut reply's text), `tests/agents/test_judge.py::test_a_reply_cut_off_mid_json_is_asked_once_more_with_more_room`, [`docs/evidence/live-observations.md`](evidence/live-observations.md) (E9).
+- Repro: the recorded request is not committed (its prompt holds the open-source repo's eval cases). Any `json_schema` call whose answer outgrows `max_tokens` shows the shape. We did not run this exact request:
+
+  ```bash
+  uv run python - <<'EOF'
+  import json, os
+  from openai import OpenAI
+  c = OpenAI(base_url="https://api.tokenfactory.nebius.com/v1", api_key=os.environ["NEBIUS_API_KEY"])
+  item = {"type": "object", "properties": {"case": {"type": "integer"}, "note": {"type": "string"}}, "required": ["case", "note"]}
+  schema = {"name": "batch", "schema": {"type": "object", "properties": {"items": {"type": "array", "items": item}}, "required": ["items"]}}
+  r = c.chat.completions.create(
+      model="nvidia/Nemotron-3-Ultra-550b-a55b", max_tokens=300, temperature=0,
+      messages=[{"role": "user", "content": "For cases 1 to 30, write a three-sentence note on why each number is interesting."}],
+      response_format={"type": "json_schema", "json_schema": schema},
+      extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+  )
+  print(r.choices[0].finish_reason)
+  try:
+      json.loads(r.choices[0].message.content)
+      print("valid JSON")
+  except json.JSONDecodeError as e:
+      print("invalid JSON:", e)
+  EOF
+  ```

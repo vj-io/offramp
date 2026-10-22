@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import fixtureFile from "../fixtures/dev-events.json";
 import {
@@ -130,6 +132,37 @@ describe("siteView", () => {
     expect(view.currentTier).toBeNull();
     expect(Object.values(view.perTier).every((r) => r === null)).toBe(true);
   });
+
+  it("a site waits for its first eval only until there is nothing to wait for", () => {
+    const early = applyEvents(initialRunState, events.filter((e) => e.type === "site"));
+    expect(siteView(early, "cs_01").status).toBe("Waiting for the first eval");
+    const v = Object.values(final.verdicts).find((x) => x.iterations === 2)!;
+    expect(siteView(final, v.site_id).status).toBe(`On ${v.tier![0].toUpperCase()}${v.tier!.slice(1)}`);
+  });
+
+  // The open-source recording's cs_03 builds its prompt at runtime, so prepare wrote no cases for it and its
+  // verdict is MANUAL_REVIEW with that reason (run 20261022-153359255-7bea7c).
+  const oss = parseRecording(
+    JSON.parse(readFileSync(join(__dirname, "../public/replay/oss-events.json"), "utf8")),
+  )!.events;
+  it("tripwire: a site prepare skipped never says it is waiting", () => {
+    const firstVerdict = oss.find((e) => e.type === "verdict")!.seq;
+    const evaluating = applyEvents(initialRunState, oss.filter((e) => e.seq < firstVerdict));
+    expect(siteView(evaluating, "cs_03").status).toBe("No eval cases, so not evaluated");
+    expect(siteView(evaluating, "cs_02").status).toBe("On Super");
+    const done = applyEvents(initialRunState, oss);
+    const view = siteView(done, "cs_03");
+    expect(view.status).toBe("No eval cases, so not evaluated");
+    expect(view.verdict?.decision).toBe("MANUAL_REVIEW");
+    expect(view.verdict?.reason).toMatch(/can't render this call's prompt statically/);
+  });
+
+  it("a verdict with no tier result says the site was not evaluated", () => {
+    const v = final.verdicts.cs_01;
+    const bare = { ...final, tierResults: final.tierResults.filter((r) => r.site_id !== "cs_01") };
+    const verdicts = { ...final.verdicts, cs_01: { ...v, tier: null, best_tier: null } };
+    expect(siteView({ ...bare, verdicts }, "cs_01").status).toBe("Not evaluated");
+  });
 });
 
 describe("stageProgress", () => {
@@ -249,6 +282,10 @@ describe("replayEntry (allow-list)", () => {
     expect(replayEntry("no-ultra")).toEqual({
       file: "/replay/no-ultra-events.json",
       policy: "a team that caps spend below Ultra",
+    });
+    expect(replayEntry("oss")).toEqual({
+      file: "/replay/oss-events.json",
+      policy: "a tier must answer within the call's own 30 s timeout",
     });
   });
   it("refuses any other name, including inherited object keys", () => {

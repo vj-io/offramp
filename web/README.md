@@ -24,7 +24,9 @@ Where the numbers come from (query string on the run and report pages):
 - `?replay=demo`: `public/replay/demo-events.json`, recorded from a real run (`offramp export-replay`), played at
   4x speed with pause, 1x / 4x / 16x and skip to end (gaps capped at 1.5 s; reduced-motion viewers start paused).
 - `?replay=no-ultra`: `public/replay/no-ultra-events.json`, the same repo under a team policy that caps spend
-  below Ultra. Any other `?replay=` name is refused. Until a recording's file exists the page says "This
+  below Ultra.
+- `?replay=oss`: `public/replay/oss-events.json`, a run on a fork of the open-source `mnemox-ai/idea-reality-mcp`,
+  whose calls each have a 30 s timeout. Any other `?replay=` name is refused. Until a recording's file exists the page says "This
   recording isn't published yet". A recording is an event array or `{events, diffs}`; `diffs` (each migrated
   site's shipped change) feeds the report's "What changed".
 - `?fixture=dev`: `fixtures/dev-events.json`, made-up numbers for building the UI, labelled on screen.

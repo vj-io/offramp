@@ -16,13 +16,13 @@ export default function NewRunPage() {
     <div className="grid items-start gap-12 pt-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:pt-10">
       <section className="flex flex-col gap-7">
         <h1 className="text-5xl leading-[0.98] font-extrabold tracking-[-0.035em] sm:text-7xl">
-          Prove which LLM calls can <Swipe mark="var(--hl-lime)">move to Nemotron.</Swipe>
+          Test which LLM calls can <Swipe mark="var(--hl-lime)">move to Nemotron.</Swipe>
         </h1>
         <p className="max-w-xl text-lg leading-relaxed font-medium">
-          Offramp finds every OpenAI and Anthropic call in a Python repo and proves which ones NVIDIA Nemotron on Nebius
-          Token Factory can take over, by checking them against reference answers with known ground truth. It opens a
-          pull request for the calls that reach the parity bar. The rest stay on their source model, with the numbers
-          that show why.
+          Offramp finds every OpenAI and Anthropic call in a Python repo and shows, on held-out cases, which ones NVIDIA
+          Nemotron on Nebius Token Factory can take over, by checking them against reference answers with known ground
+          truth. It opens a pull request for the calls that reach the parity bar. The rest stay on their source model,
+          with the numbers that show why.
         </p>
         <div className="flex flex-col gap-2">
           <p className="font-hand text-xl text-muted">Each call tries the cheapest tier first:</p>
@@ -47,6 +47,17 @@ export default function NewRunPage() {
           </Link>
           <span className="font-hand text-lg text-muted">A recorded run. No backend or keys needed.</span>
         </div>
+        <p className="font-hand text-lg text-muted">
+          Two more recorded runs:{" "}
+          <Link href="/runs/demo?replay=no-ultra" className="text-bluepen underline underline-offset-4">
+            the gate saying no
+          </Link>{" "}
+          (same app, Ultra not allowed) and{" "}
+          <Link href="/runs/demo?replay=oss" className="text-bluepen underline underline-offset-4">
+            a real open-source repo
+          </Link>
+          .
+        </p>
       </section>
 
       {localApi ? (

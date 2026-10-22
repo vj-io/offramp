@@ -1,51 +1,51 @@
 {
   "by_model": {
     "nvidia/Nemotron-3-Ultra-550b-a55b": {
-      "calls": 348,
+      "calls": 653,
       "finish_reasons": {
-        "length": 3,
-        "stop": 315,
+        "length": 4,
+        "stop": 619,
         "tool_calls": 30
       },
       "input_tokens": {
-        "p50": 897,
-        "total": 914957
+        "p50": 952,
+        "total": 2566410
       },
       "json": {
-        "calls_with_response_format": 163,
+        "calls_with_response_format": 286,
         "invalid_by_finish_reason": {
-          "length": 3
+          "length": 4
         },
         "repair_retries_of_synthetic_replies": 2,
         "repair_retry_calls": 3,
-        "valid": 160
+        "valid": 282
       },
       "latency_ms": {
-        "max": 39417,
-        "n": 348,
-        "p50": 2974,
-        "p95": 11326
+        "max": 215324,
+        "n": 653,
+        "p50": 3811,
+        "p95": 10997
       },
-      "length_share": 0.008620689655172414,
+      "length_share": 0.006125574272588055,
       "output_tokens": {
-        "p50": 185,
-        "total": 233235
+        "p50": 334,
+        "total": 446936
       },
       "prompt_cache": {
-        "hit_tokens": 143616,
-        "prompt_tokens_of_reporting_calls": 914957
+        "hit_tokens": 409088,
+        "prompt_tokens_of_reporting_calls": 2566410
       }
     },
     "nvidia/Nemotron-3_5-Lightning": {
-      "calls": 372,
+      "calls": 532,
       "finish_reasons": {
         "length": 2,
-        "stop": 337,
+        "stop": 497,
         "tool_calls": 33
       },
       "input_tokens": {
-        "p50": 597,
-        "total": 235779
+        "p50": 566,
+        "total": 341965
       },
       "json": {
         "calls_with_response_format": 83,
@@ -55,102 +55,102 @@
         "valid": 83
       },
       "latency_ms": {
-        "max": 82838,
-        "n": 372,
-        "p50": 1821,
-        "p95": 24758
+        "max": 485670,
+        "n": 532,
+        "p50": 3137,
+        "p95": 110836
       },
-      "length_share": 0.005376344086021506,
+      "length_share": 0.0037593984962406013,
       "output_tokens": {
-        "p50": 63,
-        "total": 196729
+        "p50": 62,
+        "total": 224337
       },
       "prompt_cache": {
         "hit_tokens": 0,
-        "prompt_tokens_of_reporting_calls": 235779
+        "prompt_tokens_of_reporting_calls": 341965
       }
     },
     "nvidia/nemotron-3-super-120b-a12b": {
-      "calls": 352,
+      "calls": 583,
       "finish_reasons": {
         "length": 3,
-        "stop": 293,
+        "stop": 524,
         "tool_calls": 56
       },
       "input_tokens": {
-        "p50": 731,
-        "total": 611295
+        "p50": 617,
+        "total": 813222
       },
       "json": {
-        "calls_with_response_format": 143,
+        "calls_with_response_format": 197,
         "invalid_by_finish_reason": {},
         "repair_retries_of_synthetic_replies": 0,
         "repair_retry_calls": 0,
-        "valid": 143
+        "valid": 197
       },
       "latency_ms": {
         "max": 61867,
-        "n": 352,
-        "p50": 2460,
-        "p95": 16000
+        "n": 583,
+        "p50": 3141,
+        "p95": 12455
       },
-      "length_share": 0.008522727272727272,
+      "length_share": 0.005145797598627788,
       "output_tokens": {
-        "p50": 79,
-        "total": 215556
+        "p50": 94,
+        "total": 275131
       },
       "prompt_cache": {
-        "hit_tokens": 0,
-        "prompt_tokens_of_reporting_calls": 611295
+        "hit_tokens": 912,
+        "prompt_tokens_of_reporting_calls": 813222
       }
     }
   },
   "by_model_cache_only": {
     "nvidia/Nemotron-3-Ultra-550b-a55b": {
-      "calls": 201,
+      "calls": 505,
       "finish_reasons": {
-        "length": 2,
-        "stop": 189,
+        "length": 3,
+        "stop": 492,
         "tool_calls": 10
       },
       "input_tokens": {
-        "p50": 866,
-        "total": 655805
+        "p50": 989,
+        "total": 2293993
       },
       "json": {
-        "calls_with_response_format": 78,
+        "calls_with_response_format": 201,
         "invalid_by_finish_reason": {
-          "length": 2
+          "length": 3
         },
         "repair_retries_of_synthetic_replies": 0,
         "repair_retry_calls": 0,
-        "valid": 76
+        "valid": 198
       },
       "latency_ms": {
-        "max": 39417,
-        "n": 201,
-        "p50": 3618,
-        "p95": 11041
+        "max": 215324,
+        "n": 505,
+        "p50": 4171,
+        "p95": 10737
       },
-      "length_share": 0.009950248756218905,
+      "length_share": 0.005940594059405941,
       "output_tokens": {
-        "p50": 336,
-        "total": 169530
+        "p50": 422,
+        "total": 383114
       },
       "prompt_cache": {
-        "hit_tokens": 139264,
-        "prompt_tokens_of_reporting_calls": 655805
+        "hit_tokens": 400384,
+        "prompt_tokens_of_reporting_calls": 2293993
       }
     },
     "nvidia/Nemotron-3_5-Lightning": {
-      "calls": 243,
+      "calls": 403,
       "finish_reasons": {
-        "stop": 233,
+        "stop": 393,
         "tool_calls": 10
       },
       "input_tokens": {
-        "p50": 554,
-        "total": 140340
+        "p50": 458,
+        "total": 246526
       },
       "json": {
         "calls_with_response_format": 52,
@@ -160,67 +160,67 @@
         "valid": 52
       },
       "latency_ms": {
-        "max": 38753,
-        "n": 243,
-        "p50": 1773,
-        "p95": 22510
+        "max": 485670,
+        "n": 403,
+        "p50": 3904,
+        "p95": 117403
       },
       "length_share": 0.0,
       "output_tokens": {
-        "p50": 64,
-        "total": 128910
+        "p50": 61,
+        "total": 156518
       },
       "prompt_cache": {
         "hit_tokens": 0,
-        "prompt_tokens_of_reporting_calls": 140340
+        "prompt_tokens_of_reporting_calls": 246526
       }
     },
     "nvidia/nemotron-3-super-120b-a12b": {
-      "calls": 211,
+      "calls": 441,
       "finish_reasons": {
         "length": 3,
-        "stop": 193,
+        "stop": 423,
         "tool_calls": 15
       },
       "input_tokens": {
-        "p50": 669,
-        "total": 471440
+        "p50": 599,
+        "total": 671569
       },
       "json": {
-        "calls_with_response_format": 86,
+        "calls_with_response_format": 139,
         "invalid_by_finish_reason": {},
         "repair_retries_of_synthetic_replies": 0,
         "repair_retry_calls": 0,
-        "valid": 86
+        "valid": 139
       },
       "latency_ms": {
         "max": 61867,
-        "n": 211,
-        "p50": 2817,
-        "p95": 21306
+        "n": 441,
+        "p50": 3420,
+        "p95": 12542
       },
-      "length_share": 0.014218009478672985,
+      "length_share": 0.006802721088435374,
       "output_tokens": {
-        "p50": 88,
-        "total": 167224
+        "p50": 111,
+        "total": 226421
       },
       "prompt_cache": {
-        "hit_tokens": 0,
-        "prompt_tokens_of_reporting_calls": 471440
+        "hit_tokens": 912,
+        "prompt_tokens_of_reporting_calls": 671569
       }
     }
   },
   "by_model_cassette_only": {
     "nvidia/Nemotron-3-Ultra-550b-a55b": {
-      "calls": 147,
+      "calls": 148,
       "finish_reasons": {
         "length": 1,
-        "stop": 126,
+        "stop": 127,
         "tool_calls": 20
       },
       "input_tokens": {
         "p50": 944,
-        "total": 259152
+        "total": 272417
       },
       "json": {
         "calls_with_response_format": 85,
@@ -233,18 +233,18 @@
       },
       "latency_ms": {
         "max": 15826,
-        "n": 147,
+        "n": 148,
         "p50": 2420,
         "p95": 11718
       },
-      "length_share": 0.006802721088435374,
+      "length_share": 0.006756756756756757,
       "output_tokens": {
         "p50": 90,
-        "total": 63705
+        "total": 63822
       },
       "prompt_cache": {
-        "hit_tokens": 4352,
-        "prompt_tokens_of_reporting_calls": 259152
+        "hit_tokens": 8704,
+        "prompt_tokens_of_reporting_calls": 272417
       }
     },
     "nvidia/Nemotron-3_5-Lightning": {
@@ -282,82 +282,85 @@
       }
     },
     "nvidia/nemotron-3-super-120b-a12b": {
-      "calls": 141,
+      "calls": 142,
       "finish_reasons": {
-        "stop": 100,
+        "stop": 101,
         "tool_calls": 41
       },
       "input_tokens": {
         "p50": 761,
-        "total": 139855
+        "total": 141653
       },
       "json": {
-        "calls_with_response_format": 57,
+        "calls_with_response_format": 58,
         "invalid_by_finish_reason": {},
         "repair_retries_of_synthetic_replies": 0,
         "repair_retry_calls": 0,
-        "valid": 57
+        "valid": 58
       },
       "latency_ms": {
         "max": 32505,
-        "n": 141,
+        "n": 142,
         "p50": 2125,
         "p95": 10919
       },
       "length_share": 0.0,
       "output_tokens": {
         "p50": 73,
-        "total": 48332
+        "total": 48710
       },
       "prompt_cache": {
         "hit_tokens": 0,
-        "prompt_tokens_of_reporting_calls": 139855
+        "prompt_tokens_of_reporting_calls": 141653
       }
     }
   },
   "by_model_in_runs": {
     "nvidia/Nemotron-3-Ultra-550b-a55b": {
-      "calls": 167,
+      "calls": 464,
       "finish_reasons": {
-        "stop": 157,
+        "length": 1,
+        "stop": 453,
         "tool_calls": 10
       },
       "input_tokens": {
-        "p50": 602,
-        "total": 383846
+        "p50": 834,
+        "total": 2015798
       },
       "json": {
-        "calls_with_response_format": 69,
-        "invalid_by_finish_reason": {},
+        "calls_with_response_format": 185,
+        "invalid_by_finish_reason": {
+          "length": 1
+        },
         "repair_retries_of_synthetic_replies": 0,
         "repair_retry_calls": 0,
-        "valid": 69
+        "valid": 184
       },
       "latency_ms": {
-        "max": 39417,
-        "n": 167,
-        "p50": 3034,
-        "p95": 11041
+        "max": 215324,
+        "n": 464,
+        "p50": 4154,
+        "p95": 10737
       },
-      "length_share": 0.0,
+      "length_share": 0.0021551724137931034,
       "output_tokens": {
-        "p50": 107,
-        "total": 108585
+        "p50": 370,
+        "total": 317093
       },
       "prompt_cache": {
-        "hit_tokens": 34816,
-        "prompt_tokens_of_reporting_calls": 383846
+        "hit_tokens": 295936,
+        "prompt_tokens_of_reporting_calls": 2015798
       }
     },
     "nvidia/Nemotron-3_5-Lightning": {
-      "calls": 243,
+      "calls": 403,
       "finish_reasons": {
-        "stop": 233,
+        "stop": 393,
         "tool_calls": 10
       },
       "input_tokens": {
-        "p50": 554,
-        "total": 140340
+        "p50": 458,
+        "total": 246526
       },
       "json": {
         "calls_with_response_format": 52,
@@ -367,134 +370,134 @@
         "valid": 52
       },
       "latency_ms": {
-        "max": 38753,
-        "n": 243,
-        "p50": 1773,
-        "p95": 22510
+        "max": 485670,
+        "n": 403,
+        "p50": 3904,
+        "p95": 117403
       },
       "length_share": 0.0,
       "output_tokens": {
-        "p50": 64,
-        "total": 128910
+        "p50": 61,
+        "total": 156518
       },
       "prompt_cache": {
         "hit_tokens": 0,
-        "prompt_tokens_of_reporting_calls": 140340
+        "prompt_tokens_of_reporting_calls": 246526
       }
     },
     "nvidia/nemotron-3-super-120b-a12b": {
-      "calls": 157,
+      "calls": 364,
       "finish_reasons": {
         "length": 1,
-        "stop": 141,
+        "stop": 348,
         "tool_calls": 15
       },
       "input_tokens": {
-        "p50": 599,
-        "total": 281654
+        "p50": 453,
+        "total": 461325
       },
       "json": {
-        "calls_with_response_format": 50,
+        "calls_with_response_format": 80,
         "invalid_by_finish_reason": {},
         "repair_retries_of_synthetic_replies": 0,
         "repair_retry_calls": 0,
-        "valid": 50
+        "valid": 80
       },
       "latency_ms": {
         "max": 45360,
-        "n": 157,
-        "p50": 2245,
-        "p95": 21306
+        "n": 364,
+        "p50": 3391,
+        "p95": 11539
       },
-      "length_share": 0.006369426751592357,
+      "length_share": 0.0027472527472527475,
       "output_tokens": {
-        "p50": 74,
-        "total": 119535
+        "p50": 89,
+        "total": 166129
       },
       "prompt_cache": {
-        "hit_tokens": 0,
-        "prompt_tokens_of_reporting_calls": 281654
+        "hit_tokens": 912,
+        "prompt_tokens_of_reporting_calls": 461325
       }
     }
   },
   "by_model_role": {
     "nvidia/Nemotron-3-Ultra-550b-a55b": {
       "adapter": {
-        "calls": 18,
+        "calls": 25,
         "finish_reasons": {
-          "stop": 18
+          "stop": 25
         },
         "input_tokens": {
-          "p50": 1134,
-          "total": 26540
+          "p50": 1291,
+          "total": 35987
         },
         "json": {
-          "calls_with_response_format": 18,
+          "calls_with_response_format": 25,
           "invalid_by_finish_reason": {},
           "repair_retries_of_synthetic_replies": 1,
           "repair_retry_calls": 1,
-          "valid": 18
+          "valid": 25
         },
         "latency_ms": {
           "max": 5609,
-          "n": 18,
-          "p50": 2142,
-          "p95": 5609
+          "n": 25,
+          "p50": 2287,
+          "p95": 4404
         },
         "length_share": 0.0,
         "output_tokens": {
           "p50": 265,
-          "total": 4924
+          "total": 6759
         },
         "prompt_cache": {
           "hit_tokens": 0,
-          "prompt_tokens_of_reporting_calls": 26540
+          "prompt_tokens_of_reporting_calls": 35987
         }
       },
       "case_gen": {
-        "calls": 14,
+        "calls": 21,
         "finish_reasons": {
           "length": 2,
-          "stop": 12
+          "stop": 19
         },
         "input_tokens": {
           "p50": 937,
-          "total": 15701
+          "total": 21937
         },
         "json": {
-          "calls_with_response_format": 14,
+          "calls_with_response_format": 21,
           "invalid_by_finish_reason": {
             "length": 2
           },
           "repair_retries_of_synthetic_replies": 0,
           "repair_retry_calls": 0,
-          "valid": 12
+          "valid": 19
         },
         "latency_ms": {
           "max": 11846,
-          "n": 14,
+          "n": 21,
           "p50": 4906,
-          "p95": 11846
+          "p95": 10307
         },
-        "length_share": 0.14285714285714285,
+        "length_share": 0.09523809523809523,
         "output_tokens": {
           "p50": 1026,
-          "total": 20063
+          "total": 25139
         },
         "prompt_cache": {
           "hit_tokens": 0,
-          "prompt_tokens_of_reporting_calls": 15701
+          "prompt_tokens_of_reporting_calls": 21937
         }
       },
       "eval_target": {
-        "calls": 193,
+        "calls": 359,
         "finish_reasons": {
-          "stop": 163,
+          "stop": 329,
           "tool_calls": 30
         },
         "input_tokens": {
-          "p50": 575,
-          "total": 106785
+          "p50": 589,
+          "total": 214270
         },
         "json": {
           "calls_with_response_format": 41,
@@ -505,95 +508,98 @@
         },
         "latency_ms": {
           "max": 18456,
-          "n": 193,
-          "p50": 2038,
-          "p95": 12304
+          "n": 359,
+          "p50": 2842,
+          "p95": 10424
         },
         "length_share": 0.0,
         "output_tokens": {
-          "p50": 72,
-          "total": 81329
+          "p50": 77,
+          "total": 120207
         },
         "prompt_cache": {
           "hit_tokens": 0,
-          "prompt_tokens_of_reporting_calls": 106785
+          "prompt_tokens_of_reporting_calls": 214270
         }
       },
       "iterator": {
-        "calls": 42,
+        "calls": 57,
         "finish_reasons": {
           "length": 1,
-          "stop": 41
+          "stop": 56
         },
         "input_tokens": {
-          "p50": 4702,
-          "total": 220890
+          "p50": 6779,
+          "total": 409131
         },
         "json": {
-          "calls_with_response_format": 42,
+          "calls_with_response_format": 57,
           "invalid_by_finish_reason": {
             "length": 1
           },
           "repair_retries_of_synthetic_replies": 1,
           "repair_retry_calls": 2,
-          "valid": 41
+          "valid": 56
         },
         "latency_ms": {
-          "max": 9054,
-          "n": 42,
-          "p50": 3629,
-          "p95": 5308
+          "max": 11666,
+          "n": 57,
+          "p50": 4165,
+          "p95": 10329
         },
-        "length_share": 0.023809523809523808,
+        "length_share": 0.017543859649122806,
         "output_tokens": {
-          "p50": 653,
-          "total": 33610
+          "p50": 739,
+          "total": 55956
         },
         "prompt_cache": {
           "hit_tokens": 4352,
-          "prompt_tokens_of_reporting_calls": 220890
+          "prompt_tokens_of_reporting_calls": 409131
         }
       },
       "judge": {
-        "calls": 47,
+        "calls": 141,
         "finish_reasons": {
-          "stop": 47
+          "length": 1,
+          "stop": 140
         },
         "input_tokens": {
-          "p50": 5861,
-          "total": 202117
+          "p50": 6122,
+          "total": 1371917
         },
         "json": {
-          "calls_with_response_format": 47,
-          "invalid_by_finish_reason": {},
+          "calls_with_response_format": 141,
+          "invalid_by_finish_reason": {
+            "length": 1
+          },
           "repair_retries_of_synthetic_replies": 0,
           "repair_retry_calls": 0,
-          "valid": 47
+          "valid": 140
         },
         "latency_ms": {
-          "max": 6186,
-          "n": 47,
-          "p50": 3325,
-          "p95": 6015
+          "max": 215324,
+          "n": 141,
+          "p50": 4620,
+          "p95": 12097
         },
-        "length_share": 0.0,
+        "length_share": 0.0070921985815602835,
         "output_tokens": {
-          "p50": 916,
-          "total": 35350
+          "p50": 1204,
+          "total": 168390
         },
         "prompt_cache": {
-          "hit_tokens": 0,
-          "prompt_tokens_of_reporting_calls": 202117
+          "hit_tokens": 208896,
+          "prompt_tokens_of_reporting_calls": 1371917
         }
       },
       "patcher": {
-        "calls": 33,
+        "calls": 49,
         "finish_reasons": {
-          "stop": 33
+          "stop": 49
         },
         "input_tokens": {
           "p50": 9194,
-          "total": 342092
+          "total": 512336
         },
         "json": {
           "calls_with_response_format": 0,
@@ -604,18 +610,18 @@
         },
         "latency_ms": {
           "max": 39417,
-          "n": 33,
-          "p50": 5168,
-          "p95": 28348
+          "n": 49,
+          "p50": 4883,
+          "p95": 16831
         },
         "length_share": 0.0,
         "output_tokens": {
-          "p50": 1061,
-          "total": 55957
+          "p50": 931,
+          "total": 68483
         },
         "prompt_cache": {
-          "hit_tokens": 139264,
-          "prompt_tokens_of_reporting_calls": 342092
+          "hit_tokens": 195840,
+          "prompt_tokens_of_reporting_calls": 512336
         }
       },
       "reference_audit": {
@@ -653,15 +659,15 @@
     },
     "nvidia/Nemotron-3_5-Lightning": {
       "eval_target": {
-        "calls": 372,
+        "calls": 532,
         "finish_reasons": {
           "length": 2,
-          "stop": 337,
+          "stop": 497,
           "tool_calls": 33
         },
         "input_tokens": {
-          "p50": 597,
-          "total": 235779
+          "p50": 566,
+          "total": 341965
         },
         "json": {
           "calls_with_response_format": 83,
@@ -671,64 +677,64 @@
           "valid": 83
         },
         "latency_ms": {
-          "max": 82838,
-          "n": 372,
-          "p50": 1821,
-          "p95": 24758
+          "max": 485670,
+          "n": 532,
+          "p50": 3137,
+          "p95": 110836
         },
-        "length_share": 0.005376344086021506,
+        "length_share": 0.0037593984962406013,
         "output_tokens": {
-          "p50": 63,
-          "total": 196729
+          "p50": 62,
+          "total": 224337
         },
         "prompt_cache": {
           "hit_tokens": 0,
-          "prompt_tokens_of_reporting_calls": 235779
+          "prompt_tokens_of_reporting_calls": 341965
         }
       }
     },
     "nvidia/nemotron-3-super-120b-a12b": {
       "case_gen": {
-        "calls": 39,
+        "calls": 57,
         "finish_reasons": {
-          "stop": 39
+          "stop": 57
         },
         "input_tokens": {
-          "p50": 1215,
-          "total": 54543
+          "p50": 1030,
+          "total": 68685
         },
         "json": {
-          "calls_with_response_format": 39,
+          "calls_with_response_format": 57,
           "invalid_by_finish_reason": {},
           "repair_retries_of_synthetic_replies": 0,
           "repair_retry_calls": 0,
-          "valid": 39
+          "valid": 57
         },
         "latency_ms": {
-          "max": 14007,
-          "n": 39,
-          "p50": 3349,
-          "p95": 9456
+          "max": 20472,
+          "n": 57,
+          "p50": 3568,
+          "p95": 14007
         },
         "length_share": 0.0,
         "output_tokens": {
-          "p50": 341,
-          "total": 16397
+          "p50": 362,
+          "total": 28713
         },
         "prompt_cache": {
           "hit_tokens": 0,
-          "prompt_tokens_of_reporting_calls": 54543
+          "prompt_tokens_of_reporting_calls": 68685
         }
       },
       "eval_target": {
-        "calls": 219,
+        "calls": 396,
         "finish_reasons": {
-          "stop": 163,
+          "stop": 340,
           "tool_calls": 56
         },
         "input_tokens": {
-          "p50": 599,
-          "total": 142413
+          "p50": 465,
+          "total": 247864
         },
         "json": {
           "calls_with_response_format": 50,
@@ -739,18 +745,18 @@
         },
         "latency_ms": {
           "max": 37572,
-          "n": 219,
-          "p50": 2139,
-          "p95": 18479
+          "n": 396,
+          "p50": 3253,
+          "p95": 11269
         },
         "length_share": 0.0,
         "output_tokens": {
-          "p50": 75,
-          "total": 111855
+          "p50": 87,
+          "total": 154214
         },
         "prompt_cache": {
-          "hit_tokens": 0,
-          "prompt_tokens_of_reporting_calls": 142413
+          "hit_tokens": 912,
+          "prompt_tokens_of_reporting_calls": 247864
         }
       },
       "patcher": {
@@ -787,77 +793,45 @@
         }
       },
       "pr_writer": {
-        "calls": 4,
+        "calls": 12,
         "finish_reasons": {
-          "stop": 4
+          "stop": 12
         },
         "input_tokens": {
-          "p50": 1796,
-          "total": 6879
+          "p50": 1798,
+          "total": 20028
         },
         "json": {
-          "calls_with_response_format": 4,
+          "calls_with_response_format": 12,
           "invalid_by_finish_reason": {},
           "repair_retries_of_synthetic_replies": 0,
           "repair_retry_calls": 0,
-          "valid": 4
+          "valid": 12
         },
         "latency_ms": {
           "max": 7337,
-          "n": 4,
-          "p50": 3496,
+          "n": 12,
+          "p50": 3875,
           "p95": 7337
         },
         "length_share": 0.0,
         "output_tokens": {
-          "p50": 400,
-          "total": 1640
+          "p50": 378,
+          "total": 4679
         },
         "prompt_cache": {
           "hit_tokens": 0,
-          "prompt_tokens_of_reporting_calls": 6879
+          "prompt_tokens_of_reporting_calls": 20028
         }
       },
       "pricing_extract": {
-        "calls": 9,
-        "finish_reasons": {
-          "stop": 9
-        },
-        "input_tokens": {
-          "p50": 5048,
-          "total": 46103
-        },
-        "json": {
-          "calls_with_response_format": 9,
-          "invalid_by_finish_reason": {},
-          "repair_retries_of_synthetic_replies": 0,
-          "repair_retry_calls": 0,
-          "valid": 9
-        },
-        "latency_ms": {
-          "max": 4563,
-          "n": 9,
-          "p50": 2287,
-          "p95": 4563
-        },
-        "length_share": 0.0,
-        "output_tokens": {
-          "p50": 73,
-          "total": 829
-        },
-        "prompt_cache": {
-          "hit_tokens": 0,
-          "prompt_tokens_of_reporting_calls": 46103
-        }
-      },
-      "scanner": {
         "calls": 24,
         "finish_reasons": {
           "stop": 24
         },
         "input_tokens": {
-          "p50": 936,
-          "total": 27772
+          "p50": 4245,
+          "total": 105911
         },
         "json": {
           "calls_with_response_format": 24,
@@ -867,90 +841,122 @@
           "valid": 24
         },
         "latency_ms": {
-          "max": 6397,
+          "max": 5364,
           "n": 24,
-          "p50": 1411,
-          "p95": 3768
+          "p50": 2541,
+          "p95": 4563
+        },
+        "length_share": 0.0,
+        "output_tokens": {
+          "p50": 73,
+          "total": 2132
+        },
+        "prompt_cache": {
+          "hit_tokens": 0,
+          "prompt_tokens_of_reporting_calls": 105911
+        }
+      },
+      "scanner": {
+        "calls": 29,
+        "finish_reasons": {
+          "stop": 29
+        },
+        "input_tokens": {
+          "p50": 986,
+          "total": 34088
+        },
+        "json": {
+          "calls_with_response_format": 29,
+          "invalid_by_finish_reason": {},
+          "repair_retries_of_synthetic_replies": 0,
+          "repair_retry_calls": 0,
+          "valid": 29
+        },
+        "latency_ms": {
+          "max": 6397,
+          "n": 29,
+          "p50": 1397,
+          "p95": 4596
         },
         "length_share": 0.0,
         "output_tokens": {
           "p50": 58,
-          "total": 1298
+          "total": 1585
         },
         "prompt_cache": {
           "hit_tokens": 0,
-          "prompt_tokens_of_reporting_calls": 27772
+          "prompt_tokens_of_reporting_calls": 34088
         }
       },
       "verdict": {
-        "calls": 17,
+        "calls": 25,
         "finish_reasons": {
-          "stop": 17
+          "stop": 25
         },
         "input_tokens": {
           "p50": 348,
-          "total": 5975
+          "total": 9036
         },
         "json": {
-          "calls_with_response_format": 17,
+          "calls_with_response_format": 25,
           "invalid_by_finish_reason": {},
           "repair_retries_of_synthetic_replies": 0,
           "repair_retry_calls": 0,
-          "valid": 17
+          "valid": 25
         },
         "latency_ms": {
           "max": 7936,
-          "n": 17,
-          "p50": 1508,
-          "p95": 7936
+          "n": 25,
+          "p50": 1727,
+          "p95": 4221
         },
         "length_share": 0.0,
         "output_tokens": {
-          "p50": 34,
-          "total": 596
+          "p50": 33,
+          "total": 867
         },
         "prompt_cache": {
           "hit_tokens": 0,
-          "prompt_tokens_of_reporting_calls": 5975
+          "prompt_tokens_of_reporting_calls": 9036
         }
       }
     }
   },
   "by_model_thinking": {
     "nvidia/Nemotron-3-Ultra-550b-a55b | off": {
-      "calls": 321,
+      "calls": 626,
       "finish_reasons": {
-        "length": 3,
-        "stop": 288,
+        "length": 4,
+        "stop": 592,
         "tool_calls": 30
       },
       "input_tokens": {
-        "p50": 952,
-        "total": 898524
+        "p50": 1011,
+        "total": 2549977
       },
       "json": {
-        "calls_with_response_format": 162,
+        "calls_with_response_format": 285,
         "invalid_by_finish_reason": {
-          "length": 3
+          "length": 4
         },
         "repair_retries_of_synthetic_replies": 2,
         "repair_retry_calls": 3,
-        "valid": 159
+        "valid": 281
       },
       "latency_ms": {
-        "max": 39417,
-        "n": 321,
-        "p50": 2680,
-        "p95": 7305
+        "max": 215324,
+        "n": 626,
+        "p50": 3679,
+        "p95": 9782
       },
-      "length_share": 0.009345794392523364,
+      "length_share": 0.006389776357827476,
       "output_tokens": {
-        "p50": 97,
-        "total": 159507
+        "p50": 290,
+        "total": 373208
       },
       "prompt_cache": {
-        "hit_tokens": 143616,
-        "prompt_tokens_of_reporting_calls": 898524
+        "hit_tokens": 409088,
+        "prompt_tokens_of_reporting_calls": 2549977
       }
     },
     "nvidia/Nemotron-3-Ultra-550b-a55b | on": {
@@ -986,15 +992,15 @@
       }
     },
     "nvidia/Nemotron-3_5-Lightning | off": {
-      "calls": 336,
+      "calls": 496,
       "finish_reasons": {
         "length": 2,
-        "stop": 301,
+        "stop": 461,
         "tool_calls": 33
       },
       "input_tokens": {
-        "p50": 567,
-        "total": 214201
+        "p50": 485,
+        "total": 320387
       },
       "json": {
         "calls_with_response_format": 83,
@@ -1004,19 +1010,19 @@
         "valid": 83
       },
       "latency_ms": {
-        "max": 8852,
-        "n": 336,
-        "p50": 1563,
-        "p95": 4513
+        "max": 485670,
+        "n": 496,
+        "p50": 2803,
+        "p95": 113300
       },
-      "length_share": 0.005952380952380952,
+      "length_share": 0.004032258064516129,
       "output_tokens": {
         "p50": 57,
-        "total": 17598
+        "total": 45206
       },
       "prompt_cache": {
         "hit_tokens": 0,
-        "prompt_tokens_of_reporting_calls": 214201
+        "prompt_tokens_of_reporting_calls": 320387
       }
     },
     "nvidia/Nemotron-3_5-Lightning | on": {
@@ -1052,37 +1058,37 @@
       }
     },
     "nvidia/nemotron-3-super-120b-a12b | off": {
-      "calls": 282,
+      "calls": 513,
       "finish_reasons": {
         "length": 3,
-        "stop": 253,
+        "stop": 484,
         "tool_calls": 26
       },
       "input_tokens": {
-        "p50": 723,
-        "total": 541557
+        "p50": 587,
+        "total": 743484
       },
       "json": {
-        "calls_with_response_format": 129,
+        "calls_with_response_format": 183,
         "invalid_by_finish_reason": {},
         "repair_retries_of_synthetic_replies": 0,
         "repair_retry_calls": 0,
-        "valid": 129
+        "valid": 183
       },
       "latency_ms": {
         "max": 61867,
-        "n": 282,
-        "p50": 2008,
-        "p95": 10573
+        "n": 513,
+        "p50": 2874,
+        "p95": 10355
       },
-      "length_share": 0.010638297872340425,
+      "length_share": 0.005847953216374269,
       "output_tokens": {
-        "p50": 71,
-        "total": 112558
+        "p50": 79,
+        "total": 172133
       },
       "prompt_cache": {
-        "hit_tokens": 0,
-        "prompt_tokens_of_reporting_calls": 541557
+        "hit_tokens": 912,
+        "prompt_tokens_of_reporting_calls": 743484
       }
     },
     "nvidia/nemotron-3-super-120b-a12b | on": {
@@ -1121,14 +1127,14 @@
   },
   "by_model_thinking_eval_target": {
     "nvidia/Nemotron-3-Ultra-550b-a55b | off": {
-      "calls": 167,
+      "calls": 333,
       "finish_reasons": {
-        "stop": 137,
+        "stop": 303,
         "tool_calls": 30
       },
       "input_tokens": {
-        "p50": 537,
-        "total": 91184
+        "p50": 545,
+        "total": 198669
       },
       "json": {
         "calls_with_response_format": 41,
@@ -1138,19 +1144,19 @@
         "valid": 41
       },
       "latency_ms": {
-        "max": 11326,
-        "n": 167,
-        "p50": 1798,
-        "p95": 5209
+        "max": 11539,
+        "n": 333,
+        "p50": 2514,
+        "p95": 8144
       },
       "length_share": 0.0,
       "output_tokens": {
-        "p50": 55,
-        "total": 9603
+        "p50": 70,
+        "total": 48481
       },
       "prompt_cache": {
         "hit_tokens": 0,
-        "prompt_tokens_of_reporting_calls": 91184
+        "prompt_tokens_of_reporting_calls": 198669
       }
     },
     "nvidia/Nemotron-3-Ultra-550b-a55b | on": {
@@ -1186,15 +1192,15 @@
       }
     },
     "nvidia/Nemotron-3_5-Lightning | off": {
-      "calls": 336,
+      "calls": 496,
       "finish_reasons": {
         "length": 2,
-        "stop": 301,
+        "stop": 461,
         "tool_calls": 33
       },
       "input_tokens": {
-        "p50": 567,
-        "total": 214201
+        "p50": 485,
+        "total": 320387
       },
       "json": {
         "calls_with_response_format": 83,
@@ -1204,19 +1210,19 @@
         "valid": 83
       },
       "latency_ms": {
-        "max": 8852,
-        "n": 336,
-        "p50": 1563,
-        "p95": 4513
+        "max": 485670,
+        "n": 496,
+        "p50": 2803,
+        "p95": 113300
       },
-      "length_share": 0.005952380952380952,
+      "length_share": 0.004032258064516129,
       "output_tokens": {
         "p50": 57,
-        "total": 17598
+        "total": 45206
       },
       "prompt_cache": {
         "hit_tokens": 0,
-        "prompt_tokens_of_reporting_calls": 214201
+        "prompt_tokens_of_reporting_calls": 320387
       }
     },
     "nvidia/Nemotron-3_5-Lightning | on": {
@@ -1252,14 +1258,14 @@
       }
     },
     "nvidia/nemotron-3-super-120b-a12b | off": {
-      "calls": 149,
+      "calls": 326,
       "finish_reasons": {
-        "stop": 123,
+        "stop": 300,
         "tool_calls": 26
       },
       "input_tokens": {
-        "p50": 352,
-        "total": 72675
+        "p50": 389,
+        "total": 178126
       },
       "json": {
         "calls_with_response_format": 36,
@@ -1269,19 +1275,19 @@
         "valid": 36
       },
       "latency_ms": {
-        "max": 10639,
-        "n": 149,
-        "p50": 1632,
-        "p95": 6579
+        "max": 12662,
+        "n": 326,
+        "p50": 2847,
+        "p95": 9434
       },
       "length_share": 0.0,
       "output_tokens": {
-        "p50": 68,
-        "total": 8857
+        "p50": 72,
+        "total": 51216
       },
       "prompt_cache": {
-        "hit_tokens": 0,
-        "prompt_tokens_of_reporting_calls": 72675
+        "hit_tokens": 912,
+        "prompt_tokens_of_reporting_calls": 178126
       }
     },
     "nvidia/nemotron-3-super-120b-a12b | on": {
@@ -1449,75 +1455,302 @@
         "prompt_tokens_of_reporting_calls": 24171
       }
     },
-    "cache_outside_runs": {
-      "calls": 88,
+    "20261021-010850445-554f5f": {
+      "calls": 11,
       "finish_reasons": {
-        "length": 4,
-        "stop": 84
+        "stop": 11
       },
       "input_tokens": {
-        "p50": 2474,
-        "total": 461745
+        "p50": 6671,
+        "total": 87938
       },
       "json": {
-        "calls_with_response_format": 45,
+        "calls_with_response_format": 6,
+        "invalid_by_finish_reason": {},
+        "repair_retries_of_synthetic_replies": 0,
+        "repair_retry_calls": 0,
+        "valid": 6
+      },
+      "latency_ms": {
+        "max": 5364,
+        "n": 11,
+        "p50": 3121,
+        "p95": 5364
+      },
+      "length_share": 0.0,
+      "output_tokens": {
+        "p50": 216,
+        "total": 4759
+      },
+      "prompt_cache": {
+        "hit_tokens": 21760,
+        "prompt_tokens_of_reporting_calls": 87938
+      }
+    },
+    "20261021-121928793-c6ae9e": {
+      "calls": 14,
+      "finish_reasons": {
+        "stop": 14
+      },
+      "input_tokens": {
+        "p50": 7544,
+        "total": 103806
+      },
+      "json": {
+        "calls_with_response_format": 5,
+        "invalid_by_finish_reason": {},
+        "repair_retries_of_synthetic_replies": 0,
+        "repair_retry_calls": 0,
+        "valid": 5
+      },
+      "latency_ms": {
+        "max": 6448,
+        "n": 14,
+        "p50": 4016,
+        "p95": 6448
+      },
+      "length_share": 0.0,
+      "output_tokens": {
+        "p50": 405,
+        "total": 8751
+      },
+      "prompt_cache": {
+        "hit_tokens": 30464,
+        "prompt_tokens_of_reporting_calls": 103806
+      }
+    },
+    "20261022-005412408-1240bf": {
+      "calls": 7,
+      "finish_reasons": {
+        "stop": 7
+      },
+      "input_tokens": {
+        "p50": 3584,
+        "total": 28326
+      },
+      "json": {
+        "calls_with_response_format": 6,
+        "invalid_by_finish_reason": {},
+        "repair_retries_of_synthetic_replies": 0,
+        "repair_retry_calls": 0,
+        "valid": 6
+      },
+      "latency_ms": {
+        "max": 4322,
+        "n": 7,
+        "p50": 3652,
+        "p95": 4322
+      },
+      "length_share": 0.0,
+      "output_tokens": {
+        "p50": 106,
+        "total": 1395
+      },
+      "prompt_cache": {
+        "hit_tokens": 0,
+        "prompt_tokens_of_reporting_calls": 28326
+      }
+    },
+    "20261022-015732734-b5aee2": {
+      "calls": 13,
+      "finish_reasons": {
+        "stop": 13
+      },
+      "input_tokens": {
+        "p50": 309,
+        "total": 13904
+      },
+      "json": {
+        "calls_with_response_format": 4,
+        "invalid_by_finish_reason": {},
+        "repair_retries_of_synthetic_replies": 0,
+        "repair_retry_calls": 0,
+        "valid": 4
+      },
+      "latency_ms": {
+        "max": 7654,
+        "n": 13,
+        "p50": 4344,
+        "p95": 7654
+      },
+      "length_share": 0.0,
+      "output_tokens": {
+        "p50": 87,
+        "total": 2647
+      },
+      "prompt_cache": {
+        "hit_tokens": 0,
+        "prompt_tokens_of_reporting_calls": 13904
+      }
+    },
+    "20261022-023459043-590031": {
+      "calls": 203,
+      "finish_reasons": {
+        "stop": 203
+      },
+      "input_tokens": {
+        "p50": 440,
+        "total": 468490
+      },
+      "json": {
+        "calls_with_response_format": 41,
+        "invalid_by_finish_reason": {},
+        "repair_retries_of_synthetic_replies": 0,
+        "repair_retry_calls": 0,
+        "valid": 41
+      },
+      "latency_ms": {
+        "max": 485670,
+        "n": 203,
+        "p50": 6942,
+        "p95": 102638
+      },
+      "length_share": 0.0,
+      "output_tokens": {
+        "p50": 170,
+        "total": 80632
+      },
+      "prompt_cache": {
+        "hit_tokens": 912,
+        "prompt_tokens_of_reporting_calls": 468490
+      }
+    },
+    "20261022-065443547-22ed36": {
+      "calls": 235,
+      "finish_reasons": {
+        "length": 1,
+        "stop": 234
+      },
+      "input_tokens": {
+        "p50": 419,
+        "total": 479940
+      },
+      "json": {
+        "calls_with_response_format": 44,
         "invalid_by_finish_reason": {
-          "length": 2
+          "length": 1
         },
         "repair_retries_of_synthetic_replies": 0,
         "repair_retry_calls": 0,
         "valid": 43
       },
       "latency_ms": {
+        "max": 359300,
+        "n": 235,
+        "p50": 6517,
+        "p95": 117777
+      },
+      "length_share": 0.00425531914893617,
+      "output_tokens": {
+        "p50": 187,
+        "total": 93654
+      },
+      "prompt_cache": {
+        "hit_tokens": 0,
+        "prompt_tokens_of_reporting_calls": 479940
+      }
+    },
+    "20261022-153359255-7bea7c": {
+      "calls": 181,
+      "finish_reasons": {
+        "stop": 181
+      },
+      "input_tokens": {
+        "p50": 1204,
+        "total": 735405
+      },
+      "json": {
+        "calls_with_response_format": 40,
+        "invalid_by_finish_reason": {},
+        "repair_retries_of_synthetic_replies": 0,
+        "repair_retry_calls": 0,
+        "valid": 40
+      },
+      "latency_ms": {
+        "max": 215324,
+        "n": 181,
+        "p50": 4692,
+        "p95": 10482
+      },
+      "length_share": 0.0,
+      "output_tokens": {
+        "p50": 399,
+        "total": 90872
+      },
+      "prompt_cache": {
+        "hit_tokens": 208896,
+        "prompt_tokens_of_reporting_calls": 735405
+      }
+    },
+    "cache_outside_runs": {
+      "calls": 118,
+      "finish_reasons": {
+        "length": 4,
+        "stop": 114
+      },
+      "input_tokens": {
+        "p50": 1732,
+        "total": 488439
+      },
+      "json": {
+        "calls_with_response_format": 75,
+        "invalid_by_finish_reason": {
+          "length": 2
+        },
+        "repair_retries_of_synthetic_replies": 0,
+        "repair_retry_calls": 0,
+        "valid": 73
+      },
+      "latency_ms": {
         "max": 61867,
-        "n": 88,
-        "p50": 4609,
+        "n": 118,
+        "p50": 4181,
         "p95": 16831
       },
-      "length_share": 0.045454545454545456,
+      "length_share": 0.03389830508474576,
       "output_tokens": {
-        "p50": 653,
-        "total": 108634
+        "p50": 562,
+        "total": 126313
       },
       "prompt_cache": {
         "hit_tokens": 104448,
-        "prompt_tokens_of_reporting_calls": 461745
+        "prompt_tokens_of_reporting_calls": 488439
       }
     },
     "cassette": {
-      "calls": 417,
+      "calls": 419,
       "finish_reasons": {
         "length": 3,
-        "stop": 330,
+        "stop": 332,
         "tool_calls": 84
       },
       "input_tokens": {
-        "p50": 798,
-        "total": 494446
+        "p50": 808,
+        "total": 509509
       },
       "json": {
-        "calls_with_response_format": 173,
+        "calls_with_response_format": 174,
         "invalid_by_finish_reason": {
           "length": 1
         },
         "repair_retries_of_synthetic_replies": 2,
         "repair_retry_calls": 3,
-        "valid": 172
+        "valid": 173
       },
       "latency_ms": {
         "max": 82838,
-        "n": 417,
-        "p50": 2188,
+        "n": 419,
+        "p50": 2194,
         "p95": 13916
       },
-      "length_share": 0.007194244604316547,
+      "length_share": 0.007159904534606206,
       "output_tokens": {
         "p50": 79,
-        "total": 179856
+        "total": 180351
       },
       "prompt_cache": {
-        "hit_tokens": 4352,
-        "prompt_tokens_of_reporting_calls": 494446
+        "hit_tokens": 8704,
+        "prompt_tokens_of_reporting_calls": 509509
       }
     }
   },
@@ -1527,17 +1760,24 @@
       "20261019-222942730-2c0f0b": 149,
       "20261020-115200254-46f068": 15,
       "20261020-122354830-57c50b": 3,
-      "cache_outside_runs": 88,
-      "cassette": 417
+      "20261021-010850445-554f5f": 11,
+      "20261021-121928793-c6ae9e": 14,
+      "20261022-005412408-1240bf": 7,
+      "20261022-015732734-b5aee2": 13,
+      "20261022-023459043-590031": 203,
+      "20261022-065443547-22ed36": 235,
+      "20261022-153359255-7bea7c": 181,
+      "cache_outside_runs": 118,
+      "cassette": 419
     },
     "calls_by_source": {
-      "cache": 655,
-      "cassette": 417
+      "cache": 1349,
+      "cassette": 419
     },
     "created_at_first": "2026-10-19T07:56:50.702402+00:00",
-    "created_at_last": "2026-10-20T12:42:01.158213+00:00",
-    "duplicate_copies_dropped": 5,
-    "runs": 5,
+    "created_at_last": "2026-10-22T16:02:59.220921+00:00",
+    "duplicate_copies_dropped": 6,
+    "runs": 15,
     "synthetic_excluded": 2
   },
   "length_calls": [
@@ -1570,6 +1810,17 @@
       "output_tokens": 4000,
       "role": "case_gen",
       "scope": "cache_outside_runs",
+      "source": "cache",
+      "thinking": false,
+      "tool_choice": null
+    },
+    {
+      "json_kind": "json_schema",
+      "max_tokens": 2500,
+      "model": "nvidia/Nemotron-3-Ultra-550b-a55b",
+      "output_tokens": 2500,
+      "role": "judge",
+      "scope": "20261022-065443547-22ed36",
       "source": "cache",
       "thinking": false,
       "tool_choice": null
@@ -1631,45 +1882,49 @@
     }
   ],
   "overall": {
-    "calls": 1072,
+    "calls": 1768,
     "finish_reasons": {
-      "length": 8,
-      "stop": 945,
+      "length": 9,
+      "stop": 1640,
       "tool_calls": 119
     },
     "input_tokens": {
-      "p50": 650,
-      "total": 1762031
+      "p50": 648,
+      "total": 3721597
     },
     "json": {
-      "calls_with_response_format": 389,
+      "calls_with_response_format": 566,
       "invalid_by_finish_reason": {
-        "length": 3
+        "length": 4
       },
       "repair_retries_of_synthetic_replies": 2,
       "repair_retry_calls": 3,
-      "valid": 386
+      "valid": 562
     },
     "latency_ms": {
-      "max": 82838,
-      "n": 1072,
-      "p50": 2384,
-      "p95": 16831
+      "max": 485670,
+      "n": 1768,
+      "p50": 3431,
+      "p95": 71365
     },
-    "length_share": 0.007462686567164179,
+    "length_share": 0.005090497737556561,
     "output_tokens": {
-      "p50": 76,
-      "total": 645520
+      "p50": 88,
+      "total": 946404
     },
     "prompt_cache": {
-      "hit_tokens": 143616,
-      "prompt_tokens_of_reporting_calls": 1762031
+      "hit_tokens": 410000,
+      "prompt_tokens_of_reporting_calls": 3721597
     }
   },
   "role_evidence": {
     "eval_target_system_prompt_heads": {
+      "Given a product idea, generate 3-5 distinct search angles.\nE": 68,
       "You are HelpHub's order-support agent. You resolve customer ": 171,
-      "You are HelpHub's support assistant. Answer the customer's q": 155,
+      "You are HelpHub's support assistant. Answer the customer's q": 164,
+      "You are a competitive intelligence analyst writing a paid re": 150,
+      "You are a search query generator for developer tool market r": 159,
+      "You are a startup advisor analyzing real market competition ": 117,
       "You are the ticket router for HelpHub, a customer support pl": 108,
       "You compute subscription refunds for HelpHub billing. Follow": 88,
       "You extract structured order data from customer support emai": 174,
@@ -1696,6 +1951,46 @@
       {
         "message": "cs_04: lightning dev: judge: left 1 case(s) unscored: cs_04:020; retrying once",
         "run_id": "20261019-220847641-43d3df"
+      },
+      {
+        "message": "patch: removed 2 patch(es) of `helphub.cli.Anthropic`, which Offramp's rewrite removed",
+        "run_id": "20261022-005412408-1240bf"
+      },
+      {
+        "message": "patch: removed 2 patch(es) of `helphub.cli.Anthropic`, which Offramp's rewrite removed",
+        "run_id": "20261022-011012152-704127"
+      },
+      {
+        "message": "patch: removed 2 patch(es) of `helphub.cli.Anthropic`, which Offramp's rewrite removed",
+        "run_id": "20261022-012608016-d7c85b"
+      },
+      {
+        "message": "patch: removed 2 patch(es) of `helphub.cli.Anthropic`, which Offramp's rewrite removed",
+        "run_id": "20261022-014146107-57cca9"
+      },
+      {
+        "message": "patch: removed 2 patch(es) of `helphub.cli.Anthropic`, which Offramp's rewrite removed",
+        "run_id": "20261022-015732734-b5aee2"
+      },
+      {
+        "message": "cs_05 lightning dev: ProviderError: judge: reply does not match the rubric schema",
+        "run_id": "20261022-065443547-22ed36"
+      },
+      {
+        "message": "cs_01: Lightning not iterated: dev median 64.3 s is more than twice the call's 30 s timeout",
+        "run_id": "20261022-153359255-7bea7c"
+      },
+      {
+        "message": "cs_02: Lightning not iterated: dev median 76.7 s is more than twice the call's 30 s timeout",
+        "run_id": "20261022-153359255-7bea7c"
+      },
+      {
+        "message": "cs_04: Lightning not iterated: dev median 71.0 s is more than twice the call's 30 s timeout",
+        "run_id": "20261022-153359255-7bea7c"
+      },
+      {
+        "message": "cs_05: Lightning not iterated: dev median 97.5 s is more than twice the call's 30 s timeout",
+        "run_id": "20261022-153359255-7bea7c"
       }
     ]
   },
@@ -1759,6 +2054,126 @@
       "cache_ultra_agent_calls": 0,
       "matches_budget": true,
       "run_id": "20261020-124700775-6cb31e"
+    },
+    {
+      "budget_tf_spend_usd": 0.08140750000000001,
+      "budget_tokens_in": 87938,
+      "budget_tokens_out": 4759,
+      "budget_ultra_agent_calls": 5,
+      "cache_calls": 11,
+      "cache_tokens_in": 87938,
+      "cache_tokens_out": 4759,
+      "cache_ultra_agent_calls": 5,
+      "matches_budget": true,
+      "run_id": "20261021-010850445-554f5f"
+    },
+    {
+      "budget_tf_spend_usd": 0.11678490000000001,
+      "budget_tokens_in": 103806,
+      "budget_tokens_out": 8751,
+      "budget_ultra_agent_calls": 9,
+      "cache_calls": 14,
+      "cache_tokens_in": 103806,
+      "cache_tokens_out": 8751,
+      "cache_ultra_agent_calls": 9,
+      "matches_budget": true,
+      "run_id": "20261021-121928793-c6ae9e"
+    },
+    {
+      "budget_tf_spend_usd": 0.017187300000000003,
+      "budget_tokens_in": 28326,
+      "budget_tokens_out": 1395,
+      "budget_ultra_agent_calls": 1,
+      "cache_calls": 7,
+      "cache_tokens_in": 28326,
+      "cache_tokens_out": 1395,
+      "cache_ultra_agent_calls": 1,
+      "matches_budget": true,
+      "run_id": "20261022-005412408-1240bf"
+    },
+    {
+      "budget_tf_spend_usd": 0.0,
+      "budget_tokens_in": 0,
+      "budget_tokens_out": 0,
+      "budget_ultra_agent_calls": 0,
+      "cache_calls": 0,
+      "cache_tokens_in": 0,
+      "cache_tokens_out": 0,
+      "cache_ultra_agent_calls": 0,
+      "matches_budget": true,
+      "run_id": "20261022-011012152-704127"
+    },
+    {
+      "budget_tf_spend_usd": 0.0,
+      "budget_tokens_in": 0,
+      "budget_tokens_out": 0,
+      "budget_ultra_agent_calls": 0,
+      "cache_calls": 0,
+      "cache_tokens_in": 0,
+      "cache_tokens_out": 0,
+      "cache_ultra_agent_calls": 0,
+      "matches_budget": true,
+      "run_id": "20261022-012608016-d7c85b"
+    },
+    {
+      "budget_tf_spend_usd": 0.0,
+      "budget_tokens_in": 0,
+      "budget_tokens_out": 0,
+      "budget_ultra_agent_calls": 0,
+      "cache_calls": 0,
+      "cache_tokens_in": 0,
+      "cache_tokens_out": 0,
+      "cache_ultra_agent_calls": 0,
+      "matches_budget": true,
+      "run_id": "20261022-014146107-57cca9"
+    },
+    {
+      "budget_tf_spend_usd": 0.0155765,
+      "budget_tokens_in": 13904,
+      "budget_tokens_out": 2647,
+      "budget_ultra_agent_calls": 2,
+      "cache_calls": 13,
+      "cache_tokens_in": 13904,
+      "cache_tokens_out": 2647,
+      "cache_ultra_agent_calls": 2,
+      "matches_budget": true,
+      "run_id": "20261022-015732734-b5aee2"
+    },
+    {
+      "budget_tf_spend_usd": 0.6442897200000002,
+      "budget_tokens_in": 498099,
+      "budget_tokens_out": 93186,
+      "budget_ultra_agent_calls": 40,
+      "cache_calls": 203,
+      "cache_tokens_in": 468490,
+      "cache_tokens_out": 80632,
+      "cache_ultra_agent_calls": 40,
+      "matches_budget": false,
+      "run_id": "20261022-023459043-590031"
+    },
+    {
+      "budget_tf_spend_usd": 0.6051253200000003,
+      "budget_tokens_in": 479940,
+      "budget_tokens_out": 93654,
+      "budget_ultra_agent_calls": 40,
+      "cache_calls": 235,
+      "cache_tokens_in": 479940,
+      "cache_tokens_out": 93654,
+      "cache_ultra_agent_calls": 40,
+      "matches_budget": true,
+      "run_id": "20261022-065443547-22ed36"
+    },
+    {
+      "budget_tf_spend_usd": 1.086834,
+      "budget_tokens_in": 869711,
+      "budget_tokens_out": 104572,
+      "budget_ultra_agent_calls": 39,
+      "cache_calls": 181,
+      "cache_tokens_in": 735405,
+      "cache_tokens_out": 90872,
+      "cache_ultra_agent_calls": 34,
+      "matches_budget": false,
+      "run_id": "20261022-153359255-7bea7c"
     }
   ],
   "tier_of_model": {

@@ -35,6 +35,27 @@ const demo = toSnapshot(
   ),
 );
 
+// The real-repo recording (?replay=oss): run 20261022-153359255-7bea7c on a fork of mnemox-ai/idea-reality-mcp.
+const oss = toSnapshot(
+  applyEvents(
+    initialRunState,
+    parseRecording(JSON.parse(readFileSync(join(__dirname, "../public/replay/oss-events.json"), "utf8")))!.events,
+  ),
+);
+
+describe("the open-source recording", () => {
+  it("tripwire: names its target repo, its PR on the fork and what moved", () => {
+    expect(repoName(oss.config!.repo_url)).toBe("vj-io/idea-reality-mcp");
+    expect(oss.artifacts.pr_url).toBe("https://github.com/vj-io/idea-reality-mcp/pull/1");
+    expect(headline(oss.verdicts, oss.totals)).toEqual({
+      lead: "2 of 5 call sites reached parity on Nemotron (held-out cases) · 2 migrated · est. −78% on those 2",
+      // cs_03 has no cases and cs_05's source model has no price on file: the run's totals cover the other 3
+      scope:
+        "−59% across the 3 priced sites ($2.15 → $0.89 per 1,000 calls, est.), since 1 stays on its source model; the other 2 have no cost estimate",
+    });
+  });
+});
+
 const V = (over: Partial<Verdict>): Verdict => ({
   site_id: "cs_01",
   decision: "MIGRATE",
@@ -73,6 +94,19 @@ describe("report headline", () => {
       scope: "−60% across all 4 ($30.00 → $12.00 per 1,000 calls, est.), since 2 stay for review and 1 stays on its source model",
     });
     expect(headline([kept], null)).toEqual({ lead: "0 of 1 call site reached parity on Nemotron (held-out cases) · none migrated", scope: null });
+  });
+  it("scopes the all-sites figure to the sites with a cost estimate, as the run's totals are", () => {
+    const totals = { est_cost_before_per_1k: 20, est_cost_after_per_1k: 11 } as never;
+    const kept = V({ site_id: "cs_02", decision: "KEEP_CLOSED", tier: null, best_tier: "ultra", parity_pct: 71 });
+    const unpriced = V({ site_id: "cs_03", decision: "MANUAL_REVIEW", cost_before_per_1k: null, cost_after_per_1k: null });
+    expect(headline([V({}), kept, unpriced], totals)).toEqual({
+      lead: "2 of 3 call sites reached parity on Nemotron (held-out cases) · 1 migrated · est. −90% on that one",
+      scope: "−45% across the 2 priced sites ($20.00 → $11.00 per 1,000 calls, est.), since 1 stays on its source model; the other 1 has no cost estimate",
+    });
+    const noAfter = V({ site_id: "cs_04", cost_after_per_1k: null }); // migrated, after cost not measured
+    expect(headline([V({}), kept, noAfter], totals).scope).toBe(
+      "−45% across the 2 priced sites ($20.00 → $11.00 per 1,000 calls, est.), since 1 stays on its source model; the other 1 has no cost estimate",
+    );
   });
   it("leaves out a cost figure it cannot compute from every migrated site", () => {
     expect(headline([V({ cost_after_per_1k: null })], null).lead).toBe(
