@@ -92,6 +92,7 @@ def run_tier(
     *,
     build_request: BuildRequest | None = None,
     return_candidates: bool = False,
+    scored: TierResult | None = None,
 ) -> TierResult | BudgetStop | tuple[TierResult | BudgetStop, list[CandidateResult]]:
     """Evaluate `adapter` on `tier` over the `split` cases of `site`.
 
@@ -102,7 +103,14 @@ def run_tier(
 
     return_candidates=True returns (result, the CandidateResult of every case in case order) so the
     Iterator can show failing outputs; ([] with a BudgetStop).
+
+    `scored`: this cell's result as already measured (the eval matrix's, for this adapter version, tier and
+    split). It is returned as is: the calls are replayed (cached) only for their outputs, and nothing is
+    judged or scored again, so one set of outputs never gets two scores (or costs two judge calls).
     """
+    key = (site.id, Tier(tier), adapter.version, split)
+    if scored is not None and (scored.site_id, scored.tier, scored.adapter_version, scored.split) != key:
+        raise ValueError(f"the result given as scored is for another cell than {key}")
     contract = site.contract
     if contract is None:
         raise ValueError(f"site {site.id} has no contract: label it before evaluating")
@@ -127,6 +135,8 @@ def run_tier(
     ]
     try:
         results = _run_calls(client, requests, selected, tier, adapter.version)
+        if scored is not None:
+            return (scored, results) if return_candidates else scored
         if free_text:
             scores, reference_mean = _judge_scores(client, selected, results, refs)
         else:

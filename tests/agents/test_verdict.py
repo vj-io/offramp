@@ -740,13 +740,26 @@ class Runner:
     """Stub run_tier: the share of passing cases per (tier, split[, version]); records every call."""
 
     def __init__(self, table: dict):
-        self.table, self.calls = table, []
+        self.table, self.calls, self.reused = table, [], []
 
     def __call__(
-        self, site, cases, baselines, adapter, tier, client, split, thresholds, *, return_candidates=False
+        self,
+        site,
+        cases,
+        baselines,
+        adapter,
+        tier,
+        client,
+        split,
+        thresholds,
+        *,
+        return_candidates=False,
+        scored=None,
     ):
         assert return_candidates is True
         self.calls.append((Tier(tier), split, adapter.version))
+        if scored is not None:  # run_tier(scored=...): the calls are replayed, the scores are not redone
+            self.reused.append((Tier(tier), split, adapter.version))
         outcome = self.table.get((tier, split, adapter.version), self.table.get((tier, split)))
         if isinstance(outcome, list):  # one outcome per call, in order
             outcome = outcome.pop(0)
@@ -795,7 +808,7 @@ class Runner:
             )
             for c in selected
         ]
-        return res, out
+        return (scored or res), out
 
 
 class StubIterator:
@@ -839,6 +852,17 @@ def route(
 
 
 L, S, U = Tier.LIGHTNING, Tier.SUPER, Tier.ULTRA
+
+
+def matrix_cells(table: dict, site=SITE, cases=ROUTE_CASES) -> dict:
+    """The eval matrix's cells for `table`: v0 on every tier's dev cases, keyed as route_site's `prior`."""
+    runner = Runner(dict(table))
+    config = RunConfig(repo_url="x")
+    return {
+        (t, 0, "dev"): runner(site, cases, {}, V0, t, None, "dev", config, return_candidates=True)[0]
+        for t in (L, S, U)
+        if (t, "dev") in table
+    }
 
 
 def test_migrates_to_the_cheapest_tier_passing_dev_and_holdout_and_stops():
@@ -995,7 +1019,112 @@ def test_the_iterator_hitting_the_ultra_cap_keeps_the_site_closed():
         {(L, "dev"): 0.5}, iterator=StubIterator(error=BudgetExceeded("Ultra agent call cap reached (40)"))
     )
     assert out.verdict.decision == "KEEP_CLOSED"
-    assert out.verdict.reason == "budget: Ultra agent call cap reached (40)"
+    assert out.verdict.reason == (
+        "budget: Ultra agent call cap reached (40); best reached: Lightning dev, parity vs reference 48.0% < "
+        "95% after 0 adapter iterations (holdout not measured)"
+    )
+
+
+# ---------------------------------------------------------------- the eval matrix's cells (`prior`)
+
+ULTRA_CAP = BudgetExceeded("Ultra agent call cap reached (40)")
+
+
+def test_cells_the_matrix_measured_are_reused_not_scored_again():
+    """Run 20261022-023459043-590031, cs_01: the routing loop re-judged the Lightning v0 outputs the matrix
+    had judged (4.42, then 3.44) and spent 2 Ultra calls on it. The matrix's TierResult is now the cell's
+    result; the runner only replays the calls (cached) for the outputs the Iterator is shown."""
+    table = {(L, "dev"): 0.5, (L, "dev", 1): 1.0, (L, "holdout"): 1.0}
+    prior = matrix_cells(table)
+    out, runner, it = route(table, prior=prior)
+    assert runner.reused == [(L, "dev", 0)] and out.results[0] is prior[L, 0, "dev"]
+    assert runner.calls == [(L, "dev", 0), (L, "dev", 1), (L, "holdout", 1)]  # v1 and holdout are new cells
+    assert out.verdict.decision == "MIGRATE" and out.verdict.tier == L and out.verdict.iterations == 1
+
+
+def test_a_tier_that_passed_dev_in_the_matrix_runs_its_holdout_before_a_cheaper_tier_is_iterated():
+    """cs_04 of that run: Super (4.91) and Ultra (4.87) passed dev in the matrix, Lightning (4.40) did not.
+    The loop iterated Lightning first, the Ultra cap stopped it, and a site with a dev-passing tier ended a
+    budget stop. Now the cheapest dev-passing tier's holdout runs before the first Iterator call."""
+    table = {(L, "dev"): 0.5, (S, "dev"): 1.0, (U, "dev"): 1.0, (S, "holdout"): 1.0}
+    out, runner, it = route(table, prior=matrix_cells(table))
+    assert runner.calls == [
+        (L, "dev", 0),
+        (S, "holdout", 0),  # secured before the Iterator's first call
+        (L, "dev", 1),
+        (L, "dev", 2),
+        (L, "dev", 3),
+        (S, "dev", 0),  # reused from the matrix; its holdout is not run again
+    ]
+    assert out.verdict.decision == "MIGRATE" and out.verdict.tier == S and out.adapter == V0
+    assert "not fully tried" not in out.verdict.reason  # every cheaper tier was tried in full
+
+
+def test_a_budget_stop_after_a_secured_verdict_keeps_it_and_says_cheaper_tiers_were_not_fully_tried():
+    table = {(L, "dev"): 0.5, (S, "dev"): 1.0, (U, "dev"): 1.0, (S, "holdout"): 1.0}
+    llm = FakeLLM({VERDICT_ROLE: [{"reason": "Idea report angles stay correct on Super."}]})
+    out, runner, it = route(table, prior=matrix_cells(table), iterator=StubIterator(error=ULTRA_CAP), llm=llm)
+    v = out.verdict
+    assert runner.calls == [(L, "dev", 0), (S, "holdout", 0)]
+    assert (v.decision, v.tier, v.failed_gate, v.iterations) == ("MIGRATE", S, None, 0)
+    assert v.reason.endswith("; Lightning not fully tried (budget: Ultra agent call cap reached (40)).")
+    facts = json.loads(llm.calls[0]["messages"][1]["content"])
+    assert facts["outcome"].endswith("cheaper tiers were not fully tried before the run's budget ran out")
+
+
+def test_a_cheaper_tier_that_passes_after_a_verdict_was_secured_wins():
+    table = {
+        (L, "dev"): 0.5,
+        (L, "dev", 1): 1.0,
+        (L, "holdout"): 1.0,
+        (S, "dev"): 1.0,
+        (S, "holdout"): 1.0,
+    }
+    out, runner, it = route(table, prior=matrix_cells(table))
+    assert runner.calls == [(L, "dev", 0), (S, "holdout", 0), (L, "dev", 1), (L, "holdout", 1)]
+    assert out.verdict.decision == "MIGRATE" and out.verdict.tier == L and out.verdict.iterations == 1
+
+
+def test_a_secured_holdout_that_fails_moves_to_the_next_dev_passing_tier():
+    table = {(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): 0.5, (U, "dev"): 1.0, (U, "holdout"): 1.0}
+    out, runner, it = route(
+        table, prior=matrix_cells(table), config=RunConfig(repo_url="x", max_iterations=1)
+    )
+    assert runner.calls == [
+        (L, "dev", 0),
+        (S, "holdout", 0),
+        (U, "holdout", 0),
+        (L, "dev", 1),
+        (S, "dev", 0),  # passed dev, failed holdout: moves on without iterating, as before
+        (U, "dev", 0),
+    ]
+    assert out.verdict.decision == "MIGRATE" and out.verdict.tier == U
+
+
+def test_a_budget_stop_before_any_holdout_names_the_best_tier_and_score_reached():
+    """cs_01 and cs_05 of that run ended KEEP_CLOSED("budget ...") with best_tier, best_score null and
+    iterations 0. The best adapter measured so far, the matrix's cells included, is now on the verdict."""
+    table = {(L, "dev"): 0.5, (S, "dev"): 0.4, (U, "dev"): 0.6}
+    out, runner, it = route(
+        table, site=FREE_TEXT, prior=matrix_cells(table, FREE_TEXT), iterator=StubIterator(error=ULTRA_CAP)
+    )
+    v = out.verdict
+    assert (v.decision, v.failed_gate, v.best_tier, v.iterations) == ("KEEP_CLOSED", "budget", U, 0)
+    assert v.best_score == pytest.approx(3.8) and v.parity_pct is None and out.adapter is None
+    assert v.reason == (
+        "budget: Ultra agent call cap reached (40); best reached: Ultra dev, judge mean 3.80 < 4.0 "
+        "(parity vs reference 60.0%) after 0 adapter iterations (holdout not measured)"
+    )
+
+
+def test_a_budget_stop_counts_the_iterations_of_the_best_adapter():
+    table = {(L, "dev"): 0.5, (L, "dev", 1): 0.9, (L, "dev", 2): "budget"}
+    out, runner, it = route(table)
+    v = out.verdict
+    assert (v.best_tier, v.best_score, v.iterations) == (L, 0.88, 1)  # v1: 22 of 25 dev cases
+    assert (
+        "best reached: Lightning dev, parity vs reference 88.0% < 95% after 1 adapter iteration " in v.reason
+    )
 
 
 def test_an_iterator_without_a_valid_adapter_ends_that_tiers_iterations():

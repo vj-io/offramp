@@ -23,10 +23,12 @@ from offramp.schemas import (
     BaselineResult,
     CallSite,
     CandidateResult,
+    CaseScore,
     Contract,
     EvalCase,
     ModelOutput,
     Tier,
+    TierMetrics,
     TierResult,
 )
 from offramp.tf import BudgetExceeded, CacheMiss, ChatResult, FakeLLM, get_tier
@@ -555,6 +557,32 @@ def test_free_text_case_scores_keep_the_judge_score_of_the_reference():
         ("cs_01:001", 5.0, 1.0),
         ("cs_01:002", 5.0, 4.0),
     ]
+
+
+def test_a_result_already_scored_is_reused_and_nothing_is_judged_again():
+    """The eval matrix judged these outputs (run 20261022-023459043-590031, cs_01 Lightning v0: 4.42); the
+    routing loop re-judged them (3.44) for 2 more Ultra calls. Given the matrix's result, run_tier replays the
+    calls for their outputs and returns that result unchanged."""
+    cases = [_case(1), _case(2)]
+    client = CaseClient({c.id: _ok(f"answer {c.id}") for c in cases})  # no judge reply: a judge call fails
+    matrix = TierResult(
+        site_id="cs_01",
+        tier=Tier.LIGHTNING,
+        adapter_version=2,
+        split="dev",
+        passed=False,
+        score=4.42,
+        metrics=TierMetrics(p50_ms=1, p95_ms=1, tokens_in=1, tokens_out=1, cost_per_1k_calls_usd=0.0),
+        case_scores=[CaseScore(case_id=c.id, passed=False, score=4.42) for c in cases],
+    )
+    result, candidates = _run(
+        client, cases, [], site=_site("free_text"), scored=matrix, return_candidates=True
+    )
+
+    assert result is matrix and client.judge_calls == []
+    assert [c.output.text for c in candidates] == ["answer cs_01:001", "answer cs_01:002"]
+    with pytest.raises(ValueError, match="holdout"):  # a result for another cell is never reused
+        _run(client, cases, [], site=_site("free_text"), split="holdout", scored=matrix)
 
 
 def test_budget_exceeded_in_judge_returns_budget_stop():

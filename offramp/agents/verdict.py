@@ -116,6 +116,31 @@ def stopped(site: CallSite, decision: Decision, reason: str, gate: Gate | None =
     return Verdict(site_id=site.id, decision=decision, reason=reason, failed_gate=gate)
 
 
+def budget_stopped(
+    site: CallSite,
+    reason: str,
+    best: tuple[Tier, TierResult, int] | None,
+    thresholds: Thresholds | RunConfig,
+) -> Verdict:
+    """KEEP_CLOSED for a per-run cap that stopped routing before any verdict. `best`: the best adapter
+    measured so far (its tier, its dev result, its iterations); the verdict carries its tier, dev score and
+    iterations, and the reason names them. Its holdout was never run, so there is no parity."""
+    if best is None:
+        return stopped(site, "KEEP_CLOSED", reason, "budget")
+    tier, dev, n = best
+    measured, _ = _phrase(dev, site.contract.task_type, thresholds)
+    return Verdict(
+        site_id=site.id,
+        decision="KEEP_CLOSED",
+        best_tier=tier,
+        best_score=dev.score,
+        iterations=n,
+        failed_gate="budget",
+        reason=f"{reason}; best reached: {tier.value.capitalize()} dev, {measured} after {_iterations(n)} "
+        "(holdout not measured)",
+    )
+
+
 def closed_reference_parity(
     site: CallSite,
     cases: Sequence[EvalCase],
@@ -292,8 +317,10 @@ def decide(
     *,
     closed_parity: tuple[str, float] | None = None,
     price_lookup: PriceLookup | None = None,
+    untried: str | None = None,
 ) -> Verdict:
-    """MIGRATE or KEEP_CLOSED for a site with a measured holdout run (see the module docstring)."""
+    """MIGRATE or KEEP_CLOSED for a site with a measured holdout run (see the module docstring). `untried`:
+    for a MIGRATE secured before a budget stop, which cheaper tiers were not fully tried and why."""
     task = site.contract.task_type
     tier, dev, holdout, n = Tier(evidence.tier), evidence.dev, evidence.holdout, evidence.iterations
     migrate = dev.passed and holdout.passed
@@ -314,7 +341,13 @@ def decide(
         "decision": "MIGRATE" if migrate else "KEEP_CLOSED",
         "tier": name,
         "outcome": "reached parity with the references on the held-out cases; "
-        + ("it is the cheapest tier" if tier == TIER_ORDER[0] else "cheaper tiers did not")
+        + (
+            "it is the cheapest tier"
+            if tier == TIER_ORDER[0]
+            else "cheaper tiers were not fully tried before the run's budget ran out"
+            if untried
+            else "cheaper tiers did not"
+        )
         if migrate
         else "no tier reached parity with the references; this tier came closest",
         "adapter_changes": evidence.changes,
@@ -324,6 +357,8 @@ def decide(
         "closed_reference_compared": closed_parity is not None,
     }
     clause = _clause(migrate, name, result, n, cost_before, cost_after, closed_parity)
+    if untried:
+        clause = f"{clause[:-1]}; {untried}."
     sentence = _sentence(llm, facts)
     rows, free_text = holdout.case_scores, task == "free_text"
     return Verdict(

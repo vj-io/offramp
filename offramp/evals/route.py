@@ -9,10 +9,18 @@ All tiers failing: KEEP_CLOSED with the best tier, i.e. the adapter with the hig
 wins a tie), measured on holdout once so the verdict's parity is a holdout number; the verdict counts that
 adapter's iterations and changes, not the later ones tried on its tier.
 
+`prior` holds cells measured before routing (the eval matrix: v0 on every tier's dev cases). Their scores are
+reused, never judged again. Verdict first under the Ultra cap: before the first Iterator call on a tier
+cheaper than one whose v0 passed dev there, that tier's holdout runs (the cheapest such tier whose holdout
+passes is a secured verdict); then the cheaper tiers are iterated with what is left. The result is the same
+cheapest passing tier as without the reordering; a budget stop after a secured verdict keeps it, and its
+reason says which cheaper tiers were not fully tried.
+
 A ProviderError from a tier run (an outage, an account error, the judge leaving a case out) is retried once;
 a second one propagates as a run error, never a score. CacheMiss (replay without its cassette) propagates.
 Verdicts without a comparison: a per-run cap (BudgetStop from the runner, BudgetExceeded from the Iterator)
-is KEEP_CLOSED("budget: ..."); a site the loop cannot evaluate (no contract, flagged MANUAL_REVIEW, no dev or
+is KEEP_CLOSED("budget: ...") with the best adapter measured so far (tier, dev score, iterations); a site the
+loop cannot evaluate (no contract, flagged MANUAL_REVIEW, no dev or
 no holdout cases, a case without a reference, a call with unresolved parameters) is MANUAL_REVIEW.
 
 on_event(type, payload) gets JSON-ready RunEvent payloads: "tier_result" (TierResult without case_scores),
@@ -26,7 +34,14 @@ from typing import Any
 
 from offramp.agents.iterator import DevCase, Iterator, failing_dev_cases
 from offramp.agents.translate import UnresolvedCallSite
-from offramp.agents.verdict import Evidence, PriceLookup, closed_reference_parity, decide, stopped
+from offramp.agents.verdict import (
+    Evidence,
+    PriceLookup,
+    budget_stopped,
+    closed_reference_parity,
+    decide,
+    stopped,
+)
 from offramp.evals.errors import MissingReference, ProviderError
 from offramp.evals.runner import BudgetStop, run_tier
 from offramp.schemas import (
@@ -76,11 +91,13 @@ def route_site(
     runner: Callable[..., Any] = run_tier,
     price_lookup: PriceLookup | None = None,
     on_event: EventFn | None = None,
+    prior: Mapping[tuple[Tier, int, Split], TierResult] | None = None,
 ) -> SiteRoute:
     """Route one site from Adapter v0 (`adapter`) to its verdict. `references`: what candidates are compared
     against (references, or closed outputs where a site has none, as baselines.baselines_for returns them);
     `closed`: closed-model outputs for the verdict's comparison row (GC27c). `iterator` defaults to
-    Iterator(client, schemas), `runner` to run_tier."""
+    Iterator(client, schemas), `runner` to run_tier. `prior`: this site's cells measured before routing, by
+    (tier, adapter version, split): the eval matrix's."""
     if not config.tiers:
         raise ValueError("config.tiers is empty")
     emit = on_event or (lambda event_type, payload: None)
@@ -96,12 +113,15 @@ def route_site(
         runner,
         price_lookup,
         emit,
+        prior or {},
     )
     emit("verdict", route.verdict.model_dump(mode="json"))
     return route
 
 
-def _route(site, cases, references, adapter, client, config, closed, iterate, runner, price_lookup, emit):
+def _route(
+    site, cases, references, adapter, client, config, closed, iterate, runner, price_lookup, emit, prior
+):
     results: list[TierResult] = []
     unfit = _unfit(site, cases)
     if unfit:
@@ -109,8 +129,10 @@ def _route(site, cases, references, adapter, client, config, closed, iterate, ru
 
     def run(current: Adapter, tier: Tier, split: Split) -> tuple[TierResult, list[CandidateResult]]:
         args = (site, cases, references, current, tier, client, split, config)
+        scored = prior.get((tier, current.version, split))
+        kw = {"scored": scored} if scored is not None else {}  # measured already: reused, never re-judged
         try:
-            out, calls = runner(*args, return_candidates=True)
+            out, calls = runner(*args, return_candidates=True, **kw)
         except ProviderError as e:  # once more: an outage may have passed (a cached failure replays for free)
             emit(
                 "log",
@@ -119,20 +141,23 @@ def _route(site, cases, references, adapter, client, config, closed, iterate, ru
                     "message": f"{site.id}: {tier.value} {split}: {e}"[:300] + "; retrying once",
                 },
             )
-            out, calls = runner(*args, return_candidates=True)  # a second ProviderError is a run error
+            out, calls = runner(*args, return_candidates=True, **kw)  # a second ProviderError is a run error
         if isinstance(out, BudgetStop):
             raise _BudgetStop(out.reason)
         results.append(out)
         emit("tier_result", out.model_dump(mode="json", exclude={"case_scores"}))
         return out, calls
 
+    tiers = sorted(set(map(Tier, config.tiers)), key=TIER_ORDER.index)
     history: dict[Tier, list[Adapter]] = {}  # per tier: v0, then each iteration's adapter in order
     holdouts: dict[
         tuple[Tier, int], tuple[TierResult, list[CandidateResult]]
     ] = {}  # by (tier, history index)
+    secured: tuple[Tier, TierResult] | None = None  # a v0 that passed dev (in `prior`) and then holdout
 
-    def verdict(tier: Tier, i: int, dev: TierResult, holdout: TierResult, calls) -> Verdict:
+    def verdict(tier: Tier, i: int, dev: TierResult, untried: str | None = None) -> Verdict:
         """The verdict for history[tier][i]: i iterations, and the change logs of exactly those."""
+        holdout, calls = holdouts[tier, i]
         changes = [entry for a in history[tier][1 : i + 1] for entry in a.change_log]
         return decide(
             site,
@@ -141,12 +166,31 @@ def _route(site, cases, references, adapter, client, config, closed, iterate, ru
             config,
             closed_parity=closed_reference_parity(site, cases, references, closed, config),
             price_lookup=price_lookup,
+            untried=untried,
         )
+
+    def secure(cheaper_than: Tier) -> None:
+        """Verdict first: before the first Iterator call on `cheaper_than`, the holdout of each more expensive
+        tier whose v0 passed dev in `prior`, cheapest first, until one passes. One holdout run is then all the
+        verdict needs, so the Ultra cap can no longer take it away while cheaper tiers iterate."""
+        nonlocal secured
+        if secured is not None:
+            return
+        for tier in tiers[tiers.index(cheaper_than) + 1 :]:
+            dev = prior.get((tier, adapter.version, "dev"))
+            if dev is None or not dev.passed:
+                continue
+            history.setdefault(tier, [adapter])
+            if (tier, 0) not in holdouts:
+                holdouts[tier, 0] = run(adapter, tier, "holdout")
+            if holdouts[tier, 0][0].passed:
+                secured = (tier, dev)
+                return
 
     # the adapter with the highest dev score so far: (score, tier, its history index, its dev result)
     best: tuple[float, Tier, int, TierResult] | None = None
     try:
-        for tier in sorted(set(map(Tier, config.tiers)), key=TIER_ORDER.index):
+        for tier in tiers:
             history[tier] = [adapter]
             while True:
                 i = len(history[tier]) - 1
@@ -156,6 +200,7 @@ def _route(site, cases, references, adapter, client, config, closed, iterate, ru
                     best = (dev.score, tier, i, dev)
                 if dev.passed or i >= config.max_iterations:
                     break
+                secure(tier)
                 failed = [s for s in dev.case_scores if not s.passed]
                 counts = Counter(s.error_category or "failed" for s in failed)
                 new = iterate(current, site, failing_dev_cases(dev, cases, references, calls), tier, counts)
@@ -172,15 +217,25 @@ def _route(site, cases, references, adapter, client, config, closed, iterate, ru
                 emit("iteration", new.model_dump(mode="json"))
                 history[tier].append(new)
             if dev.passed:
-                holdout, holdout_calls = holdouts[tier, i] = run(current, tier, "holdout")
-                if holdout.passed:
-                    return SiteRoute(verdict(tier, i, dev, holdout, holdout_calls), current, results)
+                if (tier, i) not in holdouts:
+                    holdouts[tier, i] = run(current, tier, "holdout")
+                if holdouts[tier, i][0].passed:
+                    return SiteRoute(verdict(tier, i, dev), current, results)
         _, tier, i, dev = best
-        holdout, holdout_calls = holdouts.get((tier, i)) or run(history[tier][i], tier, "holdout")
-        return SiteRoute(verdict(tier, i, dev, holdout, holdout_calls), history[tier][i], results)
+        if (tier, i) not in holdouts:
+            holdouts[tier, i] = run(history[tier][i], tier, "holdout")
+        return SiteRoute(verdict(tier, i, dev), history[tier][i], results)
     except (_BudgetStop, BudgetExceeded) as e:
         reason = str(e) if isinstance(e, _BudgetStop) else f"budget: {e}"
-        return SiteRoute(stopped(site, "KEEP_CLOSED", reason, "budget"), None, results)
+        if secured is not None:  # the verdict stands; the cheaper tiers it might have lost to were cut short
+            tier, dev = secured
+            cheaper = " and ".join(t.value.capitalize() for t in tiers[: tiers.index(tier)])
+            return SiteRoute(verdict(tier, 0, dev, f"{cheaper} not fully tried ({reason})"), adapter, results)
+        # the best adapter measured so far, the matrix's cells of tiers not reached yet included
+        reached = [(b[1], b[3], b[2]) for b in [best] if b]
+        reached += [(t, r, 0) for (t, v, split), r in prior.items() if (v, split) == (adapter.version, "dev")]
+        top = max(reached, key=lambda b: b[1].score, default=None)  # the first one wins a tie
+        return SiteRoute(budget_stopped(site, reason, top, config), None, results)
     except (MissingReference, UnresolvedCallSite) as e:
         return SiteRoute(stopped(site, "MANUAL_REVIEW", f"cannot evaluate: {e}"), None, results)
 

@@ -161,26 +161,34 @@ def tier_result(site_id: str, tier: Tier, split: str = "dev", passed: bool = Tru
     )
 
 
+def matrix_cell(m: Matrix, site_id: str, tier: Tier, passed: bool = True) -> TierResult:
+    dev = [c for c in m.cases if c.site_id == site_id and c.split == "dev"]
+    rows = [CaseScore(case_id=c.id, passed=passed, score=float(passed)) for c in dev]
+    return tier_result(site_id, tier, passed=passed).model_copy(
+        update={"case_scores": rows, "failing_case_ids": [r.case_id for r in rows if not passed]}
+    )
+
+
 class Recorder:
     """The injected stages, recording what they were given."""
 
-    def __init__(self, matrix_entries: list[dict] | None = None):
+    def __init__(self, matrix_entries: list[dict] | None = None, passed: bool = True):
         self.matrices: list[Matrix] = []
         self.patches: list[dict] = []
         self.prs: list[dict] = []
-        self.matrix_entries = matrix_entries
+        self.matrix_entries, self.passed = matrix_entries, passed
 
     def eval_matrix(self, m: Matrix) -> MatrixResults:
         self.matrices.append(m)
         rows = self.matrix_entries
-        if rows is None:
+        if rows is None:  # every dev case passing (or failing), scored per case as run_tier scores them
             rows = [
                 {
                     "kind": "tier_result",
                     "site_id": s.id,
                     "tier": t.value,
                     "split": "dev",
-                    "result": tier_result(s.id, t).model_dump(mode="json"),
+                    "result": matrix_cell(m, s.id, t, self.passed).model_dump(mode="json"),
                 }
                 for s in m.sites
                 for t in m.tiers
@@ -348,6 +356,26 @@ def test_only_the_migrated_tiers_are_priced(tmp_path):
 
 def pr_url(log: pipeline.RunLog) -> str:
     return next(e.payload["url"] for e in log.events if e.type == "pr")
+
+
+def test_the_routing_loop_gets_the_cells_the_eval_matrix_measured(tmp_path):
+    """Their scores are reused, never judged again (run 20261022-023459043-590031 re-judged them), and the dev
+    cells tell the loop which tier's holdout secures a verdict first."""
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo)
+    llm, stub, seen = llm_for_full_run(*split_counts(repo)), Recorder(), []
+
+    def route(site, cases, refs, adapter, client, config, **kw):
+        seen.append(kw["prior"])
+        return SiteRoute(Verdict(site_id=site.id, decision="MANUAL_REVIEW", reason="stub"), None, [])
+
+    pipeline.Pipeline(
+        log, llm, eval_matrix=stub.eval_matrix, route=route, patch=stub.patch, pr=stub.pr
+    ).execute()
+
+    (prior,) = seen
+    (m,) = stub.matrices
+    assert prior == {(t, 0, "dev"): matrix_cell(m, "cs_01", t) for t in RunConfig(repo_url="x").tiers}
 
 
 def test_a_failed_run_resumes_after_its_last_finished_step(tmp_path):
@@ -805,10 +833,11 @@ def test_a_closed_model_that_did_not_audit_the_references_is_compared(tmp_path):
 FREE_TEXT = Contract(task_type="free_text", output="text")
 
 
-def pr_body(tmp_path: Path, repo: Path, llm: FakeLLM, route=None) -> str:
-    """Run the pipeline with the real PR writer (no GitHub: open_pr=False) and return the body it rendered."""
+def pr_body(tmp_path: Path, repo: Path, llm: FakeLLM, route=None, passed: bool = True) -> str:
+    """Run the pipeline with the real PR writer (no GitHub: open_pr=False) and return the body it rendered.
+    `passed`: whether the eval matrix found every tier passing dev (the routing loop reuses its cells)."""
     log, _ = start(tmp_path, repo, open_pr=False, max_iterations=0)
-    stub = Recorder()
+    stub = Recorder(passed=passed)
     llm.add("pr_writer", {"summary": "", "sites": []})
     run = pipeline.Pipeline(
         log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, **({"route": route} if route else {})
@@ -833,7 +862,7 @@ def keep_closed_llm(repo: Path) -> FakeLLM:
 @pytest.mark.parametrize("auditor", [AUDITOR, "blind:nvidia/Nemotron-3-Ultra-550b-a55b"])
 def test_the_pr_body_lists_only_the_rows_compared_and_no_circular_closed_row(tmp_path, auditor):
     repo = make_repo(tmp_path, closed=True, auditor=auditor)  # closed answers incl. dropped case cs_01:099
-    body = pr_body(tmp_path, repo, keep_closed_llm(repo))
+    body = pr_body(tmp_path, repo, keep_closed_llm(repo), passed=False)
 
     assert "stays on gpt-4o-mini: " in body  # a kept site: the PR prints its whole reason
     assert "| cs_01 | reference:seed × 20 |" in body  # what the cases were compared against, nothing else

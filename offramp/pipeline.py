@@ -491,8 +491,8 @@ class Pipeline:
         adapters = self._artifact("adapters.json", lambda: self._adapters(chat, unfit, scan["schemas"]))
         stopped = {k: Verdict.model_validate(v) for k, v in adapters["stopped"].items()}
         adapters = {k: Adapter.model_validate(v) for k, v in adapters["adapters"].items()}
-        self._artifact("matrix.json", lambda: self._matrix(chat, adapters, evals))
-        routes = self._routes(chat, adapters, stopped, evals, scan["schemas"])
+        matrix = self._artifact("matrix.json", lambda: self._matrix(chat, adapters, evals))
+        routes = self._routes(chat, adapters, stopped, evals, scan["schemas"], matrix)
         verdicts = self._artifact("verdicts.json", lambda: self._verdicts(chat, routes))
         patch = self._artifact("patch.json", lambda: self._patch(repo, chat, verdicts, routes))
         write_results(self.dir, routes, patch["verdicts"])
@@ -721,10 +721,17 @@ class Pipeline:
         stopped: dict[str, Verdict],
         evals: Path,
         schemas: dict[str, Any],
+        matrix: dict[str, Any],
     ) -> dict[str, dict[str, Any]]:
-        """Route each site (Task 9) to its verdict. evals/results/<site>.json is written per site, so a
-        resumed run routes only the sites it had not finished (write_results adds the final verdict after the
-        patch stage). Verdicts are announced together at VERDICTS."""
+        """Route each site (Task 9) to its verdict, given the cells the eval matrix measured (reused, never
+        judged again). evals/results/<site>.json is written per site, so a resumed run routes only the sites
+        it had not finished (write_results adds the final verdict after the patch stage). Verdicts are
+        announced together at VERDICTS."""
+        cells: dict[str, dict[tuple[Tier, int, str], TierResult]] = {}
+        for entry in matrix.get("results", []):
+            if entry["kind"] == "tier_result":
+                r = TierResult.model_validate(entry["result"])
+                cells.setdefault(r.site_id, {})[r.tier, r.adapter_version, r.split] = r
         out = {}
         for site in chat:
             path = self.dir / "evals" / "results" / f"{site.id}.json"
@@ -737,14 +744,21 @@ class Pipeline:
                         "tier_results": [],
                     }
                 else:
-                    result = self._route_site(site, adapters[site.id], evals, schemas.get(site.id) or None)
+                    result = self._route_site(
+                        site, adapters[site.id], evals, schemas.get(site.id) or None, cells.get(site.id, {})
+                    )
                 _write_json(path, {"site": site.model_dump(mode="json"), **result})
                 self._save_budget()
             out[site.id] = json.loads(path.read_text(encoding="utf-8"))
         return out
 
     def _route_site(
-        self, site: CallSite, adapter: Adapter, evals: Path, schemas: dict | None
+        self,
+        site: CallSite,
+        adapter: Adapter,
+        evals: Path,
+        schemas: dict | None,
+        prior: dict[tuple[Tier, int, str], TierResult],
     ) -> dict[str, Any]:
         def on_event(event_type: str, payload: dict[str, Any]) -> None:
             if event_type != "verdict":  # announced at VERDICTS
@@ -780,6 +794,7 @@ class Pipeline:
             runner=runner,
             price_lookup=self.price_lookup,
             on_event=on_event,
+            prior=prior,
         )
         verdict = route.verdict
         if circular and route.adapter is not None:  # compared, but not with the closed model: say which one
