@@ -50,6 +50,7 @@ class ChatResult(BaseModel):
     cached: bool = False
     json_path: JsonPath = "none"
     repaired: bool = False
+    cache_key: str | None = None  # the cached response's key: TFClient.forget(key) drops a reply found bad
 
 
 class LLM(Protocol):
@@ -260,6 +261,11 @@ class TFClient:
             sdk, _ = self._connection()
             return sdk.chat.completions.create(model=model, messages=messages, **params)
 
+    def forget(self, key: str) -> None:
+        """Drop a cached response its caller found unusable (a judge reply off the rubric), so the next run
+        sends the request again instead of replaying it forever."""
+        self.cache.forget(key)
+
     def _complete(
         self, role: str, info: TierInfo, messages: list[dict[str, Any]], params: dict[str, Any]
     ) -> _Call:
@@ -350,4 +356,5 @@ class TFClient:
             cached=call.cached,
             json_path=plan.json_path,
             repaired=repaired,
+            cache_key=None if repaired else cache_key(info.model_id, messages, params),
         )

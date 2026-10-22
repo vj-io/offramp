@@ -207,11 +207,76 @@ def test_a_field_grown_far_past_the_source_prompt_is_refused():
     assert adapter_problem(IDEA_SITE, AdapterSpec(few_shot=shots)).startswith("few_shot is ")
 
 
-def test_a_rewrite_that_drops_numbered_rules_of_the_source_is_refused():
-    dropped = SOURCE.split("\n8.")[0].replace("\n7.", "\n-")  # rule 8 gone, rule 7 lost its marker
+def test_a_rewrite_with_fewer_rules_than_the_source_is_refused():
+    dropped = SOURCE.split("\n8.")[0]  # rule 8 gone
     assert adapter_problem(IDEA_SITE, AdapterSpec(system_prompt=dropped)) == (
-        "system_prompt drops the source's rule markers 7., 8."
+        "system_prompt has 7 rules, the source's system prompt 8"
     )
+
+
+RULES = "You extract keywords.\n1. Output JSON only.\n2. At most 8 items.\n3. Lowercase.\n"
+
+
+def small_site(system: str) -> CallSite:
+    return IDEA_SITE.model_copy(
+        update={"template": PromptTemplate(system=system, user="{text}", variables=["text"])}
+    )
+
+
+@pytest.mark.parametrize(
+    "system, spec",
+    [  # review M1: the gate counts what the model added, so these pass
+        (
+            RULES + 'Example output for an empty idea: {"scores": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}',
+            dict(
+                system_prompt=RULES
+                + 'Example output for an empty idea: {"scores": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}',
+                user_suffix="\n\nBe concise.",
+            ),
+        ),  # the source's own zero vector, kept
+        (RULES, dict(user_suffix="\n```python\n" + "assert ok(x)\n" * 10 + "```")),  # ten lines of a sample
+        (
+            RULES,
+            dict(
+                system_prompt="You extract keywords.\n- Output JSON only.\n- At most 8 items.\n- Lowercase."
+            ),
+        ),
+        (
+            RULES,
+            dict(
+                system_prompt=RULES + "| plan | sso | audit |\n|---|---|---|\n" + "| free | no | no |\n" * 5
+            ),
+        ),
+        (RULES, dict(system_prompt=RULES + "\n" + "---\n" * 30 + "|" * 40)),  # separators
+        (RULES, dict(few_shot=[{"role": "assistant", "content": '["a", "b", "c", "d", "e"]'}] * 12)),
+        (RULES, dict(user_suffix="请用中文回答。只输出JSON，不要输出其他文字。")),
+    ],
+)
+def test_text_the_source_has_or_ordinary_formatting_passes(system, spec):
+    assert adapter_problem(small_site(system), AdapterSpec(**spec)) is None
+
+
+@pytest.mark.parametrize(
+    "spec, problem",
+    [
+        (
+            dict(system_prompt=RULES + " very good" * 12),
+            "system_prompt repeats 'very good' 12 times in a row",
+        ),
+        (dict(system_prompt=RULES + "实用" * 600), "system_prompt repeats '实用' 600 times in a row"),
+        (
+            dict(system_prompt=RULES + " Do not use any markdown." * 60),
+            "system_prompt repeats ' Do not use any markdown.' 60 times in a row",
+        ),
+        (
+            dict(few_shot=[{"role": "assistant", "content": "ok " * 30}]),
+            "few_shot repeats 'ok' 30 times in a row",
+        ),
+    ],
+)
+def test_loops_the_model_added_are_refused(spec, problem):
+    """Review M1, M2 (mutant A2): a 2-word loop, a CJK loop with no spaces, a 5-word sentence on repeat."""
+    assert adapter_problem(small_site(RULES), AdapterSpec(**spec)) == problem
 
 
 def test_ordinary_rewrites_pass_the_sanity_check():

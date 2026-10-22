@@ -1114,46 +1114,57 @@ def json_reply(root: str | Path, site: CallSite) -> str | None:
     return ("fence_stripped" if fenced else "exact") + ("_lenient" if lenient else "")
 
 
-def _seconds(node: ast.AST | None, consts: dict[str, ast.expr]) -> float | None:
-    """A timeout read statically: a number, a module constant holding one, or httpx.Timeout(<number>)."""
-    if isinstance(node, ast.Name) and node.id in consts:
-        node = consts[node.id]
-    if isinstance(node, ast.Call) and ast.unparse(node.func).split(".")[-1] == "Timeout" and node.args:
-        return _seconds(node.args[0], consts)
+def _seconds(node: ast.AST | None, once: dict[str, ast.expr]) -> float | None:
+    """A timeout that is surely this value: a number literal, a module name bound once to one, or
+    httpx.Timeout(<that>) with no per-phase values. None for anything else, `None` (no timeout) included."""
+    if isinstance(node, ast.Name) and node.id in once:
+        node = once[node.id]
+    if isinstance(node, ast.Call) and ast.unparse(node.func).split(".")[-1] == "Timeout":
+        return _seconds(node.args[0], once) if len(node.args) == 1 and not node.keywords else None
     if isinstance(node, ast.Constant) and type(node.value) in (int, float) and node.value > 0:
         return float(node.value)
     return None
 
 
-def _timeout_kw(call: ast.AST | None, consts: dict[str, ast.expr]) -> float | None:
+def _timeout_of(call: ast.AST | None, once: dict[str, ast.expr]) -> tuple[bool, float | None]:
+    """(whether `call` passes a timeout, or may through **kwargs; the seconds when surely known)."""
     if not isinstance(call, ast.Call):
-        return None
-    return next((_seconds(k.value, consts) for k in call.keywords if k.arg == "timeout"), None)
+        return False, None
+    given = [k for k in call.keywords if k.arg in ("timeout", None)]
+    return bool(given), _seconds(given[0].value, once) if len(given) == 1 and given[0].arg else None
 
 
 def call_timeout(root: str | Path, site: CallSite) -> float | None:
-    """The timeout in seconds the code sets on `site`'s call: `timeout=` on the request, else on the client
-    it is made with, when that client is a name bound once to a constructor call in the function or at
-    module level (idea-reality's `client = anthropic.AsyncAnthropic(..., timeout=30.0)`). None when there is
-    none to read statically: no latency gate then."""
+    """The timeout in seconds `site`'s call surely uses, read from the code; None when unsure (then no
+    latency gate: a missed timeout costs nothing, a wrong one fails a tier against a limit the call does not
+    have). The request's own `timeout=` decides when there is one. Otherwise the client's `timeout=`, when
+    the client is a name bound once, by one plain assignment, in the function (idea-reality's
+    `client = anthropic.AsyncAnthropic(..., timeout=30.0)`), or else once in the whole module and never a
+    parameter. A client that is a parameter, an attribute or anything else gives None."""
     found = _located(root, site)
     if found is None:
         return None
     tree, call, fn = found
-    consts = {n: v for stmt in tree.body if (a := _assigned(stmt)) for n, v in [a]}
-    if (seconds := _timeout_kw(call, consts)) is not None:
+    stores = Counter(n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store))
+    params = Counter(a for n in ast.walk(tree) if isinstance(n, ast.arguments) for a in _all_args(n))
+    module = {n: v for stmt in tree.body if (a := _assigned(stmt)) for n, v in [a]}
+    once = {n: v for n, v in module.items() if stores[n] == 1 and not params[n]}
+    given, seconds = _timeout_of(call, once)
+    if given:
         return seconds
-    receiver = call.func
+    receiver = call.func.value if isinstance(call.func, ast.Attribute) else None
     while isinstance(receiver, ast.Attribute):
         receiver = receiver.value
-    if not isinstance(receiver, ast.Name):
+    if not isinstance(receiver, ast.Name) or (fn is not None and receiver.id in _all_args(fn.args)):
         return None
-    for scope in [fn, tree] if fn is not None else [tree]:
-        nodes = _own_nodes(scope) if scope is fn else iter(scope.body)
-        bound = [v for node in nodes if (a := _assigned(node)) and a[0] == receiver.id for v in [a[1]]]
-        if bound:
-            return _timeout_kw(bound[0], consts) if len(bound) == 1 else None
-    return None
+    local = _bindings(fn).get(receiver.id, []) if fn is not None else []
+    if local:
+        return _timeout_of(local[0], once)[1] if len(local) == 1 and local[0] is not None else None
+    return _timeout_of(once.get(receiver.id), once)[1]
+
+
+def _all_args(args: ast.arguments) -> set[str]:
+    return {a.arg for a in [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg] if a}
 
 
 def _describe(site: CallSite, root: str | Path | None) -> str:

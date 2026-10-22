@@ -292,6 +292,39 @@ def test_a_reply_cut_off_mid_json_is_asked_once_more_with_more_room():
         judge(fake, cases, {"cs_04:001": ModelOutput(text="x")})
 
 
+def test_replies_that_failed_the_rubric_are_not_kept_so_a_resume_asks_again(tmp_path, monkeypatch):
+    """Review I1 (judge_resume.py): a reply off the rubric was cached like any reply, so after the first try
+    and the 2x retry both failed, every resume replayed them and failed at the same cell without a request.
+    Both are evicted: the run fails, and its resume sends fresh requests."""
+    from offramp.tf.client import TFClient
+
+    class Reply:
+        def model_dump(self, **_):
+            message = {"role": "assistant", "content": TRUNCATED["reply"]}
+            return {
+                "choices": [{"message": message, "finish_reason": "length"}],
+                "usage": {"completion_tokens": 9},
+            }
+
+    sent = []
+    monkeypatch.setattr(
+        TFClient,
+        "_create",
+        lambda self, model, messages, params: sent.append(params["max_tokens"]) or Reply(),
+    )
+    case = _case(1)
+    for _ in ("run", "resume"):
+        sent.clear()
+        with pytest.raises(ProviderError, match="does not match the rubric schema"):
+            judge(
+                TFClient(api_key="x", cache_dir=tmp_path, live=True),
+                [case],
+                {case.id: ModelOutput(text="answer")},
+            )
+        assert sent == [550, 1100]  # live both times: nothing failed was kept
+    assert list(tmp_path.glob("*.json")) == []
+
+
 def test_pairwise_ordering_the_judge_skipped_raises():
     case = _case(1)
     fake = FakeLLM().add(

@@ -167,9 +167,11 @@ def _ask(
         )
     except openai.APIError as e:  # after the SDK's retries; any kind: the judge is not under test
         raise provider_error(e, "judge: ") from e
-    if result.parsed is None and room == 1:
-        return _ask(client, items, paired, again, room=2)
-    if result.parsed is None:
+    if result.parsed is None:  # not kept: a resume must ask again, never replay the bad reply forever
+        if result.cache_key and (forget := getattr(client, "forget", None)):
+            forget(result.cache_key)
+        if room == 1:
+            return _ask(client, items, paired, again, room=2)
         raise ProviderError("judge: reply does not match the rubric schema")
     by_case: dict[int, Any] = {}
     for item in result.parsed.scores:

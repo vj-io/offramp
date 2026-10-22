@@ -360,6 +360,23 @@ def test_runs_from_an_earlier_process_are_served_from_disk(make_client, tmp_path
         assert len(sse(stream.read().decode())) == 7  # ends: nothing in this process will add more
 
 
+def test_events_another_process_appends_to_a_run_are_served(make_client, tmp_path):
+    """Review M3 (task 29): `offramp pr` appends the PR's events to a finished run in another process; an
+    API that had already loaded the run serves them too."""
+    root = tmp_path / "data"
+    log = pipeline.RunLog(root / "runs" / RECORDED_ID, RECORDED_ID)
+    for e in recorded_events():
+        if e.type != "pr":  # a --no-pr run
+            log.add(e)
+    client = make_client()
+    assert "pr_url" not in client.get(f"/api/runs/{RECORDED_ID}").json()["artifacts"]
+    other = pipeline.RunLog(root / "runs" / RECORDED_ID, RECORDED_ID)  # the `offramp pr` process
+    pipeline.announce_pr(other, "https://github.com/acme/tiny/pull/9", "T")
+    assert client.get(f"/api/runs/{RECORDED_ID}").json()["artifacts"]["pr_url"].endswith("/pull/9")
+    with client.stream("GET", f"/api/runs/{RECORDED_ID}/events") as stream:
+        assert [e["event"] for e in sse(stream.read().decode())][-2:] == ["pr", "stage"]
+
+
 @pytest.mark.parametrize("run_id", ["nope", "..%2F..%2Fetc", "a" * 70])
 def test_unknown_runs_are_404(make_client, run_id):
     client = make_client()

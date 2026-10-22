@@ -840,9 +840,17 @@ class StubIterator:
 
 
 def route(
-    table, site=SITE, iterator=None, llm=None, config=None, events=None, cases=ROUTE_CASES, **kw
+    table,
+    site=SITE,
+    iterator=None,
+    llm=None,
+    config=None,
+    events=None,
+    cases=ROUTE_CASES,
+    runner_type=None,
+    **kw,
 ) -> tuple:
-    runner, iterator = Runner(table), iterator or StubIterator()
+    runner, iterator = (runner_type or Runner)(table), iterator or StubIterator()
     llm = llm or reason_llm(*[BudgetExceeded("rule sentence only")] * 2)
     out = route_site(
         site,
@@ -1341,6 +1349,20 @@ def test_a_degenerate_rewrite_is_refused_before_evaluation_and_counts_as_a_try()
     assert [t for t, _ in events].count("iteration") == 1  # only the evaluated rewrite is announced
 
 
+def test_a_refused_rewrite_uses_up_a_try_even_when_the_next_one_is_accepted():
+    """Review M6 (mutant A10): with two tries, a refused rewrite and an accepted one end Lightning's tries."""
+    it = LoopingIterator(loops=1)
+    table = {(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): 1.0}
+    out, runner, _ = route(table, iterator=it, config=RunConfig(repo_url="x", max_iterations=2))
+    assert len(it.told) == 2 and runner.calls == [
+        (L, "dev", 0),
+        (L, "dev", 1),
+        (S, "dev", 0),
+        (S, "holdout", 0),
+    ]
+    assert out.verdict.tier == S and len(out.refused) == 1
+
+
 def test_a_tier_whose_rewrites_are_all_refused_ends_without_evaluating_any():
     it = LoopingIterator(loops=3)
     out, runner, _ = route({(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): 1.0}, iterator=it)
@@ -1369,8 +1391,9 @@ def test_a_tier_slower_than_the_calls_own_timeout_fails_for_the_site():
         (U, "holdout", 0),
     ]
     assert (v.decision, v.best_tier, v.failed_gate) == ("KEEP_CLOSED", L, "latency")
-    assert v.reason.startswith(
-        "too slow: median 0.7 s > the call's 0.5 s timeout on Lightning after 0 adapter"
+    assert v.reason.startswith(  # review M5: what was measured, and that parity was reached
+        f"too slow: holdout median 0.7 s over {HOLD_N} calls > the call's 0.5 s timeout (it reached parity: "
+        "parity vs reference 100.0% ≥ 95%) on Lightning after 0 adapter"
     )
     out, *_ = route(ALL_PASS, site=timed(SITE, 1))  # within the timeout: as before
     assert (out.verdict.decision, out.verdict.tier) == ("MIGRATE", L)
@@ -1390,8 +1413,64 @@ def test_a_securing_holdout_slower_than_the_timeout_secures_nothing():
     )
     assert (out.verdict.decision, out.verdict.failed_gate) == ("KEEP_CLOSED", "budget")
     assert out.verdict.reason.endswith(
-        "failed the holdout: too slow: median 0.7 s > the call's 0.5 s timeout"
+        f"failed the holdout: too slow: holdout median 0.7 s over {HOLD_N} calls > the call's 0.5 s timeout"
     )
+
+
+class Timed(Runner):
+    """The stub runner, with each tier's p50 latency as given (ms)."""
+
+    def __init__(self, table: dict, p50: dict):
+        super().__init__(table)
+        self.p50 = p50
+
+    def __call__(self, *args, **kw):
+        out, calls = super().__call__(*args, **kw)
+        if isinstance(out, TierResult) and out.tier in self.p50:
+            out = out.model_copy(
+                update={"metrics": out.metrics.model_copy(update={"p50_ms": self.p50[out.tier]})}
+            )
+        return out, calls
+
+
+def test_the_securing_pass_moves_on_from_a_tier_too_slow_for_the_calls_timeout():
+    """Review M6 (mutant C5): Super passes its holdout but at 2 s against a 1 s timeout; Ultra, within it,
+    is the verdict to secure."""
+    table = {(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): 1.0, (U, "dev"): 1.0, (U, "holdout"): 1.0}
+    refs = {c.id: ref(c.id, "billing") for c in ROUTE_CASES}
+    runner = Timed(table, {S: 2000})
+    got = secure_holdouts(
+        timed(SITE, 1),
+        ROUTE_CASES,
+        refs,
+        V0,
+        FakeLLM(),
+        RunConfig(repo_url="x"),
+        matrix_cells(table),
+        runner=runner,
+    )
+    assert runner.calls == [(S, "holdout", 0), (U, "holdout", 0)] and set(got) == {
+        (S, 0, "holdout"),
+        (U, 0, "holdout"),
+    }
+
+
+def test_a_tier_whose_dev_median_is_over_twice_the_timeout_is_not_iterated():
+    """Ruling on task 29 tail 1: Lightning's dev median was 42-109 s against idea-reality's 30 s timeouts. No
+    prompt change brings that in, so its iterations would only spend Ultra calls; between 1x and 2x the
+    timeout it is still iterated (a shorter reply might), and the holdout gate decides."""
+    events = []
+    table = {(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): 1.0}
+    out, runner, it = route(
+        table, site=timed(SITE, 0.3), events=events, runner_type=lambda t: Timed(t, {S: 200})
+    )
+    assert it.calls == [] and runner.calls == [(L, "dev", 0), (S, "dev", 0), (S, "holdout", 0)]
+    assert out.not_iterated == [
+        "Lightning not iterated: dev median 0.7 s is more than twice the call's 0.3 s timeout"
+    ]
+    assert any("not iterated" in p["message"] for t, p in events if t == "log")
+    out, runner, it = route(table, site=timed(SITE, 0.5), runner_type=lambda t: Timed(t, {S: 200}))
+    assert it.calls  # 0.7 s is within twice 0.5 s: Lightning is iterated
 
 
 def test_an_iterator_without_a_valid_adapter_ends_that_tiers_iterations():

@@ -38,11 +38,17 @@ INVALID_OUTPUT = (
 )
 JSON_ONLY = "Reply with the JSON only: no other text and no code fence."  # contract.reply_json sites
 # Sanity of a model-written adapter (Adapter Agent and Iterator alike), checked before it is evaluated:
-REPEATS = 10  # a word or a phrase of up to MAX_NGRAM words this many times in a row is a degenerate loop
+# A loop: a phrase of up to MAX_NGRAM words, or a unit of up to MAX_UNIT characters holding a letter or
+# digit, repeated in a row REPEATS or more times beyond its first occurrence and beyond the source's run.
+REPEATS = 10
 MAX_NGRAM = 4
+MAX_UNIT = 80
+SCAN = 20_000  # characters of a text the character-level check reads
+_UNIT_LOOP = re.compile(rf"(.{{1,{MAX_UNIT}}}?)\1{{{REPEATS - 1},}}", re.S)
 GROWTH, GROWTH_PLUS = 2, 2000  # a field may reach 2x the source prompt (system + user template) + 2,000 chars
-_SOURCE_RULE = re.compile(r"(?m)^\s*(\d{1,2})\.\s")  # "7. ..." at the start of a line of the source
-_RULE = re.compile(r"(?<![\w.])(\d{1,2})\.(?=\s)")  # "7. " anywhere: a rewrite may put rules on one line
+_NUMBERED = re.compile(r"(?m)^\s*\d{1,2}[.)]\s")  # a numbered rule starting a line (what the source counts)
+_RULE_LINE = re.compile(r"(?m)^\s*(?:\d{1,2}[.)]|[-*•])\s")  # numbered or bulleted (what a rewrite counts)
+_INLINE_RULE = re.compile(r"(?<![\w.])(\d{1,2})[.)](?=\s)")  # "7. " anywhere: rewrites put rules on one line
 REFUSED = "adapter_agent_refused"
 
 ADAPTER_SYSTEM = f"""You are Offramp's Adapter Agent. Offramp moves one LLM call site in a Python repo \
@@ -117,47 +123,76 @@ def _facts(site: CallSite, tr: Translation, schemas: dict[str, dict[str, Any]] |
     return json.dumps(facts, indent=1, ensure_ascii=False)
 
 
-def _loop(text: str) -> str | None:
-    """ "'utility' 752 times in a row" for the longest run of one word or phrase (up to MAX_NGRAM words)
-    repeated at least REPEATS times in a row, else None."""
-    words = re.findall(r"\w+", text.casefold())
+def _word_runs(text: str) -> dict[tuple[str, ...], int]:
+    """Each phrase of up to MAX_NGRAM words (case-folded) repeated in a row, and its longest run."""
+    words, runs = re.findall(r"\w+", text.casefold()), {}
     for n in range(1, MAX_NGRAM + 1):
         streak = 0
         for i in range(n, len(words) + 1):
             if i < len(words) and words[i] == words[i - n]:
                 streak += 1
                 continue
-            if streak >= n * (REPEATS - 1):
-                return f"{' '.join(words[i - n : i])!r} {streak // n + 1} times in a row"
+            if streak >= n:
+                unit = tuple(words[i - streak - n : i - streak])
+                runs[unit] = max(runs.get(unit, 0), streak // n + 1)
             streak = 0
+    return runs
+
+
+def _unit_run(text: str, unit: str) -> int:
+    return max((len(m[0]) // len(unit) for m in re.finditer(f"(?:{re.escape(unit)})+", text)), default=0)
+
+
+def _loop(text: str, source: str) -> str | None:
+    """ "'utility' 752 times in a row" for a loop the model added (see REPEATS), else None. Word phrases first
+    (case and punctuation aside), then character units, which catch scripts without spaces and sentences
+    longer than MAX_NGRAM words. ponytail: the unit scan is one regex over the first SCAN characters (a later
+    loop still trips the growth cap); a loop with small variations between repeats is not caught."""
+    ours, theirs = _word_runs(text), _word_runs(source)
+    for unit, run in ours.items():
+        if run - max(theirs.get(unit, 0), 1) >= REPEATS:
+            return f"{' '.join(unit)!r} {run} times in a row"
+    for m in _UNIT_LOOP.finditer(text[:SCAN]):
+        unit, run = m[1], len(m[0]) // len(m[1])
+        if re.search(r"\w", unit) and run - max(_unit_run(source, unit), 1) >= REPEATS:
+            return f"{unit!r} {run} times in a row"
     return None
 
 
+def _rules(text: str) -> int:
+    """How many rules a rewrite states: numbered or bulleted lines, or numbered markers on one line."""
+    return max(len(_RULE_LINE.findall(text)), len(set(_INLINE_RULE.findall(text))))
+
+
 def adapter_problem(site: CallSite, spec: AdapterSpec) -> str | None:
-    """Why a model-written adapter must not be evaluated (nor shipped), or None: a degenerate repetition in
-    one of its texts, a text grown past GROWTH x the source prompt + GROWTH_PLUS characters, or a rewritten
-    system prompt that lost "N." rule markers the source's system prompt has."""
+    """Why a model-written adapter must not be evaluated (nor shipped), or None: a loop the model added to
+    one of its texts (_loop), a text grown past GROWTH x the source prompt + GROWTH_PLUS characters, or a
+    rewritten system prompt stating fewer rules than the source's (numbers turned into bullets pass)."""
     t = site.template
-    source = (t.system or "") if t else ""
-    cap = GROWTH * (len(source) + len(t.user if t else "")) + GROWTH_PLUS
-    texts = {
-        "system_prompt": spec.system_prompt or "",
-        "user_prefix": spec.user_prefix,
-        "user_suffix": spec.user_suffix,
-        "few_shot": "\n".join(str(m.get("content") or "") for m in spec.few_shot),
-    }
-    for name, text in texts.items():
-        if loop := _loop(text):
+    system = (t.system or "") if t else ""
+    source = f"{system}\n{t.user if t else ''}"
+    cap = GROWTH * len(source) + GROWTH_PLUS
+    texts = [
+        ("system_prompt", spec.system_prompt or ""),
+        ("user_prefix", spec.user_prefix),
+        ("user_suffix", spec.user_suffix),
+        *(("few_shot", str(m.get("content") or "")) for m in spec.few_shot),  # one example at a time
+    ]
+    for name, text in texts:
+        if loop := _loop(text, source):
             return f"{name} repeats {loop}"
-    for name, text in texts.items():
+    shots = "\n".join(str(m.get("content") or "") for m in spec.few_shot)
+    for name, text in [*texts[:3], ("few_shot", shots)]:
         if len(text) > cap:
             return (
                 f"{name} is {len(text):,} characters, over the cap of {cap:,} (2x the source prompt + 2,000)"
             )
-    if spec.system_prompt is not None:
-        lost = sorted(set(_SOURCE_RULE.findall(source)) - set(_RULE.findall(spec.system_prompt)), key=int)
-        if lost:
-            return f"system_prompt drops the source's rule markers {', '.join(f'{n}.' for n in lost)}"
+    # ponytail: the source's numbered rules only. Its bulleted lines are often a list of labels or options
+    # (the demo's cs_01 queues), and the demo's recorded rewrite folds them into a sentence: counting them
+    # too would refuse a recorded adapter and change recorded requests, which waits for a ruling.
+    had = len(_NUMBERED.findall(system))
+    if spec.system_prompt is not None and (have := _rules(spec.system_prompt)) < had:
+        return f"system_prompt has {have} rules, the source's system prompt {had}"
     return None
 
 

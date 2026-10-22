@@ -111,6 +111,7 @@ class PRContext(BaseModel):
     combined: list[str] = Field(default_factory=list)  # PatchResult.combined: sites in the checked tree
     combined_repair: list[str] = Field(default_factory=list)  # PatchResult.combined_repair: files it changed
     refused: dict[str, list[str]] = Field(default_factory=dict)  # site_id -> rewrites refused unevaluated
+    not_iterated: dict[str, list[str]] = Field(default_factory=dict)  # site_id -> tiers left uniterated
     today: date = Field(default_factory=lambda: datetime.now(UTC).date())  # "retires" or "retired" on a date
 
 
@@ -417,6 +418,10 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         text = f"Adapter changes: {'; '.join(a.change_log)}." if a and a.change_log else ""
         if sid in ctx.refused:  # model-written adapters the sanity gate stopped (adapter.adapter_problem)
             text += f" Rewrites never evaluated nor shipped: {'; '.join(ctx.refused[sid])}."
+        if (
+            sid in ctx.not_iterated
+        ):  # tiers far slower than the call's own timeout (verdict.not_worth_iterating)
+            text += f" {'; '.join(ctx.not_iterated[sid])}."
         return text.strip()
 
     def files(sid: str) -> str:

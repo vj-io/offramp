@@ -42,6 +42,7 @@ from offramp.agents.verdict import (
     budget_stopped,
     closed_reference_parity,
     decide,
+    not_worth_iterating,
     passes,
     stopped,
 )
@@ -75,6 +76,9 @@ class SiteRoute:
     adapter: Adapter | None
     results: list[TierResult] = field(default_factory=list)  # every run, in order, case_scores kept
     refused: list[str] = field(default_factory=list)  # model-written rewrites refused before evaluation
+    not_iterated: list[str] = field(
+        default_factory=list
+    )  # tiers left uniterated (verdict.not_worth_iterating)
 
 
 class _BudgetStop(Exception):
@@ -119,8 +123,9 @@ def route_site(
         emit,
         prior or {},
         refused := [],
+        not_iterated := [],
     )
-    route.refused = refused
+    route.refused, route.not_iterated = refused, not_iterated
     emit("verdict", route.verdict.model_dump(mode="json"))
     return route
 
@@ -139,6 +144,7 @@ def _route(
     emit,
     prior,
     refused,
+    not_iterated,
 ):
     results: list[TierResult] = []
     unfit = _unfit(site, cases)
@@ -220,6 +226,10 @@ def _route(
                 if best is None or dev.score > best[0]:
                     best = (dev.score, tier, i, dev)
                 if dev.passed or tries >= config.max_iterations:
+                    break
+                if why := not_worth_iterating(site, dev):  # slower than any prompt change could fix
+                    not_iterated.append(f"{tier.value.capitalize()} {why}")
+                    emit("log", {"level": "warn", "message": f"{site.id}: {not_iterated[-1]}"})
                     break
                 secure(tier)
                 failed = [s for s in dev.case_scores if not s.passed]

@@ -520,7 +520,7 @@ class FakeGitHub:
         routes = {
             ("GET", repo): {"default_branch": "main"},
             ("GET", f"{repo}/git/ref/heads/main"): {"object": {"sha": "base"}},
-            ("GET", f"{repo}/git/commits/base"): {"tree": {"sha": "tree"}},
+            ("GET", f"{repo}/git/commits/{request.url.path.rsplit('/', 1)[-1]}"): {"tree": {"sha": "tree"}},
             ("POST", f"{repo}/git/trees"): {"sha": "new-tree"},
             ("POST", f"{repo}/git/commits"): {"sha": "new-commit"},
             ("POST", f"{repo}/git/refs"): {},
@@ -566,6 +566,8 @@ def test_offramp_pr_opens_a_finished_no_pr_runs_pr_from_its_own_artifacts(tmp_pa
     assert url == "https://github.com/acme/tiny/pull/9"
     ref = next(r for r in gh.requests if r.url.path.endswith("/git/refs"))
     assert pipeline.json.loads(ref.content)["ref"] == f"refs/heads/offramp/{log.run_id}"
+    commit = pipeline.json.loads(next(r for r in gh.requests if r.url.path.endswith("/git/commits")).content)
+    assert commit["parents"] == [pipeline.json.loads((log.dir / "clone.json").read_text())["commit_sha"]]
     pulls = pipeline.json.loads(next(r for r in gh.requests if r.url.path.endswith("/pulls")).content)
     pr = pipeline.json.loads((log.dir / "pr.json").read_text())
     assert (pulls["title"], pulls["body"], pr["url"]) == (pr["title"], pr["body"], url)
@@ -576,6 +578,21 @@ def test_offramp_pr_opens_a_finished_no_pr_runs_pr_from_its_own_artifacts(tmp_pa
     assert snap.artifacts["pr_url"] == url and snap.stage == Stage.DONE
     with pytest.raises(ValueError, match="already opened its PR"):
         pipeline.open_pr_from_run(log.run_id, tmp_path / "data", opener=gh.opener())
+
+
+def test_offramp_pr_holds_a_lock_so_a_second_call_cannot_reach_github(tmp_path):
+    """Review M4: two concurrent `offramp pr` calls both reached GitHub; one crashed on a shared tmp file."""
+    log = no_pr_run(tmp_path)
+    gh = FakeGitHub()
+    (log.dir / "pr.lock").write_text("held by another `offramp pr`")
+    with pytest.raises(ValueError, match="a PR is already being opened for this run"):
+        pipeline.open_pr_from_run(log.run_id, tmp_path / "data", opener=gh.opener())
+    assert gh.requests == []
+    (log.dir / "pr.lock").unlink()
+    pipeline.open_pr_from_run(log.run_id, tmp_path / "data", opener=gh.opener())
+    assert not (log.dir / "pr.lock").exists()  # released when done
+    report = pipeline.json.loads((log.dir / "report.json").read_text())  # review M6 (mutant B7)
+    assert report["snapshot"]["artifacts"]["pr_url"] == "https://github.com/acme/tiny/pull/9"
 
 
 def test_offramp_pr_refuses_a_run_that_migrated_nothing_or_has_not_finished(tmp_path):

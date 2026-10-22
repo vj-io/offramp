@@ -124,7 +124,20 @@ def too_slow(site: CallSite, result: TierResult) -> str | None:
     timeout = site.contract.timeout_s if site.contract else None
     if timeout is None or result.metrics.p50_ms <= timeout * 1000:
         return None
-    return f"too slow: median {result.metrics.p50_ms / 1000:.1f} s > the call's {timeout:g} s timeout"
+    calls, seconds = result.cases or len(result.case_scores), result.metrics.p50_ms / 1000
+    limit = f"the call's {timeout:g} s timeout"
+    return f"too slow: {result.split} median {seconds:.1f} s over {calls} calls > {limit}"
+
+
+def not_worth_iterating(site: CallSite, dev: TierResult) -> str | None:
+    """Why a tier is not iterated at all: its dev median latency is over twice the call's own timeout, which
+    no prompt change plausibly brings in, so iterations would only spend Ultra calls. Within twice the
+    timeout it is iterated (a shorter reply might come in under it), and the holdout gate decides."""
+    timeout = site.contract.timeout_s if site.contract else None
+    if timeout is None or dev.metrics.p50_ms <= 2 * timeout * 1000:
+        return None
+    seconds = dev.metrics.p50_ms / 1000
+    return f"not iterated: dev median {seconds:.1f} s is more than twice the call's {timeout:g} s timeout"
 
 
 def passes(site: CallSite, holdout: TierResult) -> bool:
@@ -369,7 +382,7 @@ def decide(
     migrate = dev.passed and holdout.passed and not slow
     name = tier.value.capitalize()
     if slow:  # parity reached, but the migrated call would time out
-        result, gate = slow, "latency"
+        result, gate = f"{slow} (it reached parity: {_phrase(holdout, task, thresholds)[0]})", "latency"
     elif migrate:
         result, gate = _phrase(holdout, task, thresholds)
     elif holdout.passed:  # dev never passed: the holdout pass is not a qualification

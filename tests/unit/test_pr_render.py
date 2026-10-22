@@ -68,6 +68,15 @@ def test_a_rewrite_refused_before_evaluation_is_stated_on_its_sites_line():
     assert "never evaluated" not in render_pr(c).body
 
 
+def test_a_tier_left_uniterated_for_latency_is_stated_on_its_sites_line():
+    c = ctx()
+    migrated = next(v.site_id for v in c.verdicts if v.decision == "MIGRATE")
+    why = "Lightning not iterated: dev median 95.2 s is more than twice the call's 30 s timeout"
+    body = render_pr(c.model_copy(update={"not_iterated": {migrated: [why]}})).body
+    (line,) = [ln for ln in body.splitlines() if ln.startswith(f"- **{migrated}**")]
+    assert line.endswith(f"{why}.")
+
+
 def test_title_counts_migrated_sites_and_estimates_the_saving_from_verdicts():
     c = ctx()
     migrated = [v for v in c.verdicts if v.decision == "MIGRATE"]
