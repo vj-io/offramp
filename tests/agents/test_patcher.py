@@ -5692,3 +5692,36 @@ def test_an_import_a_combined_repair_orphans_goes_and_the_pr_says_so():
 
     assert result.combined_repair == ["tests/test_greet_more.py"]
     assert "import json" not in result.files["tests/test_greet_more.py"] and JSON_GONE in result.change_notes
+
+
+# --------------------------------------------------- Task 26 fix round 2b: a name the change added, unused
+
+RAG_HEAD = (
+    "import pytest\nfrom fakes import FakeOpenAI, case_ids, load_cases\n\nfrom helphub.kb import Article\n"
+    "from helphub.qa.rag_answer import RAG_SYSTEM_PROMPT, answer_question\n\n\n"
+    "def test_x():\n    assert answer_question(FakeOpenAI(), 'q', [Article()]) and RAG_SYSTEM_PROMPT\n"
+)
+# live run 7, cs_04's recorded Ultra repair (tf-cache f36fcd08): it added NEMOTRON_FEW_SHOT and never used it
+CS04_LINE = "from helphub.qa.rag_answer import RAG_SYSTEM_PROMPT, answer_question, NEMOTRON_FEW_SHOT\n"
+RAG_LINE = "from helphub.qa.rag_answer import RAG_SYSTEM_PROMPT, answer_question\n"
+
+
+@pytest.mark.parametrize(
+    ("after", "expected"),
+    [
+        (RAG_HEAD.replace(RAG_LINE, CS04_LINE), RAG_HEAD),
+        (RAG_HEAD.replace(RAG_LINE, CS04_LINE) + "    assert NEMOTRON_FEW_SHOT\n",
+         RAG_HEAD.replace(RAG_LINE, CS04_LINE) + "    assert NEMOTRON_FEW_SHOT\n"),
+        (RAG_HEAD.replace("import pytest\n", "from __future__ import annotations\n\nimport pytest\n"),
+         RAG_HEAD.replace("import pytest\n", "from __future__ import annotations\n\nimport pytest\n")),
+        (RAG_HEAD.replace("import pytest\n", "import pytest\nimport helphub.plugins\n"),
+         RAG_HEAD.replace("import pytest\n", "import pytest\nimport helphub.plugins\n")),
+        (RAG_HEAD.replace("import pytest\n", "import pytest\nimport json\n"), RAG_HEAD),
+    ],
+    ids=["cs04-recorded", "added-and-used", "future-import", "dotted-import", "added-module-unused"],
+)  # fmt: skip
+def test_a_name_the_change_itself_added_and_left_unused_goes(after, expected):
+    """Fix round 2's replay: with tidy's F401 gone, cs_04's repair kept `NEMOTRON_FEW_SHOT`, a name it added
+    to an import and never used, and the demo's ruff failed. A name the change added goes when nothing reads
+    it after; a name used after, a `__future__` import and a dotted `import a.b` (a side effect) stay."""
+    assert drop_orphaned_imports(RAG_HEAD, after) == expected

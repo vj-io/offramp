@@ -1598,15 +1598,18 @@ def drop_orphaned_imports(
 ) -> str:
     """`after` (a file Offramp's code or a model edit changed from `before`) without the import names the
     change orphaned: read in `before` and nowhere in `after` (a name, or a string equal to it: `__all__`, a
-    string annotation). Only those names go (`from anthropic import Anthropic, APIError` keeps `APIError`);
-    a statement left with none goes whole, and a run of such statements takes the blank line below it when
-    it stood between two (or at the top). Every other line is byte-identical: an import unused before is the
-    repo's own lint state, and a dotted `import a.b` may be there for its side effect, so both stay. Live run
-    7: three Anthropic sites each rewired one `Anthropic()` in helphub/cli.py; merged, nothing read the
-    import, the repo's ruff failed (F401) and cs_06 dropped. This replaced a lint autofix that removed every
-    unused import, the repo's own included (review I5). `dropped` gets the names removed (for
-    `drop_dead_patches`); `keep` names stay (another module takes them from this one: `_used_elsewhere`).
-    ponytail: an import sharing its line with another statement, or the only statement of a block, stays."""
+    string annotation), or added by the change to an import and read nowhere in `after` (fix round 2's replay:
+    cs_04's repair imported `NEMOTRON_FEW_SHOT` and never used it). A name imported before stays unless read
+    before; a `__future__` import always stays. Only those names go (`from anthropic import Anthropic,
+    APIError` keeps `APIError`); a statement left with none goes whole, and a run of such statements takes the
+    blank line below it when it stood between two (or at the top). Every other line is byte-identical: an
+    import unused before is the repo's own lint state, and a dotted `import a.b` may be there for its side
+    effect, so both stay. Live run 7: three Anthropic sites each rewired one `Anthropic()` in helphub/cli.py;
+    merged, nothing read the import, the repo's ruff failed (F401) and cs_06 dropped. This replaced a lint
+    autofix that removed every unused import, the repo's own included (review I5). `dropped` gets the names
+    removed (for `drop_dead_patches`); `keep` names stay (another module takes them from this one:
+    `_used_elsewhere`). ponytail: an import sharing its line with another statement, or the only statement of
+    a block, stays."""
     old, new = _parsed(before), _parsed(after)
     if old is None or new is None:
         return after
@@ -1615,6 +1618,8 @@ def drop_orphaned_imports(
         return any(isinstance(n, ast.Name) and n.id == name or isinstance(n, ast.Constant) and n.value == name
                    for n in ast.walk(tree))  # fmt: skip
 
+    had = {a.asname or (a.name if isinstance(n, ast.ImportFrom) else a.name.split(".")[0])
+           for n in ast.walk(old) if isinstance(n, ast.Import | ast.ImportFrom) for a in n.names}  # fmt: skip
     lines = after.splitlines(keepends=True)
     cuts, rows, names = [], [], []  # (start, end) offsets of names; whole statements' (first, last) lines
     for node in ast.walk(new):
@@ -1623,7 +1628,11 @@ def drop_orphaned_imports(
         frm = isinstance(node, ast.ImportFrom)
         bound = [a.asname or (a.name if frm else a.name.split(".")[0]) for a in node.names]
         gone = [
-            (frm or a.asname or "." not in a.name) and reads(old, b) and not reads(new, b) and b not in keep
+            (frm or a.asname or "." not in a.name)
+            and not (frm and node.module == "__future__")  # never read, yet never unused
+            and not reads(new, b)
+            and (reads(old, b) or b not in had)  # it lost its last use, or the change added it unused
+            and b not in keep
             for a, b in zip(node.names, bound, strict=True)
         ]
         if all(gone):  # the whole statement, on lines of its own
