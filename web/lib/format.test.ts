@@ -27,7 +27,7 @@ import { applyEvents, initialRunState, parseRecording, runReducer, toSnapshot } 
 import type { CallSite, PatchFailure, RunConfig, TaskType, TierResult, Verdict } from "./types";
 
 // The recorded demo run as the hosted site serves it: no field it lacks is assumed. Tests marked "tripwire" pin
-// today's recording and are expected to change when the demo is re-recorded with the Task 18/19 fields.
+// today's recording (run 20261022-014146107-57cca9, PR vj-io/offramp-demo-app#3) and change when it is re-recorded.
 const demo = toSnapshot(
   applyEvents(
     initialRunState,
@@ -55,8 +55,8 @@ const config = { threshold: 0.95, reasoning_threshold: 0.9 } as RunConfig;
 describe("report headline", () => {
   it("tripwire: leads the recorded demo with what is true in its own data", () => {
     expect(headline(demo.verdicts, demo.totals)).toEqual({
-      lead: "6 of 6 call sites reached parity on Nemotron (held-out cases) · 3 migrated · est. −82% on those 3",
-      scope: "−11% across all 6 ($49.24 → $43.86 per 1,000 calls, est.), since 3 stay for review",
+      lead: "6 of 6 call sites reached parity on Nemotron (held-out cases) · 5 migrated · est. −95% on those 5",
+      scope: "−95% across all 6 ($49.24 → $2.65 per 1,000 calls, est.), since 1 stays for review",
     });
   });
   it("names every scope: all migrated, none migrated, kept and review together", () => {
@@ -106,9 +106,9 @@ describe("sunset line", () => {
     expect(spelledName("openai/gpt-4o", "GPT-4o retires")).toBe("GPT-4o");
     expect(dayText("2026-11-30")).toBe("30 Nov 2026");
   });
-  it("tripwire: adds nothing for the recorded demo, which predates retires_on", () => {
+  it("tripwire: names the recorded demo's retiring source model and its sites", () => {
     const byId = Object.fromEntries(demo.sites.map((s) => [s.id, s]));
-    expect(sunsetLines(demo.verdicts, byId, "2026-10-21")).toEqual([]);
+    expect(sunsetLines(demo.verdicts, byId, "2026-10-21")).toEqual(["Claude Sonnet 4.5 retires 30 Nov 2026: cs_02, cs_03"]);
   });
 });
 
@@ -179,16 +179,14 @@ describe("the port says what pr_writer says (Python-generated cases)", () => {
 });
 
 describe("manual-review note on the page", () => {
-  it("tripwire: the recorded demo's raw reasons fold under one line that claims no specific cause", () => {
+  it("tripwire: the recorded demo's one review site gives the PR's sentence for its recorded kind", () => {
     const review = demo.verdicts.filter((v) => v.decision === "MANUAL_REVIEW");
-    expect(review).toHaveLength(3);
-    for (const v of review) {
-      expect(manualReason(v)).toEqual({ sentence: v.reason, raw: null }); // the exact port passes it through
-      expect(reviewNote(v)).toEqual({
-        sentence: "Offramp's automatic patch for this site failed, so it shipped no change.",
-        raw: v.reason,
-      });
-    }
+    expect(review.map((v) => [v.site_id, v.patch_failure?.kind])).toEqual([["cs_01", "search_miss"]]);
+    expect(reviewNote(review[0])).toEqual(manualReason(review[0]));
+    expect(reviewNote(review[0])).toEqual({
+      sentence: "The model's edit to `tests/test_triage.py` quotes lines matching no single place there, so none applied.",
+      raw: review[0].reason,
+    });
   });
   it("a short reason without a recorded kind shows as it is; a recorded kind gives the PR's sentence", () => {
     const short = "patch not composed: Offramp could not rewrite this call; a model-written call is not shipped";
