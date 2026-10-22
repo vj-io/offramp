@@ -68,6 +68,38 @@ def test_a_rewrite_refused_before_evaluation_is_stated_on_its_sites_line():
     assert "never evaluated" not in render_pr(c).body
 
 
+def test_a_site_no_test_ran_says_so_and_the_pr_claims_no_test_of_it():
+    """Task 31 B (review I-2): PR #1 said a test fakes the async client and that each site's test files are
+    listed, while no test ran either migrated function and no test file changed. Each site's line now says
+    how its request was checked and which of its tests ran, or plainly that none did and why."""
+    c = ctx(async_client=True, sandbox="docker")
+    a, b = [v.site_id for v in c.verdicts if v.decision == "MIGRATE"][:2]
+    fn = next(s.function for s in c.sites if s.id == a)
+    skipped = "`tests/test_a.py` was skipped: could not import 'fastapi': No module named 'fastapi'"
+    probe = "probe: run in the sandbox with case cs_01:001, it sends the evaluated request"
+    body = render_pr(
+        c.model_copy(
+            update={
+                "verification": {a: probe},
+                "tests_run": {a: [], b: ["tests/test_b.py::test_x", "tests/test_b.py::test_y"]},
+                "untested": {a: skipped},
+            }
+        )
+    ).body
+    (line,) = [ln for ln in body.splitlines() if ln.startswith(f"- **{a}**")]
+    assert line.endswith(f"Request check: {probe}. No test exercised `{fn}`: {skipped}.")
+    (line,) = [ln for ln in body.splitlines() if ln.startswith(f"- **{b}**")]
+    assert line.endswith("2 tests in its test file `tests/test_b.py` ran on the shipped tree.")
+    assert "each still `await`s its call." in body and "a test fakes it" not in body
+    assert "test files are listed above" not in body and "no test file of this repo changed" in body
+
+    every = {v.site_id: ["t.py::x"] for v in c.verdicts if v.decision == "MIGRATE"}
+    tested = c.model_copy(update={"tests_run": every})
+    body = render_pr(tested.model_copy(update={"site_files": {a: ["tests/test_a.py"]}})).body
+    assert "and a test fakes it the way it faked the old SDK client." in body
+    assert "(each site's test files are listed above)" in body
+
+
 def test_a_tier_left_uniterated_for_latency_is_stated_on_its_sites_line():
     c = ctx()
     migrated = next(v.site_id for v in c.verdicts if v.decision == "MIGRATE")

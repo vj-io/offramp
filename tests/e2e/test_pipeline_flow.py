@@ -627,6 +627,31 @@ def test_a_prepared_site_gets_its_calls_timeout_from_the_code_as_it_is_now(tmp_p
     )  # adapter
 
 
+def test_a_label_that_does_not_validate_keeps_the_json_and_latency_gates_the_code_sets(tmp_path):
+    """Task 31 C (review M-1): reply_json and timeout_s were copied from this run's labelled contract, which
+    is None when the label does not validate: both gates were switched off for the site, without a trace.
+    Both are read from the code, whatever the labeller replied."""
+    repo = make_repo(tmp_path)
+    code = APP.replace("client = OpenAI()", "client = OpenAI(timeout=30)")
+    code = code.replace(
+        "return resp.choices[0].message.content", "return json.loads(resp.choices[0].message.content)"
+    )
+    (repo / "app" / "triage.py").write_text("import json\n\n" + code)
+    git(repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qam", "json reply, timeout")
+    log, _ = start(tmp_path, repo)
+    llm, stub = llm_for_full_run(*split_counts(repo)), Recorder()
+    llm.queues["scanner"].clear()
+    llm.add("scanner", "not a contract")  # the label does not validate
+
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr).execute()
+        == Stage.DONE
+    )
+
+    (site,) = [e.payload for e in log.events if e.type == "site"]
+    assert (site["contract"]["reply_json"], site["contract"]["timeout_s"]) == ("exact", 30.0)
+
+
 def test_a_failed_run_resumes_after_its_last_finished_step(tmp_path):
     repo = make_repo(tmp_path)
     n_dev, n_holdout = split_counts(repo)

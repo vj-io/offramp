@@ -267,6 +267,8 @@ class PatchResult(BaseModel):
     combined_repair: list[str] = Field(default_factory=list)  # tests and fakes the combined repair changed
     combined_failure: str | None = None  # why the merged tree stayed red (then sites were dropped one by one)
     verification: dict[str, str] = Field(default_factory=dict)  # shipped site -> how its request was checked
+    tests_run: dict[str, list[str]] = Field(default_factory=dict)  # shipped site -> its tests that ran
+    untested: dict[str, str] = Field(default_factory=dict)  # shipped site -> why none of its tests ran
     warnings: list[str] = Field(default_factory=list)  # e.g. symlinks dropped from the sandbox copy
     linted: bool = True  # the checks ran the repo's ruff (only a repo that configures ruff gets it)
     sandbox_notes: list[str] = Field(default_factory=list)  # Sandbox.notes: the PR states them
@@ -2373,6 +2375,35 @@ def run_probe(box: Sandbox, jobs: list[dict[str, Any]]) -> dict[str, dict[str, A
     return {job["site"]: found.get(job["site"], {"error": "no result"}) for job in jobs}
 
 
+TESTS_RUN = (  # one line per test in pytest's summary: PASSED / SKIPPED [n] path:line: reason / ...
+    "import sys, pytest\nsys.exit(pytest.main(['-rfEpsxX', '--tb=no', '-p', 'no:cacheprovider', *%r]))"
+)
+
+
+def run_site_tests(
+    box: Sandbox, site_tests: dict[str, list[str]]
+) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """The tests of each site's own test files run once more on the tree that ships, in one container: (site
+    -> the tests that ran, as pytest node ids; site -> why none did, in plain words). A green check says
+    nothing of a site whose tests were all skipped, and the skip-count backstop passes a module skipped
+    before and after the patch alike (review I-2)."""
+    files = sorted({f for fs in site_tests.values() for f in fs})
+    code, output = box.probe(TESTS_RUN % (files,)) if files else (0, "")
+    ran = re.findall(r"^(?:PASSED|FAILED|XFAIL|XPASS) (\S+)", output, re.M)
+    skipped = dict.fromkeys(re.findall(r"^SKIPPED \[\d+\] (.+?):\d+: (.*)$", output, re.M))
+    out: dict[str, list[str]] = {}
+    why: dict[str, str] = {}
+    for sid, fs in site_tests.items():
+        out[sid] = [n for n in ran if n.split("::")[0] in fs]
+        if not fs:
+            why[sid] = "no test refers to it"
+        elif not out[sid]:
+            skips = [f"`{path}` was skipped: {reason}" for path, reason in skipped if path in fs]
+            listed = ", ".join(f"`{f}`" for f in fs)
+            why[sid] = "; ".join(skips) or f"none of the tests in {listed} ran (pytest exit {code})"
+    return out, why
+
+
 def _request_difference(got: dict[str, Any], expected: dict[str, Any]) -> str | None:
     """None when the captured request equals the evaluated one (key order aside), else what differs first."""
     got, expected = (json.loads(json.dumps(x, default=repr)) for x in (got, expected))
@@ -3710,6 +3741,7 @@ def compose_patches(
     versions: dict[str, dict[str, str]] = {}  # site -> its patched files, green alone
     unchecked = False  # a green-alone patch was pruned after its check
     reach: dict[str, set[str]] = {}  # site -> what its tests name to reach the migrated function
+    site_tests: dict[str, list[str]] = {}  # site -> its test files: those in its context naming a handle
     raw: dict[str, dict[str, str]] = {}  # site -> its patched files as checked alone, before pruning
     befores: dict[str, dict[str, str]] = {}  # site -> its files before its patch
     code_of: dict[str, dict[str, str]] = {}  # site -> the code files Offramp's code changed, as written
@@ -3810,6 +3842,9 @@ def compose_patches(
             *(reach_handles(code[p], site.function) for p in code if p != site.file)
         )
         reach[v.site_id] = handles
+        named = re.compile(r"\b(" + "|".join(map(re.escape, sorted(h for h in handles if h))) + r")\b")
+        site_tests[v.site_id] = [p for p in context if is_test_path(p) and Path(p).name != "conftest.py"
+                                 and any(handles) and named.search(read(p) or "")]  # fmt: skip
         twins: dict[str, set[str]] = {}  # test file -> the fake lines mirror_fakes added
         for p in context:  # mechanical: the repo's provider fakes answer the Token Factory client's call
             if not is_test_path(p) or p in base_code:  # a test file shipped code imports stays as it is
@@ -4201,6 +4236,7 @@ def compose_patches(
         if sid not in combined:
             adapters[sid].patch = None
     migrated = len(combined)
+    tests_run, untested = run_site_tests(box, {sid: site_tests[sid] for sid in combined})  # the shipped tree
 
     warnings += [
         f"removed {n} patch(es) of `{k}`, which Offramp's rewrite removed" for k, n in sorted(dead.items())
@@ -4275,6 +4311,8 @@ def compose_patches(
         combined_repair=repaired,
         combined_failure=together_failure,
         verification={sid: verification.get(sid, UNCHANGED) for sid in combined},
+        tests_run=tests_run,
+        untested=untested,
         warnings=warnings,
         linted=box.ruff,
         sandbox_notes=box.notes,

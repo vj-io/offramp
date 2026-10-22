@@ -110,6 +110,9 @@ class PRContext(BaseModel):
     alone: dict[str, bool] = Field(default_factory=dict)  # PatchResult.alone: site -> green on its own
     combined: list[str] = Field(default_factory=list)  # PatchResult.combined: sites in the checked tree
     combined_repair: list[str] = Field(default_factory=list)  # PatchResult.combined_repair: files it changed
+    verification: dict[str, str] = Field(default_factory=dict)  # PatchResult.verification: request checks
+    tests_run: dict[str, list[str]] = Field(default_factory=dict)  # PatchResult.tests_run: tests that ran
+    untested: dict[str, str] = Field(default_factory=dict)  # PatchResult.untested: why none of a site's ran
     refused: dict[str, list[str]] = Field(default_factory=dict)  # site_id -> rewrites refused unevaluated
     not_iterated: dict[str, list[str]] = Field(default_factory=dict)  # site_id -> tiers left uniterated
     today: date = Field(default_factory=lambda: datetime.now(UTC).date())  # "retires" or "retired" on a date
@@ -435,6 +438,19 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
             )
         return " ".join(out)
 
+    def checked(sid: str) -> str:
+        """How the site's request was checked, and which tests of its test files ran on the shipped tree, or
+        plainly that none did (review I-2: green checks had run no test of either migrated function)."""
+        out = [f"Request check: {ctx.verification[sid]}."] if sid in ctx.verification else []
+        if sid in ctx.untested:
+            site = sites.get(sid)
+            out.append(f"No test exercised `{site.function if site else sid}`: {ctx.untested[sid]}.")
+        elif ran := ctx.tests_run.get(sid):
+            files = sorted({n.split("::")[0] for n in ran})
+            where = f"its test file{'s' * (len(files) > 1)} {', '.join(f'`{f}`' for f in files)}"
+            out.append(f"{len(ran)} test{'s' * (len(ran) != 1)} in {where} ran on the shipped tree.")
+        return " ".join(out)
+
     out = ["## Summary", ""]
     if lead := _retiring(verdicts, sites, ctx.today):
         out += [*lead, ""]
@@ -474,9 +490,11 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
             where = f"beside the migrated modules in the `{folder}/` folder, which is not a package"
         else:
             where = "at the repository root, because the migrated call sites are not inside one package"
+        tested = all(ctx.tests_run.get(v.site_id) for v in migrated)  # a test of each ran on the shipped tree
         asynchronous = (
             " For the async call sites, `token_factory_async_client()` (`openai.AsyncOpenAI`): each still "
-            "`await`s its call, and a test fakes it the way it faked the old SDK client."
+            "`await`s its call"
+            + (", and a test fakes it the way it faked the old SDK client." if tested else ".")
             if ctx.async_client
             else ""
         )
@@ -491,18 +509,31 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
     for v in migrated:
         site = sites.get(v.site_id)
         text = " ".join(
-            t for t in [_migrated_line(ctx, v, site), changelog(v.site_id), files(v.site_id)] if t
+            t
+            for t in [
+                _migrated_line(ctx, v, site),
+                changelog(v.site_id),
+                files(v.site_id),
+                checked(v.site_id),
+            ]
+            if t
         )
         out.append(
             f"- **{v.site_id}** `{site.file if site else '?'}` → {TIER_NAMES[Tier(v.tier)]}. {text}".rstrip()
         )
     if migrated:
+        edited = any(is_test_path(p) for v in migrated for p in ctx.site_files.get(v.site_id, []))
         out.append(
             "- Offramp's code rewrote each migrated call (the evaluated request as written-out keyword "
             "arguments, the reply read the OpenAI way) and the callers that build its client, and that code "
-            "ships as Offramp wrote it; Nemotron 3 Super edited only tests and their fakes (each site's test "
-            "files are listed above) where they pinned the old provider, with repair rounds on "
-            "Nemotron 3 Ultra (thinking off) when this repo's checks failed."
+            "ships as Offramp wrote it; "
+            + (
+                "Nemotron 3 Super edited only tests and their fakes (each site's test files are listed "
+                "above) where they pinned the old provider, with repair rounds on Nemotron 3 Ultra (thinking "
+                "off) when this repo's checks failed."
+                if edited
+                else "no test file of this repo changed."
+            )
         )
     green = sorted(sid for sid, ok in ctx.alone.items() if ok)
     if len(green) > 1:

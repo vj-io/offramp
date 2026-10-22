@@ -29,6 +29,7 @@ from offramp.agents.patcher import (
     REPAIRS,
     SUPERSEDED,
     SYSTEM,
+    TESTS_RUN,
     TOGETHER,
     UNCHANGED,
     Edit,
@@ -113,6 +114,7 @@ class FakeSandbox:
     `results` to the other checks."""
 
     mode, ruff = "docker", True  # a repo that configures ruff
+    runs_tests = False  # the run of each site's own tests on the shipped tree: real pytest only when True
 
     def __init__(self, repo: Path, results: list[bool] | None = None, precheck: bool = False,
                  output: str = "FAILED tests/test_tinyapp.py::x"):  # fmt: skip
@@ -138,6 +140,8 @@ class FakeSandbox:
         return False
 
     def probe(self, script: str) -> tuple[int, str]:  # runs the fixture repo's own code, locally
+        if script.startswith(TESTS_RUN[:30]) and not self.runs_tests:
+            return 0, ""  # a few seconds of pytest per run; tests that read tests_run opt in
         p = subprocess.run([sys.executable, "-"], input=script, cwd=self.repo, capture_output=True, text=True,
                            timeout=60)  # fmt: skip
         return p.returncode, p.stdout + p.stderr
@@ -293,6 +297,42 @@ def test_migrates_passing_sites_and_comments_kept_ones():
     assert "tinyapp/offramp_client.py" not in boxes[0].checks[0]
     # each site's module tidied as it will ship (shown to the model so), then each patch
     assert boxes[0].fixed == [["tinyapp/greet.py"]] * 2 + [["tinyapp/shout.py"]] * 2
+
+
+def test_a_site_whose_only_test_module_is_skipped_is_recorded_as_untested():
+    """Task 31 B (review I-2): the OSS PR's checks were green, but cs_02's only test module starts with
+    `pytest.importorskip("fastapi")` (not installed from the fork's pyproject), so it was skipped before and
+    after the patch, and cs_04 has no test. The skip count backstop compares counts: a module skipped in both
+    runs passes it. After the checks, the tests of each site's own test files run once more on the shipped
+    tree and what ran, or why nothing did, is recorded per site."""
+    repo = work_dir("skipped-module") / "src"
+    shutil.copytree(TINY, repo)
+    tests = repo / "tests" / "test_tinyapp.py"
+    text = tests.read_text().replace("from tinyapp.greet import greet\n", "")
+    tests.write_text(re.sub(r"def test_greet_strips_the_reply\(\):\n.*\n\n\n", "", text))
+    assert not re.search(r"\bgreet\b", tests.read_text())  # no test there names the function any more
+    (repo / "tests" / "test_greet.py").write_text(
+        'import pytest\n\npytest.importorskip("offramp_missing_module")\n\n'
+        "from tinyapp.greet import greet  # noqa: E402\n\n\ndef test_greet():\n    greet\n"
+    )
+
+    box = type("RunsTests", (FakeSandbox,), {"runs_tests": True})
+    result = run(patcher_llm(), repo=repo, name="skipped-module-run", precheck=True, box=box)
+
+    assert result.combined == ["cs_01", "cs_03"]
+    assert result.untested == {
+        "cs_01": "`tests/test_greet.py` was skipped: could not import 'offramp_missing_module': "
+        "No module named 'offramp_missing_module'"
+    }
+    ran = [
+        "tests/test_tinyapp.py::test_shout_upper_cases_the_reply",
+        "tests/test_tinyapp.py::test_motto_returns_the_reply",
+    ]
+    assert result.tests_run == {"cs_01": [], "cs_03": ran}  # every test of its test file: a file, not a test
+
+    (repo / "tests" / "test_greet.py").unlink()  # no test names the function at all
+    result = run(patcher_llm(), repo=repo, name="skipped-module-run", precheck=True, box=box)
+    assert result.untested == {"cs_01": "no test refers to it"} and result.tests_run["cs_01"] == []
 
 
 def test_client_module_reads_the_key_and_pins_verified_tier_ids():
