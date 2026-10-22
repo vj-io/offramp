@@ -378,6 +378,39 @@ def test_the_routing_loop_gets_the_cells_the_eval_matrix_measured(tmp_path):
     assert prior == {(t, 0, "dev"): matrix_cell(m, "cs_01", t) for t in RunConfig(repo_url="x").tiers}
 
 
+def test_every_site_secures_its_verdict_before_any_site_is_routed(tmp_path):
+    """Routing goes site by site, so one site's iterations could spend the Ultra cap another site's holdout
+    needed (run 20261022-023459043-590031: cs_01 iterated first, cs_04 never ran its holdout). The holdouts
+    of tiers that passed dev above a failing one run first; routing gets them with the matrix's cells."""
+    repo = make_repo(tmp_path)
+    n_dev, n_holdout = split_counts(repo)
+    log, _ = start(tmp_path, repo)
+    llm, seen = llm_for_full_run(n_dev, n_holdout), []
+
+    class Matrix(Recorder):  # Lightning failed dev, Super and Ultra passed
+        def eval_matrix(self, m):
+            self.matrix_entries = [
+                {"kind": "tier_result", "site_id": "cs_01", "tier": t.value, "split": "dev",
+                 "result": matrix_cell(m, "cs_01", t, passed=t != Tier.LIGHTNING).model_dump(mode="json")}
+                for t in m.tiers
+            ]  # fmt: skip
+            return super().eval_matrix(m)
+
+    def route(site, cases, refs, adapter, client, config, **kw):
+        seen.append(kw["prior"])
+        return SiteRoute(Verdict(site_id=site.id, decision="MANUAL_REVIEW", reason="stub"), None, [])
+
+    stub = Matrix()
+    pipeline.Pipeline(
+        log, llm, eval_matrix=stub.eval_matrix, route=route, patch=stub.patch, pr=stub.pr
+    ).execute()
+
+    (prior,) = seen
+    holdout = prior[Tier.SUPER, 0, "holdout"]
+    assert holdout.passed and holdout.cases == n_holdout and (Tier.ULTRA, 0, "holdout") not in prior
+    assert [c["role"] for c in llm.calls].count("eval_target") == n_holdout
+
+
 def test_a_prepared_site_gets_how_its_code_parses_the_reply_from_the_code_as_it_is_now(tmp_path):
     """Contract.reply_json is read from the code, not labelled: a run takes it from its own scan, also for a
     site whose contract comes from evals/sites.json (prepared before the code, or Offramp, changed)."""

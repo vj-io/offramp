@@ -25,7 +25,7 @@ from offramp.agents.verdict import (
     pricing_yaml_price,
 )
 from offramp.evals.errors import MissingReference, ProviderError
-from offramp.evals.route import SiteRoute, route_site
+from offramp.evals.route import SiteRoute, route_site, secure_holdouts
 from offramp.evals.runner import BudgetStop
 from offramp.evals.scorers.aggregate import CANDIDATE_ERROR, NOT_JSON, site_pass
 from offramp.integrations.tavily import SourceModelInfo
@@ -1108,6 +1108,63 @@ def test_a_secured_holdout_that_fails_moves_to_the_next_dev_passing_tier():
         (U, "dev", 0),
     ]
     assert out.verdict.decision == "MIGRATE" and out.verdict.tier == U
+
+
+def test_the_holdouts_that_secure_a_verdict_can_run_for_every_site_before_any_site_iterates():
+    """Routing goes site by site: in that run cs_01 (no tier passed dev) iterated first and spent the cap
+    before cs_04 was reached. The pipeline runs secure_holdouts for every site before routing any; routing
+    then reuses those holdout cells like the matrix's."""
+    table = {(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): 0.5, (U, "dev"): 1.0, (U, "holdout"): 1.0}
+    prior, runner = matrix_cells(table), Runner(table)
+    refs = {c.id: ref(c.id, "billing") for c in ROUTE_CASES}
+    got = secure_holdouts(
+        SITE, ROUTE_CASES, refs, V0, FakeLLM(), RunConfig(repo_url="x"), prior, runner=runner
+    )
+    assert runner.calls == [(S, "holdout", 0), (U, "holdout", 0)]  # cheapest first, until one passes
+    assert {k: r.passed for k, r in got.items()} == {(S, 0, "holdout"): False, (U, 0, "holdout"): True}
+
+    out, runner, it = route(table, prior=prior | got, config=RunConfig(repo_url="x", max_iterations=1))
+    assert runner.reused == [
+        (L, "dev", 0),
+        (S, "holdout", 0),
+        (U, "holdout", 0),
+        (S, "dev", 0),
+        (U, "dev", 0),
+    ]
+    assert out.verdict.decision == "MIGRATE" and out.verdict.tier == U
+
+
+@pytest.mark.parametrize(
+    "table, config",
+    [
+        (
+            {(L, "dev"): 1.0, (S, "dev"): 1.0},
+            RunConfig(repo_url="x"),
+        ),  # routing runs Lightning's holdout first
+        ({(L, "dev"): 0.5, (S, "dev"): 0.5, (U, "dev"): 0.5}, RunConfig(repo_url="x")),  # nothing passed dev
+        ({(L, "dev"): 0.5, (S, "dev"): 1.0}, RunConfig(repo_url="x", max_iterations=0)),  # nothing to iterate
+    ],
+)
+def test_no_holdout_is_secured_where_routing_would_not_iterate_before_it(table, config):
+    runner = Runner(table)
+    refs = {c.id: ref(c.id, "billing") for c in ROUTE_CASES}
+    assert (
+        secure_holdouts(SITE, ROUTE_CASES, refs, V0, FakeLLM(), config, matrix_cells(table), runner=runner)
+        == {}
+    )
+    assert runner.calls == []
+
+
+def test_a_budget_stop_while_securing_ends_it_quietly():
+    table = {(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): "budget"}
+    refs = {c.id: ref(c.id, "billing") for c in ROUTE_CASES}
+    config = RunConfig(repo_url="x")
+    assert (
+        secure_holdouts(
+            SITE, ROUTE_CASES, refs, V0, FakeLLM(), config, matrix_cells(table), runner=Runner(table)
+        )
+        == {}
+    )
 
 
 def test_a_budget_stop_before_any_holdout_names_the_best_tier_and_score_reached():

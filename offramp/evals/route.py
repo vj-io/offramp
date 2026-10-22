@@ -12,9 +12,10 @@ adapter's iterations and changes, not the later ones tried on its tier.
 `prior` holds cells measured before routing (the eval matrix: v0 on every tier's dev cases). Their scores are
 reused, never judged again. Verdict first under the Ultra cap: before the first Iterator call on a tier
 cheaper than one whose v0 passed dev there, that tier's holdout runs (the cheapest such tier whose holdout
-passes is a secured verdict); then the cheaper tiers are iterated with what is left. The result is the same
-cheapest passing tier as without the reordering; a budget stop after a secured verdict keeps it, and its
-reason says which cheaper tiers were not fully tried.
+passes is a secured verdict); then the cheaper tiers are iterated with what is left. The pipeline runs the
+same step for every site before routing any (secure_holdouts), so one site's iterations cannot spend what
+another site's verdict needed. The result is the same cheapest passing tier as without the reordering; a
+budget stop after a secured verdict keeps it, and its reason says which cheaper tiers were not fully tried.
 
 A ProviderError from a tier run (an outage, an account error, the judge leaving a case out) is retried once;
 a second one propagates as a run error, never a score. CacheMiss (replay without its cassette) propagates.
@@ -238,6 +239,48 @@ def _route(
         return SiteRoute(budget_stopped(site, reason, top, config), None, results)
     except (MissingReference, UnresolvedCallSite) as e:
         return SiteRoute(stopped(site, "MANUAL_REVIEW", f"cannot evaluate: {e}"), None, results)
+
+
+def secure_holdouts(
+    site: CallSite,
+    cases: Sequence[EvalCase],
+    references: Mapping[str, BaselineResult],
+    adapter: Adapter,
+    client: LLM,
+    config: RunConfig,
+    prior: Mapping[tuple[Tier, int, Split], TierResult],
+    *,
+    runner: Callable[..., Any] = run_tier,
+    on_event: EventFn | None = None,
+) -> dict[tuple[Tier, int, Split], TierResult]:
+    """Verdict first across sites: routing goes site by site, so one site's iterations could spend the Ultra
+    cap that another site's verdict needed. The pipeline calls this for every site before routing any: the
+    holdout of each tier whose v0 passed dev in `prior` (the matrix's cells), cheapest first until one
+    passes, wherever routing would iterate a cheaper tier first. Returns the holdout cells measured, which
+    routing then reuses through `prior`. A per-run cap ends it quietly (routing stops on the cap as well);
+    a run error propagates as in routing; a site routing cannot evaluate is left to routing to report."""
+    tiers = sorted(set(map(Tier, config.tiers)), key=TIER_ORDER.index)
+    passing = [t for t in tiers if (r := prior.get((t, adapter.version, "dev"))) is not None and r.passed]
+    if not passing or passing[0] == tiers[0] or config.max_iterations == 0 or _unfit(site, cases):
+        return {}
+    emit = on_event or (lambda event_type, payload: None)
+    out: dict[tuple[Tier, int, Split], TierResult] = {}
+    for tier in passing:
+        args = (site, cases, references, adapter, tier, client, "holdout", config)
+        try:
+            try:
+                result, _ = runner(*args, return_candidates=True)
+            except ProviderError:  # once more, as routing does
+                result, _ = runner(*args, return_candidates=True)
+        except (MissingReference, UnresolvedCallSite):
+            return out
+        if isinstance(result, BudgetStop):
+            return out
+        emit("tier_result", result.model_dump(mode="json", exclude={"case_scores"}))
+        out[tier, adapter.version, "holdout"] = result
+        if result.passed:
+            break
+    return out
 
 
 def _unfit(site: CallSite, cases: Sequence[EvalCase]) -> str | None:

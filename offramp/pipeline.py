@@ -49,7 +49,7 @@ from offramp.agents.pr_writer import PRContext, reference_summary, write_pr
 from offramp.agents.scanner import label_contracts, scan_repo
 from offramp.agents.verdict import pricing_yaml_price
 from offramp.evals import baselines
-from offramp.evals.route import route_site
+from offramp.evals.route import route_site, secure_holdouts
 from offramp.evals.runner import run_tier
 from offramp.evals.scorers.aggregate import Thresholds
 from offramp.evals.serverless_job.matrix import Matrix, MatrixResults, absorb_usage, remaining_caps
@@ -740,6 +740,23 @@ class Pipeline:
             if entry["kind"] == "tier_result":
                 r = TierResult.model_validate(entry["result"])
                 cells.setdefault(r.site_id, {})[r.tier, r.adapter_version, r.split] = r
+        done = {s.id for s in chat if (self.dir / "evals" / "results" / f"{s.id}.json").exists()}
+        for site in chat:  # verdict first: every site's securing holdout before any site iterates
+            if site.id in done or site.id in stopped or site.id not in cells:
+                continue
+            self._stage(Stage.ITERATING)
+            cells[site.id] |= secure_holdouts(
+                site,
+                baselines.load_cases(evals, site.id),
+                baselines.baselines_for(evals, site.id),
+                adapters[site.id],
+                self.client,
+                self.config,
+                cells[site.id],
+                runner=self._runner(site),
+                on_event=lambda t, p, sid=site.id: self.log.emit(t, p, call_site_id=sid),
+            )
+        self._save_budget()
         out = {}
         for site in chat:
             path = self.dir / "evals" / "results" / f"{site.id}.json"
@@ -772,18 +789,6 @@ class Pipeline:
             if event_type != "verdict":  # announced at VERDICTS
                 self.log.emit(event_type, payload, call_site_id=site.id)
 
-        def runner(*args: Any, **kwargs: Any) -> Any:
-            """run_tier, plus each measured (site, tier, split) as a LangSmith experiment (GC23; no-op without
-            a key). route_site calls it with (site, cases, refs, adapter, tier, client, split, config)."""
-            out = run_tier(*args, **kwargs)
-            result, calls = out if isinstance(out, tuple) else (out, [])
-            if isinstance(result, TierResult) and calls:
-                cases = {c.id: c for c in args[1]}
-                scores = {s.case_id: s for s in result.case_scores}
-                rows = [langsmith.CaseResult(cases[c.case_id], c, scores[c.case_id]) for c in calls]
-                langsmith.log_experiment(site, result.tier, result.split, rows, run_id=self.log.run_id)
-            return out
-
         closed = baselines.load_closed(evals, site.id)
         circular = self._closed_auditors(evals, site, closed)
         if circular:
@@ -799,7 +804,7 @@ class Pipeline:
             self.config,
             closed=None if circular else closed,  # GC27c: no comparison row (nor reason clause) when circular
             schemas=schemas,
-            runner=runner,
+            runner=self._runner(site),
             price_lookup=self.price_lookup,
             on_event=on_event,
             prior=prior,
@@ -812,6 +817,21 @@ class Pipeline:
             "adapter": route.adapter.model_dump(mode="json") if route.adapter else None,
             "tier_results": [r.model_dump(mode="json") for r in route.results],
         }
+
+    def _runner(self, site: CallSite) -> Callable[..., Any]:
+        def runner(*args: Any, **kwargs: Any) -> Any:
+            """run_tier, plus each measured (site, tier, split) as a LangSmith experiment (GC23; no-op without
+            a key). Routing calls it with (site, cases, refs, adapter, tier, client, split, config)."""
+            out = run_tier(*args, **kwargs)
+            result, calls = out if isinstance(out, tuple) else (out, [])
+            if isinstance(result, TierResult) and calls:
+                cases = {c.id: c for c in args[1]}
+                scores = {s.case_id: s for s in result.case_scores}
+                rows = [langsmith.CaseResult(cases[c.case_id], c, scores[c.case_id]) for c in calls]
+                langsmith.log_experiment(site, result.tier, result.split, rows, run_id=self.log.run_id)
+            return out
+
+        return runner
 
     @staticmethod
     def _closed_auditors(evals: Path, site: CallSite, closed: dict[str, Any]) -> str | None:
