@@ -2402,7 +2402,7 @@ def run_site_tests(
         elif not started:
             why[sid] = f"the run of its tests did not start (exit {code}): {output.strip()[-200:]}"
         elif not out[sid]:
-            skips = [f"`{path}` was skipped: {reason}" for path, reason in skipped if path in fs]
+            skips = [f"`{path}` was skipped: {reason[:200]}" for path, reason in skipped if path in fs]
             listed = ", ".join(f"`{f}`" for f in fs)
             why[sid] = "; ".join(skips) or f"none of the tests in {listed} ran (pytest exit {code})"
     return out, why
