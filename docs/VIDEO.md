@@ -37,7 +37,7 @@ Run ids: the final demo run is `20261022-014146107-57cca9`, the no-Ultra run `20
 | −95% on the 5 migrated sites | $49.21 → $2.61 per 1,000 calls to each site, est. | sum of the five MIGRATE verdicts' `cost_before_per_1k` / `cost_after_per_1k`; PR #3 title "est. −95% cost on those 5" |
 | $49 before, $2.65 after | $49.24 → $2.65 per 1,000 calls to each site, est., all 6 sites (cs_01 counted at its source price) | demo replay `done` event: `est_cost_before_per_1k` 49.243, `est_cost_after_per_1k` 2.646; report subline |
 | Test cases | 121 cases, 40 held out | PR #3 summary; demo `done` event `cases` |
-| cs_04 needed Ultra | Lightning dev v0 to v3 and Super dev v0 to v3 failed; Ultra v1 passed, judge mean 5.0 on 9 holdout cases | demo replay events 65 to 82; PR #3 evidence table |
+| cs_04 needed Ultra | Lightning dev v0 to v3 failed (3 distinct rewrites); Super dev v0 and v1 failed, and its v2 and v3 repeated v1; Ultra v1 passed, judge mean 5.0 on 9 holdout cases | demo replay events 65 to 82; PR #3 evidence table |
 | Two calls on Claude Sonnet 4.5, retiring 30 Nov 2026 | cs_02, cs_03; "retires on November 30, 2026" | PR #3 "Sunset risk" section (Tavily, platform.claude.com model page, 2026-10-22) |
 | cs_01's refused edit | the edit "would drop" 3 asserts it never quoted | cs_01 verdict reason in the demo replay; PR #3 "What Offramp did NOT change" |
 | CI on PR #3 | 2 of 2 checks passed | `gh pr view 3 -R vj-io/offramp-demo-app --json statusCheckRollup` (2026-10-22) |
