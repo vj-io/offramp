@@ -66,18 +66,21 @@ def input_key(messages: list[dict[str, Any]]) -> str:
     return json.dumps(parts, ensure_ascii=False)
 
 
-def save_cases(evals_dir: Path, site_id: str, cases: Iterable[EvalCase]) -> None:
-    """Refuses (ValueError, nothing written) cases whose input is in both splits: the Iterator would tune on
-    inputs the holdout verdict then reads (GC10)."""
-    cases = sorted(cases, key=lambda c: c.id)
+def _leaks(cases: Iterable[EvalCase]) -> str | None:
+    """'the same input is in dev and holdout (<ids>)' when one is: the Iterator would tune on inputs the
+    holdout verdict then reads (GC10)."""
     by_input: dict[str, dict[str, str]] = {}  # input -> split -> first case id
-    for c in cases:
+    for c in sorted(cases, key=lambda c: c.id):
         by_input.setdefault(input_key(c.input_messages), {}).setdefault(c.split, c.id)
     leaked = [" and ".join(sorted(ids.values())) for ids in by_input.values() if len(ids) > 1]
-    if leaked:
-        raise ValueError(
-            f"{site_id}: the same input is in dev and holdout ({'; '.join(leaked[:5])}): drop the duplicates"
-        )
+    return f"the same input is in dev and holdout ({'; '.join(leaked[:5])})" if leaked else None
+
+
+def save_cases(evals_dir: Path, site_id: str, cases: Iterable[EvalCase]) -> None:
+    """Refuses (ValueError, nothing written) cases whose input is in both splits."""
+    cases = sorted(cases, key=lambda c: c.id)
+    if leak := _leaks(cases):
+        raise ValueError(f"{site_id}: {leak}: drop the duplicates")
     _write_jsonl(Path(evals_dir) / "cases" / f"{site_id}.jsonl", cases)
 
 
@@ -185,7 +188,8 @@ def write_manifest(evals_dir: Path, generator_models: dict[str, str] | None = No
 
 
 def verify_manifest(evals_dir: Path) -> list[str]:
-    """Problems found (empty = the dataset is exactly what the manifest records)."""
+    """Problems found (empty = the dataset is exactly what the manifest records, and no input of a site is in
+    both of its splits)."""
     evals_dir = Path(evals_dir)
     if not (evals_dir / MANIFEST).exists():
         return [f"no {MANIFEST} in {evals_dir}"]
@@ -198,4 +202,7 @@ def verify_manifest(evals_dir: Path) -> list[str]:
         for rel in sorted(present & set(recorded))
         if _sha256(evals_dir / rel) != recorded[rel]
     ]
+    for path in sorted((evals_dir / "cases").glob("*.jsonl")):  # written before save_cases refused leaks
+        if leak := _leaks(_read_jsonl(path, EvalCase)):
+            problems.append(f"cases/{path.name}: {leak}")
     return problems

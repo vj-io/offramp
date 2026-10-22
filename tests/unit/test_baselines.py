@@ -69,6 +69,25 @@ def test_an_input_in_both_dev_and_holdout_is_refused_and_nothing_is_written(tmp_
     assert len(b.load_cases(tmp_path, "cs_01")) == 2
 
 
+def test_a_dataset_written_before_the_guard_fails_verification_where_it_leaks(tmp_path):
+    """Such as the evals/ committed to the idea-reality-mcp fork from run 20261022-023459043-590031's prepare:
+    a run reads it through verify_manifest, whose problems it logs."""
+    rows = [
+        case(5).model_copy(update={"input_messages": [{"role": "user", "content": "AI code review bot"}]}),
+        case(13).model_copy(
+            update={"split": "holdout", "input_messages": [{"role": "user", "content": "AI code review bot"}]}
+        ),
+    ]
+    path = tmp_path / "cases" / "cs_01.jsonl"
+    path.parent.mkdir()
+    path.write_text("".join(c.model_dump_json() + "\n" for c in rows))
+    b.write_manifest(tmp_path)
+
+    assert b.verify_manifest(tmp_path) == [
+        "cases/cs_01.jsonl: the same input is in dev and holdout (cs_01:005 and cs_01:013)"
+    ]
+
+
 def test_legacy_baselines_are_read_and_references_override_them(tmp_path):
     legacy = tmp_path / "baselines" / "cs_01.jsonl"
     legacy.parent.mkdir()
