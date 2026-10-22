@@ -46,6 +46,7 @@ export interface Contract {
   // read from the code: the calling code runs json.loads on the reply, as is or after stripping a ``` fence,
   // with strict=False when "_lenient"
   reply_json?: "exact" | "fence_stripped" | "exact_lenient" | "fence_stripped_lenient" | null;
+  timeout_s?: number | null; // read from the code: the call's own timeout, which a tier's holdout median must meet
 }
 
 export interface PromptTemplate {
@@ -212,7 +213,8 @@ export type Gate =
   | "pass_share"
   | "judge_mean"
   | "case_floor"
-  | "reference_margin";
+  | "reference_margin"
+  | "latency";
 
 // The optional fields arrived after the first recordings; optional so older recordings still type.
 export interface Verdict {

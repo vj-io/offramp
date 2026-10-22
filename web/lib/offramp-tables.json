@@ -31,7 +31,8 @@
   "dev": "; holdout passed, dev did not",
   "schema": ", not every output schema-valid",
   "pass_share": ", too few cases pass whole",
-  "reference_margin": ", more than 0.3 below the references' judge mean"
+  "reference_margin": ", more than 0.3 below the references' judge mean",
+  "latency": "; too slow for the call's own timeout"
  },
  "price_methods": {
   "search": "Tavily search",

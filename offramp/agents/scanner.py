@@ -805,6 +805,8 @@ def label_contracts(sites: list[CallSite], llm: LLM, root: str | Path | None = N
         certain = "task_type" in hints
         if root is not None and "tools" not in hints and (parsed := json_reply(root, site)):
             hints["reply_json"] = parsed  # from the code, like the other hints: the labeller is not asked
+        if root is not None and (seconds := call_timeout(root, site)) is not None:
+            hints["timeout_s"] = seconds
         if label is None:  # keep what the code settles, and ask a human for the rest
             flags = site.flags if "MANUAL_REVIEW" in site.flags else [*site.flags, "MANUAL_REVIEW"]
             update = {
@@ -1073,6 +1075,26 @@ def _json_loads_names(tree: ast.Module) -> tuple[set[str], set[str]]:
     return modules, functions
 
 
+def _located(root: str | Path, site: CallSite) -> tuple[ast.Module, ast.Call, Fn | None] | None:
+    """The parsed file, `site`'s call node in it and the function around it; None if it cannot be read."""
+    try:
+        with catch_warnings():
+            simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse((Path(root) / site.file).read_bytes())
+    except (OSError, SyntaxError, ValueError, RecursionError):
+        return None
+    return next(
+        (
+            (tree, node, fn)
+            for node, fn, _, _ in _walk(tree)
+            if isinstance(node, ast.Call)
+            and [node.lineno, node.end_lineno] == site.lines
+            and ast.unparse(node.func) == site.call
+        ),
+        None,
+    )
+
+
 def json_reply(root: str | Path, site: CallSite) -> str | None:
     """How the function around `site`'s call parses the reply, read from the code: "exact" when it runs
     json.loads on the reply text itself (stripped at most), "fence_stripped" when idea-reality's guarded
@@ -1081,29 +1103,57 @@ def json_reply(root: str | Path, site: CallSite) -> str | None:
     a document built around the reply), removes a fence another way, falls back to the text when json.loads
     fails, or cannot be read. Conservative on purpose: a site it misses is still judged; one it flags
     wrongly fails good replies."""
-    try:
-        with catch_warnings():
-            simplefilter("ignore", SyntaxWarning)
-            tree = ast.parse((Path(root) / site.file).read_bytes())
-    except (OSError, SyntaxError, ValueError, RecursionError):
+    found = _located(root, site)
+    if found is None or found[2] is None:
         return None
-    found = next(
-        (
-            (node, fn)
-            for node, fn, _, _ in _walk(tree)
-            if isinstance(node, ast.Call)
-            and [node.lineno, node.end_lineno] == site.lines
-            and ast.unparse(node.func) == site.call
-        ),
-        None,
-    )
-    if found is None or found[1] is None:
-        return None
-    parsed = _parses_reply(found[1], found[0], set(), _json_loads_names(tree))
+    tree, call, fn = found
+    parsed = _parses_reply(fn, call, set(), _json_loads_names(tree))
     if parsed is None:
         return None
     fenced, lenient = parsed
     return ("fence_stripped" if fenced else "exact") + ("_lenient" if lenient else "")
+
+
+def _seconds(node: ast.AST | None, consts: dict[str, ast.expr]) -> float | None:
+    """A timeout read statically: a number, a module constant holding one, or httpx.Timeout(<number>)."""
+    if isinstance(node, ast.Name) and node.id in consts:
+        node = consts[node.id]
+    if isinstance(node, ast.Call) and ast.unparse(node.func).split(".")[-1] == "Timeout" and node.args:
+        return _seconds(node.args[0], consts)
+    if isinstance(node, ast.Constant) and type(node.value) in (int, float) and node.value > 0:
+        return float(node.value)
+    return None
+
+
+def _timeout_kw(call: ast.AST | None, consts: dict[str, ast.expr]) -> float | None:
+    if not isinstance(call, ast.Call):
+        return None
+    return next((_seconds(k.value, consts) for k in call.keywords if k.arg == "timeout"), None)
+
+
+def call_timeout(root: str | Path, site: CallSite) -> float | None:
+    """The timeout in seconds the code sets on `site`'s call: `timeout=` on the request, else on the client
+    it is made with, when that client is a name bound once to a constructor call in the function or at
+    module level (idea-reality's `client = anthropic.AsyncAnthropic(..., timeout=30.0)`). None when there is
+    none to read statically: no latency gate then."""
+    found = _located(root, site)
+    if found is None:
+        return None
+    tree, call, fn = found
+    consts = {n: v for stmt in tree.body if (a := _assigned(stmt)) for n, v in [a]}
+    if (seconds := _timeout_kw(call, consts)) is not None:
+        return seconds
+    receiver = call.func
+    while isinstance(receiver, ast.Attribute):
+        receiver = receiver.value
+    if not isinstance(receiver, ast.Name):
+        return None
+    for scope in [fn, tree] if fn is not None else [tree]:
+        nodes = _own_nodes(scope) if scope is fn else iter(scope.body)
+        bound = [v for node in nodes if (a := _assigned(node)) and a[0] == receiver.id for v in [a[1]]]
+        if bound:
+            return _timeout_kw(bound[0], consts) if len(bound) == 1 else None
+    return None
 
 
 def _describe(site: CallSite, root: str | Path | None) -> str:

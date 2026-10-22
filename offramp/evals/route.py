@@ -42,6 +42,7 @@ from offramp.agents.verdict import (
     budget_stopped,
     closed_reference_parity,
     decide,
+    passes,
     stopped,
 )
 from offramp.evals.errors import MissingReference, ProviderError
@@ -201,7 +202,7 @@ def _route(
             history.setdefault(tier, [adapter])
             if (tier, 0) not in holdouts:
                 holdouts[tier, 0] = run(adapter, tier, "holdout")
-            if holdouts[tier, 0][0].passed:
+            if passes(site, holdouts[tier, 0][0]):
                 secured = (tier, dev)
                 return
             finished.add(tier)  # its holdout failed: routing moves on from it without iterating
@@ -251,7 +252,7 @@ def _route(
             if dev.passed:
                 if (tier, i) not in holdouts:
                     holdouts[tier, i] = run(current, tier, "holdout")
-                if holdouts[tier, i][0].passed:
+                if passes(site, holdouts[tier, i][0]):
                     return SiteRoute(verdict(tier, i, dev), current, results)
             finished.add(tier)
         _, tier, i, dev = best
@@ -317,7 +318,7 @@ def secure_holdouts(
             return out
         emit("tier_result", result.model_dump(mode="json", exclude={"case_scores"}))
         out[tier, adapter.version, "holdout"] = result
-        if result.passed:
+        if passes(site, result):
             break
     return out
 

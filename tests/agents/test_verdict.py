@@ -1338,6 +1338,52 @@ def test_a_tier_whose_rewrites_are_all_refused_ends_without_evaluating_any():
     assert out.verdict.tier == S and len(out.refused) == 3
 
 
+def timed(site: CallSite, seconds: float) -> CallSite:
+    return site.model_copy(update={"contract": site.contract.model_copy(update={"timeout_s": seconds})})
+
+
+ALL_PASS = {(t, split): 1.0 for t in (L, S, U) for split in ("dev", "holdout")}  # every run at p50 700 ms
+
+
+def test_a_tier_slower_than_the_calls_own_timeout_fails_for_the_site():
+    """Task 29 C: idea-reality's cs_01 migrated to Lightning with a holdout median of 95 s while the migrated
+    call keeps the client's timeout=30: most calls would time out. A tier passes only within the timeout."""
+    out, runner, it = route(ALL_PASS, site=timed(SITE, 0.5))
+    v = out.verdict
+    assert runner.calls == [
+        (L, "dev", 0),
+        (L, "holdout", 0),
+        (S, "dev", 0),
+        (S, "holdout", 0),
+        (U, "dev", 0),
+        (U, "holdout", 0),
+    ]
+    assert (v.decision, v.best_tier, v.failed_gate) == ("KEEP_CLOSED", L, "latency")
+    assert v.reason.startswith(
+        "too slow: median 0.7 s > the call's 0.5 s timeout on Lightning after 0 adapter"
+    )
+    out, *_ = route(ALL_PASS, site=timed(SITE, 1))  # within the timeout: as before
+    assert (out.verdict.decision, out.verdict.tier) == ("MIGRATE", L)
+
+
+def test_a_securing_holdout_slower_than_the_timeout_secures_nothing():
+    table = {(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): 1.0}
+    refs = {c.id: ref(c.id, "billing") for c in ROUTE_CASES}
+    config = RunConfig(repo_url="x")
+    site = timed(SITE, 0.5)
+    got = secure_holdouts(
+        site, ROUTE_CASES, refs, V0, FakeLLM(), config, matrix_cells(table), runner=Runner(table)
+    )
+    assert [k for k, r in got.items()] == [(S, 0, "holdout")]  # measured, and too slow: not a secured verdict
+    out, runner, it = route(
+        table, site=site, prior=matrix_cells(table) | got, iterator=StubIterator(error=ULTRA_CAP)
+    )
+    assert (out.verdict.decision, out.verdict.failed_gate) == ("KEEP_CLOSED", "budget")
+    assert out.verdict.reason.endswith(
+        "failed the holdout: too slow: median 0.7 s > the call's 0.5 s timeout"
+    )
+
+
 def test_an_iterator_without_a_valid_adapter_ends_that_tiers_iterations():
     events = []
     out, runner, it = route(

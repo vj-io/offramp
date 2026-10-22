@@ -210,6 +210,7 @@ _MISSED = {  # Verdict.failed_gate -> what the kept row says after its figures
     "schema": ", not every output schema-valid",
     "pass_share": ", too few cases pass whole",
     "reference_margin": f", more than {JUDGE_MARGIN:g} below the references' judge mean",
+    "latency": "; too slow for the call's own timeout",
 }
 
 

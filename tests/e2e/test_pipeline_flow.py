@@ -587,6 +587,26 @@ def test_offramp_pr_refuses_a_run_that_migrated_nothing_or_has_not_finished(tmp_
         pipeline.open_pr_from_run(unfinished.run_id, tmp_path / "data", opener=FakeGitHub().opener())
 
 
+def test_a_prepared_site_gets_its_calls_timeout_from_the_code_as_it_is_now(tmp_path):
+    """Task 29 C: Contract.timeout_s is read from the code, also for a contract from evals/sites.json."""
+    repo = make_repo(tmp_path)
+    (repo / "app" / "triage.py").write_text(APP.replace("client = OpenAI()", "client = OpenAI(timeout=30)"))
+    git(repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qam", "timeout")
+    log, _ = start(tmp_path, repo)
+    llm, stub = llm_for_full_run(*split_counts(repo)), Recorder()
+
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr).execute()
+        == Stage.DONE
+    )
+
+    (site,) = [e.payload for e in log.events if e.type == "site"]
+    assert site["contract"]["task_type"] == "classification" and site["contract"]["timeout_s"] == 30.0
+    assert (
+        "timeout_s" not in pipeline.json.loads(llm.calls[1]["messages"][1]["content"])["contract"]
+    )  # adapter
+
+
 def test_a_failed_run_resumes_after_its_last_finished_step(tmp_path):
     repo = make_repo(tmp_path)
     n_dev, n_holdout = split_counts(repo)
