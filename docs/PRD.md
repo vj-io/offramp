@@ -2,6 +2,8 @@
 **Nebius x NVIDIA Global AI Hackathon · Coding & Agentic Engineering track**
 **Status:** Build-ready · **Date:** 18 Oct 2026 · **Submit by:** 29 Oct 2026 (hard close 30 Oct, 10:00 PT)
 
+> **As shipped (2026-10-22).** This is the plan as written on 18 October, kept as history. Notes marked "As shipped" below say where the build differs; the README's [Plan versus shipped](../README.md#plan-versus-shipped) table has the whole list. In short: parity is measured against references, not a recorded closed-model baseline; the Serverless Job path is built but never ran on Nebius; the hosted site plays recordings and scans repos, while live runs need a local API; and `KEEP_CLOSED` shows in the no-Ultra run and on a real open-source repo, not in the main demo. Where this page says Offramp "proves" parity, read "shows, on held-out cases".
+
 ---
 
 ## 0. One-line
@@ -17,6 +19,7 @@
 - Current practice: manual A/B in a notebook, or nothing. No per-call-site evidence, no audit trail.
 - **Why now**
   - OpenAI hosted Evals go read-only 31 Oct 2026; API shuts 30 Nov 2026 → teams are re-platforming evals anyway.
+  - *As shipped: we have no public source we can cite for this date, so the submission does not use it. Its why-now is the Claude Sonnet 4.5 retirement on 30 Nov 2026 that Offramp's Tavily lookup found on Anthropic's model page.*
   - Nemotron 3 Ultra/Super + 3.5 Lightning live on Token Factory at $1/$3, $0.30/$0.90, $0.06/$0.24 per 1M tokens.
   - Judges (12 of 23 from Nebius product/DevRel/GTM) want proof that Token Factory is a production destination.
 
@@ -27,11 +30,13 @@
 ### Goals (must ship)
 - G1. Detect all closed-LLM call sites in a Python repo (openai + anthropic SDKs).
 - G2. For each call site, build an eval set and record a **baseline from the original closed model** (fixtures committed; judges need no closed keys).
+  - *As shipped: no baseline was recorded, because we had no OpenAI or Anthropic key. Parity is agreement with references (seeded, computed by code, or written by Claude Sonnet 5.5); the recorder exists and is tested with fake clients.*
 - G3. Run a tier matrix (Lightning → Super → Ultra) and pick the **cheapest tier that passes** a parity threshold.
 - G4. On failure, iterate (prompt/schema adapter rewrite by Ultra) up to N loops.
 - G5. Emit an honest verdict per call site: `MIGRATE(tier)` or `KEEP_CLOSED(reason)`.
 - G6. Open a real GitHub PR with diff + evidence table + failing cases attached.
 - G7. Web dashboard: paste repo URL → live progress → PR link. Cached demo run that never breaks.
+  - *As shipped: live runs work against a local API (`make demo`, `offramp serve`) with your own key. The hosted site plays three recorded runs and scans any public repo without a key.*
 - G8. Make Token Factory + Nemotron **impossible to miss** (UI, README, Built With, video audio).
 
 ### Non-goals (explicitly out)
@@ -50,6 +55,8 @@
 | Backend lead at a startup with $5–50k/mo closed-API spend | "Cut spend without breaking prod" | PR with numbers she can show CTO |
 | Platform/ML-infra engineer | "Standardise on open models, EU residency" | Per-call-site verdicts + reasons for the hold-outs |
 | Hackathon judge (Nebius PMM / NVIDIA engineer) | "Does this prove Token Factory + Nemotron are production-ready?" | Honest table incl. one `KEEP_CLOSED` row |
+
+*As shipped: the main demo run has no `KEEP_CLOSED` row (every site passed parity). The no-Ultra run keeps one site on `gpt-4o`, and the open-source run keeps two on Claude.*
 
 ---
 
@@ -144,6 +151,7 @@ All subagents: OpenAI-compatible chat completions against `https://api.tokenfact
 
 ### 6.5 Eval Runner (non-LLM + Judge)
 - **Compute:** Nebius Serverless Job (`offramp-eval:<run_id>`), parallel over tiers.
+  - *As shipped: built and tested against a fake `nebius` CLI; every run used the local worker, because AI Cloud billing is separate from the Token Factory credits.*
 - **Target tiers:** `nemotron-3.5-lightning` → `nemotron-3-super` → `nemotron-3-ultra` (stop at first pass).
 - **Scoring (deterministic first):**
   | Contract | Check | Pass rule |
@@ -153,6 +161,8 @@ All subagents: OpenAI-compatible chat completions against `https://api.tokenfact
   | tool_call | tool name == baseline; args semantic-equal (normalised) | ≥95% |
   | free_text | **Judge Agent** rubric 1–5 vs baseline | mean ≥ baseline − 0.3 and ≥4.0 |
   | reasoning | final-answer exact/numeric match | ≥90% |
+
+  *As shipped: "baseline" became the references. Free text also needs no holdout case below 3.0, and when the call sets a timeout, the tier's holdout p50 must be within it.*
 - **Judge Agent:** **Nemotron 3 Ultra**, pairwise with position-swap (A/B then B/A), rubric from contract; reports agreement with deterministic checks on overlap set (sanity).
 - **Also records:** p50/p95 latency, tokens, `$/1k calls` from published TF prices (loaded from `pricing.yaml`, timestamped).
 - **Output:** `TierResult{site_id, tier, pass, score, metrics, failing_case_ids[]}`.
@@ -282,6 +292,8 @@ Roles: **A** = backend/orchestrator, **B** = evals/agents, **C** = frontend/PR/v
 | 11 | 29 Oct | Dry-run judging from clean laptop; fix; **submit** | all | Devpost submission confirmed |
 | 12 | 30 Oct | Buffer only | — | — |
 
+*As shipped: the day 5 job never ran on Nebius (see §6.5). The day 6 cs_05 failure did not happen: cs_05, scored against code-computed answers, passed on Lightning in every demo run that reached a verdict, and we did not rig it.*
+
 **Daily ritual:** 15-min standup; "demo it" rule — every PR to main must keep the replay demo working.
 
 ---
@@ -307,9 +319,11 @@ Roles: **A** = backend/orchestrator, **B** = evals/agents, **C** = frontend/PR/v
 - **Baseline integrity:** fixture hashes match manifest; cost/latency fields present.
 - **Threshold monotonicity:** raising threshold never flips KEEP_CLOSED → MIGRATE.
 - **Known-fail canary:** cs_05 must produce `KEEP_CLOSED`; CI fails if it "passes" (guards against scorer bugs that over-pass).
+  - *As shipped: the canary is `tests/harness/test_known_fail_canary.py`, a cs_05-like site whose fixture answers never reach 90% and must stay `KEEP_CLOSED`. The real cs_05 passes (see §11).*
 
 ### 12.4 Integration tests
 - `test_pipeline_demo_repo.py`: full run against demo repo in replay mode → 6 verdicts, 5 MIGRATE, 1 KEEP_CLOSED, PR body snapshot.
+  - *As shipped: the test replays a recorded run on its own small fixture dataset and pins that run's verdicts. The final demo run gave 5 MIGRATE and 1 MANUAL_REVIEW.*
 - Serverless Job: submit tiny matrix, poll, compare to local runner output (byte-equal after sorting).
 - Patch safety: inject a patch that breaks a repo test → expect `MANUAL_REVIEW`, no PR for that site.
 
@@ -327,6 +341,8 @@ Roles: **A** = backend/orchestrator, **B** = evals/agents, **C** = frontend/PR/v
 ---
 
 ## 13. Demo Video Script (≤ 3:00)
+
+*As shipped: superseded by [VIDEO.md](VIDEO.md), which uses only the recorded runs' numbers.*
 
 | Time | Visual | Audio |
 |---|---|---|
