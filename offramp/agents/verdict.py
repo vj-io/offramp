@@ -117,28 +117,50 @@ def stopped(site: CallSite, decision: Decision, reason: str, gate: Gate | None =
     return Verdict(site_id=site.id, decision=decision, reason=reason, failed_gate=gate)
 
 
+def _holdout_fields(holdout: TierResult, task: TaskType) -> dict[str, Any]:
+    """The figures every verdict with a measured holdout carries, from that holdout run."""
+    rows, free_text = holdout.case_scores, task == "free_text"
+    return {
+        "parity_pct": parity_pct(holdout, task),
+        "holdout_cases": len(rows) or None,
+        "holdout_passed": sum(c.passed for c in rows) if rows else None,
+        "parity_lower_pct": lower_pct(rows),
+        "judge_mean": _judge(holdout, holdout.score) if free_text else None,
+        "judge_min": _judge(holdout, min(c.score for c in rows)) if free_text and rows else None,
+    }
+
+
 def budget_stopped(
     site: CallSite,
     reason: str,
     best: tuple[Tier, TierResult, int] | None,
     thresholds: Thresholds | RunConfig,
+    holdout: TierResult | None = None,
 ) -> Verdict:
     """KEEP_CLOSED for a per-run cap that stopped routing before any verdict. `best`: the best adapter
-    measured so far (its tier, its dev result, its iterations); the verdict carries its tier, dev score and
-    iterations, and the reason names them. Its holdout was never run, so there is no parity."""
+    measured so far (its tier, its dev result, its iterations); `holdout`: its holdout run, when one was
+    measured (it failed, or there would be a verdict). The reason says what was measured on which split, and
+    the verdict carries the holdout's figures only when there is one."""
     if best is None:
         return stopped(site, "KEEP_CLOSED", reason, "budget")
     tier, dev, n = best
-    measured, _ = _phrase(dev, site.contract.task_type, thresholds)
+    task = site.contract.task_type
+    measured = f"{'passed' if dev.passed else 'failed'} dev: {_phrase(dev, task, thresholds)[0]}"
+    if holdout is None:
+        measured += "; holdout not measured"
+    else:
+        result = "passed" if holdout.passed else "failed"
+        measured += f"; {result} the holdout: {_phrase(holdout, task, thresholds)[0]}"
     return Verdict(
         site_id=site.id,
         decision="KEEP_CLOSED",
         best_tier=tier,
-        best_score=dev.score,
+        best_score=(holdout or dev).score,
+        best_score_split="holdout" if holdout else "dev",
         iterations=n,
         failed_gate="budget",
-        reason=f"{reason}; best reached: {tier.value.capitalize()} dev, {measured} after {_iterations(n)} "
-        "(holdout not measured)",
+        reason=f"{reason}; best reached: {tier.value.capitalize()} after {_iterations(n)}, {measured}",
+        **(_holdout_fields(holdout, task) if holdout else {}),
     )
 
 
@@ -363,15 +385,14 @@ def decide(
     if untried:
         clause = f"{clause[:-1]}; {untried}."
     sentence = _sentence(llm, facts)
-    rows, free_text = holdout.case_scores, task == "free_text"
     return Verdict(
         site_id=site.id,
         decision="MIGRATE" if migrate else "KEEP_CLOSED",
         tier=tier if migrate else None,
         model=get_tier(tier).model_id if migrate else None,
-        parity_pct=parity_pct(holdout, task),
         best_tier=None if migrate else tier,
         best_score=None if migrate else holdout.score,
+        best_score_split=None if migrate else "holdout",
         iterations=n,
         latency_delta_ms=None,
         cost_before_per_1k=cost_before,
@@ -385,13 +406,9 @@ def decide(
             for c in holdout.case_scores
             if c.reference_score is not None and c.reference_score < WEAK_REFERENCE
         },
-        holdout_cases=len(rows) or None,
-        holdout_passed=sum(c.passed for c in rows) if rows else None,
-        parity_lower_pct=lower_pct(rows),
-        judge_mean=_judge(holdout, holdout.score) if free_text else None,
-        judge_min=_judge(holdout, min(c.score for c in rows)) if free_text and rows else None,
         retires_on=info.retires_on() if info else None,
         price_evidence=info.evidence() if info else None,
         failed_gate=gate,
         reason=f"{sentence} {clause}" if sentence else clause,
+        **_holdout_fields(holdout, task),
     )

@@ -155,6 +155,7 @@ def _route(
         tuple[Tier, int], tuple[TierResult, list[CandidateResult]]
     ] = {}  # by (tier, history index)
     secured: tuple[Tier, TierResult] | None = None  # a v0 that passed dev (in `prior`) and then holdout
+    finished: set[Tier] = set()  # tiers whose tries ended (dev passed and holdout ran, or no try left)
 
     def verdict(tier: Tier, i: int, dev: TierResult, untried: str | None = None) -> Verdict:
         """The verdict for history[tier][i]: i iterations, and the change logs of exactly those."""
@@ -222,21 +223,29 @@ def _route(
                     holdouts[tier, i] = run(current, tier, "holdout")
                 if holdouts[tier, i][0].passed:
                     return SiteRoute(verdict(tier, i, dev), current, results)
+            finished.add(tier)
         _, tier, i, dev = best
         if (tier, i) not in holdouts:
             holdouts[tier, i] = run(history[tier][i], tier, "holdout")
         return SiteRoute(verdict(tier, i, dev), history[tier][i], results)
     except (_BudgetStop, BudgetExceeded) as e:
         reason = str(e) if isinstance(e, _BudgetStop) else f"budget: {e}"
-        if secured is not None:  # the verdict stands; the cheaper tiers it might have lost to were cut short
+        if secured is not None:  # the verdict stands; name the cheaper tiers the stop cut short, if any
             tier, dev = secured
-            cheaper = " and ".join(t.value.capitalize() for t in tiers[: tiers.index(tier)])
-            return SiteRoute(verdict(tier, 0, dev, f"{cheaper} not fully tried ({reason})"), adapter, results)
-        # the best adapter measured so far, the matrix's cells of tiers not reached yet included
+            cut = [t.value.capitalize() for t in tiers[: tiers.index(tier)] if t not in finished]
+            untried = f"{' and '.join(cut)} not fully tried ({reason})" if cut else None
+            return SiteRoute(verdict(tier, 0, dev, untried), adapter, results)
+        # the best adapter measured so far, the matrix's cells of tiers not reached yet included, with its
+        # holdout if one was measured (by routing or by the securing pass before it)
         reached = [(b[1], b[3], b[2]) for b in [best] if b]
         reached += [(t, r, 0) for (t, v, split), r in prior.items() if (v, split) == (adapter.version, "dev")]
         top = max(reached, key=lambda b: b[1].score, default=None)  # the first one wins a tie
-        return SiteRoute(budget_stopped(site, reason, top, config), None, results)
+        holdout = None
+        if top is not None:
+            tier, _, i = top
+            measured = holdouts.get((tier, i))
+            holdout = measured[0] if measured else prior.get((tier, i, "holdout")) if i == 0 else None
+        return SiteRoute(budget_stopped(site, reason, top, config, holdout), None, results)
     except (MissingReference, UnresolvedCallSite) as e:
         return SiteRoute(stopped(site, "MANUAL_REVIEW", f"cannot evaluate: {e}"), None, results)
 

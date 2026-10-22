@@ -222,6 +222,7 @@ export interface Verdict {
   parity_pct: number | null; // holdout parity 0..100
   best_tier: Tier | null;
   best_score: number | null;
+  best_score_split?: "dev" | "holdout" | null; // where best_score was measured (dev when a budget stop came first)
   iterations: number;
   latency_delta_ms: number | null; // p50 after - before; null when "before" was never measured
   cost_before_per_1k: number | null;

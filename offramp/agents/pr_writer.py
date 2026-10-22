@@ -216,8 +216,11 @@ def _kept(v: Verdict, site: CallSite | None, bar: str) -> str:
     """A kept site's parity cell, saying only why the verdict records it was kept (failed_gate): free text's
     judge figures are compared with their own bars, never with a share. A verdict recorded without the gate
     states its figures and no comparison; one never measured says so."""
-    if v.failed_gate == "budget":
-        return "not measured: the run's budget stopped it"
+    if v.failed_gate == "budget":  # holdout figures only when the best adapter's holdout ran (and failed)
+        if v.parity_pct is None:
+            return "not measured: the run's budget stopped it"
+        figures = _parity(v, site, failed=_task(site) == "free_text")
+        return f"{figures}: holdout failed; the run's budget stopped the rest"
     if v.parity_pct is None:
         return "not measured"
     free_text = _task(site) == "free_text"

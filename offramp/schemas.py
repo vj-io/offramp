@@ -290,7 +290,8 @@ class AfterPrice(BaseModel):
     source: str  # "Token Factory model API, 2026-10-21" or "pricing.yaml as of 2026-10-21; <why>"
 
 
-# Why a KEEP_CLOSED verdict keeps the site: "budget" when the run's budget stopped it before a measurement;
+# Why a KEEP_CLOSED verdict keeps the site: "budget" when the run's budget stopped it before a verdict (its
+# holdout figures are set only if the best adapter's holdout was measured, and failed);
 # "dev" when dev never passed (holdout may have); else the bar its holdout missed: the parity threshold, every
 # output schema-valid, enough JSON cases passing whole, the judge mean of 4.0, no holdout case below 3.0, or a
 # judge mean within 0.3 of the references'.
@@ -306,7 +307,10 @@ class Verdict(BaseModel):
     model: str | None = None  # Token Factory model id when MIGRATE
     parity_pct: float | None = None  # holdout parity (0..100) of the chosen/best tier
     best_tier: Tier | None = None  # KEEP_CLOSED: best tier tried
-    best_score: float | None = None
+    best_score: float | None = None  # that tier's score on best_score_split (a judge mean for free text)
+    best_score_split: Split | None = (
+        None  # "holdout" when measured there; "dev" when a budget stop came first
+    )
     iterations: int = 0  # adapter iterations used for the chosen/best tier
     latency_delta_ms: int | None = None  # p50 after - before; None when "before" was never measured
     cost_before_per_1k: float | None = None

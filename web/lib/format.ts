@@ -118,7 +118,12 @@ export function judgeText(
 // A kept site's figure and only the cause its verdict recorded (failed_gate, ported from pr_writer._kept). A
 // verdict recorded without the gate states its figures and no comparison: a cause is never inferred.
 export function keptText(v: Verdict, task: TaskType | undefined, config: RunConfig | null): string {
-  if (v.failed_gate === "budget") return "not measured: the run's budget stopped it";
+  if (v.failed_gate === "budget") {
+    // holdout figures only when the best adapter's holdout ran (and failed) before the budget stopped the run
+    if (v.parity_pct == null) return "not measured: the run's budget stopped it";
+    const figures = (task === "free_text" ? judgeText(v, true) : null) ?? parityText(v, task);
+    return `${figures}: holdout failed; the run's budget stopped the rest`;
+  }
   if (v.parity_pct == null) return "not measured";
   const judged = task === "free_text" && (v.failed_gate === "judge_mean" || v.failed_gate === "case_floor");
   const text = (task === "free_text" ? judgeText(v, judged) : null) ?? parityText(v, task);

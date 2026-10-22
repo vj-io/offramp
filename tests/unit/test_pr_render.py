@@ -291,6 +291,25 @@ def test_a_budget_stopped_site_says_so_and_claims_no_parity():
     assert "| **NOT MIGRATED** | not measured: the run's budget stopped it |" in row and "95%" not in row
 
 
+def test_a_budget_stop_after_a_measured_holdout_shows_the_holdout_and_says_it_failed():
+    """Review I1: the securing holdout ran and failed before the cap stopped the run, so it was measured."""
+    c = ctx()
+    stop = {
+        "decision": "KEEP_CLOSED",
+        "tier": None,
+        "model": None,
+        "failed_gate": "budget",
+        "parity_pct": 53.3,
+        "holdout_cases": 15,
+        "holdout_passed": 8,
+        "parity_lower_pct": 30.1,
+    }
+    c.verdicts = [v.model_copy(update=stop) if v.site_id == "cs_01" else v for v in c.verdicts]
+    row = next(ln for ln in render_pr(c).body.splitlines() if ln.startswith("| cs_01 "))
+    cell = "53.3% (8/15, ≥30%): holdout failed; the run's budget stopped the rest"
+    assert f"| **NOT MIGRATED** | {cell} |" in row
+
+
 @pytest.mark.parametrize("site_id", ["cs_05", "cs_06"])
 def test_a_kept_verdict_recorded_without_its_gate_states_figures_and_no_comparison(site_id):
     """Review T19 R2-m3: a verdict from before failed_gate (a legacy "dev never passed" row read "100.0% <
