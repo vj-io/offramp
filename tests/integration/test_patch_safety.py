@@ -128,7 +128,7 @@ def test_tidy_fixes_imports_and_layout_through_stdin_not_the_mount():
     Sandbox(repo).tidy(["tinyapp/greet.py"], format_code=True)
 
     text = path.read_text()
-    assert "import sys" not in text and "import json" not in text  # F401 removed both
+    assert text.startswith("import json\nimport sys\n")  # sorted (I001); kept: the repo's own (Task 26, I5)
     assert f'"content": "{words}",' in text and text.rstrip().endswith(")")  # reformatted, not cut short
     assert max(map(len, text.splitlines())) <= 100
 

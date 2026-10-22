@@ -235,7 +235,7 @@ function Report({
           </h2>
           <p className="max-w-3xl font-hand text-lg text-muted">
             The change each migrated call site ships in the pull request, its tests included, from the run&apos;s own
-            patch.
+            patch.{report.diffs?.merged && " Under merged: what only merging the sites changed."}
           </p>
           <ul className="flex flex-col gap-3">
             {shipped.map((v, i) => (
@@ -250,6 +250,17 @@ function Report({
                 />
               </li>
             ))}
+            {report.diffs?.merged && (
+              <li key="merged" className="min-w-0">
+                <DiffView
+                  siteId="merged"
+                  siteFile={undefined}
+                  tier={null}
+                  diff={report.diffs.merged}
+                  prUrl={snap.artifacts.pr_url ?? null}
+                />
+              </li>
+            )}
           </ul>
         </section>
       )}

@@ -232,6 +232,7 @@ PatchFailureKind = Literal[
     "no_change",  # a repair repeated an edit already tried
     "search_miss",  # patch rules: a SEARCH that does not match exactly one place
     "deletes_tests",  # patch rules: the patch deletes tests
+    "skips_tests",  # patch rules: the patch makes a test skip or xfail
     "locked_file",  # patch rules: an edit to code that ships
     "not_editable",  # patch rules: a file this site's patch may not change (or not whole)
     "does_not_parse",  # patch rules: an edited file that does not parse

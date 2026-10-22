@@ -38,7 +38,8 @@ import textwrap
 import tokenize
 import tomllib
 import uuid
-from collections.abc import Callable
+from collections import Counter
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -272,6 +273,7 @@ class PatchResult(BaseModel):
     async_client: bool = False  # the client module also holds token_factory_async_client
     client_packaged: bool = True  # the client module sits inside a package (it ships in its wheel)
     change_notes: list[str] = Field(default_factory=list)  # dependency edits, lockfiles, key reads left as is
+    merged_diff: str = ""  # the shipped tree against the per-site diffs merged: what only merging changed
 
 
 def client_location(repo: Path, files: list[str]) -> tuple[str, str] | None:
@@ -1141,14 +1143,137 @@ def _refusal(e: APIStatusError) -> str | None:
     return f"the model request was {'too large' if big else 'refused'} (HTTP {e.status_code})"
 
 
+CHECK_CALLS = ("raises", "warns", "deprecated_call")  # pytest's, as a call or as a `with` item
+
+
+def _checks(node: ast.AST, source: str) -> list[tuple[str, str, str]]:
+    """The checks under `node` of `source`, each (its `ast.dump`, its whole statement's text, how a refusal
+    names it): an `assert`, a call statement whose final name starts with `assert` (`m.assert_called_once()`,
+    `self.assertEqual(...)`) or is `pytest.raises/warns/deprecated_call(...)`, and each such `with` item
+    (its statement: the `with ...:` line)."""
+
+    def final(e: ast.expr) -> str:
+        f = e.func if isinstance(e, ast.Call) else None
+        return getattr(f, "attr", None) or getattr(f, "id", None) or ""
+
+    out = []
+    for n in ast.walk(node):
+        if (
+            isinstance(n, ast.Assert)
+            or isinstance(n, ast.Expr)
+            and (final(n.value).startswith("assert") or final(n.value) in CHECK_CALLS)
+        ):
+            seg = ast.get_source_segment(source, n) or ast.unparse(n)
+            out.append((ast.dump(n), seg, seg if "\n" not in seg else ast.unparse(n)))
+        elif isinstance(n, ast.With | ast.AsyncWith):
+            line = source.splitlines()[n.lineno - 1] if n.lineno <= len(source.splitlines()) else ""
+            out += [(ast.dump(i.context_expr), line, f"with {ast.unparse(i.context_expr)}")
+                    for i in n.items if final(i.context_expr) in CHECK_CALLS]  # fmt: skip
+    return out
+
+
+def _quotes(search: str, statement: str) -> bool:
+    """Whether `search` holds `statement` as whole lines, whitespace aside (review m1: `assert r` is not
+    quoted by a SEARCH holding `assert rate == 2`)."""
+    want, lines, k = " ".join(statement.split()), search.splitlines(), statement.count("\n") + 1
+    return any(" ".join(" ".join(lines[i : i + k]).split()) == want for i in range(len(lines) - k + 1))
+
+
+def _by_name(text: str, replace: str, search: str) -> tuple[str, list[str], list[str]] | None:
+    """A test file's `text` with a REPLACE whose SEARCH matched nowhere applied by name: when the REPLACE
+    parses as a module whose top-level statements are each a def or class whose name the file has exactly
+    once at top level, or a statement the file already has (by `ast.dump`), each def replaces the file's
+    own of that name, from its first decorator line (its `def` line when the REPLACE's carries none: the
+    file's decorators stay, as a SEARCH starting at the `def` leaves them) to its end; nothing else changes.
+    A def replaces only one of its own kind (def, async def, class). (the new text, the names, the checks
+    (`_checks`) of the file's defs, and their decorators when the REPLACE carries its own, that the REPLACE
+    drops and its SEARCH never quoted) or None; one dropped refuses the edit (the caller's miss names it): the
+    model never saw that line, so it never chose to drop it (review I1: repair 2 shipped without `... is
+    Queue.SHIPPING`; I3: a mock or unittest check, a `pytest.raises` block, a narrowed `parametrize`). Live
+    run 7, cs_01: repair 2's SEARCH quoted a test that never existed, repair 3's the same one under the file's
+    first top, each REPLACE that test whole. ponytail: top level only, so a method is replaced only with its
+    whole class."""
+    have, new = _parsed(text), _parsed(replace)
+    kinds = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+    if have is None or new is None:
+        return None
+    old = {n.name: n for n in have.body if isinstance(n, kinds)}
+    tops = [n.name for n in have.body if isinstance(n, kinds)]
+    defs = [n for n in new.body if isinstance(n, kinds)]
+    names = [d.name for d in defs]
+    same = {ast.dump(n) for n in have.body}
+    if not defs or len(set(names)) < len(names) or any(tops.count(name) != 1 for name in names):
+        return None
+    if any(type(old[d.name]) is not type(d) for d in defs):
+        return None
+    if any(not isinstance(n, kinds) and ast.dump(n) not in same for n in new.body):
+        return None
+
+    def first(n: ast.AST) -> int:
+        return n.decorator_list[0].lineno if n.decorator_list else n.lineno
+
+    found = _parsed(textwrap.dedent(search))
+    quoted = {c[0] for c in _checks(found, textwrap.dedent(search))} if found else set()
+    quoted |= {
+        ast.dump(x) for n in ast.walk(found or ast.Module(body=[])) for x in getattr(n, "decorator_list", [])
+    }
+
+    def decorated(file_def: ast.AST, its: ast.AST | None) -> list[tuple[str, str, str, set[str]]]:
+        """The file def's decorators, each with the REPLACE def's (`its`) it may be kept among."""
+        theirs = {ast.dump(x) for x in getattr(its, "decorator_list", [])}
+        segs = [(x, ast.get_source_segment(text, x) or ast.unparse(x)) for x in file_def.decorator_list]
+        return [
+            (ast.dump(x), "@" + seg, "@" + (seg if "\n" not in seg else ast.unparse(x)), theirs)
+            for x, seg in segs
+        ]
+
+    dropped = []
+    for d in defs:
+        o, kept = old[d.name], {c[0] for c in _checks(d, replace)}
+        found = [(dump, statement, shown, kept) for dump, statement, shown in _checks(o, text)]
+        found += (
+            decorated(o, d) if d.decorator_list else []
+        )  # the REPLACE's replace the file's: each kept or quoted
+        if isinstance(o, ast.ClassDef):  # a whole class: each method's too, paired by name (re-review 2, n1)
+            mine = dict(_defs(d))
+            found += [f for qual, fn in _defs(o) for f in decorated(fn, mine.get(qual))]
+        dropped += [shown for dump, statement, shown, kept_in in found
+                    if dump not in kept_in | quoted and not _quotes(search, statement)]  # fmt: skip
+    lines, mine = text.splitlines(keepends=True), replace.splitlines(keepends=True)
+    for d in sorted(defs, key=lambda d: old[d.name].lineno, reverse=True):
+        o = old[d.name]
+        piece = mine[first(d) - 1 : d.end_lineno]
+        piece[-1] = piece[-1].rstrip("\n") + "\n"
+        lines[(first(o) if d.decorator_list else o.lineno) - 1 : o.end_lineno] = piece
+    return "".join(lines), names, dropped
+
+
+def _union(*found: dict[str, set[str]]) -> dict[str, set[str]]:
+    """path -> names, merged."""
+    out: dict[str, set[str]] = {}
+    for f in found:
+        for p, names in f.items():
+            out.setdefault(p, set()).update(names)
+    return out
+
+
+def _by_name_note(path: str, names: tuple[str, ...]) -> str:
+    """The run's warning for an edit `_apply` placed by name (`_by_name`)."""
+    defs = ", ".join(f"`{x}`" for x in names)
+    return f"an edit to `{path}` was applied by function name ({defs}) after its SEARCH matched nowhere"
+
+
 def _apply(
     edits: list[Edit],
     files: dict[str, str],
     locked: frozenset[str] = frozenset(),
     hidden: frozenset[str] = frozenset(),
+    notes: list[tuple[str, tuple[str, ...]]] | None = None,
 ) -> list[Problem]:
     """Apply the edit blocks in order; `locked` files (code that ships) are shown but read-only, `hidden` ones
-    (left out of the last repair turn in their current text) are not editable, whatever a block's label."""
+    (left out of the last repair turn in their current text) are not editable, whatever a block's label. A
+    block whose SEARCH matched nowhere in a test file is applied by name when its REPLACE is whole
+    definitions (`_by_name`), and `notes` says so; the checks after it are the same."""
     shown = dict(files)
     seen = set()
     for e in edits:
@@ -1196,6 +1321,16 @@ def _apply(
         if merged is not None and near:
             files[e.path] = files[e.path][: near[0]] + merged + files[e.path][near[1] :]
             continue
+        named = (
+            _by_name(files[e.path], e.replace, e.search)
+            if n == 0 and e.search not in shown[e.path] and is_test_path(e.path)
+            else None
+        )  # a SEARCH an earlier block of this reply changed is a merge for the model, never a guess
+        if named is not None and not named[2]:
+            files[e.path] = named[0]
+            if notes is not None:
+                notes.append((e.path, tuple(named[1])))
+            continue
         if n != 1:
             hint = (
                 " (an earlier block already changed these lines: merge the two)"
@@ -1203,8 +1338,18 @@ def _apply(
                 else ""
             )
             where = "not found" if n == 0 else f"found {n} times"
+            it = "it" if named and len(named[2]) == 1 else "them"
+            drops = ", ".join(f"`{a}`" for a in named[2]) if named else ""
+            why = (
+                f"; applied by name, this edit would drop {drops}, which your SEARCH never quoted: "
+                f"keep {it}, or quote {it} to change {it}"
+                if named
+                else ""
+            )
             return [
-                Problem("search_miss", f"search text {where} in {e.path}{hint}: {e.search[:80]!r}", e.path)
+                Problem(
+                    "search_miss", f"search text {where} in {e.path}{hint}: {e.search[:80]!r}{why}", e.path
+                )
             ]
         files[e.path] = files[e.path].replace(e.search, e.replace, 1)
     return []
@@ -1357,12 +1502,10 @@ def _targets(sources: dict[str, str], site_file: str, function: str) -> set[str]
     return targets
 
 
-def _references(path: str, tree: ast.Module, targets: set[str], defined: str | None) -> list[ast.expr]:
-    """The expressions in a module that refer to the function `targets` names, resolved through the module's
-    imports, never by name alone: a name a `from ... import` (or a star import) binds to it, an attribute
-    chain through an imported module (`s.summarize` after `import app.summarize as s`), and its own name in
-    the module that defines it (`defined`)."""
-    names, modules = {defined} - {None}, {}
+def _module_aliases(tree: ast.Module, path: str) -> dict[str, str]:
+    """Local name -> the dotted name an import binds it to, perhaps a module (`s` -> `app.summarize` after
+    `import app.summarize as s` or `from app import summarize as s`; `app` -> `app` after `import app.x`)."""
+    modules = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
@@ -1370,29 +1513,40 @@ def _references(path: str, tree: ast.Module, targets: set[str], defined: str | N
                 modules[a.asname or top] = a.name if a.asname else top
         elif isinstance(node, ast.ImportFrom):
             base = _imported(node, path)
+            modules |= {a.asname or a.name: f"{base}.{a.name}" for a in node.names if a.name != "*"}
+    return modules
+
+
+def _chain(n: ast.expr, modules: dict[str, str]) -> str | None:
+    """`app.summarize.summarize` for an attribute chain on an imported name (`s.summarize`), else None."""
+    attrs = []
+    while isinstance(n, ast.Attribute):
+        attrs.append(n.attr)
+        n = n.value
+    return (
+        ".".join([modules[n.id], *reversed(attrs)]) if isinstance(n, ast.Name) and n.id in modules else None
+    )
+
+
+def _references(path: str, tree: ast.Module, targets: set[str], defined: str | None) -> list[ast.expr]:
+    """The expressions in a module that refer to the function `targets` names, resolved through the module's
+    imports, never by name alone: a name a `from ... import` (or a star import) binds to it, an attribute
+    chain through an imported module (`s.summarize` after `import app.summarize as s`), and its own name in
+    the module that defines it (`defined`)."""
+    names, modules = {defined} - {None}, _module_aliases(tree, path)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            base = _imported(node, path)
             for a in node.names:
                 if a.name == "*":
                     names |= {t.rpartition(".")[2] for t in targets if t.rpartition(".")[0] == base}
                 elif f"{base}.{a.name}" in targets:
                     names.add(a.asname or a.name)
-                else:  # perhaps a module: `from app import summarize as s`, then `s.summarize`
-                    modules[a.asname or a.name] = f"{base}.{a.name}"
-
-    def chain(n: ast.expr) -> str | None:  # `app.summarize.summarize` for an attribute chain on a module
-        attrs = []
-        while isinstance(n, ast.Attribute):
-            attrs.append(n.attr)
-            n = n.value
-        return (
-            ".".join([modules[n.id], *reversed(attrs)])
-            if isinstance(n, ast.Name) and n.id in modules
-            else None
-        )
 
     def refers(n: ast.AST) -> bool:
         if isinstance(n, ast.Name):
             return isinstance(n.ctx, ast.Load) and n.id in names
-        return isinstance(n, ast.Attribute) and chain(n) in targets
+        return isinstance(n, ast.Attribute) and _chain(n, modules) in targets
 
     return [n for n in ast.walk(tree) if refers(n)]
 
@@ -1449,6 +1603,221 @@ def rewrite_callers(sources: dict[str, str], site_file: str, function: str, clie
         if spans:
             out[path] = add_imports(source, client)
     return out
+
+
+def _import_bindings(tree: ast.AST | None) -> set[str]:
+    """Every name an import in `tree` binds (`from a import B as C` -> C, `import a.b` -> a)."""
+    if tree is None:
+        return set()
+    imports = [n for n in ast.walk(tree) if isinstance(n, ast.Import | ast.ImportFrom)]
+    return {a.asname or (a.name if isinstance(n, ast.ImportFrom) else a.name.split(".")[0])
+            for n in imports for a in n.names}  # fmt: skip
+
+
+def drop_orphaned_imports(
+    before: str, after: str, dropped: list[str] | None = None, keep: frozenset[str] = frozenset()
+) -> str:
+    """`after` (a file Offramp's code or a model edit changed from `before`) without the import names the
+    change orphaned: read in `before` and nowhere in `after` (a name, or a string equal to it: `__all__`, a
+    string annotation), or added by the change to an import and read nowhere in `after` (fix round 2's replay:
+    cs_04's repair imported `NEMOTRON_FEW_SHOT` and never used it). A name imported before stays unless read
+    before; a `__future__` import always stays. Only those names go (`from anthropic import Anthropic,
+    APIError` keeps `APIError`); a statement left with none goes whole, and a run of such statements takes the
+    blank line below it when it stood between two (or at the top). Every other line is byte-identical: an
+    import unused before is the repo's own lint state, and a dotted `import a.b` may be there for its side
+    effect, so both stay. Live run 7: three Anthropic sites each rewired one `Anthropic()` in helphub/cli.py;
+    merged, nothing read the import, the repo's ruff failed (F401) and cs_06 dropped. This replaced a lint
+    autofix that removed every unused import, the repo's own included (review I5). `dropped` gets the names
+    removed (for `drop_dead_patches`); `keep` names stay (another module takes them from this one:
+    `_used_elsewhere`). ponytail: an import sharing its line with another statement, or the only statement of
+    a block, stays."""
+    old, new = _parsed(before), _parsed(after)
+    if old is None or new is None:
+        return after
+
+    def reads(tree: ast.Module, name: str) -> bool:
+        return any(isinstance(n, ast.Name) and n.id == name or isinstance(n, ast.Constant) and n.value == name
+                   for n in ast.walk(tree))  # fmt: skip
+
+    had = _import_bindings(old)
+    lines = after.splitlines(keepends=True)
+    cuts, rows, names = [], [], []  # (start, end) offsets of names; whole statements' (first, last) lines
+    for node in ast.walk(new):
+        if not isinstance(node, ast.Import | ast.ImportFrom) or getattr(node, "level", 0):
+            continue
+        frm = isinstance(node, ast.ImportFrom)
+        bound = [a.asname or (a.name if frm else a.name.split(".")[0]) for a in node.names]
+        gone = [
+            (frm or a.asname or "." not in a.name)
+            and not (frm and node.module == "__future__")  # never read, yet never unused
+            and not reads(new, b)
+            and (reads(old, b) or b not in had)  # it lost its last use, or the change added it unused
+            and b not in keep
+            for a, b in zip(node.names, bound, strict=True)
+        ]
+        if all(gone):  # the whole statement, on lines of its own
+            head = lines[node.lineno - 1][: node.col_offset]
+            tail = lines[node.end_lineno - 1].encode()[node.end_col_offset :].decode().strip()
+            if head.strip() or tail[:1] not in ("", "#"):  # shares its lines with another statement
+                continue
+            rows.append((node.lineno - 1, node.end_lineno - 1))
+            names += bound
+            continue
+        at = [(_offset(lines, a.lineno, a.col_offset), _offset(lines, a.end_lineno, a.end_col_offset))
+              for a in node.names]  # fmt: skip
+        # each name with a comma: up to the next kept name, else from the end of the last kept one
+        for i in (i for i, g in enumerate(gone) if g):
+            cuts.append((at[i][0], at[i + 1][0]) if not all(gone[i:]) else (at[i - 1][1], at[i][1]))
+            names.append(bound[i])
+    runs: list[list[int]] = []  # adjacent whole statements, as one run of lines
+    for first, last in sorted(rows):
+        if runs and first == runs[-1][1] + 1:
+            runs[-1][1] = last
+        else:
+            runs.append([first, last])
+    for first, last in runs:
+        blank = last + 1 < len(lines) and not lines[last + 1].strip()
+        last += blank and (first == 0 or not lines[first - 1].strip())  # the run stood between two blanks
+        cuts.append((sum(map(len, lines[:first])), sum(map(len, lines[: last + 1]))))
+    for start, end in sorted(cuts, reverse=True):
+        after = after[:start] + after[end:]
+    if _parsed(after) is None:
+        return "".join(lines)
+    if dropped is not None:
+        dropped += names
+    return after
+
+
+def _drop_unused(
+    path: str, before: str, after: str, others: dict[str, str], kept: dict[str, None], who: str
+) -> tuple[str, set[str]]:
+    """`drop_orphaned_imports` on `who`'s change of `path`, keeping a name another module of `others` still
+    takes from it (`_used_elsewhere`, review I2), said in `kept` (the run's warnings): (the text, the names
+    dropped)."""
+    names: list[str] = []
+    out = drop_orphaned_imports(before, after, names)
+    if names and (uses := _used_elsewhere(path, out, set(names), others)):
+        kept.update(dict.fromkeys(
+            f"kept the `{n}` import in `{path}`, which {who} left unused: {why}" for n, why in uses.items()
+        ))  # fmt: skip
+        names = []
+        out = drop_orphaned_imports(before, after, names, keep=frozenset(uses))
+    return out, set(names)
+
+
+def _patch_target(node: ast.AST, modules: dict[str, str]) -> tuple[str, str, bool] | None:
+    """(dotted module, name, whether as a decorator it hands the test a mock) for a patch of a module's
+    attribute: `<fixture>.setattr(module, "N", value)` or `.setattr("pkg.mod.N", value)`, `patch("pkg.mod.N",
+    ...)` and `patch.object(module, "N", ...)`, bare or through `mock.`, also started (`.start()`). A module
+    argument is resolved through the file's imports (`modules`), never by its name; None for anything else."""
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "start":
+        node = node.func.value
+    if not isinstance(node, ast.Call):
+        return None
+    f, args, new = node.func, node.args, any(k.arg == "new" for k in node.keywords)
+    text = [a.value if isinstance(a, ast.Constant) and isinstance(a.value, str) else None for a in args]
+    kind = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+    on = getattr(f, "value", None)
+    if kind == "object" and (getattr(on, "id", None) or getattr(on, "attr", None)) != "patch":
+        return None
+    if (kind == "setattr" and isinstance(f, ast.Attribute) and len(args) == 3 or kind == "object"
+            and len(args) >= 2) and text[1] and (module := _chain(args[0], modules)):  # fmt: skip
+        return module, text[1], len(args) < 3 and not new
+    if (
+        kind == "setattr" and isinstance(f, ast.Attribute) and len(args) == 2 or kind == "patch" and args
+    ) and (text[0] and "." in text[0]):
+        module, _, name = text[0].rpartition(".")
+        return module, name, len(args) < 2 and not new
+    return None
+
+
+def _used_elsewhere(path: str, text: str, names: set[str], sources: dict[str, str]) -> dict[str, str]:
+    """Each of `names` (SDK names about to leave the module at `path`, whose text is `text`) that another
+    module of `sources` still takes from it -> how: `from <it> import N` (relative too), `from <it> import *`
+    when it exports N (no `__all__`, or one naming N), or `<it>.N` read through an import of it (review I2:
+    the cleanup is per file, and `from app.llm import Anthropic` in app/admin.py lost its name). Every
+    suffix of the module's dotted name counts (`_dotted`): a shared one errs toward keeping the import."""
+    dotted, tree = set(_dotted(path)), _parsed(text)
+    listed = [n.value for n in (tree.body if tree else []) if isinstance(n, ast.Assign)
+              and any(getattr(t, "id", None) == "__all__" for t in n.targets)]  # fmt: skip
+    exported = (
+        {e.value for v in listed for e in ast.walk(v) if isinstance(e, ast.Constant)} if listed else None
+    )
+    reads = {f"{d}.{n}": n for d in dotted for n in names}
+    out: dict[str, str] = {}
+    for q, source in sorted(sources.items()):
+        other = _parsed(source) if q != path else None
+        aliases = _module_aliases(other, q) if other else {}
+        for node in ast.walk(other) if other else ():
+            if isinstance(node, ast.ImportFrom) and _imported(node, q) in dotted:
+                for a in node.names:
+                    if a.name in names:
+                        out.setdefault(a.name, f"`{q}` imports it")
+                    elif a.name == "*":
+                        for n in names if exported is None else names & exported:
+                            out.setdefault(n, f"`{q}` imports `*` from it")
+            elif isinstance(node, ast.Attribute) and (chain := _chain(node, aliases)) in reads:
+                out.setdefault(reads[chain], f"`{q}` reads `{chain}`")
+    return out
+
+
+def drop_dead_patches(
+    source: str, path: str, dropped: dict[str, set[str]], tracked: Iterable[str] = ()
+) -> tuple[str, dict[str, int]]:
+    """A test file (`path`) without its patches of a module attribute that `drop_orphaned_imports` removed
+    (`dropped`: module path -> names), which would now raise: a statement (`monkeypatch.setattr(cli,
+    "Anthropic", fake)`, a started `patch`) or a decorator that passes no mock to the test. Only in a test
+    that also patches the Token Factory client on that module (mirror_fakes' twin), so the test still fakes
+    the call. Returns (the source, `module.name` -> patches removed). Live run 7, replayed: tests/test_cli.py
+    patched `cli.Anthropic` beside its twins; merged, cli.py no longer imported it and pytest failed.
+    ponytail: a `with patch(...)` block, a decorator that injects a mock, a statement sharing its line or the
+    only one of its block stay, for the repair or a manual review."""
+    tree = _parsed(source)
+    if tree is None or not dropped:
+        return source, {}
+    modules = _module_aliases(tree, path)
+    owners: dict[str, set[str]] = {}  # dotted name -> the tracked modules it may name
+    for m in {*tracked, *dropped}:
+        for d in _dotted(m):
+            owners.setdefault(d, set()).add(m)
+    # the full name, or a shorter one no other tracked module shares (review M2: `import cli` may be tools/)
+    by_dotted = {
+        d: m for m in dropped for d in _dotted(m) if d in (_dotted(m)[0], _module_name(m)) or owners[d] == {m}
+    }
+    lines = source.splitlines(keepends=True)
+    gone: dict[int, tuple[int, str]] = {}  # first line -> (last line, `module.name`)
+    for fn in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)):
+        stmts = [s for s in ast.walk(fn) if isinstance(s, ast.Expr)]
+        found = [
+            (n, t)
+            for n in [*fn.decorator_list, *stmts]
+            if (t := _patch_target(getattr(n, "value", n), modules))
+        ]
+        twins = {by_dotted[m] for _, (m, name, _) in found if m in by_dotted and name in FACTORIES}
+        lone = {id(b[0]) for n in ast.walk(fn) for f in ("body", "orelse", "finalbody")
+                if isinstance(b := getattr(n, f, None), list) and len(b) == 1}  # fmt: skip
+        for node, (module, name, injects) in found:
+            m = by_dotted.get(module)
+            alone = (
+                not lines[node.lineno - 1][: node.col_offset].strip(" \t@")
+                and not lines[node.end_lineno - 1][node.end_col_offset :].split("#")[0].strip()
+            )
+            if (
+                m in twins
+                and name in dropped[m]
+                and alone
+                and id(node) not in lone
+                and not (injects and node in fn.decorator_list)
+            ):
+                gone[node.lineno] = (node.end_lineno, f"{_module_name(m)}.{name}")
+    drop = {i for first, (last, _) in gone.items() for i in range(first, last + 1)}
+    out = "".join(line for i, line in enumerate(lines, 1) if i not in drop)
+    if not gone or _parsed(out) is None:
+        return source, {}
+    counts: dict[str, int] = {}
+    for _, key in gone.values():
+        counts[key] = counts.get(key, 0) + 1
+    return out, counts
 
 
 def mirror_fakes(
@@ -1742,6 +2111,81 @@ def _test_bodies_changed(before: str, after: str) -> set[str]:
 
     old, new = tests(before), tests(after)
     return {name for name in old.keys() & new.keys() if old[name] != new[name]}
+
+
+SKIP_MARKS = ("skip", "skipif", "xfail")  # pytest.mark.<x>
+SKIP_DECORATORS = ("skip", "skipIf", "skipUnless", "expectedFailure")  # unittest's, bare or `unittest.<x>`
+SKIP_CALLS = ("pytest.skip", "pytest.xfail", "pytest.importorskip")  # and any `<x>.skipTest(...)`
+
+
+def _skip_marks(source: str) -> dict[str, set[str]]:
+    """Each test (function or method by qualified name, `Test*` class) and a module's `pytestmark` -> the
+    skips and xfails it carries: a `pytest.mark.skip/skipif/xfail` mark (a decorator, or in a `pytestmark`),
+    a unittest `skip*` / `expectedFailure` decorator, a `pytest.skip/xfail/importorskip(...)` or
+    `.skipTest(...)` call in its body."""
+    tree = _parsed(source)
+
+    def marks(e: ast.AST) -> set[str]:
+        found = set()
+        for n in ast.walk(e):
+            parts = ast.unparse(n).split(".") if isinstance(n, ast.Attribute | ast.Name) else []
+            if (
+                parts[-2:-1] == ["mark"]
+                and parts[-1] in SKIP_MARKS
+                or parts
+                and parts[-1] in SKIP_DECORATORS
+                and (len(parts) == 1 or parts[0] == "unittest")
+            ):
+                found.add(".".join(parts))
+        return found
+
+    def calls(fn: ast.AST) -> set[str]:
+        heads = (ast.unparse(n.func) for n in ast.walk(fn) if isinstance(n, ast.Call))
+        return {h for h in heads if h in SKIP_CALLS or h.endswith(".skipTest")}
+
+    def pytestmark(body: list[ast.stmt]) -> set[str]:
+        return set().union(*(marks(n.value) for n in body if isinstance(n, ast.Assign)
+                             and any(getattr(t, "id", None) == "pytestmark" for t in n.targets)))  # fmt: skip
+
+    out = {"pytestmark": pytestmark(tree.body)} if tree else {}
+    for qual, fn in _defs(tree) if tree else []:
+        if fn.name.startswith("test"):
+            out[qual] = set().union(calls(fn), *(marks(d) for d in fn.decorator_list))
+    for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)) if tree else ():
+        if cls.name.startswith("Test"):
+            out[cls.name] = pytestmark(cls.body).union(*(marks(d) for d in cls.decorator_list))
+    return out
+
+
+def _new_skips(before: str, after: str) -> dict[str, list[str]]:
+    """The skips and xfails (`_skip_marks`) a test or `pytestmark` has in `after` and lacked in `before`: test
+    -> them. A model edit may not switch a test off (review I4: `pytest.skip()` or `@pytest.mark.skip` turned
+    a red test green, and the sandbox counted it as passed)."""
+    old, new = _skip_marks(before), _skip_marks(after)
+    return {k: sorted(v - old.get(k, set())) for k, v in new.items() if v - old.get(k, set())}
+
+
+def _skips_text(path: str, skips: dict[str, list[str]]) -> str:
+    gains = "; ".join(f"`{k}` gains {', '.join(f'`{m}`' for m in v)}" for k, v in skips.items())
+    return f"patch makes tests skip in {path}: {gains}; never switch a test off: make it pass"
+
+
+def _skip_count(output: str) -> int:
+    """Skipped plus xfailed tests in pytest's summary line (`3 passed, 2 skipped, 1 xfailed in 0.4s`)."""
+    counts = r"\b\d+ (passed|failed|skipped|xfailed|xpassed|errors?)\b.* in [\d.]+s"
+    summary = [ln for ln in output.splitlines() if re.search(counts, ln)]
+    return sum(int(n) for n in re.findall(r"(\d+) (?:skipped|xfailed)\b", summary[-1])) if summary else 0
+
+
+def _no_more_skips(result: CheckResult, baseline: int) -> CheckResult:
+    """A green run that skips (or xfails) more tests than the untouched repo's is red: the backstop under
+    `_new_skips` for a skip no rule sees (a fixture's, a conftest's)."""
+    more = _skip_count(result.output) - baseline if result.ok else 0
+    return (
+        CheckResult(ok=False, mode=result.mode, output=f"the patch makes {more} more tests skip")
+        if more > 0
+        else result
+    )
 
 
 def _test_names(source: str) -> set[str]:
@@ -2953,6 +3397,11 @@ class _Job:
     constants: dict[str, str] = field(default_factory=dict)  # Offramp's NEMOTRON_* name -> its import line
     locked: bool = True  # shipped code read-only to the model (switched off only to test the backstop alone)
     verify: Callable[[], str | None] | None = None  # the probe: why the patched call is not the evaluated one
+    notes: list = field(default_factory=list)  # the last attempt's edits applied by name: (path, names)
+    skips: int = 0  # the untouched repo's skipped + xfailed tests: a patched run may not have more
+    others: dict[str, str] = field(default_factory=dict)  # every module, as this site's code leaves it
+    kept: dict[str, None] = field(default_factory=dict)  # the run's "kept the ... import" warnings
+    gone: dict[str, set[str]] = field(default_factory=dict)  # the last attempt's: imports its edit orphaned
 
 
 def _settle(box: Sandbox, repo: Path, paths: list[str], before: dict[str, str], width: int, formatted: bool):
@@ -2993,13 +3442,20 @@ def _attempt(
     base = job.shown if base is None else base
     new = dict(base)
     locked = frozenset(p for p in new if p in job.reference) if job.locked else frozenset()
-    problems = _apply(edits, new, locked, hidden)
+    job.notes, job.gone = [], {}  # this attempt's: its caller keeps those of a tree that ships or is built on
+    problems = _apply(edits, new, locked, hidden, job.notes)
     for path in new if not problems else []:
         try:
             if new[path] != job.shown[path]:
                 new[path] = add_imports(new[path], job.client_module)
                 if is_test_path(path):  # a test may read the constants Offramp wrote, imported like any other
                     new[path] = add_fixtures(add_imports(new[path], job.client_module, job.constants))
+            if new[path] != base[path] and is_test_path(path):  # imports this edit left unused (review I5)
+                others = {**job.others, **new}  # the other files as this edit leaves them (re-review 2, n3)
+                new[path], names = _drop_unused(
+                    path, base[path], new[path], others, job.kept, "the model's edit"
+                )
+                job.gone |= {path: names} if names else {}
         except SyntaxError as e:
             problems.append(
                 Problem("does_not_parse", f"{path} does not parse: {e.msg} (line {e.lineno})", path)
@@ -3011,6 +3467,9 @@ def _attempt(
                 Problem("deletes_tests", f"patch removes tests from {path}: {sorted(gone)}", path)
             )
             deleted += [f"{path}::{name}" for name in sorted(gone)]
+        if is_test_path(path) and (skips := _new_skips(job.shown[path], new[path])):
+            problems.append(Problem("skips_tests", _skips_text(path, skips), path))
+            deleted += [f"{path}::{name}" for name in skips]
     if problems:
         files = list(dict.fromkeys(p.file for p in problems))
         rejected = PatchFailure(kind=problems[0].kind, files=files, tests=deleted)
@@ -3021,7 +3480,7 @@ def _attempt(
     for p in changed:
         write(p, new[p])
     _settle(box, repo, changed, job.before, job.width, formatted)
-    result: CheckResult = box.check()
+    result: CheckResult = _no_more_skips(box.check(), job.skips)
     why = job.verify() if result.ok and job.verify else None  # run while the patch is on disk
     off = backstop(repo, job.reference)  # after the run: whatever wrote code, an edit or a test, is caught
     patched = {p: (repo / p).read_text() for p in changed}
@@ -3127,6 +3586,7 @@ def compose_patches(
     if box.mode == "none":
         return stop(NO_SANDBOX)
     untouched = box.check()
+    baseline_skips = _skip_count(untouched.output)  # a patched run may not skip or xfail more (review I4)
     if not untouched.ok:
         return stop(
             f"repo checks fail on the untouched repo ({untouched.mode}): {_summary(untouched.output)}"
@@ -3240,6 +3700,13 @@ def compose_patches(
                 )
         return out
 
+    # every module at base, and the warnings (in order) for an orphaned SDK import another module still reads
+    base_sources = {p: text for p in sorted(tracked) if (text := read(p)) is not None}
+    kept_imports: dict[str, None] = {}
+
+    def clean(path: str, before: str, after: str, others: dict[str, str]) -> tuple[str, set[str]]:
+        return _drop_unused(path, before, after, others, kept_imports, "Offramp's rewrite")
+
     versions: dict[str, dict[str, str]] = {}  # site -> its patched files, green alone
     unchecked = False  # a green-alone patch was pruned after its check
     reach: dict[str, set[str]] = {}  # site -> what its tests name to reach the migrated function
@@ -3247,6 +3714,9 @@ def compose_patches(
     befores: dict[str, dict[str, str]] = {}  # site -> its files before its patch
     code_of: dict[str, dict[str, str]] = {}  # site -> the code files Offramp's code changed, as written
     site_twins: dict[str, dict[str, set[str]]] = {}  # site -> test file -> the fake lines mirror_fakes added
+    site_notes: dict[str, list] = {}  # site -> the by-name edits (path, names) of the tree it ships alone
+    site_dropped: dict[str, dict[str, set[str]]] = {}  # site -> code file -> SDK names its rewrite dropped
+    site_dead: dict[str, Counter] = {}  # site -> `module.name` -> its tests' patches of it removed alone
     alone: dict[str, bool] = {}
     for v in to_migrate:
         site, adapter = by_id.get(v.site_id), adapters.get(v.site_id)
@@ -3296,6 +3766,12 @@ def compose_patches(
                    and (text := read(p)) is not None} | code  # fmt: skip  # the repo's code, as it would ship
         if site.function:  # mechanical: callers hand the migrated function a Token Factory client
             code |= rewrite_callers(modules, site.file, local.function, client_at[1])
+        dropped: dict[str, set[str]] = {}  # code file -> the SDK names its rewrite orphaned, dropped
+        others = base_sources | code  # the tree as this site's patch leaves it
+        for p, text in code.items():
+            code[p], names = clean(p, read(p) or "", text, others)
+            dropped |= {p: names} if names else {}
+        site_dropped[site.id] = dropped
         context += [p for p in code if p not in context]  # a caller reached through an alias is shown too
         base = {p: read(p) for p in code}
         for p, text in code.items():
@@ -3348,14 +3824,21 @@ def compose_patches(
                     twins[p] = twins.get(p, set()) | added
                     shown[p] = mirrored
                     done.append(f"`{p}` also fakes `{OLD_CLIENTS[name]}` where it faked `{name}`")
+            if dropped and (cut := drop_dead_patches(shown[p], p, dropped, tracked))[1]:
+                shown[p] = cut[0]
+                site_dead[site.id] = Counter(site_dead.get(site.id)) + Counter(cut[1])
+                done += [f"`{p}` no longer patches `{k}`, which the rewrite removed" for k in cut[1]]
         before = {p: read(p) for p in shown}
         probe = (lambda sid=site.id: verify([sid]).get(sid)) if probed else None
         names = [*constants.values(), *([system_name] if (system_name or "").startswith("NEMOTRON_") else [])]
         imports = {name: f"from {_module_name(site.file)} import {name}" for name in names}
         job = _Job(local, shown, before, {**base_code, **code}, client_module=client_at[1], width=width,
-                   constants=imports, locked=locked, verify=probe)  # fmt: skip
+                   constants=imports, locked=locked, verify=probe, skips=baseline_skips, others=others,
+                   kept=kept_imports)  # fmt: skip
         # Offramp's own changes alone: green needs no model call; red shows the model what fails
         tried: list = []  # every tree checked for this site, with its outcome (see _attempt)
+        carried: list = []  # by-name edits of the checked tries the next blocks build on
+        carried_gone: dict[str, set[str]] = {}  # and the test imports those tries' edits orphaned
         failure, patched, last = _attempt(job, [], repo, box, formatted, write, tried=tried)
         if last is not None and last.kind == "probe_mismatch":  # the model may not touch it
             why = f"Offramp's own rewrite was run and {failure.partition(': ')[2]}"
@@ -3430,7 +3913,11 @@ def compose_patches(
                     base = {p: patched.get(p, job.before[p]) for p in base}
                     tried.append((base, why, last))
                     applied += fresh
+                    carried += job.notes
+                    carried_gone = _union(carried_gone, job.gone)
                 if failure is None:
+                    site_notes[site.id] = [*carried, *job.notes]  # review M3: only what ships is reported
+                    site_dropped[site.id] = _union(site_dropped.get(site.id, {}), carried_gone, job.gone)
                     break
             repair, again, hidden = _repair(failure, {p: base[p] for p in editable}, _live(ledger))
             messages = [
@@ -3462,6 +3949,11 @@ def compose_patches(
     by_verdict = {v.site_id: v for v in to_migrate}
 
     unified: set[str] = set()  # test files where merge() gave one fake per case to several sites' twins
+    dead: Counter = Counter()  # `module.name` -> the merged tests' patches of it removed (drop_dead_patches)
+    plain: dict[str, str] = {}  # the last merged tree before its own edits (cleanup, unified twins, patches)
+    gone_imports: dict[str, set[str]] = {}  # code file -> SDK names the last merged tree no longer imports
+    together_by_name: list = []  # the combined repair's by-name edits, when its tree ships
+    together_gone: dict[str, set[str]] = {}  # and the test imports its edits orphaned
 
     def merge(sids: list[str]) -> tuple[dict[str, str], list[str]]:  # (merged files, sites merged)
         merged: dict[str, str] = {}
@@ -3476,11 +3968,26 @@ def compose_patches(
                 trial[path] = m
             else:
                 merged, taken = trial, [*taken, sid]
+        plain.clear()  # the per-site diffs merged: what the report's site diffs show together
+        plain.update(merged)
+        dropped: dict[str, set[str]] = {}  # merged code file -> the SDK names dropped from it
+        for path in {p for sid in taken for p in code_of[sid]} & set(merged):  # Offramp's code, merged
+            merged[path], names = clean(path, base_files[path], merged[path], base_sources | merged)
+            dropped |= {path: names} if names else {}
         for path in merged:  # sites of different SDKs faked in one test: one fake per case (Offramp's twins)
             twins = [(site_twins[sid][path], reach[sid]) for sid in taken if path in site_twins[sid]]
             if len(twins) > 1 and (one := unify_twins(merged[path], twins)) != merged[path]:
                 merged[path] = one
                 unified.add(path)
+        dead.clear()  # what the tree last merged (the one placed) removed
+        for path in [p for p in merged if is_test_path(p)] if dropped else []:
+            merged[path], counts = drop_dead_patches(merged[path], path, dropped, tracked)
+            dead.update(counts)
+        dead.update(sum((Counter(site_dead.get(sid)) for sid in taken), Counter()))
+        gone_imports.clear()  # every SDK import the placed tree dropped: merged, and each site's alone
+        for found in [dropped, *(site_dropped.get(sid, {}) for sid in taken)]:
+            for path, names in found.items():
+                gone_imports.setdefault(path, set()).update(names)
         return merged, taken
 
     def drift(sids: list[str]) -> dict[str, list[str]]:
@@ -3491,6 +3998,10 @@ def compose_patches(
             for path, text in code_of[sid].items():
                 was = reference.get(path)
                 reference[path] = None if was is None else merge_onto(base_code[path], was, text)
+        on_disk = {p: (repo / p).read_text() for p in sorted(tracked) if (repo / p).is_file()}  # as placed
+        for path in {p for sid in sids for p in code_of[sid]}:  # as merge() leaves it: no orphaned SDK import
+            if reference.get(path) is not None:
+                reference[path] = clean(path, base_code[path], reference[path], on_disk)[0]
         out: dict[str, list[str]] = {}
         for path, why in backstop(repo, reference).items():
             for sid in [s for s in sids if path in code_of[s] or path in versions[s]] or sids:
@@ -3549,6 +4060,8 @@ def compose_patches(
         prompt = _together_prompt([by_id[sid] for sid in combined], reach, failure, shown, editable, width)
         messages = [{"role": "system", "content": TOGETHER}, {"role": "user", "content": prompt}]
         tried, checked, applied, base = [(dict(shown), failure)], failure, [], dict(shown)  # as per site
+        carried: list = []  # by-name edits of the checked tries the next blocks build on (review M3)
+        carried_gone: dict[str, set[str]] = {}  # and the test imports their edits orphaned
         sent: list = []
         hidden: frozenset[str] = frozenset()
         ledger = [_Copy(p, 1, shown[p]) for p in editable]
@@ -3576,10 +4089,20 @@ def compose_patches(
                     why = f"{ALREADY} applied, and leaving one out does not drop it; last failure: {checked}"
                     return [], why
                 sent.append((base, hidden, edits))
-                new = dict(base)
-                problems = [p.text for p in _apply(fresh, new, read_only, hidden)]
+                new, notes, gone_now = dict(base), [], {}
+                problems = [p.text for p in _apply(fresh, new, read_only, hidden, notes)]
+                for p in [p for p in new if new[p] != base[p] and is_test_path(p)] if not problems else []:
+                    new[p], names = _drop_unused(
+                        p, base[p], new[p], base_sources | new, kept_imports, "the model's edit"
+                    )
+                    gone_now |= {p: names} if names else {}
                 gone = {p: _test_names(shown[p]) - _test_names(new[p]) for p in new if is_test_path(p)}
                 problems += [f"patch removes tests from {p}: {sorted(g)}" for p, g in gone.items() if g]
+                problems += [
+                    _skips_text(p, sk)
+                    for p in new
+                    if is_test_path(p) and (sk := _new_skips(shown[p], new[p]))
+                ]
                 for p in sorted(editable) if not problems else []:
                     for name in sorted(
                         n for n in _test_bodies_changed(shown[p], new[p]) if (p, n) not in failing
@@ -3594,8 +4117,11 @@ def compose_patches(
                     for p in changed:
                         write(p, add_fixtures(add_imports(new[p], client_at[1])))
                     _settle(box, repo, changed, shown, width, formatted)
-                    result = box.check()
+                    result = _no_more_skips(box.check(), baseline_skips)
                     if result.ok and not (off := drift(combined)):
+                        together_by_name.extend(dict.fromkeys([*carried, *notes]))
+                        together_gone.update(_union(carried_gone, gone_now))
+                        warnings.extend(f"combined repair: {_by_name_note(*n)}" for n in together_by_name)
                         return changed, None
                     if result.ok:  # the backstop and the probe: the merged tree may not change shipped code
                         result = CheckResult(ok=False, mode=result.mode, output=_drift_text(off))
@@ -3605,6 +4131,8 @@ def compose_patches(
                     # as checked, the next blocks meet it (after a backstop or probe failure too, unlike per
                     # site: every later merged tree is drift-checked again)
                     base = {**shown, **{p: read(p) for p in changed}}
+                    carried += notes  # the next blocks build on this tree
+                    carried_gone = _union(carried_gone, gone_now)
                     tried += [(new, failure), (base, failure)]
                     for p in changed:
                         write(p, shown[p])
@@ -3622,7 +4150,7 @@ def compose_patches(
     together_failure = None
     together = None
     while combined and (len(combined) > 1 or unchecked):
-        together = box.check()
+        together = _no_more_skips(box.check(), baseline_skips)
         if not (off := drift(combined)):
             break
         drop = culprits(off, combined)  # never repaired: only code may change an evaluated call
@@ -3648,7 +4176,7 @@ def compose_patches(
                 versions[sid] = version  # pruned first; as checked alone if pruning broke it
                 trial, _ = merge([*kept, sid])  # a superset of the kept sites' files
                 place(trial)
-                result, off = box.check(), drift([*kept, sid])
+                result, off = _no_more_skips(box.check(), baseline_skips), drift([*kept, sid])
                 if result.ok and not off:
                     kept.append(sid)
                     break
@@ -3674,6 +4202,13 @@ def compose_patches(
             adapters[sid].patch = None
     migrated = len(combined)
 
+    warnings += [
+        f"removed {n} patch(es) of `{k}`, which Offramp's rewrite removed" for k, n in sorted(dead.items())
+    ]
+    by_name = [(sid, n) for sid in combined for n in dict.fromkeys(site_notes.get(sid, []))]
+    by_name += [("combined repair", n) for n in together_by_name]
+    warnings += [f"{who}: {_by_name_note(*n)}" for who, n in by_name if who != "combined repair"]
+    warnings += list(kept_imports) if migrated else []
     files = {p: text for p in originals if (text := read(p)) is not None and text != originals[p]}
     files |= {p: text for p, text in dependencies.items() if p in files}  # as written: a CRLF file stays CRLF
     if not migrated:  # nothing uses the client module, nor the openai SDK it imports
@@ -3707,6 +4242,26 @@ def compose_patches(
                             "the literal getattr/import_module forms Offramp refuses")  # fmt: skip
     if filtered:
         change_notes.append(left_out)
+    # the placed tree's and a shipped combined repair's, as the repo's own file had them: a name the change
+    # added and Offramp dropped is no line of the PR's diff (re-review 2, n5)
+    removed = {p: own for p, names in _union(gone_imports, together_gone).items()
+               if (own := names & _import_bindings(_parsed(originals.get(p) or "")))}  # fmt: skip
+    if migrated and removed:  # review M4 and I5: imports a change orphaned, said
+        gone = "; ".join(
+            f"{', '.join(f'`{n}`' for n in sorted(ns))} from `{p}`" for p, ns in sorted(removed.items())
+        )
+        change_notes.append(f"imports that Offramp's or the model's changes left unused were removed: {gone}")
+    if migrated and dead:
+        patches = ", ".join(f"{n} of `{k}`" for k, n in sorted(dead.items()))
+        change_notes.append(f"test patches of those names were removed: {patches}")
+    if migrated and by_name:
+        edits = "; ".join(
+            f"{', '.join(f'`{x}`' for x in names)} in `{p}` ({who})" for who, (p, names) in by_name
+        )
+        change_notes.append(f"a model edit was applied by function name after its SEARCH missed: {edits}")
+    paths = sorted(set(plain) | set(repaired)) if migrated else []
+    merged_diff = _diff({p: plain.get(p, originals.get(p)) for p in paths},
+                        {p: text for p in paths if (text := read(p)) is not None})  # fmt: skip
     return PatchResult(
         files=files,
         diffs=diffs,
@@ -3727,4 +4282,5 @@ def compose_patches(
         client_packaged=(repo / client_at[0]).parent != repo
         and ((repo / client_at[0]).parent / "__init__.py").is_file(),
         change_notes=change_notes,
+        merged_diff=merged_diff,
     )

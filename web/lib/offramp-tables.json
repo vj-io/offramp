@@ -3,6 +3,7 @@
  "cause": {
   "search_miss": "the model's edit to {files} quotes lines matching no single place there, so none applied",
   "deletes_tests": "the model's edit deleted {tests}, and Offramp never ships a patch that deletes a test",
+  "skips_tests": "the model's edit made {tests} skip, and Offramp never ships a patch that skips a test",
   "locked_file": "the model tried to edit {files}, which ships exactly as Offramp's code wrote it",
   "not_editable": "the model's edit to {files} is not allowed for this site",
   "does_not_parse": "the model's edit left {files} unparseable",

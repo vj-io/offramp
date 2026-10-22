@@ -70,6 +70,7 @@ def test_export_replay_adds_each_migrated_sites_diff_scrubbed(tmp_path, monkeypa
     patch = {
         "files": {"app.py": "x = 1\n"},
         "diffs": {"cs_01": shipped, "cs_02": "--- a/kept.py\n+++ b/kept.py\n", "cs_03": "--- a/x.py\n"},
+        "merged_diff": "--- a/cli.py\n+++ b/cli.py\n@@ -1 +0,0 @@\n-from anthropic import Anthropic\n",
         "verdicts": [
             {"site_id": "cs_01", "decision": "MIGRATE"},
             {"site_id": "cs_02", "decision": "KEEP_CLOSED"},
@@ -80,7 +81,10 @@ def test_export_replay_adds_each_migrated_sites_diff_scrubbed(tmp_path, monkeypa
     api, web = tmp_path / "api.jsonl", tmp_path / "web.json"
 
     assert cli.main(["export-replay", log.run_id, "--api-out", str(api), "--web-out", str(web)]) == 0
-    assert json.loads(web.read_text())["diffs"] == {"cs_01": shipped.replace("tf-secret-0123456789", "***")}
+    assert json.loads(web.read_text())["diffs"] == {
+        "cs_01": shipped.replace("tf-secret-0123456789", "***"),
+        "merged": patch["merged_diff"],  # what only merging the sites changed (Task 26 review M4)
+    }
 
 
 def test_export_replay_refuses_an_unfinished_run(tmp_path, monkeypatch, capsys):

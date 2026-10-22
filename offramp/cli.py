@@ -121,7 +121,8 @@ def serve(args: argparse.Namespace) -> int:
 
 def _shipped_diffs(run_dir: Path) -> dict[str, str]:
     """Each migrated site's unified diff as its PR commits it (patch.json), scrubbed like the events. Only
-    MIGRATE sites: a kept site's comment and a manual-review site never reach the report's diff panel.
+    MIGRATE sites: a kept site's comment and a manual-review site never reach the report's diff panel. Under
+    "merged", what only merging the sites changed (Task 26: an import their rewrites left unused together).
     scrub() knows only the secret-named variables in this shell's environment (the CLI loads no .env); the
     diff is the code the public PR already commits."""
     patch = run_dir / "patch.json"
@@ -129,7 +130,8 @@ def _shipped_diffs(run_dir: Path) -> dict[str, str]:
         return {}
     p = json.loads(patch.read_text())
     migrated = {v["site_id"] for v in p["verdicts"] if v["decision"] == "MIGRATE"}
-    return pipeline.scrub({sid: d for sid, d in p.get("diffs", {}).items() if sid in migrated})
+    merged = {"merged": p["merged_diff"]} if migrated and p.get("merged_diff") else {}
+    return pipeline.scrub({sid: d for sid, d in p.get("diffs", {}).items() if sid in migrated} | merged)
 
 
 def export_replay(args: argparse.Namespace) -> int:
