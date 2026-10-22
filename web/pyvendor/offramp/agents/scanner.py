@@ -824,23 +824,203 @@ def label_contracts(sites: list[CallSite], llm: LLM, root: str | Path | None = N
 
 # ---------------------------------------------------------------- how the code parses the reply
 
-TOOL_ATTRS = {"tool_calls", "function_call", "arguments"}  # a tool call's arguments are not the reply text
+REPLY_ATTRS = {
+    "content",
+    "text",
+    "output_text",
+}  # the attribute a chain from the response ends in at the text
+STRIPS = {"strip", "lstrip", "rstrip"}
+UNFENCE = {"removeprefix", "removesuffix", "replace"}  # a step of the reply's flow only with a ``` argument
+FENCE = "```"
 
 
-def _stored(node: ast.AST) -> tuple[ast.AST | None, set[str]]:
-    """(value, names bound from it) for an assignment-like node: =, :=, +=, for ... in, with ... as."""
-    if isinstance(node, ast.Assign):
-        targets: list[ast.AST] = list(node.targets)
-    elif isinstance(node, ast.AnnAssign | ast.AugAssign | ast.NamedExpr):
-        targets = [node.target]
-    elif isinstance(node, ast.For | ast.AsyncFor | ast.comprehension):
-        return node.iter, {n.id for n in ast.walk(node.target) if isinstance(n, ast.Name)}
-    elif isinstance(node, ast.withitem) and node.optional_vars is not None:
-        return node.context_expr, {n.id for n in ast.walk(node.optional_vars) if isinstance(n, ast.Name)}
-    else:
-        return None, set()
-    names = {n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)}
-    return getattr(node, "value", None), names
+def _has_fence(node: ast.AST) -> bool:
+    return any(
+        isinstance(n, ast.Constant) and isinstance(n.value, str) and FENCE in n.value for n in ast.walk(node)
+    )
+
+
+def _own_nodes(fn: ast.AST) -> Iterator[ast.AST]:
+    """The nodes of `fn` itself: not those of functions, lambdas or classes defined inside it."""
+    stack = list(ast.iter_child_nodes(fn))
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, Fn | ast.Lambda | ast.ClassDef):
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _bindings(fn: ast.AST) -> dict[str, list[ast.AST | None]]:
+    """Each local name and every value `fn` binds to it; None for a binding of any other kind (a loop or
+    with target, an unpacking, +=), so such a name is never taken for the reply."""
+    out: dict[str, list[ast.AST | None]] = {}
+    plain: set[int] = set()
+    for node in _own_nodes(fn):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign | ast.NamedExpr) and isinstance(node.target, ast.Name):
+            target, value = node.target, node.value
+        else:
+            continue
+        plain.add(id(target))
+        out.setdefault(target.id, []).append(value)
+    for node in _own_nodes(fn):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and id(node) not in plain:
+            out.setdefault(node.id, []).append(None)
+    return out
+
+
+class _Flow:
+    """The reply's flow through one function: names bound to the response (`resp`), to the reply text after
+    nothing but strips and fence removal (`text`), and to its lines while a fence is being removed (`lines`).
+    `text` and `lines` map a name to whether a ``` fence step is on its flow."""
+
+    def __init__(self, call: ast.AST | None, resp: set[str], text: dict[str, bool], lines: dict[str, bool]):
+        self.call, self.resp, self.text, self.lines = call, resp, text, lines
+
+    def is_resp(self, e: ast.AST) -> bool:
+        if self.call is not None and (e is self.call or (isinstance(e, ast.Await) and e.value is self.call)):
+            return True
+        if isinstance(e, ast.Name):
+            return e.id in self.resp
+        return isinstance(e, ast.Attribute | ast.Subscript) and self.is_resp(e.value)
+
+    def text_of(self, e: ast.AST) -> bool | None:
+        """Whether `e` is the reply text itself (stripped, or with a ``` fence removed): None if it is not,
+        else whether a fence step is on its flow."""
+        if isinstance(e, ast.Name):
+            return self.text.get(e.id)
+        if isinstance(e, ast.Attribute) and e.attr in REPLY_ATTRS and self.is_resp(e.value):
+            return False
+        if not (isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute)):
+            return None
+        method, base = e.func.attr, e.func.value
+        if method in STRIPS and (inner := self.text_of(base)) is not None:
+            return inner or any(_has_fence(a) or "`" in str(getattr(a, "value", "")) for a in e.args)
+        if method in UNFENCE and e.args and _has_fence(e.args[0]) and self.text_of(base) is not None:
+            return True
+        if method == "join" and isinstance(base, ast.Constant) and len(e.args) == 1:
+            return self.lines_of(e.args[0])
+        if method == "sub" and isinstance(base, ast.Name) and base.id == "re" and len(e.args) >= 3:
+            if _has_fence(e.args[0]) and self.text_of(e.args[2]) is not None:
+                return True
+        return None
+
+    def lines_of(self, e: ast.AST) -> bool | None:
+        if isinstance(e, ast.Name):
+            return self.lines.get(e.id)
+        if (
+            isinstance(e, ast.Call)
+            and isinstance(e.func, ast.Attribute)
+            and e.func.attr in ("split", "splitlines")
+        ):
+            return self.text_of(e.func.value)
+        if isinstance(e, ast.ListComp | ast.GeneratorExp) and len(e.generators) == 1:
+            g = e.generators[0]
+            if not (
+                isinstance(g.target, ast.Name) and isinstance(e.elt, ast.Name) and e.elt.id == g.target.id
+            ):
+                return None  # each line changed: not a filter
+            inner = self.lines_of(g.iter)
+            if inner is None or (g.ifs and not all(_has_fence(c) for c in g.ifs)):
+                return None  # dropping lines for another reason than a fence changes the reply
+            return inner or bool(g.ifs)
+        return None
+
+
+def _flow(fn: ast.AST, call: ast.AST | None, seeds: set[str]) -> _Flow:
+    """The reply's flow in `fn`, `seeds` being names that hold the reply text on entry (a helper's parameter).
+    A name is in a set only if every binding of it is such a value (the largest such sets) and it gets its
+    value from the call or a seed (the smallest such set): one other binding keeps it out."""
+    binds = _bindings(fn)
+    names = {n for n, values in binds.items() if None not in values}
+    flow = _Flow(call, set(names), dict.fromkeys(names | seeds, False), dict.fromkeys(names, False))
+    while True:  # largest sets closed under "every value is of the kind"
+        resp = {n for n in flow.resp if all(flow.is_resp(v) for v in binds[n])}
+        text = {n for n in flow.text if all(flow.text_of(v) is not None for v in binds.get(n, []))}
+        lines = {n for n in flow.lines if all(flow.lines_of(v) is not None for v in binds[n])}
+        if (resp, text, lines) == (flow.resp, set(flow.text), set(flow.lines)):
+            break
+        flow.resp, flow.text, flow.lines = resp, dict.fromkeys(text, False), dict.fromkeys(lines, False)
+    grounded, grew = set(seeds), True
+    while grew:  # names that get a value from the call or a seed, to a fixed point
+        before = len(grounded)
+        for n, values in binds.items():
+            for v in values:
+                if v is not None and any(
+                    x is call or (isinstance(x, ast.Name) and x.id in grounded) for x in ast.walk(v)
+                ):
+                    grounded.add(n)
+        grew = len(grounded) > before
+    flow.resp &= grounded
+    flow.text = {n: False for n in flow.text if n in grounded}
+    flow.lines = {n: False for n in flow.lines if n in grounded}
+    changed = True
+    while changed:  # whether a fence step is on each name's flow
+        changed = False
+        for kind, of in ((flow.text, flow.text_of), (flow.lines, flow.lines_of)):
+            for n in kind:
+                if not kind[n] and any(of(v) for v in binds.get(n, [])):
+                    kind[n] = changed = True
+    return flow
+
+
+def _tolerated(fn: ast.AST, node: ast.AST, flow: _Flow) -> bool:
+    """Whether `node` sits in the body of a try whose handler accepts a reply that is not JSON: it returns or
+    stores the reply text, or carries on after the try. Only a handler ending in raise, or in a return of
+    something else, gives the call up (logging the reply on the way is no use of it)."""
+    parents = {id(c): p for p in [fn, *_own_nodes(fn)] for c in ast.iter_child_nodes(p)}
+    reply = set(flow.text) | set(flow.lines)
+
+    def keeps_reply(handler: ast.ExceptHandler) -> bool:
+        values = [
+            n.value
+            for stmt in handler.body
+            for n in ast.walk(stmt)
+            if isinstance(n, ast.Return | ast.Assign | ast.AnnAssign | ast.AugAssign | ast.NamedExpr)
+            and n.value is not None
+        ]
+        return any(isinstance(x, ast.Name) and x.id in reply for v in values for x in ast.walk(v))
+
+    child, parent = node, parents.get(id(node))
+    while parent is not None:
+        if isinstance(parent, ast.Try) and child in parent.body:
+            for handler in parent.handlers:
+                if keeps_reply(handler) or not isinstance(handler.body[-1], ast.Return | ast.Raise):
+                    return True
+        child, parent = parent, parents.get(id(parent))
+    return False
+
+
+def _parses_reply(fn: ast.AST, call: ast.AST | None, seeds: set[str], loads: tuple[set[str], set[str]]):
+    """True/False (a ``` fence step on the reply's flow or not) when `fn` runs json.loads on the reply text
+    itself, directly or through a helper defined inside it, where a reply that is not JSON breaks the code;
+    None otherwise. ponytail: one function's local names only; a missed site is still judged."""
+    flow = _flow(fn, call, seeds)
+    modules, functions = loads
+    helpers = {
+        h.name: fenced
+        for h in _own_nodes(fn)
+        if isinstance(h, Fn) and h.args.args
+        if (fenced := _parses_reply(h, None, {h.args.args[0].arg}, loads)) is not None
+    }
+    found: list[bool] = []
+    for node in _own_nodes(fn):
+        if not (isinstance(node, ast.Call) and node.args):
+            continue
+        f = node.func
+        is_loads = (isinstance(f, ast.Name) and f.id in functions) or (
+            isinstance(f, ast.Attribute)
+            and f.attr == "loads"
+            and isinstance(f.value, ast.Name)
+            and f.value.id in modules
+        )
+        helper = isinstance(f, ast.Name) and f.id in helpers
+        if not (is_loads or helper) or (fenced := flow.text_of(node.args[0])) is None:
+            continue
+        if not _tolerated(fn, node, flow):
+            found.append(fenced or (helper and helpers[f.id]))
+    return any(found) if found else None
 
 
 def _json_loads_names(tree: ast.Module) -> tuple[set[str], set[str]]:
@@ -854,50 +1034,12 @@ def _json_loads_names(tree: ast.Module) -> tuple[set[str], set[str]]:
     return modules, functions
 
 
-def _parses(fn: Fn, sources: set[str], call: ast.AST | None, loads: tuple[set[str], set[str]]) -> bool:
-    """Whether `call`'s value, or a name in `sources`, reaches json.loads inside `fn`: directly, through the
-    local names it is assigned to (to a fixed point), or as the argument of a helper defined in `fn` that
-    itself json.loads its parameter. ponytail: names only, no attribute or container flow."""
-    tainted = set(sources)
-
-    def carries(expr: ast.AST) -> bool:
-        nodes = list(ast.walk(expr))
-        if any(isinstance(n, ast.Attribute) and n.attr in TOOL_ATTRS for n in nodes):
-            return False
-        return any(n is call or (isinstance(n, ast.Name) and n.id in tainted) for n in nodes)
-
-    changed = True
-    while changed:
-        changed = False
-        for node in ast.walk(fn):
-            value, names = _stored(node)
-            if value is not None and names - tainted and carries(value):
-                tainted |= names
-                changed = True
-    modules, functions = loads
-    helpers = {
-        h.name
-        for h in ast.walk(fn)
-        if isinstance(h, Fn) and h is not fn and _parses(h, {a.arg for a in h.args.args}, None, loads)
-    }
-    for node in ast.walk(fn):
-        if not (isinstance(node, ast.Call) and node.args and carries(node.args[0])):
-            continue
-        f = node.func
-        if isinstance(f, ast.Name) and (f.id in functions or f.id in helpers):
-            return True
-        if isinstance(f, ast.Attribute) and f.attr == "loads" and isinstance(f.value, ast.Name):
-            if f.value.id in modules:
-                return True
-    return False
-
-
 def json_reply(root: str | Path, site: CallSite) -> str | None:
-    """How the function around `site`'s call parses the reply, read from the code: "exact" when the reply
-    text reaches json.loads there (directly, through local variables, or through a helper defined inside the
-    function), "fence_stripped" when that function also deals with a ``` fence (a string literal holding
-    one, as in code that drops fence lines before json.loads); None when it never reaches json.loads, or the
-    file cannot be read. ponytail: a fence literal anywhere in the function counts as stripping one."""
+    """How the function around `site`'s call parses the reply, read from the code: "exact" when it runs
+    json.loads on the reply text itself (stripped at most), "fence_stripped" when a ``` fence is removed
+    from that text first; None when it never does, parses something else (a regex match, a slice, a
+    document built around the reply), falls back to the text when json.loads fails, or cannot be read.
+    Conservative on purpose: a site it misses is still judged; one it flags wrongly fails good replies."""
     try:
         with catch_warnings():
             simplefilter("ignore", SyntaxWarning)
@@ -914,15 +1056,10 @@ def json_reply(root: str | Path, site: CallSite) -> str | None:
         ),
         None,
     )
-    if found is None:
+    if found is None or found[1] is None:
         return None
-    node, fn = found
-    if fn is None or not _parses(fn, set(), node, _json_loads_names(tree)):
-        return None
-    fenced = any(
-        isinstance(n, ast.Constant) and isinstance(n.value, str) and "```" in n.value for n in ast.walk(fn)
-    )
-    return "fence_stripped" if fenced else "exact"
+    fenced = _parses_reply(found[1], found[0], set(), _json_loads_names(tree))
+    return None if fenced is None else "fence_stripped" if fenced else "exact"
 
 
 def _describe(site: CallSite, root: str | Path | None) -> str:
