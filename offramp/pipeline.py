@@ -482,6 +482,7 @@ class Pipeline:
     def _steps(self) -> None:
         clone = self._artifact("clone.json", self._clone)
         repo = Path(clone["path"])
+        self._check_dataset(repo / "evals")
         scan = self._artifact("scan.json", lambda: self._scan(repo))
         sites = [CallSite.model_validate(s) for s in scan["sites"]]
         chat = [s for s in sites if s.kind == "chat"]
@@ -498,6 +499,15 @@ class Pipeline:
         write_results(self.dir, routes, patch["verdicts"])
         self._artifact("pr.json", lambda: self._pr(repo, chat, patch, routes, evals, cases))
         self._finish(chat, cases, patch)
+
+    def _check_dataset(self, evals: Path) -> None:
+        """Before anything is spent: an input in both dev and holdout refuses the run (ValueError, the run's
+        error); inputs repeated within one split are a warning with their count."""
+        baselines.refuse_leaks(evals)
+        _, within = baselines.dataset_duplicates(evals)
+        if within:
+            text = baselines.duplicates_text(within, "repeat within one split")
+            self._log("warn", f"{text}: each counts more than once; re-run `offramp prepare` to drop them")
 
     def _artifact(self, name: str, make: Callable[[], Any]) -> Any:
         """The step's artifact: loaded when an earlier attempt finished the step, else made and saved."""

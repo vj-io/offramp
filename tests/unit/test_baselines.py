@@ -84,8 +84,29 @@ def test_a_dataset_written_before_the_guard_fails_verification_where_it_leaks(tm
     b.write_manifest(tmp_path)
 
     assert b.verify_manifest(tmp_path) == [
-        "cases/cs_01.jsonl: the same input is in dev and holdout (cs_01:005 and cs_01:013)"
+        "cases/cs_01.jsonl: 1 input in both dev and holdout (cs_01:005 and cs_01:013)"
     ]
+
+
+def test_duplicate_messages_count_every_group_and_show_the_first_five(tmp_path):
+    """Review M4: the fork's cs_04 has 7 groups across the splits; the message listed 5 and no count."""
+    text = lambda i: [{"role": "user", "content": f"idea {i}"}]  # noqa: E731
+    cases = [case(i).model_copy(update={"input_messages": text(i)}) for i in range(1, 8)]
+    cases += [
+        case(i + 10).model_copy(update={"split": "holdout", "input_messages": text(i)}) for i in range(1, 8)
+    ]
+    cases += [case(30).model_copy(update={"input_messages": text(1)})]  # a third copy, in dev
+    cases += [case(40 + i).model_copy(update={"input_messages": text(99)}) for i in range(2)]  # within dev
+    span, within = b.duplicate_inputs(cases)
+    assert (
+        len(span) == 7
+        and span[0] == ["cs_01:001", "cs_01:011", "cs_01:030"]
+        and within == [["cs_01:040", "cs_01:041"]]
+    )
+    with pytest.raises(
+        ValueError, match=r"cs_01: 7 inputs in both dev and holdout \(cs_01:001 and .*; 2 more\)"
+    ):
+        b.save_cases(tmp_path, "cs_01", cases)
 
 
 def test_legacy_baselines_are_read_and_references_override_them(tmp_path):

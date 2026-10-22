@@ -66,14 +66,29 @@ def input_key(messages: list[dict[str, Any]]) -> str:
     return json.dumps(parts, ensure_ascii=False)
 
 
-def _leaks(cases: Iterable[EvalCase]) -> str | None:
-    """'the same input is in dev and holdout (<ids>)' when one is: the Iterator would tune on inputs the
-    holdout verdict then reads (GC10)."""
-    by_input: dict[str, dict[str, str]] = {}  # input -> split -> first case id
+def duplicate_inputs(cases: Iterable[EvalCase]) -> tuple[list[list[str]], list[list[str]]]:
+    """Case ids that share one input: (groups spanning dev and holdout, groups within one split). The first
+    leak GC10 forbids (the Iterator would tune on inputs the holdout verdict then reads); the second counts
+    one case more than once."""
+    by_input: dict[str, list[EvalCase]] = {}
     for c in sorted(cases, key=lambda c: c.id):
-        by_input.setdefault(input_key(c.input_messages), {}).setdefault(c.split, c.id)
-    leaked = [" and ".join(sorted(ids.values())) for ids in by_input.values() if len(ids) > 1]
-    return f"the same input is in dev and holdout ({'; '.join(leaked[:5])})" if leaked else None
+        by_input.setdefault(input_key(c.input_messages), []).append(c)
+    groups = [g for g in by_input.values() if len(g) > 1]
+    span = [[c.id for c in g] for g in groups if len({c.split for c in g}) > 1]
+    within = [[c.id for c in g] for g in groups if len({c.split for c in g}) == 1]
+    return span, within
+
+
+def listed(groups: list[list[str]], shown: int = 5) -> str:
+    """'a and b; c and d; 2 more': the first `shown` groups and how many more there are."""
+    text = "; ".join(" and ".join(g) for g in groups[:shown])
+    return text + (f"; {len(groups) - shown} more" if len(groups) > shown else "")
+
+
+def _leaks(cases: Iterable[EvalCase]) -> str | None:
+    span, _ = duplicate_inputs(cases)
+    n = len(span)
+    return f"{n} input{'s' * (n != 1)} in both dev and holdout ({listed(span)})" if span else None
 
 
 def save_cases(evals_dir: Path, site_id: str, cases: Iterable[EvalCase]) -> None:
@@ -82,6 +97,34 @@ def save_cases(evals_dir: Path, site_id: str, cases: Iterable[EvalCase]) -> None
     if leak := _leaks(cases):
         raise ValueError(f"{site_id}: {leak}: drop the duplicates")
     _write_jsonl(Path(evals_dir) / "cases" / f"{site_id}.jsonl", cases)
+
+
+def dataset_duplicates(evals_dir: Path) -> tuple[dict[str, list[list[str]]], dict[str, list[list[str]]]]:
+    """duplicate_inputs per site of a dataset: ({site: groups across splits}, {site: groups within one})."""
+    span, within = {}, {}
+    for path in sorted((Path(evals_dir) / "cases").glob("*.jsonl")):
+        across, inside = duplicate_inputs(_read_jsonl(path, EvalCase))
+        if across:
+            span[path.stem] = across
+        if inside:
+            within[path.stem] = inside
+    return span, within
+
+
+def duplicates_text(groups: dict[str, list[list[str]]], where: str) -> str:
+    """'15 duplicate inputs span dev and holdout (cs_01: a and b; ...)', `where` being the verb phrase."""
+    n = sum(len(g) for g in groups.values())
+    verb = where if n != 1 else where.replace("span ", "spans ").replace("repeat ", "repeats ")
+    sites = "; ".join(f"{site}: {listed(g)}" for site, g in groups.items())
+    return f"{n} duplicate input{'s' * (n != 1)} {verb} ({sites})"
+
+
+def refuse_leaks(evals_dir: Path) -> None:
+    """ValueError when a dataset (one written before save_cases refused it) puts an input in both splits:
+    nothing should read it, nor write to it, until `offramp prepare` regenerates it."""
+    span, _ = dataset_duplicates(evals_dir)
+    if span:
+        raise ValueError(f"re-run `offramp prepare`: {duplicates_text(span, 'span dev and holdout')}")
 
 
 def load_references(evals_dir: Path, site_id: str) -> dict[str, BaselineResult]:

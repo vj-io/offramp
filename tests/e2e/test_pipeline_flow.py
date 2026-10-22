@@ -437,6 +437,50 @@ def test_a_prepared_site_gets_how_its_code_parses_the_reply_from_the_code_as_it_
     assert "Reply with the JSON only" in adapter["spec"]["user_suffix"]
 
 
+def duplicate_inputs(repo: Path, *, across_splits: bool) -> None:
+    """Give one case the input of another, as `offramp prepare` did before it dropped repeats (run
+    20261022-023459043-590031): across dev and holdout, or within one split."""
+    cases = baselines.load_cases(repo / "evals", "cs_01")
+    first = cases[0]
+    other = next(c for c in cases[1:] if (c.split != first.split) == across_splits)
+    rows = [
+        c.model_copy(update={"input_messages": first.input_messages}) if c.id == other.id else c
+        for c in cases
+    ]
+    (repo / "evals" / "cases" / "cs_01.jsonl").write_text("".join(c.model_dump_json() + "\n" for c in rows))
+    baselines.write_manifest(repo / "evals")
+    git(repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qam", "duplicate input")
+
+
+def test_a_run_on_a_dataset_with_an_input_in_both_splits_refuses_to_start(tmp_path):
+    """Review M4: the Iterator would tune on inputs the holdout verdict then reads; a warning let it run."""
+    repo = make_repo(tmp_path)
+    duplicate_inputs(repo, across_splits=True)
+    log, _ = start(tmp_path, repo)
+    llm = FakeLLM()  # nothing may be spent on it: any call fails the test
+
+    assert pipeline.Pipeline(log, llm, eval_matrix=Recorder().eval_matrix).execute() == Stage.FAILED
+    reason = log.events[-1].payload["reason"]
+    assert reason.startswith(
+        "ValueError: re-run `offramp prepare`: 1 duplicate input spans dev and holdout (cs_01:"
+    )
+    assert llm.calls == [] and log.events[-1].payload["stage"] == "CLONED"
+
+
+def test_inputs_repeated_within_one_split_are_a_warning_with_their_count(tmp_path):
+    repo = make_repo(tmp_path)
+    duplicate_inputs(repo, across_splits=False)
+    log, _ = start(tmp_path, repo)
+    llm, stub = llm_for_full_run(*split_counts(repo)), Recorder()
+
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr).execute()
+        == Stage.DONE
+    )
+    warnings = [e.payload["message"] for e in log.events if e.type == "log" and e.payload["level"] == "warn"]
+    assert any(m.startswith("1 duplicate input repeats within one split (cs_01: cs_01:") for m in warnings)
+
+
 def test_a_failed_run_resumes_after_its_last_finished_step(tmp_path):
     repo = make_repo(tmp_path)
     n_dev, n_holdout = split_counts(repo)
