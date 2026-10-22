@@ -918,8 +918,7 @@ class Pipeline:
             open_pr=self.config.open_pr and bool(patch["files"]) and gh is not None,
         )
         if draft.get("url"):
-            self.log.emit("pr", {"url": draft["url"], "title": draft["title"]})
-            self._stage(Stage.PR_OPENED)
+            announce_pr(self.log, draft["url"], draft["title"])
         elif not self.config.open_pr:
             self._log("info", "pull request not opened (--no-pr); its body is in the report")
         elif not patch["files"]:
@@ -944,6 +943,59 @@ class Pipeline:
         from offramp.evals.serverless_job.submit import run_matrix_job
 
         return run_matrix_job(matrix, mode="auto", cache_dir=self.cache_dir, run_id=self.log.run_id)
+
+
+def open_run_pr(
+    repo: str,
+    run_id: str,
+    files: dict[str, str],
+    title: str,
+    body: str,
+    opener: Callable[..., str] | None = None,
+) -> str:
+    """The PR stage's GitHub step, shared by a run and by `offramp pr`: one commit of `files` on branch
+    offramp/<run_id> of `repo` ("owner/name"), then the PR; its URL. `opener` stands in for github.open_pr."""
+    return (opener or github.open_pr)(repo, run_id=run_id, files=files, title=title, body=body)
+
+
+def announce_pr(log: RunLog, url: str, title: str) -> None:
+    """The PR stage's events, shared by a run and by `offramp pr`: the `pr` event, then PR_OPENED."""
+    log.emit("pr", {"url": url, "title": title})
+    log.emit("stage", {"stage": Stage.PR_OPENED.value})
+
+
+def open_pr_from_run(
+    run_id: str, root: Path | None = None, *, opener: Callable[..., str] | None = None, **log_kw: Any
+) -> str:
+    """`offramp pr <run_id>`: open the PR of a finished `--no-pr` run from its own artifacts (patch.json's
+    files, pr.json's title and body, on the repo its config names), with no model call, so a capped run is
+    never continued to get its PR. The run's log gains the PR stage's events, then DONE again, so its
+    snapshot and export-replay show the PR. ValueError when the run has not finished, already opened its
+    PR, migrated nothing, or is not on GitHub."""
+    run_dir = (root or data_dir()) / "runs" / run_id
+    log = RunLog(run_dir, run_id, **log_kw)  # engine, on_event: as `offramp run` mirrors and shows events
+    if not log.events or log.stage != Stage.DONE or log.events[-1].type != "done":
+        raise ValueError(
+            f"run {run_id} has not finished (stage {log.stage.value}): only a DONE run's PR opens"
+        )
+    if opened := next((e.payload["url"] for e in log.events if e.type == "pr"), None):
+        raise ValueError(f"run {run_id} already opened its PR: {opened}")
+    patch = json.loads((run_dir / "patch.json").read_text(encoding="utf-8"))
+    if not patch["files"] or not any(v["decision"] == "MIGRATE" for v in patch["verdicts"]):
+        raise ValueError(f"run {run_id} migrated nothing: there is no PR to open")
+    clone = json.loads((run_dir / "clone.json").read_text(encoding="utf-8"))
+    repo = github_repo(log.config.repo_url, Path(clone["path"]))
+    if repo is None:
+        raise ValueError(f"run {run_id}: {log.config.repo_url} is not a GitHub repository")
+    draft = json.loads((run_dir / "pr.json").read_text(encoding="utf-8"))
+    url = open_run_pr(repo, run_id, patch["files"], draft["title"], draft["body"], opener)
+    _write_json(run_dir / "pr.json", draft | {"url": url})
+    done = log.events[-1].payload  # the run's totals, unchanged: nothing was spent
+    announce_pr(log, url, draft["title"])
+    log.emit("stage", {"stage": Stage.DONE.value})
+    log.emit("done", done)
+    _write_json(run_dir / "report.json", report(run_dir, run_id, log.events))
+    return url
 
 
 def write_and_open_pr(
@@ -996,7 +1048,7 @@ def write_and_open_pr(
     )
     draft = write_pr(ctx, client)
     files, title, body = patch["files"], scrub(draft.title), scrub(draft.body)  # reasons carry sandbox output
-    url = github.open_pr(repo, run_id=run_id, files=files, title=title, body=body) if open_pr else None
+    url = open_run_pr(repo, run_id, files, title, body) if open_pr else None
     return {"title": title, "body": body, "url": url}
 
 

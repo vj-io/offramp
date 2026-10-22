@@ -506,6 +506,87 @@ def test_a_refused_adapter_agent_reply_is_on_the_sites_record_for_the_pr(tmp_pat
     assert pr["routes"]["cs_01"]["refused"] == result["refused"]
 
 
+class FakeGitHub:
+    """GitHub's REST API for acme/tiny, as github.open_pr calls it; records every request."""
+
+    def __init__(self):
+        self.requests: list = []
+
+    def __call__(self, request):
+        import httpx
+
+        self.requests.append(request)
+        repo = "/repos/acme/tiny"
+        routes = {
+            ("GET", repo): {"default_branch": "main"},
+            ("GET", f"{repo}/git/ref/heads/main"): {"object": {"sha": "base"}},
+            ("GET", f"{repo}/git/commits/base"): {"tree": {"sha": "tree"}},
+            ("POST", f"{repo}/git/trees"): {"sha": "new-tree"},
+            ("POST", f"{repo}/git/commits"): {"sha": "new-commit"},
+            ("POST", f"{repo}/git/refs"): {},
+            ("POST", f"{repo}/pulls"): {"html_url": "https://github.com/acme/tiny/pull/9"},
+        }
+        body = routes.get((request.method, request.url.path))
+        return httpx.Response(404 if body is None else 201, json=body or {"message": "Not Found"})
+
+    def opener(self):
+        import functools
+
+        import httpx
+
+        from offramp import github
+
+        return functools.partial(github.open_pr, token="t", transport=httpx.MockTransport(self))
+
+
+def no_pr_run(tmp_path, *, migrate: bool = True) -> pipeline.RunLog:
+    """A finished `--no-pr` run as `offramp run --no-pr` leaves it: pr.json holds the rendered title, body."""
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo, open_pr=False, max_iterations=0)
+    n_dev, n_holdout = split_counts(repo)
+    llm, stub = llm_for_full_run(n_dev, n_holdout), Recorder(passed=migrate)
+    if not migrate:
+        llm.queues["eval_target"] = type(llm.queues["eval_target"])(["bug"] * (3 * n_dev + n_holdout))
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr).execute()
+        == Stage.DONE
+    )
+    return log
+
+
+def test_offramp_pr_opens_a_finished_no_pr_runs_pr_from_its_own_artifacts(tmp_path):
+    """Task 29 B: a capped run is never continued to open its PR; its recorded patch and body are opened as
+    they are, on the branch the PR stage uses, and its event log gains the PR, so export-replay shows it."""
+    log = no_pr_run(tmp_path)
+    before = len(log.events)
+    gh = FakeGitHub()
+
+    url = pipeline.open_pr_from_run(log.run_id, tmp_path / "data", opener=gh.opener())
+
+    assert url == "https://github.com/acme/tiny/pull/9"
+    ref = next(r for r in gh.requests if r.url.path.endswith("/git/refs"))
+    assert pipeline.json.loads(ref.content)["ref"] == f"refs/heads/offramp/{log.run_id}"
+    pulls = pipeline.json.loads(next(r for r in gh.requests if r.url.path.endswith("/pulls")).content)
+    pr = pipeline.json.loads((log.dir / "pr.json").read_text())
+    assert (pulls["title"], pulls["body"], pr["url"]) == (pr["title"], pr["body"], url)
+    again = pipeline.RunLog(log.dir, log.run_id)
+    added = [e.payload.get("stage", e.type) for e in again.events[before:]]
+    assert added == ["pr", "PR_OPENED", "DONE", "done"] and again.stage == Stage.DONE
+    snap = pipeline.snapshot(again.run_id, again.events)
+    assert snap.artifacts["pr_url"] == url and snap.stage == Stage.DONE
+    with pytest.raises(ValueError, match="already opened its PR"):
+        pipeline.open_pr_from_run(log.run_id, tmp_path / "data", opener=gh.opener())
+
+
+def test_offramp_pr_refuses_a_run_that_migrated_nothing_or_has_not_finished(tmp_path):
+    log = no_pr_run(tmp_path, migrate=False)
+    with pytest.raises(ValueError, match="migrated nothing"):
+        pipeline.open_pr_from_run(log.run_id, tmp_path / "data", opener=FakeGitHub().opener())
+    unfinished = pipeline.new_run(RunConfig(repo_url="x", open_pr=False), tmp_path / "data")
+    with pytest.raises(ValueError, match="has not finished"):
+        pipeline.open_pr_from_run(unfinished.run_id, tmp_path / "data", opener=FakeGitHub().opener())
+
+
 def test_a_failed_run_resumes_after_its_last_finished_step(tmp_path):
     repo = make_repo(tmp_path)
     n_dev, n_holdout = split_counts(repo)

@@ -95,6 +95,25 @@ def test_export_replay_refuses_an_unfinished_run(tmp_path, monkeypatch, capsys):
     assert "has not finished" in capsys.readouterr().out and not api.exists()
 
 
+def test_pr_refuses_a_run_that_has_not_finished_and_calls_nothing(tmp_path, monkeypatch, capsys):
+    """Task 29 B: `offramp pr <run_id>` opens a finished run's PR; anything else is refused before GitHub."""
+    monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path / "data"))
+    log = finished_run(tmp_path / "data", done=False)
+    monkeypatch.setattr(pipeline.github, "open_pr", lambda *a, **k: pytest.fail("GitHub was called"))
+    assert cli.main(["pr", log.run_id]) == 1
+    assert "has not finished" in capsys.readouterr().err
+
+
+def test_pr_prints_the_url_of_the_pr_it_opened(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path / "data"))
+    seen = []
+    monkeypatch.setattr(
+        pipeline, "open_pr_from_run", lambda run_id, root, **kw: seen.append(run_id) or "https://x/pull/1"
+    )
+    assert cli.main(["pr", "20261022-065443547-22ed36"]) == 0
+    assert capsys.readouterr().out.strip() == "https://x/pull/1" and seen == ["20261022-065443547-22ed36"]
+
+
 @pytest.mark.parametrize("argv", [["run"], ["run", "--resume", "20261019-000000-nope00"]])
 def test_run_needs_a_repo_or_a_known_run(tmp_path, monkeypatch, argv):
     monkeypatch.setenv("OFFRAMP_DATA_DIR", str(tmp_path))
