@@ -250,6 +250,10 @@ describe("replayEntry (allow-list)", () => {
       file: "/replay/no-ultra-events.json",
       policy: "a team that caps spend below Ultra",
     });
+    expect(replayEntry("oss")).toEqual({
+      file: "/replay/oss-events.json",
+      policy: "a tier must answer within the call's own 30 s timeout",
+    });
   });
   it("refuses any other name, including inherited object keys", () => {
     for (const name of ["nope", "", "__proto__", "constructor", "toString", "../demo", null]) expect(replayEntry(name)).toBeNull();

@@ -35,6 +35,24 @@ const demo = toSnapshot(
   ),
 );
 
+// The real-repo recording (?replay=oss): run 20261022-153359255-7bea7c on a fork of mnemox-ai/idea-reality-mcp.
+const oss = toSnapshot(
+  applyEvents(
+    initialRunState,
+    parseRecording(JSON.parse(readFileSync(join(__dirname, "../public/replay/oss-events.json"), "utf8")))!.events,
+  ),
+);
+
+describe("the open-source recording", () => {
+  it("tripwire: names its target repo, its PR on the fork and what moved", () => {
+    expect(repoName(oss.config!.repo_url)).toBe("vj-io/idea-reality-mcp");
+    expect(oss.artifacts.pr_url).toBe("https://github.com/vj-io/idea-reality-mcp/pull/1");
+    expect(headline(oss.verdicts, oss.totals).lead).toBe(
+      "2 of 5 call sites reached parity on Nemotron (held-out cases) · 2 migrated · est. −78% on those 2",
+    );
+  });
+});
+
 const V = (over: Partial<Verdict>): Verdict => ({
   site_id: "cs_01",
   decision: "MIGRATE",
