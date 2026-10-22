@@ -53,6 +53,22 @@ def test_cases_and_references_round_trip(tmp_path):
     assert b.load_cases(tmp_path, "cs_09") == [] and b.load_references(tmp_path, "cs_09") == {}
 
 
+def test_an_input_in_both_dev_and_holdout_is_refused_and_nothing_is_written(tmp_path):
+    """Run 20261022-023459043-590031: identical inputs under different case ids landed in both splits, so the
+    Iterator tuned on inputs the holdout verdict then read. The writer refuses that, whatever wrote the cases;
+    case and whitespace do not make an input different."""
+    dev = case(1).model_copy(update={"input_messages": [{"role": "user", "content": "AI code review bot"}]})
+    holdout = case(9).model_copy(
+        update={"split": "holdout", "input_messages": [{"role": "user", "content": " ai  code review BOT"}]}
+    )
+    with pytest.raises(ValueError, match="cs_01:001 and cs_01:009"):
+        b.save_cases(tmp_path, "cs_01", [dev, holdout, case(2)])
+    assert b.load_cases(tmp_path, "cs_01") == []
+
+    b.save_cases(tmp_path, "cs_01", [dev, holdout.model_copy(update={"split": "dev"})])  # one split: allowed
+    assert len(b.load_cases(tmp_path, "cs_01")) == 2
+
+
 def test_legacy_baselines_are_read_and_references_override_them(tmp_path):
     legacy = tmp_path / "baselines" / "cs_01.jsonl"
     legacy.parent.mkdir()

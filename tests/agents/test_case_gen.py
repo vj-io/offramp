@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import shutil
 from collections import Counter
 from pathlib import Path
@@ -12,8 +13,10 @@ import pytest
 from offramp.agents import case_gen as cg
 from offramp.agents import reference_audit as ra
 from offramp.evals import baselines as b
-from offramp.schemas import CallSite, Contract, PromptTemplate, ScanResult, Tier
-from offramp.tf import FakeLLM, TFClient
+from offramp.schemas import CallSite, Contract, ModelOutput, PromptTemplate, ScanResult, Tier
+from offramp.tf import BudgetExceeded, FakeLLM, TFClient
+from offramp.tf.client import ChatResult
+from offramp.tf.tiers import get_tier
 
 HERE = Path(__file__).resolve().parents[1] / "fixtures" / "cassettes" / "case_gen"
 MINIREPO = HERE / "minirepo"
@@ -925,7 +928,7 @@ def test_rejected_records_are_rewritten_once_then_dropped(tmp_path):
     leaky = {"records": [{"subject": "Help", "body": "Queue: billing / Queue: shipping / Queue: other"}] * 6}
     llm = FakeLLM(
         {
-            "case_gen": [leaky, {"records": [{"subject": "Help", "body": "fixed"}] * 6}],
+            "case_gen": [leaky, records(6, subject="Help", body="fixed")],
             "case_gen_adversarial": [records(2, subject="Tricky", body="x")],
         }
     )
@@ -1026,7 +1029,8 @@ def test_json_fixture_outputs_must_parse(tmp_path):
 
 
 def records(n, **fields):
-    return {"records": [dict(fields) for _ in range(n)]}
+    """n records of `fields`, each after the first numbered, since case_gen drops a repeated input."""
+    return {"records": [{k: f"{v} ({i + 1})" if i else v for k, v in fields.items()} for i in range(n)]}
 
 
 def test_prepare_repo_builds_cases_and_references_by_construction(tmp_path):
@@ -1161,11 +1165,11 @@ def test_free_text_sites_get_inputs_but_no_references(tmp_path):
             {"var": "transcript", "field": "messages", "op": "join", "item": "{role}: {text}", "sep": "\n"},
         ],
     }
-    thread = {"messages": [{"role": "customer", "text": "Hi"}]}
+    threads = [{"messages": [{"role": "customer", "text": f"Hi, question {i}"}]} for i in range(5)]
     llm = FakeLLM(
         {
-            "case_gen": [mapping, {"records": [thread] * 3}],
-            "case_gen_adversarial": [{"records": [thread] * 2}],
+            "case_gen": [mapping, {"records": threads[:3]}],
+            "case_gen_adversarial": [{"records": threads[3:]}],
         }
     )
 
@@ -1176,6 +1180,101 @@ def test_free_text_sites_get_inputs_but_no_references(tmp_path):
     assert Counter(c.source for c in cases) == {"repo_fixture": 3, "synthetic": 3, "adversarial": 2}
     assert b.load_references(repo / "evals", "cs_04") == {}
     assert summary["cs_04"]["references"] == 0
+
+
+# idea-reality-mcp's cs_01 (api/main.py, _extract_keywords_via_haiku): a free-text site without fixtures, so
+# without seeds: each written item is only a style. Run 20261022-023459043-590031: 40% of cases were repeats.
+DUP_SITE = CallSite(
+    id="cs_01",
+    file="api/main.py",
+    lines=[333, 341],
+    sdk="anthropic",
+    call="client.messages.create",
+    function="_extract_keywords_via_haiku",
+    source_model="claude-haiku-4-5",
+    prompt_source="variable",
+    template=PromptTemplate(
+        system="You are a search query generator for developer tool market research. Output ONLY a JSON "
+        "array of strings.",
+        user="{idea_text}",
+        variables=["idea_text"],
+    ),
+    contract=Contract(task_type="free_text", output="text"),
+)
+
+
+class CachedWriter:
+    """The writer at temperature 0 behind Offramp's response cache: one prompt, one reply, always. Each prompt
+    gets records of its own, so records repeat only when a prompt does. `copy_first` makes the adversarial
+    writer's first reply start with the first bulk record (cs_01:022 of the run equals cs_01:005);
+    `exhausted` makes every adversarial call after the first raise the Ultra cap."""
+
+    def __init__(self, copy_first: bool = False, exhausted: bool = False):
+        self.prompts: list[tuple[str, str]] = []
+        self.replies: dict[str, list[dict]] = {}
+        self.copy_first, self.exhausted = copy_first, exhausted
+
+    def chat(self, *, role, tier, messages, **_):
+        prompt = messages[-1]["content"]
+        adversarial = [p for r, p in self.prompts if r == cg.ROLE_ADVERSARIAL]
+        if role == cg.ROLE_ADVERSARIAL and adversarial and self.exhausted:
+            raise BudgetExceeded("Ultra agent call cap reached (40)")
+        self.prompts.append((role, prompt))
+        if prompt not in self.replies:
+            n = int(re.search(r"Write exactly (\d+) records", prompt)[1])
+            tag = hashlib.sha256(prompt.encode()).hexdigest()[:8]
+            records = [{"idea_text": f"A tool that tracks idea {tag}-{i}"} for i in range(n)]
+            if role == cg.ROLE_ADVERSARIAL and self.copy_first and not adversarial:
+                first_bulk = self.replies[next(p for r, p in self.prompts if r == cg.ROLE)][0]
+                records[0] = dict(first_bulk)
+            self.replies[prompt] = records
+        records = self.replies[prompt]
+        info = get_tier(tier)
+        out = ModelOutput(text=json.dumps({"records": records}))
+        return ChatResult(output=out, parsed={"records": records}, model=info.model_id, tier=info.tier)
+
+
+def dup_prepare(tmp_path, llm):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    summary = cg.prepare_repo(repo, ScanResult(repo=str(repo), sites=[DUP_SITE]), llm)  # 24 cases, 4 hard
+    return b.load_cases(repo / "evals", "cs_01"), summary["cs_01"]
+
+
+def test_each_batch_of_one_write_gets_its_own_prompt_so_the_cache_cannot_repeat_records(tmp_path):
+    """The reproduction: 20 bulk items in batches of 8 cycle the 8 styles, so batches 1 and 2 were the same
+    prompt and the cache returned batch 1's records for batch 2. A later batch now names itself and lists the
+    inputs already written; the first batch's prompt is unchanged, so recorded cassettes still replay."""
+    llm = CachedWriter()
+    cases, _ = dup_prepare(tmp_path, llm)
+
+    bulk = [p for r, p in llm.prompts if r == cg.ROLE]
+    assert len(bulk) == 3 and len(set(bulk)) == 3
+    assert "Already written" not in bulk[0]
+    assert "Batch 2 of 3" in bulk[1] and "write different inputs" in bulk[1]
+    assert all(r["idea_text"] in bulk[1] for r in llm.replies[bulk[0]])  # batch 1's inputs, shown to batch 2
+    assert all(r["idea_text"] in bulk[2] for p in bulk[:2] for r in llm.replies[p])
+    assert len(cases) == 24 and len({b.input_key(c.input_messages) for c in cases}) == 24
+
+
+def test_a_case_whose_input_repeats_an_earlier_one_is_dropped_and_replaced(tmp_path):
+    llm = CachedWriter(copy_first=True)
+    cases, summary = dup_prepare(tmp_path, llm)
+
+    assert len(cases) == 24 and len({b.input_key(c.input_messages) for c in cases}) == 24
+    adversarial = [p for r, p in llm.prompts if r == cg.ROLE_ADVERSARIAL]
+    assert len(adversarial) == 2 and "Write exactly 1 records" in adversarial[1]  # the one duplicate, again
+    assert "write different inputs" in adversarial[1]
+    assert Counter(c.source for c in cases) == {"synthetic": 20, "adversarial": 4}
+    assert [c.source for c in cases] == ["synthetic"] * 20 + ["adversarial"] * 4
+    assert any("1 case dropped: its input repeats an earlier case" in n for n in summary["notes"])
+
+
+def test_without_budget_for_a_replacement_the_duplicate_is_still_dropped(tmp_path):
+    cases, summary = dup_prepare(tmp_path, CachedWriter(copy_first=True, exhausted=True))
+
+    assert len(cases) == 23 and len({b.input_key(c.input_messages) for c in cases}) == 23
+    assert any("no replacement" in n and "Ultra agent call cap" in n for n in summary["notes"])
 
 
 # ---------------------------------------------------------------- recorded Token Factory cassettes

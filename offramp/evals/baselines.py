@@ -55,8 +55,30 @@ def load_cases(evals_dir: Path, site_id: str) -> list[EvalCase]:
     return _read_jsonl(Path(evals_dir) / "cases" / f"{site_id}.jsonl", EvalCase)
 
 
+def input_key(messages: list[dict[str, Any]]) -> str:
+    """A case's rendered input with case and whitespace normalised: two cases with one key are one input."""
+    parts = []
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, str):
+            content = json.dumps(content, sort_keys=True, ensure_ascii=False)
+        parts.append([m.get("role"), " ".join(content.split()).casefold()])
+    return json.dumps(parts, ensure_ascii=False)
+
+
 def save_cases(evals_dir: Path, site_id: str, cases: Iterable[EvalCase]) -> None:
-    _write_jsonl(Path(evals_dir) / "cases" / f"{site_id}.jsonl", sorted(cases, key=lambda c: c.id))
+    """Refuses (ValueError, nothing written) cases whose input is in both splits: the Iterator would tune on
+    inputs the holdout verdict then reads (GC10)."""
+    cases = sorted(cases, key=lambda c: c.id)
+    by_input: dict[str, dict[str, str]] = {}  # input -> split -> first case id
+    for c in cases:
+        by_input.setdefault(input_key(c.input_messages), {}).setdefault(c.split, c.id)
+    leaked = [" and ".join(sorted(ids.values())) for ids in by_input.values() if len(ids) > 1]
+    if leaked:
+        raise ValueError(
+            f"{site_id}: the same input is in dev and holdout ({'; '.join(leaked[:5])}): drop the duplicates"
+        )
+    _write_jsonl(Path(evals_dir) / "cases" / f"{site_id}.jsonl", cases)
 
 
 def load_references(evals_dir: Path, site_id: str) -> dict[str, BaselineResult]:
