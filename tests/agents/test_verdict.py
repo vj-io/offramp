@@ -826,6 +826,7 @@ class StubIterator:
 
     def __call__(self, adapter, site, failing, tier, error_counts):
         self.calls.append((Tier(tier), adapter.version, [c.id for c in failing], dict(error_counts)))
+        assert len(self.calls) <= 50, "asked without end: tries are not being counted"  # fail, never hang
         if self.error:
             raise self.error
         if self.give_up_at == adapter.version + 1:
