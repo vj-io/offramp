@@ -68,15 +68,15 @@ export function RunLinks({ repoUrl, prUrl }: { repoUrl: string | null; prUrl: st
 
 /** The tier policy a recording ran under: the allow-list's words for it, and the tiers its config allowed. */
 export function PolicyNote({ replay, tiers }: { replay: string | null; tiers: Tier[] | null }) {
-  const policy = replayEntry(replay)?.policy;
+  const note = replayEntry(replay)?.note;
   const capped = tiers && tiers.length < TIER_ORDER.length ? tiers : null;
-  if (!policy && !capped) return null;
+  if (!note && !capped) return null;
   return (
     <p
       className="hl-chip sketch inline-block self-start px-3 py-1 font-hand text-lg"
       style={{ "--mark": "var(--hl-violet)" } as CSSProperties}
     >
-      {policy && <>Team policy: {policy}. </>}
+      {note && <>{note}. </>}
       {capped && <>Tiers this run could use: {capped.map((t) => TIER_SHORT[t]).join(", ")}.</>}
     </p>
   );
@@ -92,10 +92,10 @@ export function NoticeNote({ title, children, tone = "plain" }: { title: string;
 }
 
 export function NoRecording({ replay }: { replay: string | null }) {
-  const policy = replayEntry(replay)?.policy;
+  const note = replayEntry(replay)?.note;
   return (
     <NoticeNote title="This recording isn't published yet">
-      {policy && <p className="mb-2">Team policy: {policy}.</p>}
+      {note && <p className="mb-2">{note}.</p>}
       <p>
         This page plays back a real Offramp run, and that run has not been recorded and published here yet. Check
         back soon{replay !== "demo" ? ", or watch the recorded demo run meanwhile" : ""}.

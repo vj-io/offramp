@@ -281,11 +281,11 @@ describe("replayEntry (allow-list)", () => {
     expect(replayEntry("demo")?.file).toBe("/replay/demo-events.json");
     expect(replayEntry("no-ultra")).toEqual({
       file: "/replay/no-ultra-events.json",
-      policy: "a team that caps spend below Ultra",
+      note: "Team policy: a team that caps spend below Ultra",
     });
     expect(replayEntry("oss")).toEqual({
       file: "/replay/oss-events.json",
-      policy: "a tier must answer within the call's own 30 s timeout",
+      note: "Latency gate: a tier must answer within the call's own 30 s timeout (the repo's client gives up after 30 s)",
     });
   });
   it("refuses any other name, including inherited object keys", () => {

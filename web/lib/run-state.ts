@@ -206,10 +206,10 @@ export function replayDelays(es: RunEvent[], speed: Speed = 4): number[] {
 }
 
 // The recordings a page may play (`?replay=<name>`); any other name is refused, never fetched.
-export const REPLAYS: Record<string, { file: string; policy?: string }> = {
+export const REPLAYS: Record<string, { file: string; note?: string }> = {
   demo: { file: "/replay/demo-events.json" },
-  "no-ultra": { file: "/replay/no-ultra-events.json", policy: "a team that caps spend below Ultra" },
-  oss: { file: "/replay/oss-events.json", policy: "a tier must answer within the call's own 30 s timeout" },
+  "no-ultra": { file: "/replay/no-ultra-events.json", note: "Team policy: a team that caps spend below Ultra" },
+  oss: { file: "/replay/oss-events.json", note: "Latency gate: a tier must answer within the call's own 30 s timeout (the repo's client gives up after 30 s)" },
 };
 export const replayEntry = (name: string | null) =>
   name !== null && Object.hasOwn(REPLAYS, name) ? REPLAYS[name] : null;
