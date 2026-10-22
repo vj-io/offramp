@@ -40,7 +40,9 @@ JSON_ONLY = "Reply with the JSON only: no other text and no code fence."  # cont
 # Sanity of a model-written adapter (Adapter Agent and Iterator alike), checked before it is evaluated:
 # A loop: a phrase of up to MAX_NGRAM words, or a unit of up to MAX_UNIT characters holding a letter or
 # digit, repeated in a row REPEATS or more times beyond its first occurrence and beyond the source's run.
+# A single character needs CHAR_REPEATS: ids, masks, blanks and hashes repeat one (100000000000, ____).
 REPEATS = 10
+CHAR_REPEATS = 40
 MAX_NGRAM = 4
 MAX_UNIT = 80
 SCAN = 20_000  # characters of a text the character-level check reads
@@ -154,7 +156,8 @@ def _loop(text: str, source: str) -> str | None:
             return f"{' '.join(unit)!r} {run} times in a row"
     for m in _UNIT_LOOP.finditer(text[:SCAN]):
         unit, run = m[1], len(m[0]) // len(m[1])
-        if re.search(r"\w", unit) and run - max(_unit_run(source, unit), 1) >= REPEATS:
+        need = CHAR_REPEATS if len(unit) == 1 else REPEATS
+        if re.search(r"\w", unit) and run - max(_unit_run(source, unit), 1) >= need:
             return f"{unit!r} {run} times in a row"
     return None
 

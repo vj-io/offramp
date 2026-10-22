@@ -118,9 +118,9 @@ def pr(args: argparse.Namespace) -> int:
     engine = db.init_db(db.engine(root / "offramp.db"))
     try:
         url = pipeline.open_pr_from_run(args.run_id, root, engine=engine, on_event=_show)
-    except (ValueError, FileNotFoundError) as e:
+    except (ValueError, FileNotFoundError) as e:  # its refusals: one line, like a bad argument
         print(f"offramp pr: {e}", file=sys.stderr)
-        return 1
+        return 2
     print(url)
     return 0
 

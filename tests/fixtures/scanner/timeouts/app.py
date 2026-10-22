@@ -52,7 +52,7 @@ SHORT = OpenAI(timeout=5)
 REQUEST_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120"))
 
 
-def summarise_with_given_client(SHORT, text: str) -> str:  # a parameter shadows the module client
+def module_client_short(text: str) -> str:  # control: SHORT is readable here, so the cases below test the rule
     resp = SHORT.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": text}])
     return resp.choices[0].message.content
 
@@ -86,3 +86,15 @@ def client_bound_twice(text: str, slow: bool) -> str:  # which client is used de
         c = anthropic.Anthropic(timeout=600.0)
     msg = c.messages.create(model="claude-haiku-4-5", max_tokens=100, messages=[{"role": "user", "content": text}])
     return msg.content[0].text
+
+
+def kwargs_request(text: str, **opts) -> str:  # a timeout may come through **opts: unknown, never the client's
+    resp = SHORT.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": text}], **opts)
+    return resp.choices[0].message.content
+
+
+def default_client(text: str, client=None) -> str:  # a caller may pass a client with any timeout
+    if client is None:
+        client = OpenAI(timeout=5)
+    resp = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": text}])
+    return resp.choices[0].message.content

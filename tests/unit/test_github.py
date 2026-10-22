@@ -108,7 +108,7 @@ def test_the_commit_is_based_on_the_commit_the_run_checked_not_on_the_branch_hea
 
 def test_a_cloned_commit_github_does_not_have_is_refused_with_a_clear_message():
     gh = FakeGitHub()
-    with pytest.raises(RuntimeError, match="commit gone-sha the run checked is not on GitHub"):
+    with pytest.raises(ValueError, match="commit gone-sha the run checked is not on GitHub"):  # a refusal
         github.open_pr(
             REPO, run_id="run1", files=FILES, title="T", body="B", parent="gone-sha", token="tok",
             transport=httpx.MockTransport(gh),

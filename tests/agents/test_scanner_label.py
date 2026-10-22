@@ -280,11 +280,16 @@ def test_a_timeout_the_code_sets_is_recorded_on_the_contract():
         "httpx_timeout": 45.0,  # OpenAI(timeout=httpx.Timeout(45.0))
         "no_timeout": None,
         # review I3: only a timeout the call surely uses; else no gate (a false one fails a tier wrongly)
-        "summarise_with_given_client": None,  # the client is a parameter
+        "module_client_short": 5.0,  # control: SHORT is readable, so the request cases below pin the rule
         "request_timeout_from_env": None,  # the request's own timeout=, not a literal: never the client's
         "request_timeout_none": None,  # timeout=None: no timeout
         "request_timeout_product": None,
+        "kwargs_request": None,  # a timeout may come through **opts
         "read_timeout_only": None,  # httpx.Timeout(connect=..., read=...): no single number
         "client_bound_twice": None,
+        "default_client": None,  # a parameter, even one the function may bind
+        # shadow.py (review R1-1): its module client is also a parameter's name, so it is never read
+        "summarise_with_given_client": None,
+        "module_client_also_a_parameter": None,
     }
     assert all("timeout_s" not in json.dumps(c["response_model"].model_json_schema()) for c in llm.calls)

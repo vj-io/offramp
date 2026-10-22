@@ -1000,7 +1000,10 @@ def open_pr_from_run(
     try:  # one `offramp pr` per run at a time: the checks below and the PR are one step
         os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
     except FileExistsError:
-        raise ValueError(f"run {run_id}: a PR is already being opened for this run ({lock})") from None
+        raise ValueError(
+            f"run {run_id}: a PR is already being opened for this run; "
+            f"if no `offramp pr` is running for this run, delete {lock}"
+        ) from None
     except FileNotFoundError:
         raise ValueError(f"run {run_id} has not finished (no such run under {run_dir.parent})") from None
     try:

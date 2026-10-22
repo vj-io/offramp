@@ -1,5 +1,6 @@
 """Adapter Agent contract: FakeLLM unit tests, then cassette replay (recorded live from Token Factory)."""
 
+import base64
 import json
 import re
 from pathlib import Path
@@ -250,6 +251,21 @@ def small_site(system: str) -> CallSite:
         (RULES, dict(system_prompt=RULES + "\n" + "---\n" * 30 + "|" * 40)),  # separators
         (RULES, dict(few_shot=[{"role": "assistant", "content": '["a", "b", "c", "d", "e"]'}] * 12)),
         (RULES, dict(user_suffix="请用中文回答。只输出JSON，不要输出其他文字。")),
+        # re-review R1-2 (mutants L1, L2): a run the source has, kept, is not a loop the model added
+        (
+            RULES + "Empty idea: " + "0 " * 20,
+            dict(system_prompt=RULES + "Empty idea: " + "0 " * 20 + "\nBe brief."),
+        ),
+        (RULES + "Pad ids: " + "0" * 60, dict(system_prompt=RULES + "Pad ids: " + "0" * 60 + "\nBe brief.")),
+        # re-review R1-g: one character repeated is a loop only from 40 repeats on
+        (RULES, dict(user_suffix="\nIDs look like 100000000000 or 200000000000.")),
+        (RULES, dict(user_suffix="\nWrite a card number as xxxxxxxxxxxx1234.")),
+        (RULES, dict(user_suffix="\nAnswer: ____________ (one word).")),
+        (RULES, dict(user_suffix="\nIgnore the sentinel id ffffffffffff0a.")),
+        (
+            RULES,
+            dict(user_suffix="\nThe empty key is " + base64.b64encode(bytes(24)).decode() + "."),
+        ),  # 'A' x32
     ],
 )
 def test_text_the_source_has_or_ordinary_formatting_passes(system, spec):
@@ -272,10 +288,11 @@ def test_text_the_source_has_or_ordinary_formatting_passes(system, spec):
             dict(few_shot=[{"role": "assistant", "content": "ok " * 30}]),
             "few_shot repeats 'ok' 30 times in a row",
         ),
+        (dict(system_prompt=RULES + "好" * 60), "system_prompt repeats '好' 60 times in a row"),
     ],
 )
 def test_loops_the_model_added_are_refused(spec, problem):
-    """Review M1, M2 (mutant A2): a 2-word loop, a CJK loop with no spaces, a 5-word sentence on repeat."""
+    """Review M1, M2 (mutant A2): a 2-word loop, CJK loops with no spaces, a 5-word sentence on repeat."""
     assert adapter_problem(small_site(RULES), AdapterSpec(**spec)) == problem
 
 

@@ -585,8 +585,11 @@ def test_offramp_pr_holds_a_lock_so_a_second_call_cannot_reach_github(tmp_path):
     log = no_pr_run(tmp_path)
     gh = FakeGitHub()
     (log.dir / "pr.lock").write_text("held by another `offramp pr`")
-    with pytest.raises(ValueError, match="a PR is already being opened for this run"):
+    with pytest.raises(ValueError, match="a PR is already being opened for this run") as refused:
         pipeline.open_pr_from_run(log.run_id, tmp_path / "data", opener=gh.opener())
+    assert str(refused.value).endswith(
+        f"if no `offramp pr` is running for this run, delete {log.dir / 'pr.lock'}"
+    )
     assert gh.requests == []
     (log.dir / "pr.lock").unlink()
     pipeline.open_pr_from_run(log.run_id, tmp_path / "data", opener=gh.opener())

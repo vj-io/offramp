@@ -59,8 +59,8 @@ def open_pr(
         base = base or call("GET", f"/repos/{repo}")["default_branch"]
         base_sha = parent or call("GET", f"/repos/{repo}/git/ref/heads/{base}")["object"]["sha"]
         r = gh.get(f"/repos/{repo}/git/commits/{base_sha}")
-        if r.status_code in (404, 422) and parent:
-            raise RuntimeError(
+        if r.status_code in (404, 422) and parent:  # a refusal, like offramp pr's others (ValueError)
+            raise ValueError(
                 f"the commit {parent} the run checked is not on GitHub (gone, or never pushed): the PR "
                 "would not be the change that was evaluated; run Offramp again on the repository as it is"
             )
