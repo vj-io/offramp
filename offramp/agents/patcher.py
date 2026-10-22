@@ -1217,16 +1217,28 @@ def _by_name(text: str, replace: str, search: str) -> tuple[str, list[str], list
     quoted |= {
         ast.dump(x) for n in ast.walk(found or ast.Module(body=[])) for x in getattr(n, "decorator_list", [])
     }
+
+    def decorated(file_def: ast.AST, its: ast.AST | None) -> list[tuple[str, str, str, set[str]]]:
+        """The file def's decorators, each with the REPLACE def's (`its`) it may be kept among."""
+        theirs = {ast.dump(x) for x in getattr(its, "decorator_list", [])}
+        segs = [(x, ast.get_source_segment(text, x) or ast.unparse(x)) for x in file_def.decorator_list]
+        return [
+            (ast.dump(x), "@" + seg, "@" + (seg if "\n" not in seg else ast.unparse(x)), theirs)
+            for x, seg in segs
+        ]
+
     dropped = []
     for d in defs:
-        o, kept = old[d.name], {c[0] for c in _checks(d, replace)} | {ast.dump(x) for x in d.decorator_list}
-        decorators = [  # the file's, when the REPLACE's replace them (it carries its own)
-            (ast.dump(x), "@" + seg, "@" + (seg if "\n" not in seg else ast.unparse(x)))
-            for x in (o.decorator_list if d.decorator_list else [])
-            for seg in [ast.get_source_segment(text, x) or ast.unparse(x)]
-        ]
-        dropped += [shown for dump, statement, shown in [*decorators, *_checks(o, text)]
-                    if dump not in kept | quoted and not _quotes(search, statement)]  # fmt: skip
+        o, kept = old[d.name], {c[0] for c in _checks(d, replace)}
+        found = [(dump, statement, shown, kept) for dump, statement, shown in _checks(o, text)]
+        found += (
+            decorated(o, d) if d.decorator_list else []
+        )  # the REPLACE's replace the file's: each kept or quoted
+        if isinstance(o, ast.ClassDef):  # a whole class: each method's too, paired by name (re-review 2, n1)
+            mine = dict(_defs(d))
+            found += [f for qual, fn in _defs(o) for f in decorated(fn, mine.get(qual))]
+        dropped += [shown for dump, statement, shown, kept_in in found
+                    if dump not in kept_in | quoted and not _quotes(search, statement)]  # fmt: skip
     lines, mine = text.splitlines(keepends=True), replace.splitlines(keepends=True)
     for d in sorted(defs, key=lambda d: old[d.name].lineno, reverse=True):
         o = old[d.name]
@@ -1593,6 +1605,15 @@ def rewrite_callers(sources: dict[str, str], site_file: str, function: str, clie
     return out
 
 
+def _import_bindings(tree: ast.AST | None) -> set[str]:
+    """Every name an import in `tree` binds (`from a import B as C` -> C, `import a.b` -> a)."""
+    if tree is None:
+        return set()
+    imports = [n for n in ast.walk(tree) if isinstance(n, ast.Import | ast.ImportFrom)]
+    return {a.asname or (a.name if isinstance(n, ast.ImportFrom) else a.name.split(".")[0])
+            for n in imports for a in n.names}  # fmt: skip
+
+
 def drop_orphaned_imports(
     before: str, after: str, dropped: list[str] | None = None, keep: frozenset[str] = frozenset()
 ) -> str:
@@ -1618,8 +1639,7 @@ def drop_orphaned_imports(
         return any(isinstance(n, ast.Name) and n.id == name or isinstance(n, ast.Constant) and n.value == name
                    for n in ast.walk(tree))  # fmt: skip
 
-    had = {a.asname or (a.name if isinstance(n, ast.ImportFrom) else a.name.split(".")[0])
-           for n in ast.walk(old) if isinstance(n, ast.Import | ast.ImportFrom) for a in n.names}  # fmt: skip
+    had = _import_bindings(old)
     lines = after.splitlines(keepends=True)
     cuts, rows, names = [], [], []  # (start, end) offsets of names; whole statements' (first, last) lines
     for node in ast.walk(new):
@@ -3431,8 +3451,9 @@ def _attempt(
                 if is_test_path(path):  # a test may read the constants Offramp wrote, imported like any other
                     new[path] = add_fixtures(add_imports(new[path], job.client_module, job.constants))
             if new[path] != base[path] and is_test_path(path):  # imports this edit left unused (review I5)
+                others = {**job.others, **new}  # the other files as this edit leaves them (re-review 2, n3)
                 new[path], names = _drop_unused(
-                    path, base[path], new[path], job.others, job.kept, "the model's edit"
+                    path, base[path], new[path], others, job.kept, "the model's edit"
                 )
                 job.gone |= {path: names} if names else {}
         except SyntaxError as e:
@@ -4221,7 +4242,10 @@ def compose_patches(
                             "the literal getattr/import_module forms Offramp refuses")  # fmt: skip
     if filtered:
         change_notes.append(left_out)
-    removed = _union(gone_imports, together_gone)  # the placed tree's, and a combined repair's that shipped
+    # the placed tree's and a shipped combined repair's, as the repo's own file had them: a name the change
+    # added and Offramp dropped is no line of the PR's diff (re-review 2, n5)
+    removed = {p: own for p, names in _union(gone_imports, together_gone).items()
+               if (own := names & _import_bindings(_parsed(originals.get(p) or "")))}  # fmt: skip
     if migrated and removed:  # review M4 and I5: imports a change orphaned, said
         gone = "; ".join(
             f"{', '.join(f'`{n}`' for n in sorted(ns))} from `{p}`" for p, ns in sorted(removed.items())

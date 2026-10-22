@@ -41,6 +41,7 @@ from offramp.agents.patcher import (
     _prepare,
     _repair,
     _rewrite_call,
+    _skip_count,
     _summary,
     _used_elsewhere,
     add_fixtures,
@@ -5725,3 +5726,144 @@ def test_a_name_the_change_itself_added_and_left_unused_goes(after, expected):
     to an import and never used, and the demo's ruff failed. A name the change added goes when nothing reads
     it after; a name used after, a `__future__` import and a dotted `import a.b` (a side effect) stay."""
     assert drop_orphaned_imports(RAG_HEAD, after) == expected
+
+
+# --------------------------------------------------- Task 26 round 3: n1, n2, n3, n5
+
+PARAM_METHOD = (
+    '    @pytest.mark.parametrize("x", [1, 2, 3])\n    def test_x(self, x):\n        assert x > 0\n'
+)
+CLASS_P = "import pytest\n\n\nclass TestK:\n" + PARAM_METHOD
+
+
+@pytest.mark.parametrize(
+    ("replace", "refused"),
+    [
+        ("class TestK:\n" + PARAM_METHOD.replace("[1, 2, 3]", "[1]"), True),
+        ('class TestK:\n    def test_x(self, x):\n        assert x > 0', True),
+        ("class TestK:\n" + PARAM_METHOD + "        assert x < 4", False),
+    ],
+    ids=["method-parametrize-narrowed", "method-decorator-dropped", "method-decorator-kept"],
+)  # fmt: skip
+def test_a_whole_class_by_name_keeps_or_quotes_each_methods_decorators(replace, refused):
+    """Re-review 2, n1: a class REPLACE narrowed a method's `parametrize` from 3 cases to 1, unseen."""
+    files = {"tests/test_k.py": CLASS_P}
+
+    problems = _apply([Edit(path="tests/test_k.py", search="nowhere at all", replace=replace)], files)
+
+    assert bool(problems) is refused
+    if refused:
+        assert problems[0].text.endswith(
+            'this edit would drop `@pytest.mark.parametrize("x", [1, 2, 3])`, which your SEARCH never '
+            "quoted: keep it, or quote it to change it"
+        )
+
+
+@pytest.mark.parametrize(
+    ("summary", "count"),
+    [("3 passed, 1 skipped in 0.1s", 1), ("3 passed, 1 xfailed in 0.1s", 1),
+     ("3 passed, 1 skipped, 2 xfailed, 1 xpassed in 0.1s", 3), ("3 passed in 0.1s", 0), ("", 0)],
+    ids=["skipped", "xfailed", "both", "none", "no-summary"],
+)  # fmt: skip
+def test_the_backstop_counts_skipped_and_xfailed_tests(summary, count):
+    """Re-review 2, n2 (mutant B25): an xfail is a test switched off as much as a skip is."""
+    assert _skip_count(f"...\n{summary}\n") == count
+
+
+class PairSkipSandbox(FakeSandbox):
+    """A green run skips one test when both sites' markers are in the tests: neither site alone does."""
+
+    def check(self) -> CheckResult:
+        result = super().check()
+        text = "".join(t for p, t in self._files().items() if is_test_path(p))
+        n = int("# greet half" in text and "# shout half" in text)
+        return (
+            CheckResult(ok=True, mode="docker", output=f"3 passed, {n} skipped in 0.1s")
+            if result.ok
+            else result
+        )
+
+
+def test_a_merged_tree_that_skips_more_tests_drops_the_site_that_does_it():
+    """Re-review 2, n2 (mutants B12, B14): the together check and the one-at-a-time check carry the
+    backstop too; with no failing test the combined repair has nothing to edit."""
+    motto = "def test_motto_returns_the_reply():"
+    half = [Edit(path=TESTS, search=motto, replace=f"# {w} half\n{motto}") for w in ("greet", "shout")]
+    llm = patcher_llm(migrate(GREET, extra=[half[0]]), migrate(SHOUT, extra=[half[1]]))
+
+    result = run(llm, box=PairSkipSandbox)
+
+    assert result.alone == {"cs_01": True, "cs_03": True} and result.combined == ["cs_01"]
+    shout = verdict(result, "cs_03")
+    assert shout.patch_failure.kind == "not_together" and "the patch makes 1 more tests skip" in shout.reason
+
+
+def test_a_combined_repair_whose_run_skips_more_tests_is_red_and_repaired_again():
+    """Re-review 2, n2 (mutant B13): the combined repair's own check carries the backstop."""
+    skip = Edit(path=TESTS, search="def test_motto_returns_the_reply():\n",
+                replace="def test_motto_returns_the_reply():\n    # skipped at run time\n")  # fmt: skip
+    undo = Edit(path=TESTS, search="    # skipped at run time\n", replace="    # fixed\n")
+    llm = patcher_llm(migrate(GREET), migrate(SHOUT), PatchEdits(edits=[skip]), PatchEdits(edits=[undo]))
+
+    # untouched, base, greet alone, shout alone, together (red), repair 1 (a skip more), repair 2 (green)
+    result = run(llm, results=[True, True, True, True, False, True, True], box=SkipCountingSandbox,
+                 output="FAILED tests/test_tinyapp.py::test_motto_returns_the_reply")  # fmt: skip
+
+    assert result.combined == ["cs_01", "cs_03"] and result.combined_repair == [TESTS]
+    assert "# fixed" in result.files[TESTS] and "# skipped at run time" not in result.files[TESTS]
+    assert "the patch makes 1 more tests skip" in llm.calls[3]["messages"][-1]["content"]
+
+
+def test_the_import_note_names_only_the_repos_own_imports():
+    """Re-review 2, n5: the note listed `NEMOTRON_FEW_SHOT`, which the model's edit added and Offramp dropped,
+    a line the PR's diff never shows. Only names the repo's own file imported are listed."""
+    repo = tiny_with("note-own-imports", {"tests/test_greet_more.py": MORE_JSON})
+    added = Edit(path="tests/test_greet_more.py", search="import json\n", replace="import json\nimport os\n")
+    llm = patcher_llm(PatchEdits(edits=[UNJSON, added]), migrate(SHOUT))
+
+    result = run(llm, repo=repo, name="note-own-imports-run")
+
+    assert "import os" not in result.files["tests/test_greet_more.py"]  # added unused: dropped
+    assert [n for n in result.change_notes if "left unused were removed" in n] == [JSON_GONE]
+
+
+HELPERS_TEXT = "from tinyapp.greet import greet\n\n\ndef hi():\n    return greet\n"
+TEST_G = "from helpers import hi  # greet\n\n\ndef test_hi():\n    assert hi()\n"
+
+
+def test_a_name_one_file_of_the_reply_re_exports_to_another_stays():
+    """Re-review 2, n3: the per-site cleanup saw the other files at their base text, so a name the reply added
+    to tests/helpers.py and imported from it in tests/test_g.py was dropped as unused."""
+    repo = tiny_with("re-export", {"tests/helpers.py": HELPERS_TEXT, "tests/test_g.py": TEST_G})
+    export = Edit(
+        path="tests/helpers.py",
+        search="from tinyapp.greet import greet\n",
+        replace="from tinyapp.greet import greet\nfrom tinyapp.offramp_client import token_factory_client\n",
+    )
+    use = Edit(path="tests/test_g.py", search=TEST_G.rstrip("\n"),
+               replace=TEST_G.replace("import hi", "import hi, token_factory_client")
+               .replace("assert hi()", "assert hi() and token_factory_client").rstrip("\n"))  # fmt: skip
+    llm = patcher_llm(PatchEdits(edits=[export, use]), migrate(SHOUT))
+
+    result = run(llm, repo=repo, name="re-export-run")
+
+    assert "from tinyapp.offramp_client import token_factory_client" in result.files["tests/helpers.py"]
+    assert "token_factory_client" in result.files["tests/test_g.py"]
+
+
+def test_a_class_by_name_pairs_each_methods_decorators_by_its_name():
+    """A decorator moved to another method is not kept: `test_a` loses its `parametrize`."""
+    two = CLASS_P + "\n    @pytest.mark.slow\n    def test_b(self):\n        assert 1\n"
+    swapped = (
+        two.split("class TestK:\n")[1]
+        .replace("@pytest.mark.parametrize", "@TMP")
+        .replace("@pytest.mark.slow", '@pytest.mark.parametrize("x", [1, 2, 3])')
+    )
+    swapped = "class TestK:\n" + swapped.replace('@TMP("x", [1, 2, 3])', "@pytest.mark.slow")
+    files = {"tests/test_k.py": two}
+
+    (problem,) = _apply([Edit(path="tests/test_k.py", search="nowhere at all", replace=swapped)], files)
+
+    assert (
+        '`@pytest.mark.parametrize("x", [1, 2, 3])`, `@pytest.mark.slow`, which your SEARCH' in problem.text
+    )
