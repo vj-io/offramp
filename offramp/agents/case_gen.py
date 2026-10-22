@@ -79,6 +79,14 @@ DIGEST_CHARS = 160  # of each record already written, as a later batch's prompt 
 RUN_TIMEOUT_S = 60  # one run of target code (schema import, oracle)
 SETUP_TIMEOUT_S = 600  # building the target's environment the first time
 NEEDS_RUNTIME_CAPTURE = "NEEDS_RUNTIME_CAPTURE"
+NO_STATIC_PROMPT = (
+    "Offramp can't render this call's prompt statically, so it has no eval cases; runtime capture isn't "
+    "supported yet"
+)
+NO_STATIC_CALL = (
+    "Offramp can't resolve this call statically (flagged NEEDS_RUNTIME_CAPTURE), so it has no eval cases; "
+    "runtime capture isn't supported yet"
+)
 NO_TARGET_SANDBOX = (
     "target code not run: Offramp imports the target repo's Pydantic schemas and runs its oracles only in "
     f"the network-off Docker sandbox, and Docker is unavailable. Start Docker, or set {LOCAL_OPT_IN}=1 to "
@@ -2479,13 +2487,21 @@ def _generate_site(
     return cases, refs, notes
 
 
+def runtime_only(site: CallSite) -> str | None:
+    """Why no case can be generated for this site from the code alone, if none can: the prompt is built at
+    runtime, or the scan flagged what it could not resolve. Only runtime capture (not built) would help."""
+    if site.template is None or site.prompt_source == "dynamic":
+        return NO_STATIC_PROMPT
+    if NEEDS_RUNTIME_CAPTURE in site.flags:
+        return NO_STATIC_CALL
+    return None
+
+
 def _skip_reason(site: CallSite) -> str | None:
     if site.kind != "chat":
         return "embeddings call site: never migrated"
-    if site.template is None or site.prompt_source == "dynamic":
-        return "dynamic prompt: needs runtime capture"
-    if NEEDS_RUNTIME_CAPTURE in site.flags:
-        return "flagged NEEDS_RUNTIME_CAPTURE"
+    if why := runtime_only(site):
+        return why
     if site.contract is None:
         return "no contract (run the scanner's contract labelling first)"
     return None

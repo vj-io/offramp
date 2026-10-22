@@ -175,7 +175,7 @@ def threshold(site: CallSite | None, config: RunConfig) -> float:
 
 
 def _task(site: CallSite | None) -> str:
-    return site.contract.task_type if site and site.contract else "—"
+    return site.contract.task_type if site and site.contract else "unknown"
 
 
 def _result(ctx: PRContext, v: Verdict) -> TierResult | None:

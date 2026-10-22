@@ -567,8 +567,10 @@ class Pipeline:
         sites, stale, notes = [], [], []
         for s in labelled:
             p = prepared.get(s.id)
-            if p is None or s.kind != "chat":
+            if s.kind != "chat":
                 sites.append(s)
+            elif p is None:  # a contract from this run's labelling, not the one the other sites were prepared
+                sites.append(s.model_copy(update={"contract": None}) if prepared else s)  # with: unknown
             elif (p.file, p.function) != (s.file, s.function):
                 stale.append(s.id)
                 sites.append(s)
@@ -645,12 +647,15 @@ class Pipeline:
         """Why the site cannot be evaluated at all (a MANUAL_REVIEW verdict), if it cannot."""
         if site.id in stale:
             return "evals/ was prepared for a different call at this id: run `offramp prepare` again"
-        if site.contract is None:
+        summary = summaries.get(site.id) or {"dev": 0, "holdout": 0}
+        missing = [s for s in ("dev", "holdout") if not summary[s]]
+        if missing and (why := case_gen.runtime_only(site)):  # prepare again can't help: it skipped it
+            return why
+        # no contract and no flag: labelled by this run only, its label dropped (_scan); prepare labels it
+        if site.contract is None and (not missing or "MANUAL_REVIEW" in site.flags):
             return "no contract: the site was never labelled"
         if "MANUAL_REVIEW" in site.flags:
             return "scanner flagged MANUAL_REVIEW (streaming call or unlabelled site)"
-        summary = summaries.get(site.id) or {"dev": 0, "holdout": 0}
-        missing = [s for s in ("dev", "holdout") if not summary[s]]
         return f"no {missing[0]} cases: run `offramp prepare` on the repo" if missing else None
 
     def _adapters(

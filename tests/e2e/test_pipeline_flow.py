@@ -874,6 +874,37 @@ def test_the_pr_body_lists_only_the_rows_compared_and_no_circular_closed_row(tmp
         assert clause in body
 
 
+RUNTIME_PROMPT = """
+
+def ask(messages: list[dict]) -> str:
+    return client.chat.completions.create(model="gpt-4o-mini", messages=messages).choices[0].message.content
+"""
+
+
+def test_a_call_whose_prompt_is_built_at_runtime_says_why_it_has_no_cases_and_borrows_no_label(tmp_path):
+    """idea-reality-mcp's cs_03 (run 20261022-023459043-590031): prepare skipped it, its prompt being built at
+    runtime, yet the run told the user to run `offramp prepare`, and the PR table showed the run's own label
+    for it (json_extraction) beside the labels the other sites were prepared with (free_text)."""
+    repo = make_repo(tmp_path)  # evals/ prepared for cs_01 only, as prepare leaves a repo with such a call
+    with (repo / "app" / "triage.py").open("a") as f:
+        f.write(RUNTIME_PROMPT)
+    git(repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qam", "runtime prompt")
+    llm = llm_for_full_run(*split_counts(repo))
+    llm.add(
+        "scanner", ContractLabel(contract=Contract(task_type="json_extraction", output="json"), confidence=1)
+    )
+
+    body = pr_body(tmp_path, repo, llm)
+
+    assert "| cs_02 | `app/triage.py` | unknown | gpt-4o-mini | **MANUAL REVIEW** |" in body
+    (line,) = [ln for ln in body.splitlines() if ln.startswith("- **cs_02**")]
+    assert line.endswith(
+        "needs manual review: Offramp can't render this call's prompt statically, so it has no eval cases; "
+        "runtime capture isn't supported yet"
+    )
+    assert "| cs_01 | `app/triage.py` | classification |" in body  # the prepared site keeps its label
+
+
 def test_the_pr_body_names_the_closed_references_of_a_free_text_site(tmp_path):
     repo = make_repo(tmp_path, references=False, closed=True, contract=FREE_TEXT)
 
