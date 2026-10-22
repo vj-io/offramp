@@ -64,11 +64,16 @@ class Contract(BaseModel):
     reply_json: SkipJsonSchema[
         Literal["exact", "fence_stripped", "exact_lenient", "fence_stripped_lenient"] | None
     ] = None
+    # Read from the code too: the timeout (seconds) the call or its client sets. A tier whose holdout median
+    # latency exceeds it fails for the site (verdict.too_slow): the migrated call keeps that timeout.
+    timeout_s: SkipJsonSchema[float | None] = None
 
     def shown(self) -> dict[str, Any]:
-        """The contract as agent prompts show it: reply_json only when set, so a site without it gets the
-        prompt it always got (its recorded cassettes replay)."""
-        return self.model_dump(mode="json", exclude=None if self.reply_json else {"reply_json"})
+        """The contract as agent prompts show it: reply_json only when set, never timeout_s, so a site's
+        prompt is the one it always got unless it has reply_json (its recorded cassettes replay)."""
+        return self.model_dump(
+            mode="json", exclude={"timeout_s"} | (set() if self.reply_json else {"reply_json"})
+        )
 
 
 class PromptTemplate(BaseModel):
@@ -297,9 +302,17 @@ class AfterPrice(BaseModel):
 # holdout figures are set only if the best adapter's holdout was measured, and failed);
 # "dev" when dev never passed (holdout may have); else the bar its holdout missed: the parity threshold, every
 # output schema-valid, enough JSON cases passing whole, the judge mean of 4.0, no holdout case below 3.0, or a
-# judge mean within 0.3 of the references'.
+# judge mean within 0.3 of the references'; or "latency": its holdout median exceeds the call's own timeout.
 Gate = Literal[
-    "budget", "dev", "threshold", "schema", "pass_share", "judge_mean", "case_floor", "reference_margin"
+    "budget",
+    "dev",
+    "threshold",
+    "schema",
+    "pass_share",
+    "judge_mean",
+    "case_floor",
+    "reference_margin",
+    "latency",
 ]
 
 

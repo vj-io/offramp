@@ -33,6 +33,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from offramp.agents.adapter import adapter_problem
 from offramp.agents.iterator import DevCase, Iterator, failing_dev_cases
 from offramp.agents.translate import UnresolvedCallSite
 from offramp.agents.verdict import (
@@ -41,6 +42,8 @@ from offramp.agents.verdict import (
     budget_stopped,
     closed_reference_parity,
     decide,
+    not_worth_iterating,
+    passes,
     stopped,
 )
 from offramp.evals.errors import MissingReference, ProviderError
@@ -72,6 +75,10 @@ class SiteRoute:
     # nothing was compared (budget stop, MANUAL_REVIEW)
     adapter: Adapter | None
     results: list[TierResult] = field(default_factory=list)  # every run, in order, case_scores kept
+    refused: list[str] = field(default_factory=list)  # model-written rewrites refused before evaluation
+    not_iterated: list[str] = field(
+        default_factory=list
+    )  # tiers left uniterated (verdict.not_worth_iterating)
 
 
 class _BudgetStop(Exception):
@@ -115,13 +122,29 @@ def route_site(
         price_lookup,
         emit,
         prior or {},
+        refused := [],
+        not_iterated := [],
     )
+    route.refused, route.not_iterated = refused, not_iterated
     emit("verdict", route.verdict.model_dump(mode="json"))
     return route
 
 
 def _route(
-    site, cases, references, adapter, client, config, closed, iterate, runner, price_lookup, emit, prior
+    site,
+    cases,
+    references,
+    adapter,
+    client,
+    config,
+    closed,
+    iterate,
+    runner,
+    price_lookup,
+    emit,
+    prior,
+    refused,
+    not_iterated,
 ):
     results: list[TierResult] = []
     unfit = _unfit(site, cases)
@@ -185,7 +208,7 @@ def _route(
             history.setdefault(tier, [adapter])
             if (tier, 0) not in holdouts:
                 holdouts[tier, 0] = run(adapter, tier, "holdout")
-            if holdouts[tier, 0][0].passed:
+            if passes(site, holdouts[tier, 0][0]):
                 secured = (tier, dev)
                 return
             finished.add(tier)  # its holdout failed: routing moves on from it without iterating
@@ -195,18 +218,35 @@ def _route(
     try:
         for tier in tiers:
             history[tier] = [adapter]
+            tries = 0  # Iterator calls on this tier: an evaluated rewrite or a refused one each
             while True:
                 i = len(history[tier]) - 1
                 current = history[tier][i]
                 dev, calls = run(current, tier, "dev")
                 if best is None or dev.score > best[0]:
                     best = (dev.score, tier, i, dev)
-                if dev.passed or i >= config.max_iterations:
+                if dev.passed or tries >= config.max_iterations:
+                    break
+                if why := not_worth_iterating(site, dev):  # slower than any prompt change could fix
+                    not_iterated.append(f"{tier.value.capitalize()} {why}")
+                    emit("log", {"level": "warn", "message": f"{site.id}: {not_iterated[-1]}"})
                     break
                 secure(tier)
                 failed = [s for s in dev.case_scores if not s.passed]
                 counts = Counter(s.error_category or "failed" for s in failed)
-                new = iterate(current, site, failing_dev_cases(dev, cases, references, calls), tier, counts)
+                failing = failing_dev_cases(dev, cases, references, calls)
+                why = None  # a rewrite that fails adapter_problem costs its try, never an evaluation
+                while tries < config.max_iterations:
+                    tries += 1
+                    new = iterate(current, site, failing, tier, counts, **({"refused": why} if why else {}))
+                    if new is None or not (why := adapter_problem(site, new.spec)):
+                        break
+                    refused.append(
+                        f"{tier.value.capitalize()} v{new.version} refused before evaluation: {why}"
+                    )
+                    emit("log", {"level": "warn", "message": f"{site.id}: {refused[-1]}"})
+                if new is not None and why:
+                    break  # every try left was refused
                 if new is None:
                     emit(
                         "log",
@@ -222,7 +262,7 @@ def _route(
             if dev.passed:
                 if (tier, i) not in holdouts:
                     holdouts[tier, i] = run(current, tier, "holdout")
-                if holdouts[tier, i][0].passed:
+                if passes(site, holdouts[tier, i][0]):
                     return SiteRoute(verdict(tier, i, dev), current, results)
             finished.add(tier)
         _, tier, i, dev = best
@@ -246,7 +286,10 @@ def _route(
             tier, _, i = top
             measured = holdouts.get((tier, i))
             holdout = measured[0] if measured else prior.get((tier, i, "holdout")) if i == 0 else None
-        return SiteRoute(budget_stopped(site, reason, top, config, holdout), None, results)
+        # its record keeps every cell measured for it, the matrix's included: routing may have run none
+        ran = {(r.tier, r.adapter_version, r.split) for r in results}
+        kept = [r for key, r in prior.items() if key not in ran]
+        return SiteRoute(budget_stopped(site, reason, top, config, holdout), None, kept + results)
     except (MissingReference, UnresolvedCallSite) as e:
         return SiteRoute(stopped(site, "MANUAL_REVIEW", f"cannot evaluate: {e}"), None, results)
 
@@ -288,7 +331,7 @@ def secure_holdouts(
             return out
         emit("tier_result", result.model_dump(mode="json", exclude={"case_scores"}))
         out[tier, adapter.version, "holdout"] = result
-        if result.passed:
+        if passes(site, result):
             break
     return out
 

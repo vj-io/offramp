@@ -261,3 +261,35 @@ def test_tool_call_arguments_are_never_the_reply_text():
     json.loads of the call's arguments is still not a json.loads of the reply."""
     (site,) = [s for s in scan_repo(JSON_REPLY).sites if s.function == "lookup_order"]
     assert json_reply(JSON_REPLY, site) is None
+
+
+TIMEOUTS = FIXTURES / "scanner" / "timeouts"
+
+
+def test_a_timeout_the_code_sets_is_recorded_on_the_contract():
+    """Task 29 C: idea-reality's cs_01 keeps its client's timeout=30 after migration, but Lightning's median
+    on its holdout was 95 s. The timeout is read from the code (never asked of the labeller) so a tier can
+    be held to it."""
+    scan = scan_repo(TIMEOUTS)
+    llm = fake(ContractLabel(contract=FREE_TEXT, confidence=0.9), n=len(scan.sites))
+    found = {s.function: s.contract.timeout_s for s in label_contracts(scan.sites, llm, root=TIMEOUTS)}
+    assert found == {
+        "extract_keywords": 30.0,  # AsyncAnthropic(timeout=30.0) built in the function
+        "per_call": 12.0,  # timeout=WAIT_S on the request, a module constant
+        "module_level": 20.0,  # OpenAI(timeout=20) at module level
+        "httpx_timeout": 45.0,  # OpenAI(timeout=httpx.Timeout(45.0))
+        "no_timeout": None,
+        # review I3: only a timeout the call surely uses; else no gate (a false one fails a tier wrongly)
+        "module_client_short": 5.0,  # control: SHORT is readable, so the request cases below pin the rule
+        "request_timeout_from_env": None,  # the request's own timeout=, not a literal: never the client's
+        "request_timeout_none": None,  # timeout=None: no timeout
+        "request_timeout_product": None,
+        "kwargs_request": None,  # a timeout may come through **opts
+        "read_timeout_only": None,  # httpx.Timeout(connect=..., read=...): no single number
+        "client_bound_twice": None,
+        "default_client": None,  # a parameter, even one the function may bind
+        # shadow.py (review R1-1): its module client is also a parameter's name, so it is never read
+        "summarise_with_given_client": None,
+        "module_client_also_a_parameter": None,
+    }
+    assert all("timeout_s" not in json.dumps(c["response_model"].model_json_schema()) for c in llm.calls)

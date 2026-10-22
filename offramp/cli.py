@@ -6,6 +6,7 @@ offramp run <repo> [--no-pr] [--cache-only]  the whole pipeline on a repo URL or
 offramp run --resume <run_id> [--cache-only] an interrupted or failed run, after its last finished step
 offramp serve [--host H] [--port P]          the API (offramp/api/app.py)
 offramp export-replay <run_id>               both replay files, from a finished run
+offramp pr <run_id>                          open a finished --no-pr run's PR from its artifacts
 """
 
 from __future__ import annotations
@@ -110,6 +111,20 @@ def run(args: argparse.Namespace) -> int:
     return 0 if stage == Stage.DONE else 1
 
 
+def pr(args: argparse.Namespace) -> int:
+    """Open the PR a finished `--no-pr` run rendered, from its own artifacts: never a re-run, so a capped run
+    is not continued past its cap to get a PR."""
+    root = pipeline.data_dir()
+    engine = db.init_db(db.engine(root / "offramp.db"))
+    try:
+        url = pipeline.open_pr_from_run(args.run_id, root, engine=engine, on_event=_show)
+    except (ValueError, FileNotFoundError) as e:  # its refusals: one line, like a bad argument
+        print(f"offramp pr: {e}", file=sys.stderr)
+        return 2
+    print(url)
+    return 0
+
+
 def serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -194,6 +209,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     p.set_defaults(func=serve)
+
+    p = sub.add_parser("pr", help="open a finished --no-pr run's pull request from its artifacts")
+    p.add_argument("run_id")
+    p.set_defaults(func=pr)
 
     p = sub.add_parser("export-replay", help="write the demo replay files from a finished run")
     p.add_argument("run_id")

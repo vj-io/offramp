@@ -481,6 +481,152 @@ def test_inputs_repeated_within_one_split_are_a_warning_with_their_count(tmp_pat
     assert any(m.startswith("1 duplicate input repeats within one split (cs_01: cs_01:") for m in warnings)
 
 
+def test_a_refused_adapter_agent_reply_is_on_the_sites_record_for_the_pr(tmp_path):
+    """Task 29 A: the Adapter Agent's v0 failed the sanity gate, so the translation ran; the PR is told."""
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo)
+    llm, stub = llm_for_full_run(*split_counts(repo)), Recorder()
+    llm.queues["adapter"][0] = {
+        "reasoning": "off",
+        "output_mode": "text",
+        "user_suffix": "Labels: " + "billing " * 20,
+    }
+
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr).execute()
+        == Stage.DONE
+    )
+
+    result = pipeline.json.loads((log.dir / "evals" / "results" / "cs_01.json").read_text())
+    assert result["refused"] == [
+        "Adapter v0 refused before evaluation (the translation ran instead): user_suffix repeats 'billing' "
+        "20 times in a row"
+    ]
+    (pr,) = stub.prs
+    assert pr["routes"]["cs_01"]["refused"] == result["refused"]
+
+
+class FakeGitHub:
+    """GitHub's REST API for acme/tiny, as github.open_pr calls it; records every request."""
+
+    def __init__(self):
+        self.requests: list = []
+
+    def __call__(self, request):
+        import httpx
+
+        self.requests.append(request)
+        repo = "/repos/acme/tiny"
+        routes = {
+            ("GET", repo): {"default_branch": "main"},
+            ("GET", f"{repo}/git/ref/heads/main"): {"object": {"sha": "base"}},
+            ("GET", f"{repo}/git/commits/{request.url.path.rsplit('/', 1)[-1]}"): {"tree": {"sha": "tree"}},
+            ("POST", f"{repo}/git/trees"): {"sha": "new-tree"},
+            ("POST", f"{repo}/git/commits"): {"sha": "new-commit"},
+            ("POST", f"{repo}/git/refs"): {},
+            ("POST", f"{repo}/pulls"): {"html_url": "https://github.com/acme/tiny/pull/9"},
+        }
+        body = routes.get((request.method, request.url.path))
+        return httpx.Response(404 if body is None else 201, json=body or {"message": "Not Found"})
+
+    def opener(self):
+        import functools
+
+        import httpx
+
+        from offramp import github
+
+        return functools.partial(github.open_pr, token="t", transport=httpx.MockTransport(self))
+
+
+def no_pr_run(tmp_path, *, migrate: bool = True) -> pipeline.RunLog:
+    """A finished `--no-pr` run as `offramp run --no-pr` leaves it: pr.json holds the rendered title, body."""
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo, open_pr=False, max_iterations=0)
+    n_dev, n_holdout = split_counts(repo)
+    llm, stub = llm_for_full_run(n_dev, n_holdout), Recorder(passed=migrate)
+    if not migrate:
+        llm.queues["eval_target"] = type(llm.queues["eval_target"])(["bug"] * (3 * n_dev + n_holdout))
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr).execute()
+        == Stage.DONE
+    )
+    return log
+
+
+def test_offramp_pr_opens_a_finished_no_pr_runs_pr_from_its_own_artifacts(tmp_path):
+    """Task 29 B: a capped run is never continued to open its PR; its recorded patch and body are opened as
+    they are, on the branch the PR stage uses, and its event log gains the PR, so export-replay shows it."""
+    log = no_pr_run(tmp_path)
+    before = len(log.events)
+    gh = FakeGitHub()
+
+    url = pipeline.open_pr_from_run(log.run_id, tmp_path / "data", opener=gh.opener())
+
+    assert url == "https://github.com/acme/tiny/pull/9"
+    ref = next(r for r in gh.requests if r.url.path.endswith("/git/refs"))
+    assert pipeline.json.loads(ref.content)["ref"] == f"refs/heads/offramp/{log.run_id}"
+    commit = pipeline.json.loads(next(r for r in gh.requests if r.url.path.endswith("/git/commits")).content)
+    assert commit["parents"] == [pipeline.json.loads((log.dir / "clone.json").read_text())["commit_sha"]]
+    pulls = pipeline.json.loads(next(r for r in gh.requests if r.url.path.endswith("/pulls")).content)
+    pr = pipeline.json.loads((log.dir / "pr.json").read_text())
+    assert (pulls["title"], pulls["body"], pr["url"]) == (pr["title"], pr["body"], url)
+    again = pipeline.RunLog(log.dir, log.run_id)
+    added = [e.payload.get("stage", e.type) for e in again.events[before:]]
+    assert added == ["pr", "PR_OPENED", "DONE", "done"] and again.stage == Stage.DONE
+    snap = pipeline.snapshot(again.run_id, again.events)
+    assert snap.artifacts["pr_url"] == url and snap.stage == Stage.DONE
+    with pytest.raises(ValueError, match="already opened its PR"):
+        pipeline.open_pr_from_run(log.run_id, tmp_path / "data", opener=gh.opener())
+
+
+def test_offramp_pr_holds_a_lock_so_a_second_call_cannot_reach_github(tmp_path):
+    """Review M4: two concurrent `offramp pr` calls both reached GitHub; one crashed on a shared tmp file."""
+    log = no_pr_run(tmp_path)
+    gh = FakeGitHub()
+    (log.dir / "pr.lock").write_text("held by another `offramp pr`")
+    with pytest.raises(ValueError, match="a PR is already being opened for this run") as refused:
+        pipeline.open_pr_from_run(log.run_id, tmp_path / "data", opener=gh.opener())
+    assert str(refused.value).endswith(
+        f"if no `offramp pr` is running for this run, delete {log.dir / 'pr.lock'}"
+    )
+    assert gh.requests == []
+    (log.dir / "pr.lock").unlink()
+    pipeline.open_pr_from_run(log.run_id, tmp_path / "data", opener=gh.opener())
+    assert not (log.dir / "pr.lock").exists()  # released when done
+    report = pipeline.json.loads((log.dir / "report.json").read_text())  # review M6 (mutant B7)
+    assert report["snapshot"]["artifacts"]["pr_url"] == "https://github.com/acme/tiny/pull/9"
+
+
+def test_offramp_pr_refuses_a_run_that_migrated_nothing_or_has_not_finished(tmp_path):
+    log = no_pr_run(tmp_path, migrate=False)
+    with pytest.raises(ValueError, match="migrated nothing"):
+        pipeline.open_pr_from_run(log.run_id, tmp_path / "data", opener=FakeGitHub().opener())
+    unfinished = pipeline.new_run(RunConfig(repo_url="x", open_pr=False), tmp_path / "data")
+    with pytest.raises(ValueError, match="has not finished"):
+        pipeline.open_pr_from_run(unfinished.run_id, tmp_path / "data", opener=FakeGitHub().opener())
+
+
+def test_a_prepared_site_gets_its_calls_timeout_from_the_code_as_it_is_now(tmp_path):
+    """Task 29 C: Contract.timeout_s is read from the code, also for a contract from evals/sites.json."""
+    repo = make_repo(tmp_path)
+    (repo / "app" / "triage.py").write_text(APP.replace("client = OpenAI()", "client = OpenAI(timeout=30)"))
+    git(repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qam", "timeout")
+    log, _ = start(tmp_path, repo)
+    llm, stub = llm_for_full_run(*split_counts(repo)), Recorder()
+
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr).execute()
+        == Stage.DONE
+    )
+
+    (site,) = [e.payload for e in log.events if e.type == "site"]
+    assert site["contract"]["task_type"] == "classification" and site["contract"]["timeout_s"] == 30.0
+    assert (
+        "timeout_s" not in pipeline.json.loads(llm.calls[1]["messages"][1]["content"])["contract"]
+    )  # adapter
+
+
 def test_a_failed_run_resumes_after_its_last_finished_step(tmp_path):
     repo = make_repo(tmp_path)
     n_dev, n_holdout = split_counts(repo)
@@ -548,6 +694,33 @@ def test_a_cache_miss_in_the_eval_matrix_is_a_run_error(tmp_path):
     assert pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix).execute() == Stage.FAILED
     error = log.events[-1].payload
     assert error["stage"] == "EVALUATING" and error["reason"].startswith("CacheMiss: cs_01 super dev")
+    assert not (log.dir / "matrix.json").exists()  # a resume runs the matrix again
+
+
+def test_a_matrix_cell_the_judge_could_not_score_fails_the_run_resumably(tmp_path):
+    """Task 29 D: run 20261022-065443547-22ed36 left cs_05's Lightning dev cell empty after a judge reply off
+    the rubric schema, with a warning only. A cell is never left silently empty: the run fails, and a resume
+    runs the matrix again (cached cells are free)."""
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo)
+    cell = {"kind": "error", "site_id": "cs_01", "tier": "lightning", "split": "dev"}
+    judge = cell | {"error_type": "ProviderError", "message": "judge: reply does not match the rubric schema"}
+    llm = FakeLLM(
+        {
+            "scanner": [ContractLabel(contract=CONTRACT, confidence=0.9)],
+            "adapter": [{"reasoning": "off", "output_mode": "text"}],
+        }
+    )
+
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=Recorder(matrix_entries=[judge]).eval_matrix).execute()
+        == Stage.FAILED
+    )
+    error = log.events[-1].payload
+    assert error["stage"] == "EVALUATING"
+    assert (
+        error["reason"] == "ProviderError: cs_01 lightning dev: judge: reply does not match the rubric schema"
+    )
     assert not (log.dir / "matrix.json").exists()  # a resume runs the matrix again
 
 

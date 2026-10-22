@@ -26,6 +26,7 @@ class FakeGitHub:
             ("GET", f"/repos/{REPO}"): (200, {"default_branch": "main"}),
             ("GET", f"/repos/{REPO}/git/ref/heads/main"): (200, {"object": {"sha": "base-sha"}}),
             ("GET", f"/repos/{REPO}/git/commits/base-sha"): (200, {"tree": {"sha": "base-tree"}}),
+            ("GET", f"/repos/{REPO}/git/commits/cloned-sha"): (200, {"tree": {"sha": "cloned-tree"}}),
             ("POST", f"/repos/{REPO}/git/trees"): (201, {"sha": "new-tree"}),
             ("POST", f"/repos/{REPO}/git/commits"): (201, {"sha": "new-commit"}),
             ("POST", f"/repos/{REPO}/git/refs"): (422, {"message": "Reference already exists"})
@@ -87,6 +88,32 @@ def test_opens_a_pr_from_a_new_branch_with_one_commit():
     }
     auth = {r.headers["authorization"] for r in gh.requests}
     assert auth == {"Bearer tok"}
+
+
+def test_the_commit_is_based_on_the_commit_the_run_checked_not_on_the_branch_head_now():
+    """Review I2 (b_probe.py part 1): the patched files are whole texts patched against the cloned commit;
+    committed on today's default-branch head they would silently revert anything changed upstream since."""
+    gh = FakeGitHub()
+    github.open_pr(
+        REPO, run_id="run1", files=FILES, title="T", body="B", parent="cloned-sha", token="tok",
+        transport=httpx.MockTransport(gh),
+    )  # fmt: skip
+    assert gh.body("POST", f"/repos/{REPO}/git/trees")["base_tree"] == "cloned-tree"
+    assert gh.body("POST", f"/repos/{REPO}/git/commits")["parents"] == ["cloned-sha"]
+    assert (
+        gh.body("POST", f"/repos/{REPO}/pulls")["base"] == "main"
+    )  # the PR still targets the default branch
+    assert ("GET", f"/repos/{REPO}/git/ref/heads/main") not in gh.calls()
+
+
+def test_a_cloned_commit_github_does_not_have_is_refused_with_a_clear_message():
+    gh = FakeGitHub()
+    with pytest.raises(ValueError, match="commit gone-sha the run checked is not on GitHub"):  # a refusal
+        github.open_pr(
+            REPO, run_id="run1", files=FILES, title="T", body="B", parent="gone-sha", token="tok",
+            transport=httpx.MockTransport(gh),
+        )  # fmt: skip
+    assert not any(method == "POST" for method, _ in gh.calls())
 
 
 def test_rerun_moves_the_existing_branch_and_updates_the_open_pr():

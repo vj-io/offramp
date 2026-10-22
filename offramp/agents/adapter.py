@@ -6,6 +6,7 @@ Deterministic guards then keep its choices inside what the calling code can stil
 """
 
 import json
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -18,7 +19,7 @@ from offramp.agents.translate import (
     translate,
     unresolved,
 )
-from offramp.schemas import Adapter, CallSite, Tier
+from offramp.schemas import Adapter, AdapterSpec, CallSite, Tier
 from offramp.tf.client import LLM, _repair_messages, validate_structured
 from offramp.tf.tiers import SUPPORTS_JSON_SCHEMA
 
@@ -36,6 +37,21 @@ INVALID_OUTPUT = (
     "adapter_agent_invalid_output: Adapter Agent reply invalid after one repair; spec is the translation"
 )
 JSON_ONLY = "Reply with the JSON only: no other text and no code fence."  # contract.reply_json sites
+# Sanity of a model-written adapter (Adapter Agent and Iterator alike), checked before it is evaluated:
+# A loop: a phrase of up to MAX_NGRAM words, or a unit of up to MAX_UNIT characters holding a letter or
+# digit, repeated in a row REPEATS or more times beyond its first occurrence and beyond the source's run.
+# A single character needs CHAR_REPEATS: ids, masks, blanks and hashes repeat one (100000000000, ____).
+REPEATS = 10
+CHAR_REPEATS = 40
+MAX_NGRAM = 4
+MAX_UNIT = 80
+SCAN = 20_000  # characters of a text the character-level check reads
+_UNIT_LOOP = re.compile(rf"(.{{1,{MAX_UNIT}}}?)\1{{{REPEATS - 1},}}", re.S)
+GROWTH, GROWTH_PLUS = 2, 2000  # a field may reach 2x the source prompt (system + user template) + 2,000 chars
+_NUMBERED = re.compile(r"(?m)^\s*\d{1,2}[.)]\s")  # a numbered rule starting a line (what the source counts)
+_RULE_LINE = re.compile(r"(?m)^\s*(?:\d{1,2}[.)]|[-*•])\s")  # numbered or bulleted (what a rewrite counts)
+_INLINE_RULE = re.compile(r"(?<![\w.])(\d{1,2})[.)](?=\s)")  # "7. " anywhere: rewrites put rules on one line
+REFUSED = "adapter_agent_refused"
 
 ADAPTER_SYSTEM = f"""You are Offramp's Adapter Agent. Offramp moves one LLM call site in a Python repo \
 from a closed model (OpenAI or Anthropic SDK) to NVIDIA Nemotron on Nebius Token Factory, an \
@@ -107,6 +123,80 @@ def _facts(site: CallSite, tr: Translation, schemas: dict[str, dict[str, Any]] |
         "json_schema_supported": {tier.value: ok for tier, ok in SUPPORTS_JSON_SCHEMA.items()},
     }
     return json.dumps(facts, indent=1, ensure_ascii=False)
+
+
+def _word_runs(text: str) -> dict[tuple[str, ...], int]:
+    """Each phrase of up to MAX_NGRAM words (case-folded) repeated in a row, and its longest run."""
+    words, runs = re.findall(r"\w+", text.casefold()), {}
+    for n in range(1, MAX_NGRAM + 1):
+        streak = 0
+        for i in range(n, len(words) + 1):
+            if i < len(words) and words[i] == words[i - n]:
+                streak += 1
+                continue
+            if streak >= n:
+                unit = tuple(words[i - streak - n : i - streak])
+                runs[unit] = max(runs.get(unit, 0), streak // n + 1)
+            streak = 0
+    return runs
+
+
+def _unit_run(text: str, unit: str) -> int:
+    return max((len(m[0]) // len(unit) for m in re.finditer(f"(?:{re.escape(unit)})+", text)), default=0)
+
+
+def _loop(text: str, source: str) -> str | None:
+    """ "'utility' 752 times in a row" for a loop the model added (see REPEATS), else None. Word phrases first
+    (case and punctuation aside), then character units, which catch scripts without spaces and sentences
+    longer than MAX_NGRAM words. ponytail: the unit scan is one regex over the first SCAN characters (a later
+    loop still trips the growth cap); a loop with small variations between repeats is not caught."""
+    ours, theirs = _word_runs(text), _word_runs(source)
+    for unit, run in ours.items():
+        if run - max(theirs.get(unit, 0), 1) >= REPEATS:
+            return f"{' '.join(unit)!r} {run} times in a row"
+    for m in _UNIT_LOOP.finditer(text[:SCAN]):
+        unit, run = m[1], len(m[0]) // len(m[1])
+        need = CHAR_REPEATS if len(unit) == 1 else REPEATS
+        if re.search(r"\w", unit) and run - max(_unit_run(source, unit), 1) >= need:
+            return f"{unit!r} {run} times in a row"
+    return None
+
+
+def _rules(text: str) -> int:
+    """How many rules a rewrite states: numbered or bulleted lines, or numbered markers on one line."""
+    return max(len(_RULE_LINE.findall(text)), len(set(_INLINE_RULE.findall(text))))
+
+
+def adapter_problem(site: CallSite, spec: AdapterSpec) -> str | None:
+    """Why a model-written adapter must not be evaluated (nor shipped), or None: a loop the model added to
+    one of its texts (_loop), a text grown past GROWTH x the source prompt + GROWTH_PLUS characters, or a
+    rewritten system prompt stating fewer rules than the source's (numbers turned into bullets pass)."""
+    t = site.template
+    system = (t.system or "") if t else ""
+    source = f"{system}\n{t.user if t else ''}"
+    cap = GROWTH * len(source) + GROWTH_PLUS
+    texts = [
+        ("system_prompt", spec.system_prompt or ""),
+        ("user_prefix", spec.user_prefix),
+        ("user_suffix", spec.user_suffix),
+        *(("few_shot", str(m.get("content") or "")) for m in spec.few_shot),  # one example at a time
+    ]
+    for name, text in texts:
+        if loop := _loop(text, source):
+            return f"{name} repeats {loop}"
+    shots = "\n".join(str(m.get("content") or "") for m in spec.few_shot)
+    for name, text in [*texts[:3], ("few_shot", shots)]:
+        if len(text) > cap:
+            return (
+                f"{name} is {len(text):,} characters, over the cap of {cap:,} (2x the source prompt + 2,000)"
+            )
+    # ponytail: the source's numbered rules only. Its bulleted lines are often a list of labels or options
+    # (the demo's cs_01 queues), and the demo's recorded rewrite folds them into a sentence: counting them
+    # too would refuse a recorded adapter and change recorded requests, which waits for a ruling.
+    had = len(_NUMBERED.findall(system))
+    if spec.system_prompt is not None and (have := _rules(spec.system_prompt)) < had:
+        return f"system_prompt has {have} rules, the source's system prompt {had}"
+    return None
 
 
 def _apply(
@@ -200,6 +290,10 @@ def adapt(site: CallSite, llm: LLM, schemas: dict[str, dict[str, Any]] | None = 
         adapter.risk_flags.append(INVALID_OUTPUT)
         return adapter
     adapter = _apply(site, tr, decision, schemas)
+    if problem := adapter_problem(site, adapter.spec):  # never evaluated: the translation is v0 instead
+        adapter = _apply(site, tr, AdapterDecision(reasoning=tr.spec.reasoning, output_mode="text"), schemas)
+        adapter.risk_flags.append(f"{REFUSED}: {problem}")
+        return adapter
     if repaired:
         adapter.notes.append(
             "adapter agent: reply repaired once (first reply was not valid JSON for the schema)"

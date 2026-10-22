@@ -30,10 +30,14 @@ def open_pr(
     title: str,
     body: str,
     base: str | None = None,
+    parent: str | None = None,
     token: str | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> str:
-    """Commit `files` (repo-relative path -> full text) on top of `base` and open a PR; returns its URL.
+    """Commit `files` (repo-relative path -> full text) and open a PR into `base` (default: the default
+    branch); returns its URL. The commit's parent is `parent`, the commit the run cloned and patched the
+    files against, so GitHub shows any upstream change since as a conflict instead of the PR silently
+    reverting it; without `parent`, the head of `base` now. A `parent` GitHub does not have is refused.
 
     Re-running the same run_id moves the branch to the new commit and updates the open PR instead of failing.
     """
@@ -53,8 +57,15 @@ def open_pr(
             return r.json()
 
         base = base or call("GET", f"/repos/{repo}")["default_branch"]
-        base_sha = call("GET", f"/repos/{repo}/git/ref/heads/{base}")["object"]["sha"]
-        base_tree = call("GET", f"/repos/{repo}/git/commits/{base_sha}")["tree"]["sha"]
+        base_sha = parent or call("GET", f"/repos/{repo}/git/ref/heads/{base}")["object"]["sha"]
+        r = gh.get(f"/repos/{repo}/git/commits/{base_sha}")
+        if r.status_code in (404, 422) and parent:  # a refusal, like offramp pr's others (ValueError)
+            raise ValueError(
+                f"the commit {parent} the run checked is not on GitHub (gone, or never pushed): the PR "
+                "would not be the change that was evaluated; run Offramp again on the repository as it is"
+            )
+        r.raise_for_status()
+        base_tree = r.json()["tree"]["sha"]
         tree = [{"path": p, "mode": "100644", "type": "blob", "content": c} for p, c in sorted(files.items())]
         tree_sha = call("POST", f"/repos/{repo}/git/trees", json={"base_tree": base_tree, "tree": tree})[
             "sha"

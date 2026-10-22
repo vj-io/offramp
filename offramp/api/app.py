@@ -194,6 +194,8 @@ def create_app(
 
     def run_log(run_id: str) -> pipeline.RunLog:
         log = logs.get(run_id)
+        if log is not None and run_id not in active and log.stale():  # `offramp pr` appended its PR events
+            log = logs[run_id] = pipeline.RunLog(log.dir, run_id, engine=log.engine)
         if log is None and pipeline.RUN_ID.fullmatch(run_id):
             candidate = pipeline.RunLog(root / "runs" / run_id, run_id)
             if candidate.events:

@@ -47,6 +47,9 @@ class Cache:
         except FileNotFoundError:
             return None
 
+    def forget(self, key: str) -> None:
+        self._path(key).unlink(missing_ok=True)
+
     def put(self, key: str, entry: dict[str, Any]) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=self.dir, suffix=".tmp")  # write-then-rename: no partial reads

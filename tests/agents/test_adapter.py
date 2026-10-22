@@ -1,6 +1,8 @@
 """Adapter Agent contract: FakeLLM unit tests, then cassette replay (recorded live from Token Factory)."""
 
+import base64
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,7 @@ from offramp.agents.adapter import (
     LIGHTNING_TOOL_CHOICE,
     AdapterDecision,
     adapt,
+    adapter_problem,
 )
 from offramp.agents.translate import (
     REASONING_ROOM,
@@ -23,7 +26,7 @@ from offramp.agents.translate import (
     strict_json_schema,
     translate,
 )
-from offramp.schemas import CallSite, EvalCase, ModelOutput, Tier
+from offramp.schemas import AdapterSpec, CallSite, EvalCase, ModelOutput, PromptTemplate, Tier
 from offramp.tf import Budget, BudgetExceeded, ChatResult, FakeLLM, TFClient
 from offramp.tf.tiers import get_tier
 
@@ -168,6 +171,163 @@ def test_a_reply_the_code_json_loads_is_asked_for_as_json_and_the_agent_is_told(
     )  # without it: no key in the facts (cassettes replay), no suffix
     assert adapt(SITES["cs_06"], llm).spec.user_suffix == ""
     assert "reply_json" not in json.loads(llm.calls[0]["messages"][1]["content"])["contract"]
+
+
+# ---------------------------------------------------------------- sanity of model-written adapters
+
+IDEA = json.loads(
+    (Path(__file__).parents[1] / "fixtures" / "adapter_sanity" / "idea_reality_cs01.json").read_text()
+)
+IDEA_SITE = CallSite(
+    id="cs_01",
+    file="api/main.py",
+    lines=[333, 341],
+    sdk="anthropic",
+    call="client.messages.create",
+    prompt_source="variable",
+    template=PromptTemplate(system=IDEA["source_system"], user=IDEA["source_user"], variables=["idea_text"]),
+    contract=SITES["cs_06"].contract,
+)
+SOURCE = IDEA["source_system"]
+
+
+def test_the_iterators_degenerate_rewrite_from_the_live_run_is_refused():
+    """Run 20261022-065443547-22ed36: Ultra's v1 for idea-reality's cs_01 runs rule 7 into 'utility' about
+    750 times and loses rule 8; it passed the metric and would have shipped verbatim in api/main.py."""
+    problem = adapter_problem(IDEA_SITE, AdapterSpec.model_validate(IDEA["v1_spec"]))
+    assert problem == "system_prompt repeats 'utility' 752 times in a row"
+
+
+def test_a_field_grown_far_past_the_source_prompt_is_refused():
+    grown = SOURCE + "".join(f"\nNote {i}: keep queries short and specific, case {i}." for i in range(80))
+    assert len(grown) > 2 * (len(SOURCE) + len(IDEA["source_user"])) + 2000
+    assert adapter_problem(IDEA_SITE, AdapterSpec(system_prompt=grown)).startswith(
+        f"system_prompt is {len(grown):,} characters, over the cap of "
+    )
+    shots = [{"role": "user", "content": f"idea number {i} with detail {i}"} for i in range(150)]
+    assert adapter_problem(IDEA_SITE, AdapterSpec(few_shot=shots)).startswith("few_shot is ")
+
+
+def test_a_rewrite_with_fewer_rules_than_the_source_is_refused():
+    dropped = SOURCE.split("\n8.")[0]  # rule 8 gone
+    assert adapter_problem(IDEA_SITE, AdapterSpec(system_prompt=dropped)) == (
+        "system_prompt has 7 rules, the source's system prompt 8"
+    )
+
+
+RULES = "You extract keywords.\n1. Output JSON only.\n2. At most 8 items.\n3. Lowercase.\n"
+
+
+def small_site(system: str) -> CallSite:
+    return IDEA_SITE.model_copy(
+        update={"template": PromptTemplate(system=system, user="{text}", variables=["text"])}
+    )
+
+
+@pytest.mark.parametrize(
+    "system, spec",
+    [  # review M1: the gate counts what the model added, so these pass
+        (
+            RULES + 'Example output for an empty idea: {"scores": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}',
+            dict(
+                system_prompt=RULES
+                + 'Example output for an empty idea: {"scores": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}',
+                user_suffix="\n\nBe concise.",
+            ),
+        ),  # the source's own zero vector, kept
+        (RULES, dict(user_suffix="\n```python\n" + "assert ok(x)\n" * 10 + "```")),  # ten lines of a sample
+        (
+            RULES,
+            dict(
+                system_prompt="You extract keywords.\n- Output JSON only.\n- At most 8 items.\n- Lowercase."
+            ),
+        ),
+        (
+            RULES,
+            dict(
+                system_prompt=RULES + "| plan | sso | audit |\n|---|---|---|\n" + "| free | no | no |\n" * 5
+            ),
+        ),
+        (RULES, dict(system_prompt=RULES + "\n" + "---\n" * 30 + "|" * 40)),  # separators
+        (RULES, dict(few_shot=[{"role": "assistant", "content": '["a", "b", "c", "d", "e"]'}] * 12)),
+        (RULES, dict(user_suffix="请用中文回答。只输出JSON，不要输出其他文字。")),
+        # re-review R1-2 (mutants L1, L2): a run the source has, kept, is not a loop the model added
+        (
+            RULES + "Empty idea: " + "0 " * 20,
+            dict(system_prompt=RULES + "Empty idea: " + "0 " * 20 + "\nBe brief."),
+        ),
+        (RULES + "Pad ids: " + "0" * 60, dict(system_prompt=RULES + "Pad ids: " + "0" * 60 + "\nBe brief.")),
+        # re-review R1-g: one character repeated is a loop only from 40 repeats on
+        (RULES, dict(user_suffix="\nIDs look like 100000000000 or 200000000000.")),
+        (RULES, dict(user_suffix="\nWrite a card number as xxxxxxxxxxxx1234.")),
+        (RULES, dict(user_suffix="\nAnswer: ____________ (one word).")),
+        (RULES, dict(user_suffix="\nIgnore the sentinel id ffffffffffff0a.")),
+        (
+            RULES,
+            dict(user_suffix="\nThe empty key is " + base64.b64encode(bytes(24)).decode() + "."),
+        ),  # 'A' x32
+    ],
+)
+def test_text_the_source_has_or_ordinary_formatting_passes(system, spec):
+    assert adapter_problem(small_site(system), AdapterSpec(**spec)) is None
+
+
+@pytest.mark.parametrize(
+    "spec, problem",
+    [
+        (
+            dict(system_prompt=RULES + " very good" * 12),
+            "system_prompt repeats 'very good' 12 times in a row",
+        ),
+        (dict(system_prompt=RULES + "实用" * 600), "system_prompt repeats '实用' 600 times in a row"),
+        (
+            dict(system_prompt=RULES + " Do not use any markdown." * 60),
+            "system_prompt repeats ' Do not use any markdown.' 60 times in a row",
+        ),
+        (
+            dict(few_shot=[{"role": "assistant", "content": "ok " * 30}]),
+            "few_shot repeats 'ok' 30 times in a row",
+        ),
+        (dict(system_prompt=RULES + "好" * 60), "system_prompt repeats '好' 60 times in a row"),
+    ],
+)
+def test_loops_the_model_added_are_refused(spec, problem):
+    """Review M1, M2 (mutant A2): a 2-word loop, CJK loops with no spaces, a 5-word sentence on repeat."""
+    assert adapter_problem(small_site(RULES), AdapterSpec(**spec)) == problem
+
+
+def test_ordinary_rewrites_pass_the_sanity_check():
+    """Near misses: a long legitimate list, rules renumbered around an inserted one, rules on one line (as
+    the Iterator writes them), JSON few-shot replies, and the adapter that keeps the source prompt."""
+    words = ", ".join(f"word{i}" for i in range(120))
+    long_list = SOURCE.replace('"build".', f'"build", {words}.')
+    renumbered = []  # a new rule 3; the old 3-8 become 4-9
+    for line in SOURCE.split("\n"):
+        if (m := re.match(r"(\d)\. (.*)", line)) and int(m[1]) >= 3:
+            renumbered += ["3. Prefer nouns over adjectives."] if m[1] == "3" else []
+            line = f"{int(m[1]) + 1}. {m[2]}"
+        renumbered.append(line)
+    renumbered = "\n".join(renumbered)
+    assert "9. Think about" in renumbered
+    one_line = " ".join(SOURCE.split())
+    shots = [
+        {"role": "user", "content": "A todo app for teams"},
+        {"role": "assistant", "content": '["team task manager", "shared todo list", "kanban board"]'},
+    ]
+    for spec in [
+        AdapterSpec(system_prompt=long_list),
+        AdapterSpec(system_prompt=renumbered),
+        AdapterSpec(system_prompt=one_line, few_shot=shots, user_suffix="\n\nReply with the JSON only."),
+        AdapterSpec(),
+    ]:
+        assert adapter_problem(IDEA_SITE, spec) is None, spec.system_prompt
+
+
+def test_a_refused_adapter_agent_reply_falls_back_to_the_translation():
+    loop = "Use these words: " + "utility, " * 30
+    adapter = adapt(SITES["cs_06"], FakeLLM().add("adapter", decision(reasoning="low", user_suffix=loop)))
+    assert adapter.spec == translate(SITES["cs_06"]).spec
+    assert "adapter_agent_refused: user_suffix repeats 'utility' 30 times in a row" in adapter.risk_flags
 
 
 def test_tool_site_keeps_translated_tools():

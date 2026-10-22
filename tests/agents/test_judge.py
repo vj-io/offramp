@@ -8,6 +8,7 @@ Two kinds of test:
   (made-up KB snippets, questions and answers), not product data.
 """
 
+import json
 from pathlib import Path
 
 import httpx
@@ -262,10 +263,66 @@ def test_a_case_the_judge_skipped_is_asked_again_alone():
     ],
 )
 def test_judge_side_failure_raises_never_scores(reply):
-    # the judge is not the model under test: its timeouts, outages, bad replies say nothing of the candidate
-    fake = FakeLLM().add(JUDGE_ROLE, reply)
+    # the judge is not the model under test: its timeouts, outages, bad replies say nothing of the candidate;
+    # a reply off the rubric is asked for once more (task 29 D), so it fails only when that one is off too
+    fake = FakeLLM().add(JUDGE_ROLE, reply, reply)
     with pytest.raises(ProviderError, match="judge"):
         judge(fake, [_case(1)], {"cs_04:001": ModelOutput(text="x")})
+    assert len(fake.calls) == (1 if isinstance(reply, Exception) else 2)
+
+
+TRUNCATED = json.loads(
+    (Path(__file__).parents[1] / "fixtures" / "judge" / "truncated_reply_run_22ed36.json").read_text()
+)
+
+
+def test_a_reply_cut_off_mid_json_is_asked_once_more_with_more_room():
+    """Task 29 D: in run 20261022-065443547-22ed36 the judge's notes ran past max_tokens (finish_reason
+    "length"), the JSON was cut mid-string, and cs_05's Lightning dev cell was left without a score. The batch
+    is asked once more, a new request with twice the room; a second miss is a ProviderError (a run error)."""
+    cases = [_case(1)]
+    fake = FakeLLM().add(JUDGE_ROLE, TRUNCATED["reply"], {"scores": [_single(1, _r(4, 4, 4))]})
+    result = judge(fake, cases, {"cs_04:001": ModelOutput(text="x")})
+    assert [s.candidate for s in result.scores] == [4.0]
+    assert fake.calls[1]["max_tokens"] == 2 * fake.calls[0]["max_tokens"]
+    assert fake.calls[1]["messages"] == fake.calls[0]["messages"]
+
+    fake = FakeLLM().add(JUDGE_ROLE, TRUNCATED["reply"], TRUNCATED["reply"])
+    with pytest.raises(ProviderError, match="judge: reply does not match the rubric schema"):
+        judge(fake, cases, {"cs_04:001": ModelOutput(text="x")})
+
+
+def test_replies_that_failed_the_rubric_are_not_kept_so_a_resume_asks_again(tmp_path, monkeypatch):
+    """Review I1 (judge_resume.py): a reply off the rubric was cached like any reply, so after the first try
+    and the 2x retry both failed, every resume replayed them and failed at the same cell without a request.
+    Both are evicted: the run fails, and its resume sends fresh requests."""
+    from offramp.tf.client import TFClient
+
+    class Reply:
+        def model_dump(self, **_):
+            message = {"role": "assistant", "content": TRUNCATED["reply"]}
+            return {
+                "choices": [{"message": message, "finish_reason": "length"}],
+                "usage": {"completion_tokens": 9},
+            }
+
+    sent = []
+    monkeypatch.setattr(
+        TFClient,
+        "_create",
+        lambda self, model, messages, params: sent.append(params["max_tokens"]) or Reply(),
+    )
+    case = _case(1)
+    for _ in ("run", "resume"):
+        sent.clear()
+        with pytest.raises(ProviderError, match="does not match the rubric schema"):
+            judge(
+                TFClient(api_key="x", cache_dir=tmp_path, live=True),
+                [case],
+                {case.id: ModelOutput(text="answer")},
+            )
+        assert sent == [550, 1100]  # live both times: nothing failed was kept
+    assert list(tmp_path.glob("*.json")) == []
 
 
 def test_pairwise_ordering_the_judge_skipped_raises():

@@ -117,6 +117,34 @@ def stopped(site: CallSite, decision: Decision, reason: str, gate: Gate | None =
     return Verdict(site_id=site.id, decision=decision, reason=reason, failed_gate=gate)
 
 
+def too_slow(site: CallSite, result: TierResult) -> str | None:
+    """Why a tier fails for `site` although its run passed: the median latency measured on it exceeds the
+    timeout the call's own code sets (Contract.timeout_s), which the migrated call keeps, so most calls would
+    time out in production. None without such a timeout, or within it."""
+    timeout = site.contract.timeout_s if site.contract else None
+    if timeout is None or result.metrics.p50_ms <= timeout * 1000:
+        return None
+    calls, seconds = result.cases or len(result.case_scores), result.metrics.p50_ms / 1000
+    limit = f"the call's {timeout:g} s timeout"
+    return f"too slow: {result.split} median {seconds:.1f} s over {calls} calls > {limit}"
+
+
+def not_worth_iterating(site: CallSite, dev: TierResult) -> str | None:
+    """Why a tier is not iterated at all: its dev median latency is over twice the call's own timeout, which
+    no prompt change plausibly brings in, so iterations would only spend Ultra calls. Within twice the
+    timeout it is iterated (a shorter reply might come in under it), and the holdout gate decides."""
+    timeout = site.contract.timeout_s if site.contract else None
+    if timeout is None or dev.metrics.p50_ms <= 2 * timeout * 1000:
+        return None
+    seconds = dev.metrics.p50_ms / 1000
+    return f"not iterated: dev median {seconds:.1f} s is more than twice the call's {timeout:g} s timeout"
+
+
+def passes(site: CallSite, holdout: TierResult) -> bool:
+    """A holdout run that qualifies its tier: it passed, within the call's own timeout."""
+    return holdout.passed and too_slow(site, holdout) is None
+
+
 def _holdout_fields(holdout: TierResult, task: TaskType) -> dict[str, Any]:
     """The figures every verdict with a measured holdout carries, from that holdout run."""
     rows, free_text = holdout.case_scores, task == "free_text"
@@ -148,6 +176,8 @@ def budget_stopped(
     measured = f"{'passed' if dev.passed else 'failed'} dev: {_phrase(dev, task, thresholds)[0]}"
     if holdout is None:
         measured += "; holdout not measured"
+    elif slow := holdout.passed and too_slow(site, holdout):
+        measured += f"; failed the holdout: {slow}"
     else:
         result = "passed" if holdout.passed else "failed"
         measured += f"; {result} the holdout: {_phrase(holdout, task, thresholds)[0]}"
@@ -348,9 +378,12 @@ def decide(
     for a MIGRATE secured before a budget stop, which cheaper tiers were not fully tried and why."""
     task = site.contract.task_type
     tier, dev, holdout, n = Tier(evidence.tier), evidence.dev, evidence.holdout, evidence.iterations
-    migrate = dev.passed and holdout.passed
+    slow = dev.passed and holdout.passed and too_slow(site, holdout)
+    migrate = dev.passed and holdout.passed and not slow
     name = tier.value.capitalize()
-    if migrate:
+    if slow:  # parity reached, but the migrated call would time out
+        result, gate = f"{slow} (it reached parity: {_phrase(holdout, task, thresholds)[0]})", "latency"
+    elif migrate:
         result, gate = _phrase(holdout, task, thresholds)
     elif holdout.passed:  # dev never passed: the holdout pass is not a qualification
         result, gate = (
@@ -374,6 +407,9 @@ def decide(
             else "cheaper tiers did not"
         )
         if migrate
+        else "reached parity with the references on the held-out cases, but its median latency exceeds the "
+        "timeout the call's own code sets, so the call stays"
+        if slow
         else "no tier reached parity with the references; this tier came closest",
         "adapter_changes": evidence.changes,
         "holdout_failure_kinds": sorted(

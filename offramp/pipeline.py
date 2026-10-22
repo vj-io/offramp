@@ -43,12 +43,13 @@ from sqlmodel import Session, delete
 
 from offramp import db, github
 from offramp.agents import case_gen
-from offramp.agents.adapter import adapt
+from offramp.agents.adapter import REFUSED, adapt
 from offramp.agents.patcher import compose_patches
 from offramp.agents.pr_writer import PRContext, reference_summary, write_pr
 from offramp.agents.scanner import label_contracts, scan_repo
 from offramp.agents.verdict import pricing_yaml_price
 from offramp.evals import baselines
+from offramp.evals.errors import ProviderError
 from offramp.evals.route import route_site, secure_holdouts
 from offramp.evals.runner import run_tier
 from offramp.evals.scorers.aggregate import Thresholds
@@ -161,6 +162,7 @@ class RunLog:
         self.run_id, self.dir = run_id, Path(directory)
         self.file = self.dir / "events.jsonl"
         self.events: list[RunEvent] = read_events(self.file)
+        self.loaded_size = self._size()  # the file as read: another process appending makes it grow
         self.engine, self.on_event = engine, on_event
         self._lock = threading.Lock()
 
@@ -200,6 +202,14 @@ class RunLog:
             )
             return self._add(event)
 
+    def _size(self) -> int:
+        return self.file.stat().st_size if self.file.exists() else 0
+
+    def stale(self) -> bool:
+        """Whether another process appended to the event file since this log read or wrote it (`offramp pr`
+        on a finished run)."""
+        return self._size() != self.loaded_size
+
     def add(self, event: RunEvent) -> RunEvent:
         """Append a recorded event as is (seq, ts, payload), under this run's id: replays."""
         with self._lock:
@@ -211,6 +221,7 @@ class RunLog:
         with self.file.open("a", encoding="utf-8") as f:
             f.write(event.model_dump_json() + "\n")
         self.events.append(event)
+        self.loaded_size = self._size()
         if self.engine is not None:
             record(self.engine, event)
         if self.on_event is not None:
@@ -497,7 +508,8 @@ class Pipeline:
         verdicts = self._artifact("verdicts.json", lambda: self._verdicts(chat, routes))
         patch = self._artifact("patch.json", lambda: self._patch(repo, chat, verdicts, routes))
         write_results(self.dir, routes, patch["verdicts"])
-        self._artifact("pr.json", lambda: self._pr(repo, chat, patch, routes, evals, cases))
+        sha = clone["commit_sha"]
+        self._artifact("pr.json", lambda: self._pr(repo, chat, patch, routes, evals, cases, sha))
         self._finish(chat, cases, patch)
 
     def _check_dataset(self, evals: Path) -> None:
@@ -590,9 +602,10 @@ class Pipeline:
                 if s.contract and p.contract and s.contract.task_type != p.contract.task_type:
                     notes.append(f"{s.id}: labelled {s.contract.task_type} now, prepared as "
                                  f"{p.contract.task_type}; evaluating as prepared")  # fmt: skip
-                # the code's current position, and how it parses the reply now (read from code, not labelled)
-                found = s.contract.reply_json if s.contract else None
-                contract = p.contract.model_copy(update={"reply_json": found}) if p.contract else None
+                # the code's current position, how it parses the reply and its timeout now (read from code)
+                read = ("reply_json", "timeout_s")
+                code = {k: getattr(s.contract, k) if s.contract else None for k in read}
+                contract = p.contract.model_copy(update=code) if p.contract else None
                 sites.append(p.model_copy(update={"lines": s.lines, "contract": contract}))
         chat = [s for s in sites if s.kind == "chat"]
         self._stage(Stage.SCANNED, f"{len(chat)} call sites found")
@@ -723,6 +736,10 @@ class Pipeline:
                 self.log.emit("tier_result", result, call_site_id=site_id)
             elif entry["kind"] == "error" and entry["error_type"] == "CacheMiss":
                 raise CacheMiss(f"{cell}: {entry['message']}")
+            elif entry["kind"] == "error" and entry["error_type"] == "ProviderError":
+                # never a silently empty cell: the run fails, and a resume runs the matrix again (free
+                # where cached); the judge has already asked once more (judge._ask)
+                raise ProviderError(f"{cell}: {entry['message']}")
             else:
                 why = entry.get("reason") or f"{entry['error_type']}: {entry['message']}"
                 self._log("warn", f"{cell}: {why}"[:300], site_id)
@@ -822,10 +839,14 @@ class Pipeline:
         verdict = route.verdict
         if circular and route.adapter is not None:  # compared, but not with the closed model: say which one
             verdict = verdict.model_copy(update={"closed_reference_model": circular})
+        v0 = [f.removeprefix(f"{REFUSED}: ") for f in adapter.risk_flags if f.startswith(f"{REFUSED}: ")]
+        refused = [f"Adapter v0 refused before evaluation (the translation ran instead): {w}" for w in v0]
         return {
             "verdict": verdict.model_dump(mode="json"),
             "adapter": route.adapter.model_dump(mode="json") if route.adapter else None,
             "tier_results": [r.model_dump(mode="json") for r in route.results],
+            "refused": refused + route.refused,
+            "not_iterated": route.not_iterated,
         }
 
     def _runner(self, site: CallSite) -> Callable[..., Any]:
@@ -898,9 +919,10 @@ class Pipeline:
         routes: dict[str, dict[str, Any]],
         evals: Path,
         cases: dict[str, Any],
+        commit_sha: str | None,
     ) -> dict[str, Any]:
         """PR Writer (Task 10): the body is always rendered (it is in the report); the PR is opened only with
-        config.open_pr and something to commit."""
+        config.open_pr and something to commit, on the commit the run cloned (`commit_sha`)."""
         gh = github_repo(self.config.repo_url, repo)
         draft = self.pr(
             run_id=self.log.run_id,
@@ -913,10 +935,10 @@ class Pipeline:
             cases=cases,
             client=self.client,
             open_pr=self.config.open_pr and bool(patch["files"]) and gh is not None,
+            commit_sha=commit_sha,
         )
         if draft.get("url"):
-            self.log.emit("pr", {"url": draft["url"], "title": draft["title"]})
-            self._stage(Stage.PR_OPENED)
+            announce_pr(self.log, draft["url"], draft["title"])
         elif not self.config.open_pr:
             self._log("info", "pull request not opened (--no-pr); its body is in the report")
         elif not patch["files"]:
@@ -943,6 +965,82 @@ class Pipeline:
         return run_matrix_job(matrix, mode="auto", cache_dir=self.cache_dir, run_id=self.log.run_id)
 
 
+def open_run_pr(
+    repo: str,
+    run_id: str,
+    files: dict[str, str],
+    title: str,
+    body: str,
+    commit_sha: str | None,
+    opener: Callable[..., str] | None = None,
+) -> str:
+    """The PR stage's GitHub step, shared by a run and by `offramp pr`: one commit of `files` on branch
+    offramp/<run_id> of `repo` ("owner/name"), parented on `commit_sha` (the commit the run cloned, which
+    `files` were patched against), then the PR; its URL. `opener` stands in for github.open_pr."""
+    open_pr = opener or github.open_pr
+    return open_pr(repo, run_id=run_id, files=files, title=title, body=body, parent=commit_sha)
+
+
+def announce_pr(log: RunLog, url: str, title: str) -> None:
+    """The PR stage's events, shared by a run and by `offramp pr`: the `pr` event, then PR_OPENED."""
+    log.emit("pr", {"url": url, "title": title})
+    log.emit("stage", {"stage": Stage.PR_OPENED.value})
+
+
+def open_pr_from_run(
+    run_id: str, root: Path | None = None, *, opener: Callable[..., str] | None = None, **log_kw: Any
+) -> str:
+    """`offramp pr <run_id>`: open the PR of a finished `--no-pr` run from its own artifacts (patch.json's
+    files, pr.json's title and body, on the repo its config names), with no model call, so a capped run is
+    never continued to get its PR. The run's log gains the PR stage's events, then DONE again, so its
+    snapshot and export-replay show the PR. ValueError when the run has not finished, already opened its
+    PR, migrated nothing, is not on GitHub, or another `offramp pr` holds its lock (pr.lock)."""
+    run_dir = (root or data_dir()) / "runs" / run_id
+    lock = run_dir / "pr.lock"
+    try:  # one `offramp pr` per run at a time: the checks below and the PR are one step
+        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        raise ValueError(
+            f"run {run_id}: a PR is already being opened for this run; "
+            f"if no `offramp pr` is running for this run, delete {lock}"
+        ) from None
+    except FileNotFoundError:
+        raise ValueError(f"run {run_id} has not finished (no such run under {run_dir.parent})") from None
+    try:
+        return _open_pr_from_run(run_dir, run_id, opener, log_kw)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _open_pr_from_run(
+    run_dir: Path, run_id: str, opener: Callable[..., str] | None, log_kw: dict[str, Any]
+) -> str:
+    log = RunLog(run_dir, run_id, **log_kw)  # engine, on_event: as `offramp run` mirrors and shows events
+    if not log.events or log.stage != Stage.DONE or log.events[-1].type != "done":
+        raise ValueError(
+            f"run {run_id} has not finished (stage {log.stage.value}): only a DONE run's PR opens"
+        )
+    if opened := next((e.payload["url"] for e in log.events if e.type == "pr"), None):
+        raise ValueError(f"run {run_id} already opened its PR: {opened}")
+    patch = json.loads((run_dir / "patch.json").read_text(encoding="utf-8"))
+    if not patch["files"] or not any(v["decision"] == "MIGRATE" for v in patch["verdicts"]):
+        raise ValueError(f"run {run_id} migrated nothing: there is no PR to open")
+    clone = json.loads((run_dir / "clone.json").read_text(encoding="utf-8"))
+    repo = github_repo(log.config.repo_url, Path(clone["path"]))
+    if repo is None:
+        raise ValueError(f"run {run_id}: {log.config.repo_url} is not a GitHub repository")
+    draft = json.loads((run_dir / "pr.json").read_text(encoding="utf-8"))
+    sha = clone["commit_sha"]
+    url = open_run_pr(repo, run_id, patch["files"], draft["title"], draft["body"], sha, opener)
+    _write_json(run_dir / "pr.json", draft | {"url": url})
+    done = log.events[-1].payload  # the run's totals, unchanged: nothing was spent
+    announce_pr(log, url, draft["title"])
+    log.emit("stage", {"stage": Stage.DONE.value})
+    log.emit("done", done)
+    _write_json(run_dir / "report.json", report(run_dir, run_id, log.events))
+    return url
+
+
 def write_and_open_pr(
     *,
     run_id: str,
@@ -954,6 +1052,7 @@ def write_and_open_pr(
     cases: dict[str, Any],
     client: LLM,
     open_pr: bool,
+    commit_sha: str | None = None,
     **_: Any,
 ) -> dict[str, Any]:
     """PR Writer (Task 10): Super's prose around the evidence rendered from the run's measurements, then the
@@ -989,10 +1088,12 @@ def write_and_open_pr(
         alone=patch.get("alone", {}),
         combined=patch.get("combined", []),
         combined_repair=patch.get("combined_repair", []),
+        refused={k: r["refused"] for k, r in routes.items() if r.get("refused")},
+        not_iterated={k: r["not_iterated"] for k, r in routes.items() if r.get("not_iterated")},
     )
     draft = write_pr(ctx, client)
     files, title, body = patch["files"], scrub(draft.title), scrub(draft.body)  # reasons carry sandbox output
-    url = github.open_pr(repo, run_id=run_id, files=files, title=title, body=body) if open_pr else None
+    url = open_run_pr(repo, run_id, files, title, body, commit_sha) if open_pr else None
     return {"title": title, "body": body, "url": url}
 
 

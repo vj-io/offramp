@@ -826,6 +826,7 @@ class StubIterator:
 
     def __call__(self, adapter, site, failing, tier, error_counts):
         self.calls.append((Tier(tier), adapter.version, [c.id for c in failing], dict(error_counts)))
+        assert len(self.calls) <= 50, "asked without end: tries are not being counted"  # fail, never hang
         if self.error:
             raise self.error
         if self.give_up_at == adapter.version + 1:
@@ -840,9 +841,17 @@ class StubIterator:
 
 
 def route(
-    table, site=SITE, iterator=None, llm=None, config=None, events=None, cases=ROUTE_CASES, **kw
+    table,
+    site=SITE,
+    iterator=None,
+    llm=None,
+    config=None,
+    events=None,
+    cases=ROUTE_CASES,
+    runner_type=None,
+    **kw,
 ) -> tuple:
-    runner, iterator = Runner(table), iterator or StubIterator()
+    runner, iterator = (runner_type or Runner)(table), iterator or StubIterator()
     llm = llm or reason_llm(*[BudgetExceeded("rule sentence only")] * 2)
     out = route_site(
         site,
@@ -1211,6 +1220,16 @@ def test_a_holdout_the_securing_pass_measured_is_stated_when_the_stop_comes_befo
     assert v.reason.endswith("failed the holdout: parity vs reference 53.3% < 95%")
 
 
+def test_a_budget_stopped_site_keeps_the_matrix_cells_measured_on_its_record():
+    """Task 29 E: cs_05 of run 20261022-065443547-22ed36 had Super and Ultra measured by the matrix (2.84,
+    3.59) but an empty tier_results list in its results file: routing measured nothing before the cap."""
+    table = {(L, "dev"): "budget", (S, "dev"): 0.4, (U, "dev"): 0.6}
+    prior = {k: r for k, r in matrix_cells(table, FREE_TEXT).items() if k[0] != L}  # its judge failed
+    out, runner, it = route(table, site=FREE_TEXT, prior=prior)
+    assert out.verdict.failed_gate == "budget" and runner.calls == [(L, "dev", 0)]
+    assert [(r.tier, r.split) for r in out.results] == [(S, "dev"), (U, "dev")]
+
+
 def test_a_budget_stop_counts_the_iterations_of_the_best_adapter():
     table = {(L, "dev"): 0.5, (L, "dev", 1): 0.9, (L, "dev", 2): "budget"}
     out, runner, it = route(table)
@@ -1293,6 +1312,166 @@ def test_not_fully_tried_names_only_the_cheaper_tiers_that_did_not_finish():
     assert [(t, ver) for t, ver, *_ in it.calls] == [(L, 0)]
     assert (v.decision, v.tier, v.best_score_split) == ("MIGRATE", U, None)
     assert v.reason.endswith("; Super not fully tried (budget: Ultra agent call cap reached (40)).")
+
+
+class LoopingIterator(StubIterator):
+    """The Iterator of run 20261022-065443547-22ed36: its first `loops` rewrites run a word into a loop; then,
+    told why the last one was refused (`refused`), it writes a sane one."""
+
+    def __init__(self, loops: int):
+        super().__init__()
+        self.loops, self.told = loops, []
+
+    def __call__(self, adapter, site, failing, tier, error_counts, refused=None):
+        self.told.append(refused)
+        new = super().__call__(adapter, site, failing, tier, error_counts)
+        if len(self.told) <= self.loops:
+            looped = "Never include: tool, app, " + "utility, " * 30
+            new = new.model_copy(update={"spec": new.spec.model_copy(update={"system_prompt": looped})})
+        return new
+
+
+def test_a_degenerate_rewrite_is_refused_before_evaluation_and_counts_as_a_try():
+    """Task 29 A: a refused rewrite costs its try but no evaluation (no eval or judge calls); the Iterator is
+    asked again and told why; the refusal is on the route's record."""
+    events = []
+    it = LoopingIterator(loops=1)
+    table = {(L, "dev"): 0.5, (L, "dev", 1): 1.0, (L, "holdout"): 1.0}
+    out, runner, _ = route(table, iterator=it, events=events)
+    assert runner.calls == [(L, "dev", 0), (L, "dev", 1), (L, "holdout", 1)]  # the refused v1 never ran
+    assert it.told == [None, "system_prompt repeats 'utility' 30 times in a row"]
+    assert out.verdict.decision == "MIGRATE" and out.verdict.iterations == 1
+    assert "utility" not in (out.adapter.spec.system_prompt or "")
+    assert out.refused == [
+        "Lightning v1 refused before evaluation: system_prompt repeats 'utility' 30 times in a row"
+    ]
+    [log] = [p for t, p in events if t == "log"]
+    assert log["level"] == "warn" and "refused before evaluation" in log["message"]
+    assert [t for t, _ in events].count("iteration") == 1  # only the evaluated rewrite is announced
+
+
+def test_a_refused_rewrite_uses_up_a_try_even_when_the_next_one_is_accepted():
+    """Review M6 (mutant A10): with two tries, a refused rewrite and an accepted one end Lightning's tries."""
+    it = LoopingIterator(loops=1)
+    table = {(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): 1.0}
+    out, runner, _ = route(table, iterator=it, config=RunConfig(repo_url="x", max_iterations=2))
+    assert len(it.told) == 2 and runner.calls == [
+        (L, "dev", 0),
+        (L, "dev", 1),
+        (S, "dev", 0),
+        (S, "holdout", 0),
+    ]
+    assert out.verdict.tier == S and len(out.refused) == 1
+
+
+def test_a_tier_whose_rewrites_are_all_refused_ends_without_evaluating_any():
+    it = LoopingIterator(loops=3)
+    out, runner, _ = route({(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): 1.0}, iterator=it)
+    assert runner.calls == [(L, "dev", 0), (S, "dev", 0), (S, "holdout", 0)] and len(it.told) == 3
+    assert out.verdict.tier == S and len(out.refused) == 3
+
+
+def timed(site: CallSite, seconds: float) -> CallSite:
+    return site.model_copy(update={"contract": site.contract.model_copy(update={"timeout_s": seconds})})
+
+
+ALL_PASS = {(t, split): 1.0 for t in (L, S, U) for split in ("dev", "holdout")}  # every run at p50 700 ms
+
+
+def test_a_tier_slower_than_the_calls_own_timeout_fails_for_the_site():
+    """Task 29 C: idea-reality's cs_01 migrated to Lightning with a holdout median of 95 s while the migrated
+    call keeps the client's timeout=30: most calls would time out. A tier passes only within the timeout."""
+    out, runner, it = route(ALL_PASS, site=timed(SITE, 0.5))
+    v = out.verdict
+    assert runner.calls == [
+        (L, "dev", 0),
+        (L, "holdout", 0),
+        (S, "dev", 0),
+        (S, "holdout", 0),
+        (U, "dev", 0),
+        (U, "holdout", 0),
+    ]
+    assert (v.decision, v.best_tier, v.failed_gate) == ("KEEP_CLOSED", L, "latency")
+    assert v.reason.startswith(  # review M5: what was measured, and that parity was reached
+        f"too slow: holdout median 0.7 s over {HOLD_N} calls > the call's 0.5 s timeout (it reached parity: "
+        "parity vs reference 100.0% ≥ 95%) on Lightning after 0 adapter"
+    )
+    out, *_ = route(ALL_PASS, site=timed(SITE, 1))  # within the timeout: as before
+    assert (out.verdict.decision, out.verdict.tier) == ("MIGRATE", L)
+
+
+def test_a_securing_holdout_slower_than_the_timeout_secures_nothing():
+    table = {(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): 1.0}
+    refs = {c.id: ref(c.id, "billing") for c in ROUTE_CASES}
+    config = RunConfig(repo_url="x")
+    site = timed(SITE, 0.5)
+    got = secure_holdouts(
+        site, ROUTE_CASES, refs, V0, FakeLLM(), config, matrix_cells(table), runner=Runner(table)
+    )
+    assert [k for k, r in got.items()] == [(S, 0, "holdout")]  # measured, and too slow: not a secured verdict
+    out, runner, it = route(
+        table, site=site, prior=matrix_cells(table) | got, iterator=StubIterator(error=ULTRA_CAP)
+    )
+    assert (out.verdict.decision, out.verdict.failed_gate) == ("KEEP_CLOSED", "budget")
+    assert out.verdict.reason.endswith(
+        f"failed the holdout: too slow: holdout median 0.7 s over {HOLD_N} calls > the call's 0.5 s timeout"
+    )
+
+
+class Timed(Runner):
+    """The stub runner, with each tier's p50 latency as given (ms)."""
+
+    def __init__(self, table: dict, p50: dict):
+        super().__init__(table)
+        self.p50 = p50
+
+    def __call__(self, *args, **kw):
+        out, calls = super().__call__(*args, **kw)
+        if isinstance(out, TierResult) and out.tier in self.p50:
+            out = out.model_copy(
+                update={"metrics": out.metrics.model_copy(update={"p50_ms": self.p50[out.tier]})}
+            )
+        return out, calls
+
+
+def test_the_securing_pass_moves_on_from_a_tier_too_slow_for_the_calls_timeout():
+    """Review M6 (mutant C5): Super passes its holdout but at 2 s against a 1 s timeout; Ultra, within it,
+    is the verdict to secure."""
+    table = {(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): 1.0, (U, "dev"): 1.0, (U, "holdout"): 1.0}
+    refs = {c.id: ref(c.id, "billing") for c in ROUTE_CASES}
+    runner = Timed(table, {S: 2000})
+    got = secure_holdouts(
+        timed(SITE, 1),
+        ROUTE_CASES,
+        refs,
+        V0,
+        FakeLLM(),
+        RunConfig(repo_url="x"),
+        matrix_cells(table),
+        runner=runner,
+    )
+    assert runner.calls == [(S, "holdout", 0), (U, "holdout", 0)] and set(got) == {
+        (S, 0, "holdout"),
+        (U, 0, "holdout"),
+    }
+
+
+def test_a_tier_whose_dev_median_is_over_twice_the_timeout_is_not_iterated():
+    """Ruling on task 29 tail 1: Lightning's dev median was 42-109 s against idea-reality's 30 s timeouts. No
+    prompt change brings that in, so its iterations would only spend Ultra calls; between 1x and 2x the
+    timeout it is still iterated (a shorter reply might), and the holdout gate decides."""
+    events = []
+    table = {(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): 1.0}
+    out, runner, it = route(
+        table, site=timed(SITE, 0.3), events=events, runner_type=lambda t: Timed(t, {S: 200})
+    )
+    assert it.calls == [] and runner.calls == [(L, "dev", 0), (S, "dev", 0), (S, "holdout", 0)]
+    assert out.not_iterated == [
+        "Lightning not iterated: dev median 0.7 s is more than twice the call's 0.3 s timeout"
+    ]
+    assert any("not iterated" in p["message"] for t, p in events if t == "log")
+    out, runner, it = route(table, site=timed(SITE, 0.5), runner_type=lambda t: Timed(t, {S: 200}))
+    assert it.calls  # 0.7 s is within twice 0.5 s: Lightning is iterated
 
 
 def test_an_iterator_without_a_valid_adapter_ends_that_tiers_iterations():
