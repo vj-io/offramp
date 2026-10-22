@@ -835,7 +835,7 @@ class StubIterator:
             site_id=site.id,
             version=adapter.version + 1,
             tier=tier,
-            spec=adapter.spec,
+            spec=adapter.spec.model_copy(update={"user_suffix": f" stub change {adapter.version + 1}"}),
             change_log=[f"stub change {adapter.version + 1}"],
         )
 
@@ -1362,6 +1362,40 @@ def test_a_refused_rewrite_uses_up_a_try_even_when_the_next_one_is_accepted():
         (S, "holdout", 0),
     ]
     assert out.verdict.tier == S and len(out.refused) == 1
+
+
+class RepeatingIterator(StubIterator):
+    """The Iterator of run 20261022-153359255-7bea7c: cs_05's Super v3 was v2 again, Ultra v2 was v1 again.
+    Its `repeat`-th rewrite is the spec of the adapter at version `of` on the tier."""
+
+    def __init__(self, repeat: int, of: int):
+        super().__init__()
+        self.repeat, self.of, self.told, self.seen = repeat, of, [], {}
+
+    def __call__(self, adapter, site, failing, tier, error_counts, refused=None):
+        self.told.append(refused)
+        self.seen[adapter.version] = adapter.spec
+        new = super().__call__(adapter, site, failing, tier, error_counts)
+        if len(self.told) == self.repeat:
+            new = new.model_copy(update={"spec": self.seen[self.of]})
+        return new
+
+
+@pytest.mark.parametrize(("repeat", "of"), [(1, 0), (2, 0), (2, 1)])
+def test_a_rewrite_identical_to_one_tried_on_the_tier_is_refused_and_ends_the_tier(repeat, of):
+    """Task 31 A (review I-1): an unchanged rewrite was evaluated as new, and its outputs (replayed from the
+    cache) were judged again: a different score on the same outputs. It is never evaluated, and the tier's
+    tries end: asked again unchanged the Iterator replies the same, and a request telling it why is one no
+    recorded run made (the demo run's cs_04 Super v2 and v3 repeat v1), so their replay would miss."""
+    events = []
+    it = RepeatingIterator(repeat, of)
+    table = {(L, "dev"): 0.5, (L, "dev", 1): 0.5, (S, "dev"): 1.0, (S, "holdout"): 1.0}
+    out, runner, _ = route(table, iterator=it, events=events)
+    refusal = f"Lightning v{repeat} refused before evaluation: identical to v{of}"
+    assert out.refused == [refusal] and len(it.told) == repeat
+    assert runner.calls == [(L, "dev", v) for v in range(repeat)] + [(S, "dev", 0), (S, "holdout", 0)]
+    assert [t for t, _ in events].count("iteration") == repeat - 1  # the refused rewrite is not announced
+    assert any(p.get("message", "").endswith(refusal) for t, p in events if t == "log")
 
 
 def test_a_tier_whose_rewrites_are_all_refused_ends_without_evaluating_any():
