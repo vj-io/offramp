@@ -695,7 +695,8 @@ p50 latency with thinking off against on is {off_vs_on("p50")}, and p95 is {off_
 different calls, not a controlled experiment. It does not show uptime or an error rate (failed requests are
 not recorded), throughput or behaviour under sustained load (the calls came from Offramp's pipeline and
 tests in bursts, with at most 8 eval calls in flight), time to first token (nothing was streamed), or cost
-per call (`budget.json` has run totals only). All of it comes from one demo app's call sites, the
+per call (`budget.json` has run totals only). All of it comes from the call sites of the few repos
+Offramp was pointed at (a demo app and, in the cache since 2026-10-22, one open-source repo), the
 cassettes are committed test and dev recordings rather than customer traffic, the roles are inferred from
 system prompts, and latency was measured on the client side only.""")
 
