@@ -21,8 +21,8 @@ A ProviderError from a tier run (an outage, an account error, the judge leaving 
 a second one propagates as a run error, never a score. CacheMiss (replay without its cassette) propagates.
 Verdicts without a comparison: a per-run cap (BudgetStop from the runner, BudgetExceeded from the Iterator)
 is KEEP_CLOSED("budget: ...") with the best adapter measured so far (tier, dev score, iterations); a site the
-loop cannot evaluate (no contract, flagged MANUAL_REVIEW, no dev or
-no holdout cases, a case without a reference, a call with unresolved parameters) is MANUAL_REVIEW.
+loop cannot evaluate (no contract, flagged MANUAL_REVIEW, no dev or no holdout cases, a case without a
+reference, a call with unresolved parameters) is MANUAL_REVIEW.
 
 on_event(type, payload) gets JSON-ready RunEvent payloads: "tier_result" (TierResult without case_scores),
 "iteration" (Adapter), "log" ({"level", "message"}) and "verdict" (Verdict).
