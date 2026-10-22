@@ -67,6 +67,7 @@ from offramp.agents.patcher import (
     py_literal,
     reach_handles,
     rewrite_callers,
+    run_site_tests,
     site_qualname,
     unify_twins,
     wrap_long_strings,
@@ -333,6 +334,18 @@ def test_a_site_whose_only_test_module_is_skipped_is_recorded_as_untested():
     (repo / "tests" / "test_greet.py").unlink()  # no test names the function at all
     result = run(patcher_llm(), repo=repo, name="skipped-module-run", precheck=True, box=box)
     assert result.untested == {"cs_01": "no test refers to it"} and result.tests_run["cs_01"] == []
+
+
+def test_a_test_run_that_did_not_start_is_not_reported_as_tests_that_did_not_run():
+    class NoImage:
+        def probe(self, script):
+            return 1, "sandbox image build failed: no network"
+
+    _, untested = run_site_tests(NoImage(), {"cs_01": ["tests/test_a.py"], "cs_02": []})
+    assert untested == {
+        "cs_01": "the run of its tests did not start (exit 1): sandbox image build failed: no network",
+        "cs_02": "no test refers to it",
+    }
 
 
 def test_client_module_reads_the_key_and_pins_verified_tier_ids():

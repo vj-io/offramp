@@ -2391,12 +2391,16 @@ def run_site_tests(
     code, output = box.probe(TESTS_RUN % (files,)) if files else (0, "")
     ran = re.findall(r"^(?:PASSED|FAILED|XFAIL|XPASS) (\S+)", output, re.M)
     skipped = dict.fromkeys(re.findall(r"^SKIPPED \[\d+\] (.+?):\d+: (.*)$", output, re.M))
+    counts = r"\b(\d+ (passed|failed|skipped|xfailed|xpassed|errors?|deselected)|no tests ran)\b.* in [\d.]+s"
+    started = re.search(counts, output)  # pytest's last line; absent when the run never got that far
     out: dict[str, list[str]] = {}
     why: dict[str, str] = {}
     for sid, fs in site_tests.items():
         out[sid] = [n for n in ran if n.split("::")[0] in fs]
         if not fs:
             why[sid] = "no test refers to it"
+        elif not started:
+            why[sid] = f"the run of its tests did not start (exit {code}): {output.strip()[-200:]}"
         elif not out[sid]:
             skips = [f"`{path}` was skipped: {reason}" for path, reason in skipped if path in fs]
             listed = ", ".join(f"`{f}`" for f in fs)
