@@ -27,7 +27,7 @@ from offramp.agents.verdict import (
 from offramp.evals.errors import MissingReference, ProviderError
 from offramp.evals.route import SiteRoute, route_site
 from offramp.evals.runner import BudgetStop
-from offramp.evals.scorers.aggregate import CANDIDATE_ERROR, site_pass
+from offramp.evals.scorers.aggregate import CANDIDATE_ERROR, NOT_JSON, site_pass
 from offramp.integrations.tavily import SourceModelInfo
 from offramp.schemas import (
     Adapter,
@@ -443,6 +443,15 @@ def test_a_failed_call_below_the_floor_is_named_as_a_failed_call_not_a_judged_sc
     v = keep(FREE_TEXT, Tier.LIGHTNING, result(FREE_TEXT, Tier.LIGHTNING, "holdout", rows))
 
     assert "but holdout case cs_06:015 had no answer (its call failed) (parity" in v.reason
+
+
+def test_a_reply_the_code_cannot_json_loads_below_the_floor_is_named_as_not_json():
+    rows = [CaseScore(case_id=f"cs_06:{i:03d}", passed=True, score=5.0) for i in range(7)]
+    rows.append(CaseScore(case_id="cs_06:015", passed=False, score=1.0, error_category=NOT_JSON))
+
+    v = keep(FREE_TEXT, Tier.LIGHTNING, result(FREE_TEXT, Tier.LIGHTNING, "holdout", rows))
+
+    assert "but holdout case cs_06:015 was not JSON, which the calling code parses (parity" in v.reason
 
 
 def test_references_the_judge_scored_below_3_are_flagged_on_the_verdict_and_kept():

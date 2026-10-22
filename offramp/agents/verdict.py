@@ -37,6 +37,7 @@ from offramp.evals.scorers.aggregate import (
     JUDGE_CASE_FLOOR,
     JUDGE_FLOOR,
     JUDGE_MARGIN,
+    NOT_JSON,
     WEAK_REFERENCE,
     Thresholds,
     _at_least,
@@ -201,6 +202,8 @@ def _phrase(
             low_text = f"scored {low.score:.2f} < {JUDGE_CASE_FLOOR:.1f}"
             if low.error_category == CANDIDATE_ERROR:  # scored 1.0 by the runner, never judged
                 low_text = "had no answer (its call failed)"
+            if low.error_category == NOT_JSON:  # likewise: json.loads in the calling code would reject it
+                low_text = "was not JSON, which the calling code parses"
             head = f"judge mean {mean:.2f} ≥ {JUDGE_FLOOR:.1f}, but holdout case {low.case_id}"
             return f"{head} {low_text} {parity}", "case_floor"
         text = f"judge mean {mean:.2f} more than {JUDGE_MARGIN:g} below the references' judge mean {parity}"

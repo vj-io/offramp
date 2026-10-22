@@ -15,7 +15,7 @@ import pytest
 
 from offramp.evals.errors import MissingReference, ProviderError
 from offramp.evals.runner import MAX_CONCURRENCY, BudgetStop, run_tier
-from offramp.evals.scorers.aggregate import CANDIDATE_ERROR, Thresholds
+from offramp.evals.scorers.aggregate import CANDIDATE_ERROR, NOT_JSON, Thresholds
 from offramp.pricing import load_pricing
 from offramp.schemas import (
     Adapter,
@@ -583,6 +583,39 @@ def test_a_result_already_scored_is_reused_and_nothing_is_judged_again():
     assert [c.output.text for c in candidates] == ["answer cs_01:001", "answer cs_01:002"]
     with pytest.raises(ValueError, match="holdout"):  # a result for another cell is never reused
         _run(client, cases, [], site=_site("free_text"), split="holdout", scored=matrix)
+
+
+def _parsed_as_json(how: str) -> CallSite:
+    site = _site("free_text")
+    return site.model_copy(update={"contract": site.contract.model_copy(update={"reply_json": how})})
+
+
+def test_a_reply_the_calling_code_cannot_json_loads_fails_its_case_without_a_judge_call():
+    """idea-reality-mcp's cs_01, cs_02 and cs_04 json.loads the reply, so a reply that does not parse breaks
+    the call however well it reads; judged as free text, that showed only in a rubric. It now fails its case
+    as not_json and is not judged. Those functions strip a ``` fence first, so a fenced array still parses."""
+    cases = [_case(1), _case(2), _case(3)]
+    replies = {
+        "cs_01:001": _ok('["voice scheduling agent", "calendar assistant"]'),
+        "cs_01:002": _ok('```json\n["task manager", "todo list"]\n```'),
+        "cs_01:003": _ok('Here are the queries: ["idea checker", "market scan"]'),
+    }
+    two = _judge_reply({"case": 1, "note": "", "a": _rub(5)}, {"case": 2, "note": "", "a": _rub(5)})
+    client = CaseClient(replies, judge_replies=(two,))
+    result = _run(client, cases, [], site=_parsed_as_json("fence_stripped"))
+
+    (judged,) = client.judge_calls
+    assert "task manager" in judged["messages"][-1]["content"]
+    assert "Here are the queries" not in judged["messages"][-1]["content"]
+    rows = {c.case_id: c for c in result.case_scores}
+    assert [rows[f"cs_01:00{i}"].passed for i in (1, 2, 3)] == [True, True, False]
+    assert (rows["cs_01:003"].error_category, rows["cs_01:003"].score) == (NOT_JSON, 1.0)
+    assert "json.loads" in rows["cs_01:003"].detail and result.passed is False
+
+    one = _judge_reply({"case": 1, "note": "", "a": _rub(5)})
+    client = CaseClient(replies, judge_replies=(one,))
+    result = _run(client, cases, [], site=_parsed_as_json("exact"))  # json.loads on the reply as it is
+    assert [c.error_category for c in result.case_scores] == [None, NOT_JSON, NOT_JSON]
 
 
 def test_budget_exceeded_in_judge_returns_budget_stop():

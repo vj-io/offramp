@@ -200,3 +200,26 @@ def test_helphub_labels_replay_from_cassette():
     by_id = _label_helphub(live=False)
     assert {site_id: by_id[site_id].contract.task_type for site_id in DEMO_TASK_TYPES} == DEMO_TASK_TYPES
     assert by_id["cs_03"].contract.json_schema is None  # set later from the resolved Pydantic model (Task 7)
+
+
+JSON_REPLY = FIXTURES / "scanner" / "json_reply"
+
+
+def test_a_reply_parsed_with_json_loads_is_recorded_on_the_contract():
+    """idea-reality-mcp's cs_01, cs_02 and cs_04 run json.loads on the reply, but they were judged as free
+    text, so a reply the code cannot parse showed only in a rubric. Reading each site's function now records
+    it on the contract: "fence_stripped" where the function strips a ``` fence first, else "exact"."""
+    scan = scan_repo(JSON_REPLY)
+    llm = fake(ContractLabel(contract=FREE_TEXT, confidence=0.9), n=7)
+    found = {s.function: s.contract.reply_json for s in label_contracts(scan.sites, llm, root=JSON_REPLY)}
+    assert found == {
+        "extract_keywords": "fence_stripped",  # cs_01
+        "pivot_hints": "fence_stripped",  # cs_02
+        "search_angles": "fence_stripped",  # cs_04
+        "tags_direct": "exact",
+        "tags_through_a_helper": "exact",
+        "summary": None,  # its json.loads never sees the reply
+        "lookup_order": None,  # tool-call arguments are not the reply text
+    }
+    # the labeller is never asked for it: its request schema is what the cassettes recorded
+    assert all("reply_json" not in json.dumps(c["response_model"].model_json_schema()) for c in llm.calls)

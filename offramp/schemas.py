@@ -11,6 +11,7 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 
 class Tier(StrEnum):
@@ -57,6 +58,14 @@ class Contract(BaseModel):
     reasoning_heavy: bool = False
     labels: list[str] = Field(default_factory=list)  # classification label set, when known
     json_schema: dict[str, Any] | None = None  # expected output schema, when known
+    # Read from the code, never asked of the labeller (so not in its schema): the function around the call
+    # runs json.loads on the reply as it is ("exact") or after stripping a ``` fence ("fence_stripped").
+    reply_json: SkipJsonSchema[Literal["exact", "fence_stripped"] | None] = None
+
+    def shown(self) -> dict[str, Any]:
+        """The contract as agent prompts show it: reply_json only when set, so a site without it gets the
+        prompt it always got (its recorded cassettes replay)."""
+        return self.model_dump(mode="json", exclude=None if self.reply_json else {"reply_json"})
 
 
 class PromptTemplate(BaseModel):

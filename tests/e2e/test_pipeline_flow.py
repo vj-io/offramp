@@ -378,6 +378,32 @@ def test_the_routing_loop_gets_the_cells_the_eval_matrix_measured(tmp_path):
     assert prior == {(t, 0, "dev"): matrix_cell(m, "cs_01", t) for t in RunConfig(repo_url="x").tiers}
 
 
+def test_a_prepared_site_gets_how_its_code_parses_the_reply_from_the_code_as_it_is_now(tmp_path):
+    """Contract.reply_json is read from the code, not labelled: a run takes it from its own scan, also for a
+    site whose contract comes from evals/sites.json (prepared before the code, or Offramp, changed)."""
+    repo = make_repo(tmp_path)
+    app = repo / "app" / "triage.py"
+    app.write_text(
+        "import json\n\n"
+        + APP.replace(
+            "return resp.choices[0].message.content", "return json.loads(resp.choices[0].message.content)"
+        )
+    )
+    git(repo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qam", "json reply")
+    log, _ = start(tmp_path, repo)
+    llm, stub = llm_for_full_run(*split_counts(repo)), Recorder()
+
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr).execute()
+        == Stage.DONE
+    )
+
+    (site,) = [e.payload for e in log.events if e.type == "site"]
+    assert site["contract"]["task_type"] == "classification" and site["contract"]["reply_json"] == "exact"
+    adapter = pipeline.json.loads((log.dir / "adapters.json").read_text())["adapters"]["cs_01"]
+    assert "Reply with the JSON only" in adapter["spec"]["user_suffix"]
+
+
 def test_a_failed_run_resumes_after_its_last_finished_step(tmp_path):
     repo = make_repo(tmp_path)
     n_dev, n_holdout = split_counts(repo)

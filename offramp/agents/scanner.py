@@ -803,6 +803,8 @@ def label_contracts(sites: list[CallSite], llm: LLM, root: str | Path | None = N
         label: ContractLabel | None = result.parsed
         hints = _hints(site)
         certain = "task_type" in hints
+        if root is not None and "tools" not in hints and (parsed := json_reply(root, site)):
+            hints["reply_json"] = parsed  # from the code, like the other hints: the labeller is not asked
         if label is None:  # keep what the code settles, and ask a human for the rest
             flags = site.flags if "MANUAL_REVIEW" in site.flags else [*site.flags, "MANUAL_REVIEW"]
             update = {
@@ -818,6 +820,109 @@ def label_contracts(sites: list[CallSite], llm: LLM, root: str | Path | None = N
             site.model_copy(update={"contract": contract, "confidence": 1.0 if certain else label.confidence})
         )
     return out
+
+
+# ---------------------------------------------------------------- how the code parses the reply
+
+TOOL_ATTRS = {"tool_calls", "function_call", "arguments"}  # a tool call's arguments are not the reply text
+
+
+def _stored(node: ast.AST) -> tuple[ast.AST | None, set[str]]:
+    """(value, names bound from it) for an assignment-like node: =, :=, +=, for ... in, with ... as."""
+    if isinstance(node, ast.Assign):
+        targets: list[ast.AST] = list(node.targets)
+    elif isinstance(node, ast.AnnAssign | ast.AugAssign | ast.NamedExpr):
+        targets = [node.target]
+    elif isinstance(node, ast.For | ast.AsyncFor | ast.comprehension):
+        return node.iter, {n.id for n in ast.walk(node.target) if isinstance(n, ast.Name)}
+    elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+        return node.context_expr, {n.id for n in ast.walk(node.optional_vars) if isinstance(n, ast.Name)}
+    else:
+        return None, set()
+    names = {n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)}
+    return getattr(node, "value", None), names
+
+
+def _json_loads_names(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """(names bound to the json module, names bound to json.loads) by the file's imports."""
+    modules, functions = set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules |= {a.asname or a.name for a in node.names if a.name == "json"}
+        elif isinstance(node, ast.ImportFrom) and node.module == "json":
+            functions |= {a.asname or a.name for a in node.names if a.name == "loads"}
+    return modules, functions
+
+
+def _parses(fn: Fn, sources: set[str], call: ast.AST | None, loads: tuple[set[str], set[str]]) -> bool:
+    """Whether `call`'s value, or a name in `sources`, reaches json.loads inside `fn`: directly, through the
+    local names it is assigned to (to a fixed point), or as the argument of a helper defined in `fn` that
+    itself json.loads its parameter. ponytail: names only, no attribute or container flow."""
+    tainted = set(sources)
+
+    def carries(expr: ast.AST) -> bool:
+        nodes = list(ast.walk(expr))
+        if any(isinstance(n, ast.Attribute) and n.attr in TOOL_ATTRS for n in nodes):
+            return False
+        return any(n is call or (isinstance(n, ast.Name) and n.id in tainted) for n in nodes)
+
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(fn):
+            value, names = _stored(node)
+            if value is not None and names - tainted and carries(value):
+                tainted |= names
+                changed = True
+    modules, functions = loads
+    helpers = {
+        h.name
+        for h in ast.walk(fn)
+        if isinstance(h, Fn) and h is not fn and _parses(h, {a.arg for a in h.args.args}, None, loads)
+    }
+    for node in ast.walk(fn):
+        if not (isinstance(node, ast.Call) and node.args and carries(node.args[0])):
+            continue
+        f = node.func
+        if isinstance(f, ast.Name) and (f.id in functions or f.id in helpers):
+            return True
+        if isinstance(f, ast.Attribute) and f.attr == "loads" and isinstance(f.value, ast.Name):
+            if f.value.id in modules:
+                return True
+    return False
+
+
+def json_reply(root: str | Path, site: CallSite) -> str | None:
+    """How the function around `site`'s call parses the reply, read from the code: "exact" when the reply
+    text reaches json.loads there (directly, through local variables, or through a helper defined inside the
+    function), "fence_stripped" when that function also deals with a ``` fence (a string literal holding
+    one, as in code that drops fence lines before json.loads); None when it never reaches json.loads, or the
+    file cannot be read. ponytail: a fence literal anywhere in the function counts as stripping one."""
+    try:
+        with catch_warnings():
+            simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse((Path(root) / site.file).read_bytes())
+    except (OSError, SyntaxError, ValueError, RecursionError):
+        return None
+    found = next(
+        (
+            (node, fn)
+            for node, fn, _, _ in _walk(tree)
+            if isinstance(node, ast.Call)
+            and [node.lineno, node.end_lineno] == site.lines
+            and ast.unparse(node.func) == site.call
+        ),
+        None,
+    )
+    if found is None:
+        return None
+    node, fn = found
+    if fn is None or not _parses(fn, set(), node, _json_loads_names(tree)):
+        return None
+    fenced = any(
+        isinstance(n, ast.Constant) and isinstance(n.value, str) and "```" in n.value for n in ast.walk(fn)
+    )
+    return "fence_stripped" if fenced else "exact"
 
 
 def _describe(site: CallSite, root: str | Path | None) -> str:

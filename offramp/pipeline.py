@@ -580,7 +580,10 @@ class Pipeline:
                 if s.contract and p.contract and s.contract.task_type != p.contract.task_type:
                     notes.append(f"{s.id}: labelled {s.contract.task_type} now, prepared as "
                                  f"{p.contract.task_type}; evaluating as prepared")  # fmt: skip
-                sites.append(p.model_copy(update={"lines": s.lines}))  # the code's current position
+                # the code's current position, and how it parses the reply now (read from code, not labelled)
+                found = s.contract.reply_json if s.contract else None
+                contract = p.contract.model_copy(update={"reply_json": found}) if p.contract else None
+                sites.append(p.model_copy(update={"lines": s.lines, "contract": contract}))
         chat = [s for s in sites if s.kind == "chat"]
         self._stage(Stage.SCANNED, f"{len(chat)} call sites found")
         for message in scan.warnings + notes:
