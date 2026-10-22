@@ -186,6 +186,7 @@ def _facts(
     tier: Tier,
     error_counts: Mapping[str, int],
     schemas: dict[str, dict[str, Any]] | None,
+    refused: str | None = None,
 ) -> str:
     spec = adapter.spec.model_dump(
         mode="json",
@@ -215,6 +216,10 @@ def _facts(
             "shown": [_shown(c) for c in cases],
         },
     }
+    if refused:  # only after a refusal, so every other request is the one recorded before
+        facts["previous_rewrite_refused"] = (
+            f"{refused}. Offramp refused that rewrite before evaluating it: write one without this problem"
+        )
     return json.dumps(facts, indent=1, ensure_ascii=False)
 
 
@@ -252,9 +257,11 @@ class Iterator:
         failing: Sequence[DevCase],
         tier: Tier,
         error_counts: Mapping[str, int] | None = None,
+        refused: str | None = None,
     ) -> Adapter | None:
         """Adapter(version + 1, tier, change_log) from up to MAX_CASES failing dev cases, or None when Ultra's
-        reply is still invalid after one repair. BudgetExceeded, CacheMiss and provider errors propagate."""
+        reply is still invalid after one repair. `refused`: why Offramp refused this try's previous rewrite
+        (adapter.adapter_problem), told to Ultra. BudgetExceeded, CacheMiss and provider errors propagate."""
         if not all(isinstance(c, DevCase) for c in failing):
             raise TypeError(
                 "the Iterator takes DevCase views only (offramp.agents.iterator.failing_dev_cases)"
@@ -265,7 +272,10 @@ class Iterator:
             error_counts = Counter(c.error_category for c in shown)
         messages = [
             {"role": "system", "content": ITERATOR_SYSTEM},
-            {"role": "user", "content": _facts(adapter, site, shown, tier, error_counts, self.schemas)},
+            {
+                "role": "user",
+                "content": _facts(adapter, site, shown, tier, error_counts, self.schemas, refused),
+            },
         ]
         kw = dict(
             role=ITERATOR_ROLE,

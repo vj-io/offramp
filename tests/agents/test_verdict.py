@@ -1295,6 +1295,49 @@ def test_not_fully_tried_names_only_the_cheaper_tiers_that_did_not_finish():
     assert v.reason.endswith("; Super not fully tried (budget: Ultra agent call cap reached (40)).")
 
 
+class LoopingIterator(StubIterator):
+    """The Iterator of run 20261022-065443547-22ed36: its first `loops` rewrites run a word into a loop; then,
+    told why the last one was refused (`refused`), it writes a sane one."""
+
+    def __init__(self, loops: int):
+        super().__init__()
+        self.loops, self.told = loops, []
+
+    def __call__(self, adapter, site, failing, tier, error_counts, refused=None):
+        self.told.append(refused)
+        new = super().__call__(adapter, site, failing, tier, error_counts)
+        if len(self.told) <= self.loops:
+            looped = "Never include: tool, app, " + "utility, " * 30
+            new = new.model_copy(update={"spec": new.spec.model_copy(update={"system_prompt": looped})})
+        return new
+
+
+def test_a_degenerate_rewrite_is_refused_before_evaluation_and_counts_as_a_try():
+    """Task 29 A: a refused rewrite costs its try but no evaluation (no eval or judge calls); the Iterator is
+    asked again and told why; the refusal is on the route's record."""
+    events = []
+    it = LoopingIterator(loops=1)
+    table = {(L, "dev"): 0.5, (L, "dev", 1): 1.0, (L, "holdout"): 1.0}
+    out, runner, _ = route(table, iterator=it, events=events)
+    assert runner.calls == [(L, "dev", 0), (L, "dev", 1), (L, "holdout", 1)]  # the refused v1 never ran
+    assert it.told == [None, "system_prompt repeats 'utility' 30 times in a row"]
+    assert out.verdict.decision == "MIGRATE" and out.verdict.iterations == 1
+    assert "utility" not in (out.adapter.spec.system_prompt or "")
+    assert out.refused == [
+        "Lightning v1 refused before evaluation: system_prompt repeats 'utility' 30 times in a row"
+    ]
+    [log] = [p for t, p in events if t == "log"]
+    assert log["level"] == "warn" and "refused before evaluation" in log["message"]
+    assert [t for t, _ in events].count("iteration") == 1  # only the evaluated rewrite is announced
+
+
+def test_a_tier_whose_rewrites_are_all_refused_ends_without_evaluating_any():
+    it = LoopingIterator(loops=3)
+    out, runner, _ = route({(L, "dev"): 0.5, (S, "dev"): 1.0, (S, "holdout"): 1.0}, iterator=it)
+    assert runner.calls == [(L, "dev", 0), (S, "dev", 0), (S, "holdout", 0)] and len(it.told) == 3
+    assert out.verdict.tier == S and len(out.refused) == 3
+
+
 def test_an_iterator_without_a_valid_adapter_ends_that_tiers_iterations():
     events = []
     out, runner, it = route(

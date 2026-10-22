@@ -6,6 +6,7 @@ Deterministic guards then keep its choices inside what the calling code can stil
 """
 
 import json
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -18,7 +19,7 @@ from offramp.agents.translate import (
     translate,
     unresolved,
 )
-from offramp.schemas import Adapter, CallSite, Tier
+from offramp.schemas import Adapter, AdapterSpec, CallSite, Tier
 from offramp.tf.client import LLM, _repair_messages, validate_structured
 from offramp.tf.tiers import SUPPORTS_JSON_SCHEMA
 
@@ -36,6 +37,13 @@ INVALID_OUTPUT = (
     "adapter_agent_invalid_output: Adapter Agent reply invalid after one repair; spec is the translation"
 )
 JSON_ONLY = "Reply with the JSON only: no other text and no code fence."  # contract.reply_json sites
+# Sanity of a model-written adapter (Adapter Agent and Iterator alike), checked before it is evaluated:
+REPEATS = 10  # a word or a phrase of up to MAX_NGRAM words this many times in a row is a degenerate loop
+MAX_NGRAM = 4
+GROWTH, GROWTH_PLUS = 2, 2000  # a field may reach 2x the source prompt (system + user template) + 2,000 chars
+_SOURCE_RULE = re.compile(r"(?m)^\s*(\d{1,2})\.\s")  # "7. ..." at the start of a line of the source
+_RULE = re.compile(r"(?<![\w.])(\d{1,2})\.(?=\s)")  # "7. " anywhere: a rewrite may put rules on one line
+REFUSED = "adapter_agent_refused"
 
 ADAPTER_SYSTEM = f"""You are Offramp's Adapter Agent. Offramp moves one LLM call site in a Python repo \
 from a closed model (OpenAI or Anthropic SDK) to NVIDIA Nemotron on Nebius Token Factory, an \
@@ -107,6 +115,50 @@ def _facts(site: CallSite, tr: Translation, schemas: dict[str, dict[str, Any]] |
         "json_schema_supported": {tier.value: ok for tier, ok in SUPPORTS_JSON_SCHEMA.items()},
     }
     return json.dumps(facts, indent=1, ensure_ascii=False)
+
+
+def _loop(text: str) -> str | None:
+    """ "'utility' 752 times in a row" for the longest run of one word or phrase (up to MAX_NGRAM words)
+    repeated at least REPEATS times in a row, else None."""
+    words = re.findall(r"\w+", text.casefold())
+    for n in range(1, MAX_NGRAM + 1):
+        streak = 0
+        for i in range(n, len(words) + 1):
+            if i < len(words) and words[i] == words[i - n]:
+                streak += 1
+                continue
+            if streak >= n * (REPEATS - 1):
+                return f"{' '.join(words[i - n : i])!r} {streak // n + 1} times in a row"
+            streak = 0
+    return None
+
+
+def adapter_problem(site: CallSite, spec: AdapterSpec) -> str | None:
+    """Why a model-written adapter must not be evaluated (nor shipped), or None: a degenerate repetition in
+    one of its texts, a text grown past GROWTH x the source prompt + GROWTH_PLUS characters, or a rewritten
+    system prompt that lost "N." rule markers the source's system prompt has."""
+    t = site.template
+    source = (t.system or "") if t else ""
+    cap = GROWTH * (len(source) + len(t.user if t else "")) + GROWTH_PLUS
+    texts = {
+        "system_prompt": spec.system_prompt or "",
+        "user_prefix": spec.user_prefix,
+        "user_suffix": spec.user_suffix,
+        "few_shot": "\n".join(str(m.get("content") or "") for m in spec.few_shot),
+    }
+    for name, text in texts.items():
+        if loop := _loop(text):
+            return f"{name} repeats {loop}"
+    for name, text in texts.items():
+        if len(text) > cap:
+            return (
+                f"{name} is {len(text):,} characters, over the cap of {cap:,} (2x the source prompt + 2,000)"
+            )
+    if spec.system_prompt is not None:
+        lost = sorted(set(_SOURCE_RULE.findall(source)) - set(_RULE.findall(spec.system_prompt)), key=int)
+        if lost:
+            return f"system_prompt drops the source's rule markers {', '.join(f'{n}.' for n in lost)}"
+    return None
 
 
 def _apply(
@@ -200,6 +252,10 @@ def adapt(site: CallSite, llm: LLM, schemas: dict[str, dict[str, Any]] | None = 
         adapter.risk_flags.append(INVALID_OUTPUT)
         return adapter
     adapter = _apply(site, tr, decision, schemas)
+    if problem := adapter_problem(site, adapter.spec):  # never evaluated: the translation is v0 instead
+        adapter = _apply(site, tr, AdapterDecision(reasoning=tr.spec.reasoning, output_mode="text"), schemas)
+        adapter.risk_flags.append(f"{REFUSED}: {problem}")
+        return adapter
     if repaired:
         adapter.notes.append(
             "adapter agent: reply repaired once (first reply was not valid JSON for the schema)"

@@ -1,6 +1,7 @@
 """Adapter Agent contract: FakeLLM unit tests, then cassette replay (recorded live from Token Factory)."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from offramp.agents.adapter import (
     LIGHTNING_TOOL_CHOICE,
     AdapterDecision,
     adapt,
+    adapter_problem,
 )
 from offramp.agents.translate import (
     REASONING_ROOM,
@@ -23,7 +25,7 @@ from offramp.agents.translate import (
     strict_json_schema,
     translate,
 )
-from offramp.schemas import CallSite, EvalCase, ModelOutput, Tier
+from offramp.schemas import AdapterSpec, CallSite, EvalCase, ModelOutput, PromptTemplate, Tier
 from offramp.tf import Budget, BudgetExceeded, ChatResult, FakeLLM, TFClient
 from offramp.tf.tiers import get_tier
 
@@ -168,6 +170,82 @@ def test_a_reply_the_code_json_loads_is_asked_for_as_json_and_the_agent_is_told(
     )  # without it: no key in the facts (cassettes replay), no suffix
     assert adapt(SITES["cs_06"], llm).spec.user_suffix == ""
     assert "reply_json" not in json.loads(llm.calls[0]["messages"][1]["content"])["contract"]
+
+
+# ---------------------------------------------------------------- sanity of model-written adapters
+
+IDEA = json.loads(
+    (Path(__file__).parents[1] / "fixtures" / "adapter_sanity" / "idea_reality_cs01.json").read_text()
+)
+IDEA_SITE = CallSite(
+    id="cs_01",
+    file="api/main.py",
+    lines=[333, 341],
+    sdk="anthropic",
+    call="client.messages.create",
+    prompt_source="variable",
+    template=PromptTemplate(system=IDEA["source_system"], user=IDEA["source_user"], variables=["idea_text"]),
+    contract=SITES["cs_06"].contract,
+)
+SOURCE = IDEA["source_system"]
+
+
+def test_the_iterators_degenerate_rewrite_from_the_live_run_is_refused():
+    """Run 20261022-065443547-22ed36: Ultra's v1 for idea-reality's cs_01 runs rule 7 into 'utility' about
+    750 times and loses rule 8; it passed the metric and would have shipped verbatim in api/main.py."""
+    problem = adapter_problem(IDEA_SITE, AdapterSpec.model_validate(IDEA["v1_spec"]))
+    assert problem == "system_prompt repeats 'utility' 752 times in a row"
+
+
+def test_a_field_grown_far_past_the_source_prompt_is_refused():
+    grown = SOURCE + "".join(f"\nNote {i}: keep queries short and specific, case {i}." for i in range(80))
+    assert len(grown) > 2 * (len(SOURCE) + len(IDEA["source_user"])) + 2000
+    assert adapter_problem(IDEA_SITE, AdapterSpec(system_prompt=grown)).startswith(
+        f"system_prompt is {len(grown):,} characters, over the cap of "
+    )
+    shots = [{"role": "user", "content": f"idea number {i} with detail {i}"} for i in range(150)]
+    assert adapter_problem(IDEA_SITE, AdapterSpec(few_shot=shots)).startswith("few_shot is ")
+
+
+def test_a_rewrite_that_drops_numbered_rules_of_the_source_is_refused():
+    dropped = SOURCE.split("\n8.")[0].replace("\n7.", "\n-")  # rule 8 gone, rule 7 lost its marker
+    assert adapter_problem(IDEA_SITE, AdapterSpec(system_prompt=dropped)) == (
+        "system_prompt drops the source's rule markers 7., 8."
+    )
+
+
+def test_ordinary_rewrites_pass_the_sanity_check():
+    """Near misses: a long legitimate list, rules renumbered around an inserted one, rules on one line (as
+    the Iterator writes them), JSON few-shot replies, and the adapter that keeps the source prompt."""
+    words = ", ".join(f"word{i}" for i in range(120))
+    long_list = SOURCE.replace('"build".', f'"build", {words}.')
+    renumbered = []  # a new rule 3; the old 3-8 become 4-9
+    for line in SOURCE.split("\n"):
+        if (m := re.match(r"(\d)\. (.*)", line)) and int(m[1]) >= 3:
+            renumbered += ["3. Prefer nouns over adjectives."] if m[1] == "3" else []
+            line = f"{int(m[1]) + 1}. {m[2]}"
+        renumbered.append(line)
+    renumbered = "\n".join(renumbered)
+    assert "9. Think about" in renumbered
+    one_line = " ".join(SOURCE.split())
+    shots = [
+        {"role": "user", "content": "A todo app for teams"},
+        {"role": "assistant", "content": '["team task manager", "shared todo list", "kanban board"]'},
+    ]
+    for spec in [
+        AdapterSpec(system_prompt=long_list),
+        AdapterSpec(system_prompt=renumbered),
+        AdapterSpec(system_prompt=one_line, few_shot=shots, user_suffix="\n\nReply with the JSON only."),
+        AdapterSpec(),
+    ]:
+        assert adapter_problem(IDEA_SITE, spec) is None, spec.system_prompt
+
+
+def test_a_refused_adapter_agent_reply_falls_back_to_the_translation():
+    loop = "Use these words: " + "utility, " * 30
+    adapter = adapt(SITES["cs_06"], FakeLLM().add("adapter", decision(reasoning="low", user_suffix=loop)))
+    assert adapter.spec == translate(SITES["cs_06"]).spec
+    assert "adapter_agent_refused: user_suffix repeats 'utility' 30 times in a row" in adapter.risk_flags
 
 
 def test_tool_site_keeps_translated_tools():

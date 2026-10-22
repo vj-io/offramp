@@ -368,6 +368,18 @@ def test_a_rewrite_never_drops_the_json_request_where_the_code_json_loads_the_re
     assert json.loads(llm.calls[0]["messages"][1]["content"])["contract"]["reply_json"] == "exact"
 
 
+def test_after_a_refused_rewrite_the_iterator_is_told_why():
+    site, adapter, failing, tier = dev_cases("cs_01")
+    llm = FakeLLM({ITERATOR_ROLE: [decision(), decision()]})
+    Iterator(llm, SCHEMAS)(adapter, site, failing, tier)
+    Iterator(llm, SCHEMAS)(
+        adapter, site, failing, tier, refused="system_prompt repeats 'utility' 752 times in a row"
+    )
+    plain, told = (json.loads(c["messages"][1]["content"]) for c in llm.calls)
+    assert "previous_rewrite_refused" not in plain  # an ordinary call is the request the cassettes recorded
+    assert told["previous_rewrite_refused"].startswith("system_prompt repeats 'utility' 752 times in a row")
+
+
 def test_records_every_case_id_it_saw_and_shows_at_most_ten():
     site, adapter, _, tier = dev_cases("cs_01")
     many = [DevCase(id=cid, input_messages=[{"role": "user", "content": cid}]) for cid in ids("dev", 12)]

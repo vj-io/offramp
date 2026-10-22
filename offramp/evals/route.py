@@ -33,6 +33,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from offramp.agents.adapter import adapter_problem
 from offramp.agents.iterator import DevCase, Iterator, failing_dev_cases
 from offramp.agents.translate import UnresolvedCallSite
 from offramp.agents.verdict import (
@@ -72,6 +73,7 @@ class SiteRoute:
     # nothing was compared (budget stop, MANUAL_REVIEW)
     adapter: Adapter | None
     results: list[TierResult] = field(default_factory=list)  # every run, in order, case_scores kept
+    refused: list[str] = field(default_factory=list)  # model-written rewrites refused before evaluation
 
 
 class _BudgetStop(Exception):
@@ -115,13 +117,27 @@ def route_site(
         price_lookup,
         emit,
         prior or {},
+        refused := [],
     )
+    route.refused = refused
     emit("verdict", route.verdict.model_dump(mode="json"))
     return route
 
 
 def _route(
-    site, cases, references, adapter, client, config, closed, iterate, runner, price_lookup, emit, prior
+    site,
+    cases,
+    references,
+    adapter,
+    client,
+    config,
+    closed,
+    iterate,
+    runner,
+    price_lookup,
+    emit,
+    prior,
+    refused,
 ):
     results: list[TierResult] = []
     unfit = _unfit(site, cases)
@@ -195,18 +211,31 @@ def _route(
     try:
         for tier in tiers:
             history[tier] = [adapter]
+            tries = 0  # Iterator calls on this tier: an evaluated rewrite or a refused one each
             while True:
                 i = len(history[tier]) - 1
                 current = history[tier][i]
                 dev, calls = run(current, tier, "dev")
                 if best is None or dev.score > best[0]:
                     best = (dev.score, tier, i, dev)
-                if dev.passed or i >= config.max_iterations:
+                if dev.passed or tries >= config.max_iterations:
                     break
                 secure(tier)
                 failed = [s for s in dev.case_scores if not s.passed]
                 counts = Counter(s.error_category or "failed" for s in failed)
-                new = iterate(current, site, failing_dev_cases(dev, cases, references, calls), tier, counts)
+                failing = failing_dev_cases(dev, cases, references, calls)
+                why = None  # a rewrite that fails adapter_problem costs its try, never an evaluation
+                while tries < config.max_iterations:
+                    tries += 1
+                    new = iterate(current, site, failing, tier, counts, **({"refused": why} if why else {}))
+                    if new is None or not (why := adapter_problem(site, new.spec)):
+                        break
+                    refused.append(
+                        f"{tier.value.capitalize()} v{new.version} refused before evaluation: {why}"
+                    )
+                    emit("log", {"level": "warn", "message": f"{site.id}: {refused[-1]}"})
+                if new is not None and why:
+                    break  # every try left was refused
                 if new is None:
                     emit(
                         "log",

@@ -481,6 +481,31 @@ def test_inputs_repeated_within_one_split_are_a_warning_with_their_count(tmp_pat
     assert any(m.startswith("1 duplicate input repeats within one split (cs_01: cs_01:") for m in warnings)
 
 
+def test_a_refused_adapter_agent_reply_is_on_the_sites_record_for_the_pr(tmp_path):
+    """Task 29 A: the Adapter Agent's v0 failed the sanity gate, so the translation ran; the PR is told."""
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo)
+    llm, stub = llm_for_full_run(*split_counts(repo)), Recorder()
+    llm.queues["adapter"][0] = {
+        "reasoning": "off",
+        "output_mode": "text",
+        "user_suffix": "Labels: " + "billing " * 20,
+    }
+
+    assert (
+        pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch, pr=stub.pr).execute()
+        == Stage.DONE
+    )
+
+    result = pipeline.json.loads((log.dir / "evals" / "results" / "cs_01.json").read_text())
+    assert result["refused"] == [
+        "Adapter v0 refused before evaluation (the translation ran instead): user_suffix repeats 'billing' "
+        "20 times in a row"
+    ]
+    (pr,) = stub.prs
+    assert pr["routes"]["cs_01"]["refused"] == result["refused"]
+
+
 def test_a_failed_run_resumes_after_its_last_finished_step(tmp_path):
     repo = make_repo(tmp_path)
     n_dev, n_holdout = split_counts(repo)

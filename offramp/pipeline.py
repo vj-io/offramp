@@ -43,7 +43,7 @@ from sqlmodel import Session, delete
 
 from offramp import db, github
 from offramp.agents import case_gen
-from offramp.agents.adapter import adapt
+from offramp.agents.adapter import REFUSED, adapt
 from offramp.agents.patcher import compose_patches
 from offramp.agents.pr_writer import PRContext, reference_summary, write_pr
 from offramp.agents.scanner import label_contracts, scan_repo
@@ -822,10 +822,13 @@ class Pipeline:
         verdict = route.verdict
         if circular and route.adapter is not None:  # compared, but not with the closed model: say which one
             verdict = verdict.model_copy(update={"closed_reference_model": circular})
+        v0 = [f.removeprefix(f"{REFUSED}: ") for f in adapter.risk_flags if f.startswith(f"{REFUSED}: ")]
+        refused = [f"Adapter v0 refused before evaluation (the translation ran instead): {w}" for w in v0]
         return {
             "verdict": verdict.model_dump(mode="json"),
             "adapter": route.adapter.model_dump(mode="json") if route.adapter else None,
             "tier_results": [r.model_dump(mode="json") for r in route.results],
+            "refused": refused + route.refused,
         }
 
     def _runner(self, site: CallSite) -> Callable[..., Any]:
@@ -989,6 +992,7 @@ def write_and_open_pr(
         alone=patch.get("alone", {}),
         combined=patch.get("combined", []),
         combined_repair=patch.get("combined_repair", []),
+        refused={k: r["refused"] for k, r in routes.items() if r.get("refused")},
     )
     draft = write_pr(ctx, client)
     files, title, body = patch["files"], scrub(draft.title), scrub(draft.body)  # reasons carry sandbox output

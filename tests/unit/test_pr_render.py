@@ -57,6 +57,17 @@ def test_body_matches_snapshot():
     assert body == SNAPSHOT.read_text()
 
 
+def test_a_rewrite_refused_before_evaluation_is_stated_on_its_sites_line():
+    """Task 29 A: the PR says when the sanity gate refused a model-written adapter."""
+    c = ctx()
+    migrated = next(v.site_id for v in c.verdicts if v.decision == "MIGRATE")
+    why = "Lightning v1 refused before evaluation: system_prompt repeats 'utility' 752 times in a row"
+    body = render_pr(c.model_copy(update={"refused": {migrated: [why]}})).body
+    (line,) = [ln for ln in body.splitlines() if ln.startswith(f"- **{migrated}**")]
+    assert line.endswith(f"Rewrites never evaluated nor shipped: {why}.")
+    assert "never evaluated" not in render_pr(c).body
+
+
 def test_title_counts_migrated_sites_and_estimates_the_saving_from_verdicts():
     c = ctx()
     migrated = [v for v in c.verdicts if v.decision == "MIGRATE"]
