@@ -14,6 +14,10 @@ Tests each closed-LLM call in a Python repo against NVIDIA Nemotron on Nebius To
 
 Coding and Agentic Engineering
 
+## Video
+
+https://youtu.be/dECD_2mqnME: "Offramp: move LLM calls to NVIDIA Nemotron on Nebius Token Factory, with evidence" (2:43).
+
 ## Inspiration
 
 Moving a product off a closed LLM API sounds like a base-URL change, and teams have reasons to do it: price, vendor lock-in, and deprecations. Offramp's own Tavily lookup found that Claude Sonnet 4.5 retires on 30 November 2026, and two of our demo app's calls use it. A static scan of 30 popular public Python repos found 50 chat calls that name their model; 33 of them use a model its provider has retired or scheduled for shutdown. What stops teams from moving is risk they cannot see: JSON that no longer parses, tool schemas that drift, answers that are slightly worse. Nobody wants to migrate on a vibe check, and nobody has time to check parity call site by call site. We wanted a tool that does the checking and hands over a pull request a reviewer can trust.
@@ -25,7 +29,7 @@ Point Offramp at a Python repo. It:
 1. **Scans** for every OpenAI, Anthropic, LiteLLM and LangChain call with a deterministic AST pass, and Nemotron 3 Super labels each call's contract: classification, JSON extraction, tool call, free text or reasoning.
 2. **Builds an eval set per call site**, split into dev and holdout by a hash of the case id. Expected outputs are reference answers: seeded (the expected label, record or tool call is chosen first, and Super writes an input that implies it), computed by code, or, for free text, written by Claude Sonnet 5.5, a different model family. Seed references are audited blind; the free-text ones were not audited.
 3. **Runs a tier matrix** on Nebius Token Factory: Nemotron 3.5 Lightning, then Nemotron 3 Super, then Nemotron 3 Ultra. Deterministic scorers check schemas, labels, tool names and arguments, and numeric answers; an Ultra judge scores free text.
-4. **Iterates.** When a cheaper tier fails on dev, Nemotron 3 Ultra reads the failing cases and rewrites the adapter (prompt, few-shot examples, schema, reasoning switch), up to 3 times per tier. The Iterator never sees holdout cases.
+4. **Iterates.** When a cheaper tier fails on dev, Nemotron 3 Ultra reads the failing cases and rewrites the adapter (prompt, few-shot examples, schema, reasoning switch), up to 3 times per tier; a rewrite identical to one already tried ends that tier's rewrites early. The Iterator never sees holdout cases.
 5. **Decides** per call site: migrate to the cheapest tier that passes dev and then holdout, keep the source model when no tier does, or hand the site to manual review. When the call sets a timeout, a tier must also answer within it.
 6. **Patches and opens a PR.** Code rewrites each migrated call, and Nemotron edits only the tests and fakes that pinned the old provider. The repo's own ruff and pytest run in a network-off Docker sandbox, and any site whose patch cannot be verified goes to manual review with the exact reason. The PR carries an evidence table, how parity was measured, failing cases, prices with their sources, and a "What Offramp did NOT change" section.
 
@@ -100,6 +104,7 @@ Python, FastAPI, Pydantic, SQLModel, OpenAI Python SDK, Nebius Token Factory, NV
 
 ## Testing instructions
 
+- **Demo video (2:43):** <https://youtu.be/dECD_2mqnME>.
 - **Hosted, no login and no keys:** open <https://offramp-seven.vercel.app> and click "Watch demo run (replay)", or go straight to <https://offramp-seven.vercel.app/runs/demo?replay=demo>. At 4x speed the replay plays in about 14 seconds (the event gaps add up to 14.2 s); "Skip to end" jumps to the result. Then open the report: <https://offramp-seven.vercel.app/runs/demo/report?replay=demo>.
 - **The gate saying no:** <https://offramp-seven.vercel.app/runs/demo?replay=no-ultra> (the same app with Ultra not allowed).
 - **A real open-source repo:** <https://offramp-seven.vercel.app/runs/demo?replay=oss>, and the PR it opened on our fork: <https://github.com/vj-io/idea-reality-mcp/pull/1>.

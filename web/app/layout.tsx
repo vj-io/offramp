@@ -55,7 +55,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           >
             Feedback on Token Factory and Nemotron
           </a>
-          {/* The demo video's link goes here once it is uploaded. */}
+          <a href="https://youtu.be/dECD_2mqnME" className="text-bluepen underline underline-offset-4">
+            Video
+          </a>
         </footer>
       </body>
     </html>
