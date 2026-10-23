@@ -57,6 +57,7 @@ from offramp.agents.patcher import (
     declare_openai,
     drop_dead_patches,
     drop_orphaned_imports,
+    edited_tests,
     edits_text,
     keep_comment,
     line_length,
@@ -379,9 +380,7 @@ def test_a_test_run_cut_by_the_time_cap_says_it_timed_out():
         def probe(self, script):
             return 124, "sandbox time cap of 600s reached running python -"
 
-    assert run_site_tests(Slow(), {"cs_01": ["tests/test_a.py"]})[1] == {
-        "cs_01": "the run of its tests timed out after 600 s"
-    }
+    assert run_site_tests(Slow(), {"cs_01": ["tests/test_a.py"]})[1] == {"cs_01": "timed out after 600 s"}
 
 
 def test_tests_that_passed_count_when_pytest_prints_no_count_line(tmp_path):
@@ -419,9 +418,56 @@ def test_only_passed_and_failed_tests_count_as_run_and_each_other_outcome_is_nam
     assert ran == {"xf": [], "slow": [], "broken": [], "ok": ["tests/test_ok.py::test_ok"]}  # failed: it ran
     assert untested == {
         "xf": "`tests/test_xf.py`: 1 test marked xfail, which does not count as a run",
-        "slow": "none of the tests in `tests/test_slow.py` ran (this repo's pytest options deselect tests)",
+        "slow": "none of the tests in `tests/test_slow.py` ran "
+        "(this repo's pytest options deselect some tests)",
         "broken": "`tests/test_broken.py` could not be collected: "
         "ModuleNotFoundError: No module named 'offramp_missing_module'",
+    }
+
+
+def test_a_collection_error_is_named_by_the_error_whatever_the_module_raised(tmp_path):
+    """Task 32 (re-review N-1): pytest 9 prints a module that raises at import as `ERROR <path> - <error>`,
+    which was not read as a collection error ("none of the tests ... ran (pytest exit 1)"), and a SyntaxError
+    was named by the first `E ` line of its section, `File "<path>", line 1`, not by the error."""
+    box = repo_with_tests(
+        tmp_path,
+        {
+            "test_rt.py": "raise RuntimeError('boom')\n\n\ndef test_a():\n    pass\n",
+            "test_syn.py": "def test_a(:\n    pass\n",
+            "test_imp.py": "import offramp_missing_module  # noqa: F401\n",
+            "test_ok.py": "def test_ok():\n    pass\n",
+        },
+    )
+    ran, untested = run_site_tests(box, {n: [f"tests/test_{n}.py"] for n in ("rt", "syn", "imp", "ok")})
+    assert ran == {"rt": [], "syn": [], "imp": [], "ok": ["tests/test_ok.py::test_ok"]}
+    assert untested == {
+        "rt": "`tests/test_rt.py` could not be collected: RuntimeError: boom",
+        "syn": "`tests/test_syn.py` could not be collected: SyntaxError: invalid syntax",
+        "imp": "`tests/test_imp.py` could not be collected: "
+        "ModuleNotFoundError: No module named 'offramp_missing_module'",
+    }
+
+
+def test_a_sites_own_setup_errors_are_named_before_the_repos_deselection(tmp_path):
+    """Task 32 (re-review N-3): "N deselected" anywhere in the run's output told a site whose tests errored at
+    setup that this repo's pytest options deselect its tests. Its own `ERROR path::test` lines come first."""
+    broken = "import pytest\n\n\n@pytest.fixture\ndef broken():\n    raise ValueError('bad fixture')\n\n\n"
+    box = repo_with_tests(
+        tmp_path,
+        {
+            "test_one.py": broken + "def test_a(broken):\n    pass\n",
+            "test_two.py": broken + "def test_m(nofixture):\n    pass\n\n\ndef test_n(broken):\n    pass\n",
+            "test_slow.py": "import pytest\n\n\n@pytest.mark.slow\ndef test_s():\n    pass\n",
+        },
+        'addopts = -m "not slow"\nmarkers =\n    slow: slow\n',
+    )
+    ran, untested = run_site_tests(box, {n: [f"tests/test_{n}.py"] for n in ("one", "two", "slow")})
+    assert ran == {"one": [], "two": [], "slow": []}
+    assert untested == {
+        "one": "`tests/test_one.py::test_a` errored at setup: ValueError: bad fixture",
+        "two": "`tests/test_two.py`: 2 tests errored at setup, the first `test_m`",
+        "slow": "none of the tests in `tests/test_slow.py` ran "
+        "(this repo's pytest options deselect some tests)",
     }
 
 
@@ -430,6 +476,36 @@ def test_a_test_file_names_the_function_only_as_a_python_name():
     assert names_function("from app import plan_refund\n\nplan_refund(1)\n", "plan_refund")
     assert not names_function('TAGS = ["plan_refund", "prior-refund"]  # plan_refund\n', "plan_refund")
     assert not names_function("x = plan_refunds\n", "plan_refund")
+
+
+def test_the_tests_a_change_edited_are_the_test_functions_its_changed_lines_fall_in():
+    """Task 32 (M-3 residual): the async PR sentence needs an edited test to have run, not just its file. An
+    edit outside every test function (a fake or fixture at module level) names the file: any test of it
+    counts."""
+    before = (
+        "import pytest\n\n\n"  # 1-3
+        "def fake():\n    return 'old'\n\n\n"  # 4-7
+        "@pytest.mark.parametrize('x', [1])\ndef test_one(x):\n    assert fake() == 'old'\n\n\n"  # 8-12
+        "class TestGroup:\n    def test_two(self):\n        assert 1\n\n\n"  # 13-17
+        "async def test_three():\n    assert 2\n    assert 3\n"  # 18-20
+    )
+
+    def edited(after, old=before):
+        return edited_tests("tests/test_x.py", old, after)
+
+    one, two, three = (f"tests/test_x.py::{t}" for t in ("test_one", "TestGroup::test_two", "test_three"))
+    assert edited(before) == []
+    assert edited(before.replace("fake() == 'old'", "fake() == 'new'")) == [one]
+    assert edited(before.replace("[1]", "[1, 2]")) == [one]  # its decorator
+    assert edited(before.replace("assert 1", "assert 4")) == [two]
+    assert edited(before.replace("    assert 3\n", "")) == [three]  # a line removed
+    assert edited(before.replace("return 'old'", "return 'new'")) == ["tests/test_x.py"]  # the fake
+    both = before.replace("return 'old'", "return 'new'").replace("assert 1", "assert 4")
+    assert edited(both) == ["tests/test_x.py", two]
+    added = before + "\n\ndef test_four():\n    pass\n"  # its blank lines are no edit of the module
+    assert edited(added) == ["tests/test_x.py::test_four"]
+    assert edited("def test_new():\n    pass\n", old=None) == ["tests/test_x.py::test_new"]  # a new file
+    assert edited(before + "def test_broken(:\n") == ["tests/test_x.py"]  # no parse: the file
 
 
 def test_client_module_reads_the_key_and_pins_verified_tier_ids():
@@ -1282,6 +1358,18 @@ def test_each_site_is_patched_alone_then_all_together():
     assert MIGRATED not in boxes[0].checks[5]["tinyapp/greet.py"]  # shout was checked alone
     assert result.alone == {"cs_01": True, "cs_03": True} and result.combined == ["cs_01", "cs_03"]
     assert result.files["tests/test_tinyapp.py"].count("# both sites") == 1
+
+
+def test_the_patch_result_names_the_tests_each_shipped_sites_own_change_edited():
+    """Task 32 (M-3 residual): what the PR's async sentence reads, from each site's own change."""
+    pin = Edit(path=TESTS, search='FakeClient("  Hi Ana! ")', replace='FakeClient(" Hi Ana! ")')
+    result = run(patcher_llm(PatchEdits(edits=[pin], notes="pins updated"), migrate("tinyapp/shout.py")))
+
+    assert result.combined == ["cs_01", "cs_03"]
+    assert result.tests_edited == {
+        "cs_01": ["tests/test_tinyapp.py::test_greet_strips_the_reply"],
+        "cs_03": ["tests/test_tinyapp.py"],  # migrate()'s mark is a line above the def: module level
+    }
 
 
 def test_sites_green_alone_but_red_together_get_one_combined_repair_on_ultra():

@@ -1092,6 +1092,7 @@ def write_and_open_pr(
         verification=patch.get("verification", {}),
         tests_run=patch.get("tests_run", {}),
         untested=patch.get("untested", {}),
+        tests_edited=patch.get("tests_edited", {}),
         refused={k: r["refused"] for k, r in routes.items() if r.get("refused")},
         not_iterated={k: r["not_iterated"] for k, r in routes.items() if r.get("not_iterated")},
     )

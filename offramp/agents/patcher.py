@@ -48,7 +48,7 @@ from openai import APIStatusError
 from packaging.requirements import InvalidRequirement, Requirement
 from pydantic import BaseModel, Field
 
-from offramp.agents.pr_writer import NO_TEST_FILE, TIER_NAMES, is_test_path, threshold
+from offramp.agents.pr_writer import NO_TEST_FILE, TIER_NAMES, TIMED_OUT, is_test_path, threshold
 from offramp.agents.translate import UnresolvedCallSite, build_request
 from offramp.evals.baselines import load_cases
 from offramp.sandbox import (
@@ -270,6 +270,7 @@ class PatchResult(BaseModel):
     verification: dict[str, str] = Field(default_factory=dict)  # shipped site -> how its request was checked
     tests_run: dict[str, list[str]] = Field(default_factory=dict)  # shipped site -> its tests that ran
     untested: dict[str, str] = Field(default_factory=dict)  # shipped site -> why none of its tests ran
+    tests_edited: dict[str, list[str]] = Field(default_factory=dict)  # shipped site -> its edited tests
     warnings: list[str] = Field(default_factory=list)  # e.g. symlinks dropped from the sandbox copy
     linted: bool = True  # the checks ran the repo's ruff (only a repo that configures ruff gets it)
     sandbox_notes: list[str] = Field(default_factory=list)  # Sandbox.notes: the PR states them
@@ -2393,13 +2394,51 @@ def names_function(source: str, function: str) -> bool:
         return False
 
 
+def _test_holders(path: str, text: str) -> list[str]:
+    """Per line of `text`: the pytest node id of the test function holding it (decorators included), else
+    `path` (module level, a fake, a fixture, or a file that does not parse)."""
+    at = [path] * len(text.splitlines())
+    try:
+        body = ast.parse(text).body
+    except SyntaxError:
+        return at
+
+    def walk(nodes: list[ast.stmt], prefix: str) -> None:
+        for node in nodes:
+            if isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+                walk(node.body, f"{prefix}::{node.name}")
+            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name.startswith("test"):
+                start = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+                at[start - 1 : node.end_lineno] = [f"{prefix}::{node.name}"] * (node.end_lineno - start + 1)
+
+    walk(body, path)
+    return at
+
+
+def edited_tests(path: str, before: str | None, after: str) -> list[str]:
+    """The tests of a test file that a change edited: the node ids of the test functions holding a non-blank
+    line it removed (in the old text) or added (in the new). A changed line outside every test function, a
+    fake or fixture at module level, names the file itself: any of its tests may use it (review M-3)."""
+    old, new = (before or "").splitlines(), after.splitlines()
+    held = _test_holders(path, before or ""), _test_holders(path, after)
+    out: set[str] = set()
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+        if tag != "equal":
+            out |= {held[0][k] for k in range(i1, i2) if old[k].strip()}
+            out |= {held[1][k] for k in range(j1, j2) if new[k].strip()}
+    return sorted(out)
+
+
 def _collection_error(output: str, path: str) -> str:
-    """The first `E ` line of pytest's "ERROR collecting <path>" section (one line, capped), or a fallback."""
+    """The last `E ` line of pytest's "ERROR collecting <path>" section, the error itself after any source
+    lines a SyntaxError shows (one line, capped), or a fallback."""
     section = re.search(
         rf"ERROR collecting {re.escape(path)} _*\n(.*?)(?:\n_{{3,}} |\n={{3,}} )", output, re.S
     )
-    lines = section.group(1).splitlines() if section else []
-    return next((ln[1:].strip() for ln in lines if ln.startswith("E ")), "an error during collection")[:200]
+    found = [
+        ln[1:].strip() for ln in (section.group(1).splitlines() if section else []) if ln.startswith("E ")
+    ]
+    return (found[-1] if found else "an error during collection")[:200]
 
 
 def run_site_tests(
@@ -2414,7 +2453,9 @@ def run_site_tests(
     ran = re.findall(r"^(?:PASSED|FAILED) (\S+)", output, re.M)  # an xfail, skip or deselection is no run
     skipped = dict.fromkeys(re.findall(r"^SKIPPED \[\d+\] (.+?):\d+: (.*)$", output, re.M))
     xfailed = Counter(n.split("::")[0] for n in re.findall(r"^(?:XFAIL|XPASS) (\S+)", output, re.M))
-    broken = set(re.findall(r"^ERROR (\S+)$", output, re.M))  # a module that did not collect
+    # a module that did not collect: `ERROR <path>`, or `ERROR <path> - <error>` when it raised at import
+    broken = set(re.findall(r"^ERROR ([^\s:]+)(?: - .*)?$", output, re.M))
+    setup = re.findall(r"^ERROR ([^\s:]+)::(\S+)(?: - (.*))?$", output, re.M)  # a test that errored at setup
     counts = r"\b(\d+ (passed|failed|skipped|xfailed|xpassed|errors?|deselected)|no tests ran)\b.* in [\d.]+s"
     started = re.search(counts, output)  # pytest's last line: absent at -qq, or when the run never got there
     out: dict[str, list[str]] = {}
@@ -2429,17 +2470,25 @@ def run_site_tests(
             if f in fs:
                 tests = "1 test marked xfail, which does" if n == 1 else f"{n} tests marked xfail, which do"
                 reasons.append(f"`{f}`: {tests} not count as a run")
+        for f in fs:
+            if errors := [(test, error) for path, test, error in setup if path == f]:
+                (test, error), n = errors[0], len(errors)
+                if n == 1:
+                    head = f"`{f}::{test}` errored at setup"
+                else:
+                    head = f"`{f}`: {n} tests errored at setup, the first `{test}`"
+                reasons.append(head + (f": {error[:200]}" if error else ""))
         listed = ", ".join(f"`{f}`" for f in fs)
         if not fs:
             why[sid] = NO_TEST_FILE
-        elif code == 124:
-            why[sid] = f"the run of its tests timed out after {getattr(box, 'timeout_s', TIMEOUT_S)} s"
+        elif code == 124:  # the sandbox returns no output: whether any test ran is unknown
+            why[sid] = f"{TIMED_OUT} {getattr(box, 'timeout_s', TIMEOUT_S)} s"
         elif reasons:
             why[sid] = "; ".join(reasons)
         elif not started and not (ran or skipped or xfailed or broken):
             why[sid] = f"the run of its tests did not start (exit {code}): {output.strip()[-200:]}"
-        elif re.search(r"\b\d+ deselected\b", output):
-            why[sid] = f"none of the tests in {listed} ran (this repo's pytest options deselect tests)"
+        elif re.search(r"\b\d+ deselected\b", output):  # nothing of the site's own explains it: say "some"
+            why[sid] = f"none of the tests in {listed} ran (this repo's pytest options deselect some tests)"
         else:
             why[sid] = f"none of the tests in {listed} ran (pytest exit {code})"
     return out, why
@@ -4270,9 +4319,16 @@ def compose_patches(
                 kind = "merged_drift" if off else "not_together"
                 downgrade(by_verdict[sid], f"green alone, but {alongside}{why}", PatchFailure(kind=kind))
         combined = kept
+    tests_edited: dict[str, list[str]] = {}
     for sid in combined:  # what ships: each site's own change against the base
         diffs[sid] = adapters[sid].patch = _diff(befores[sid], versions[sid])
         site_files[sid] = sorted(versions[sid])
+        tests_edited[sid] = [
+            t
+            for p in site_files[sid]
+            if is_test_path(p)
+            for t in edited_tests(p, befores[sid].get(p), versions[sid][p])
+        ]
     for sid in versions:
         if sid not in combined:
             adapters[sid].patch = None
@@ -4354,6 +4410,7 @@ def compose_patches(
         verification={sid: verification.get(sid, UNCHANGED) for sid in combined},
         tests_run=tests_run,
         untested=untested,
+        tests_edited=tests_edited,
         warnings=warnings,
         linted=box.ruff,
         sandbox_notes=box.notes,

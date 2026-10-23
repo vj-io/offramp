@@ -951,6 +951,29 @@ def test_the_pr_writer_renders_the_body_from_the_run_and_opens_the_pr(tmp_path, 
     assert [e.payload["title"] for e in log.events if e.type == "pr"] == [opened["title"]]
 
 
+def test_the_pr_reads_the_tests_each_patch_edited_from_the_patch_result(tmp_path):
+    """Task 32 (M-3 residual): the async sentence's "a test fakes it" reaches the PR from
+    PatchResult.tests_edited, through the pipeline's PR context."""
+
+    class AsyncPatch(FakePatch):
+        async_client: bool = True
+        tests_run: dict[str, list[str]] = {"cs_01": ["tests/test_triage.py::test_fake"]}
+        tests_edited: dict[str, list[str]] = {"cs_01": ["tests/test_triage.py::test_fake"]}
+
+    class Stub(Recorder):
+        def patch(self, *args, **kwargs):
+            return AsyncPatch(**super().patch(*args, **kwargs).model_dump())
+
+    repo = make_repo(tmp_path)
+    log, _ = start(tmp_path, repo, open_pr=False)
+    stub = Stub()
+    llm = llm_for_full_run(*split_counts(repo)).add("pr_writer", {"summary": "", "sites": []})
+
+    assert pipeline.Pipeline(log, llm, eval_matrix=stub.eval_matrix, patch=stub.patch).execute() == Stage.DONE
+    body = pipeline.report(log.dir, log.run_id, log.events)["pr_body_markdown"]
+    assert "each still `await`s its call, and a test fakes it the way it faked the old SDK client." in body
+
+
 @pytest.mark.parametrize("public", [False, True])
 def test_langsmith_links_are_private_unless_the_run_opts_in_to_public_ones(tmp_path, monkeypatch, public):
     """A public share link exposes the target's prompts and inputs to anyone with it: only on
