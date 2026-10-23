@@ -184,8 +184,9 @@ def _ask(
             ids = ", ".join(items[n - 1][0].id for n in missing)
             raise ProviderError(f"judge: left {len(missing)} case(s) unscored: {ids}")
         return by_case
-    except ProviderError:  # not kept: a resume must ask again, never replay a failed reply forever
-        if result.cache_key and (forget := getattr(client, "forget", None)):
+    except ProviderError as e:  # not kept: a resume must ask again, never replay a failed reply forever
+        transport = isinstance(e.__cause__, openai.APIError)  # a follow-up never answered: this reply stays
+        if not transport and result.cache_key and (forget := getattr(client, "forget", None)):
             forget(result.cache_key)
         raise
 

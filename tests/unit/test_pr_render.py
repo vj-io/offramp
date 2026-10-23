@@ -102,18 +102,57 @@ def test_a_site_no_test_ran_says_so_and_the_pr_claims_no_test_of_it():
 
 def test_the_async_sentence_claims_a_fake_only_where_an_edited_test_file_ran():
     """Review M-3: a test of every site ran is not a test that fakes the client. The claim needs, for each
-    migrated site, a test file its patch edited whose tests ran."""
+    migrated site, a test file its patch edited whose tests ran (here edits at module level: the file)."""
     c = ctx(async_client=True, sandbox="docker")
     sites = [v.site_id for v in c.verdicts if v.decision == "MIGRATE"]
     edited = {sid: [f"tests/test_{sid}.py"] for sid in sites}
     ran = {sid: [f"tests/test_{sid}.py::test_x"] for sid in sites}
     claim = "and a test fakes it the way it faked the old SDK client."
-    assert claim in render_pr(c.model_copy(update={"site_files": edited, "tests_run": ran})).body
+    both = {"site_files": edited, "tests_edited": edited}
+    assert claim in render_pr(c.model_copy(update={**both, "tests_run": ran})).body
     other = {**ran, sites[0]: ["tests/test_other.py::test_x"]}  # its tests ran, not those of the edited file
-    assert claim not in render_pr(c.model_copy(update={"site_files": edited, "tests_run": other})).body
+    assert claim not in render_pr(c.model_copy(update={**both, "tests_run": other})).body
     unedited = {**edited, sites[0]: []}  # tests ran, no test file edited (a mock of the whole function)
-    body = render_pr(c.model_copy(update={"site_files": unedited, "tests_run": ran})).body
+    body = render_pr(
+        c.model_copy(update={"site_files": unedited, "tests_edited": unedited, "tests_run": ran})
+    ).body
     assert claim not in body and "(each site's test files are listed above)" in body
+
+
+def test_the_async_sentence_needs_an_edited_test_function_itself_to_have_run():
+    """Task 32 (M-3 residual): a file with one edited test that was skipped and another test that passed
+    proved the edited file ran, not the edited test. Where the patch's changes lie inside test functions, one
+    of those tests must have run (any parametrisation of it)."""
+    c = ctx(async_client=True, sandbox="docker")
+    sites = [v.site_id for v in c.verdicts if v.decision == "MIGRATE"]
+    files = {sid: [f"tests/test_{sid}.py"] for sid in sites}
+    edited = {sid: [f"tests/test_{sid}.py::test_fake"] for sid in sites}
+    ran = {sid: [f"tests/test_{sid}.py::test_fake[sync]"] for sid in sites}
+    claim = "and a test fakes it the way it faked the old SDK client."
+
+    def body(tests_edited, tests_run):
+        update = {"site_files": files, "tests_edited": tests_edited, "tests_run": tests_run}
+        return render_pr(c.model_copy(update=update)).body
+
+    assert claim in body(edited, ran)
+    skipped = {**ran, sites[0]: [f"tests/test_{sites[0]}.py::test_other"]}  # the edited test did not run
+    assert claim not in body(edited, skipped)
+    assert claim in body({**edited, sites[0]: [f"tests/test_{sites[0]}.py"]}, skipped)  # a module-level fake
+
+
+def test_a_test_run_that_timed_out_does_not_say_no_test_ran():
+    """Task 32 (re-review N-2): a run cut by the time cap returns no output, so whether any test ran is
+    unknown; the line said "No test ran in the test files that name ...: the run of its tests timed out"."""
+    c = ctx(sandbox="docker")
+    sid = next(v.site_id for v in c.verdicts if v.decision == "MIGRATE")
+    fn = next(s.function for s in c.sites if s.id == sid)
+    body = render_pr(c.model_copy(update={"untested": {sid: "timed out after 600 s"}})).body
+    (line,) = [ln for ln in body.splitlines() if ln.startswith(f"- **{sid}**")]
+    assert line.endswith(
+        f"The run of the tests in test files that name `{fn}` timed out after 600 s, so Offramp cannot say "
+        "whether any ran."
+    )
+    assert "No test ran" not in line
 
 
 def test_a_tier_left_uniterated_for_latency_is_stated_on_its_sites_line():

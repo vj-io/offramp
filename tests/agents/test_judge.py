@@ -394,6 +394,70 @@ def test_a_case_skipped_twice_keeps_neither_reply_so_a_resume_asks_again(tmp_pat
     assert list(tmp_path.glob("*.json")) == []
 
 
+class _Reply:
+    def __init__(self, content):
+        self.content = content
+
+    def model_dump(self, **_):
+        message = {"role": "assistant", "content": self.content}
+        return {"choices": [{"message": message}], "usage": {"completion_tokens": 9}}
+
+
+def _down_once(sent: list[int], reply, fails: int):
+    """A TFClient._create that answers `reply(max_tokens)`, except one request of `fails` max_tokens, which
+    meets a connection error (what the SDK raises after its own retries) the first time it is sent."""
+    down = [fails]
+
+    def create(self, model, messages, params):
+        sent.append(params["max_tokens"])
+        if params["max_tokens"] == down[0]:
+            down[0] = None
+            raise openai.APIConnectionError(request=httpx.Request("POST", "https://x"))
+        return _Reply(reply(params["max_tokens"]))
+
+    return create
+
+
+def test_a_connection_error_on_the_re_ask_keeps_the_batch_reply_so_a_resume_asks_only_the_missing_case(
+    tmp_path, monkeypatch
+):
+    """Task 32 (re-review N-4): a batch reply that scored all but one case was deleted when only the re-ask of
+    that case failed at the transport level, so the route's retry asked the whole batch live again. Only a
+    reply's content (off the schema twice, a case skipped twice) evicts it; a transport failure keeps it."""
+    sent = []
+    scores = {700: [_single(1, _r(4, 4, 4))], 550: [_single(1, _r(5, 5, 5))]}  # the batch of two; the re-ask
+    monkeypatch.setattr(
+        TFClient, "_create", _down_once(sent, lambda m: json.dumps({"scores": scores[m]}), fails=550)
+    )
+    cases = [_case(1), _case(2)]
+    outputs = {c.id: ModelOutput(text="answer") for c in cases}
+    with pytest.raises(ProviderError, match="APIConnectionError"):
+        judge(TFClient(api_key="x", cache_dir=tmp_path, live=True), cases, outputs)
+    assert sent == [700, 550] and len(list(tmp_path.glob("*.json"))) == 1  # the batch reply is kept
+    sent.clear()
+    result = judge(TFClient(api_key="x", cache_dir=tmp_path, live=True), cases, outputs)
+    assert sent == [550]  # the batch replayed from the cache; only the missing case asked
+    assert [s.candidate for s in result.scores] == [4.0, 5.0]
+
+
+def test_a_connection_error_on_the_retry_with_more_room_keeps_the_first_reply(tmp_path, monkeypatch):
+    """Task 32 (re-review N-4): the same for the retry with twice the room. A resume replays the first reply
+    and sends only the retry, as a recovered retry does (Task 31 A)."""
+    sent = []
+    good = json.dumps({"scores": [_single(1, _r(4, 4, 4))]})
+    monkeypatch.setattr(
+        TFClient, "_create", _down_once(sent, lambda m: TRUNCATED["reply"] if m == 550 else good, fails=1100)
+    )
+    case = _case(1)
+    outputs = {case.id: ModelOutput(text="answer")}
+    with pytest.raises(ProviderError, match="APIConnectionError"):
+        judge(TFClient(api_key="x", cache_dir=tmp_path, live=True), [case], outputs)
+    assert sent == [550, 1100] and len(list(tmp_path.glob("*.json"))) == 1  # the first reply is kept
+    sent.clear()
+    result = judge(TFClient(api_key="x", cache_dir=tmp_path, live=True), [case], outputs)
+    assert sent == [1100] and [s.candidate for s in result.scores] == [4.0]
+
+
 def test_pairwise_ordering_the_judge_skipped_raises():
     case = _case(1)
     fake = FakeLLM().add(

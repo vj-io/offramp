@@ -40,6 +40,7 @@ from offramp.tf.tiers import get_tier
 
 FREE_TEXT_TAG = "free_text_arg:"  # offramp.evals.scorers.tool_call
 NO_TEST_FILE = "no test file names it"  # PatchResult.untested: the site had no test file to run
+TIMED_OUT = "timed out after"  # PatchResult.untested starts so when the test run hit the time cap
 ROLE = "pr_writer"
 MAX_TOKENS = 1500
 MAX_FAILING_SHOWN = 10
@@ -114,6 +115,7 @@ class PRContext(BaseModel):
     verification: dict[str, str] = Field(default_factory=dict)  # PatchResult.verification: request checks
     tests_run: dict[str, list[str]] = Field(default_factory=dict)  # PatchResult.tests_run: tests that ran
     untested: dict[str, str] = Field(default_factory=dict)  # PatchResult.untested: why none of a site's ran
+    tests_edited: dict[str, list[str]] = Field(default_factory=dict)  # PatchResult.tests_edited
     refused: dict[str, list[str]] = Field(default_factory=dict)  # site_id -> rewrites refused unevaluated
     not_iterated: dict[str, list[str]] = Field(default_factory=dict)  # site_id -> tiers left uniterated
     today: date = Field(default_factory=lambda: datetime.now(UTC).date())  # "retires" or "retired" on a date
@@ -448,6 +450,9 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         fn = f"`{site.function if site else sid}`"
         if (why := ctx.untested.get(sid)) == NO_TEST_FILE:
             out.append(f"No test file names {fn}.")
+        elif why and why.startswith(TIMED_OUT):  # the run printed nothing: unknown, not "no test ran"
+            out.append(f"The run of the tests in test files that name {fn} {why}, so Offramp cannot say "
+                       "whether any ran.")  # fmt: skip
         elif why:
             out.append(f"No test ran in the test files that name {fn}: {why}.")
         elif ran := ctx.tests_run.get(sid):
@@ -455,9 +460,13 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
             out.append(f"{len(ran)} test{'s' * (len(ran) != 1)} ran in test files that name {fn}: {files}.")
         return " ".join(out)
 
-    def faked(sid: str) -> bool:  # a test file its patch edited (a fake mirrored or a pin updated) ran
-        ran = {n.split("::")[0] for n in ctx.tests_run.get(sid, [])}
-        return any(is_test_path(p) and p in ran for p in ctx.site_files.get(sid, []))
+    def faked(sid: str) -> bool:
+        """A test its patch edited (a fake mirrored or a pin updated) ran, in any parametrisation. An edit
+        outside every test function (a fake or fixture at module level) is recorded as its file, and then any
+        test of that file counts (the file-level rule of review M-3)."""
+        ran = ctx.tests_run.get(sid, [])
+        tests, files = {n.split("[")[0] for n in ran}, {n.split("::")[0] for n in ran}
+        return any(t in (tests if "::" in t else files) for t in ctx.tests_edited.get(sid, []))
 
     out = ["## Summary", ""]
     if lead := _retiring(verdicts, sites, ctx.today):
