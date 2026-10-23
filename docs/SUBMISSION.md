@@ -1,6 +1,6 @@
 # Devpost submission text
 
-Ready to paste into the Devpost form, one section per field. The demo numbers come from the final demo run `20261022-014146107-57cca9`: its replay (`web/public/replay/demo-events.json`), its pull request <https://github.com/vj-io/offramp-demo-app/pull/3>, and `evals/results/*.json` in `vj-io/offramp-demo-app` at `24b97e0`. The no-Ultra numbers come from run `20261022-015732734-b5aee2` (`web/public/replay/no-ultra-events.json`), and the open-source numbers from run `20261022-153359255-7bea7c` (`web/public/replay/oss-events.json`, PR <https://github.com/vj-io/idea-reality-mcp/pull/1>). Spend comes from each run's `budget.json`, listed in the README's [What it cost](../README.md#what-it-cost).
+Ready to paste into the Devpost form, one section per field; the "About the project" field is everything from "In plain words" to "What's next for Offramp". The demo numbers come from the final demo run `20261022-014146107-57cca9`: its replay (`web/public/replay/demo-events.json`), its pull request <https://github.com/vj-io/offramp-demo-app/pull/3>, and `evals/results/*.json` in `vj-io/offramp-demo-app` at `24b97e0`. The no-Ultra numbers come from run `20261022-015732734-b5aee2` (`web/public/replay/no-ultra-events.json`), and the open-source numbers from run `20261022-153359255-7bea7c` (`web/public/replay/oss-events.json`, PR <https://github.com/vj-io/idea-reality-mcp/pull/1>). Spend comes from each run's `budget.json`, listed in the README's [What it cost](../README.md#what-it-cost).
 
 ## Project name
 
@@ -8,7 +8,7 @@ Offramp
 
 ## Tagline
 
-Tests each closed-LLM call in a Python repo against NVIDIA Nemotron on Nebius Token Factory, then opens a pull request for the calls that pass.
+Moves your app's AI calls to cheaper NVIDIA Nemotron models on Nebius Token Factory, only where tests prove they still work, with the proof in a pull request.
 
 ## Track
 
@@ -18,13 +18,31 @@ Coding and Agentic Engineering
 
 https://youtu.be/dECD_2mqnME: "Offramp: move LLM calls to NVIDIA Nemotron on Nebius Token Factory, with evidence" (2:43).
 
+## In plain words
+
+**The problem.** Many apps call paid AI models from companies like OpenAI or Anthropic, often from many places in their code. Moving those calls to a cheaper open model such as NVIDIA Nemotron can cut the bill sharply, and teams also have to move when a model they rely on is retired. But the cheaper model might quietly do worse: return data in a format the app cannot read, pick the wrong action, or give slightly worse answers. Checking every call by hand takes days, so most teams never switch.
+
+**What Offramp does.** Point it at your code and it works like an automated tester. It finds every AI call, builds a small test for each one, tries the cheapest Nemotron model first and steps up to a bigger one only when it has to, and then opens a pull request (a proposed code change) for the calls that passed, with the evidence attached. When it cannot prove a call still works, it leaves that call alone or asks a person to look.
+
+**The result on our demo app.** 6 AI calls checked. 5 moved to Nemotron, at an estimated 95% lower cost on those 5. 1 went to a person, because the model's fix would have deleted three checks from its test, and Offramp refused that. The app's own tests pass on the pull request.
+
+**In one sentence:** Offramp moves an app's AI calls to a cheaper model only where it can prove they still work, and shows the proof.
+
+**Terms used below:**
+
+- **Call site:** one place in the code that calls an AI model.
+- **Tier:** Nemotron comes in three sizes on Nebius Token Factory: 3.5 Lightning (smallest and cheapest), 3 Super, and 3 Ultra (largest).
+- **Parity:** the cheaper model's answers agree with reference answers often enough to pass the bar for that kind of call.
+- **Held-out cases:** test cases kept aside. Offramp tunes the prompt on the others and uses these only for the final check, so it cannot tune its way to a pass.
+- **Adapter:** what Offramp sends the new model for one call: its prompt, examples, output format and whether it reasons first.
+
 ## Inspiration
 
 Moving a product off a closed LLM API sounds like a base-URL change, and teams have reasons to do it: price, vendor lock-in, and deprecations. Offramp's own Tavily lookup found that Claude Sonnet 4.5 retires on 30 November 2026, and two of our demo app's calls use it. A static scan of 30 popular public Python repos found 50 chat calls that name their model; 33 of them use a model its provider has retired or scheduled for shutdown. What stops teams from moving is risk they cannot see: JSON that no longer parses, tool schemas that drift, answers that are slightly worse. Nobody wants to migrate on a vibe check, and nobody has time to check parity call site by call site. We wanted a tool that does the checking and hands over a pull request a reviewer can trust.
 
 ## What it does
 
-Point Offramp at a Python repo. It:
+In short: find the AI calls, test cheaper models on each, tune the prompt when one nearly passes, decide call by call, and write the code change. In more detail, pointed at a Python repo, Offramp:
 
 1. **Scans** for every OpenAI, Anthropic, LiteLLM and LangChain call with a deterministic AST pass, and Nemotron 3 Super labels each call's contract: classification, JSON extraction, tool call, free text or reasoning.
 2. **Builds an eval set per call site**, split into dev and holdout by a hash of the case id. Expected outputs are reference answers: seeded (the expected label, record or tool call is chosen first, and Super writes an input that implies it), computed by code, or, for free text, written by Claude Sonnet 5.5, a different model family. Seed references are audited blind; the free-text ones were not audited.
@@ -45,6 +63,8 @@ A dashboard shows it live: stage stepper, call-site cards, a parity-by-tier grid
 
 ## How we built it
 
+In short: a Python backend runs the steps above, every model call goes to Nemotron on Nebius Token Factory, models propose while code decides and writes the shipped code, and a web dashboard replays each run.
+
 - **Backend:** Python 3.12 with FastAPI, Pydantic and SQLModel; a run is a state machine that streams its events over server-sent events.
 - **Models:** every inference call in Offramp's code goes through one client, the OpenAI Python SDK pointed at Nebius Token Factory. Nemotron 3 Super and Nemotron 3 Ultra are the agents (labelling, case generation, adapter, iterator, judge, patch writer, PR prose), and Nemotron 3.5 Lightning, Super and Ultra are the models under test. Structured calls use `temperature=0`, `json_schema` output, an explicit `enable_thinking` switch and a per-agent token cap.
 - **Cache as cassettes:** every response is stored by a hash of model, messages and parameters. Cache hits are free, a finished run can be replayed from the cache without a new call, and the test suite replays real Token Factory output without a key. The exception is the open-source PR run `20261022-153359255-7bea7c`: a bug deleted judge replies it would need, and it is fixed for later runs.
@@ -54,6 +74,8 @@ A dashboard shows it live: stage stepper, call-site cards, a parity-by-tier grid
 - **Dashboard:** Next.js and Tailwind CSS on Vercel's free tier. The recordings replay entirely in the browser, and `/scan` runs the static scanner in a Python function.
 
 ## Challenges we ran into
+
+In short: we had no keys for the paid models we were replacing, Nemotron 3 Super was not reliable at rewriting app code, and a real project exposed bugs our demo never did.
 
 - **No closed-model keys.** We had only hackathon credits, so the source models' own outputs could not be recorded. We defined parity as agreement with reference answers (seeded, computed by code, or written by Claude Sonnet 5.5 for free text), labelled every reference with where it came from, and audited the seed references blind with a different model family.
 - **Super was unreliable at writing shipped code to a spec.** Asked to rewrite call sites from the evaluated adapter, Super's patches were rejected on 5 of 6 sites. We moved the call-site rewrite into deterministic code and let the model edit tests only. That took the demo from 1 patched site to 3, and later fixes to the repair loop took it to 5.
