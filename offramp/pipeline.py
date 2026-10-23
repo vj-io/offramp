@@ -46,7 +46,7 @@ from offramp.agents import case_gen
 from offramp.agents.adapter import REFUSED, adapt
 from offramp.agents.patcher import compose_patches
 from offramp.agents.pr_writer import PRContext, reference_summary, write_pr
-from offramp.agents.scanner import label_contracts, scan_repo
+from offramp.agents.scanner import label_contracts, read_from_code, scan_repo
 from offramp.agents.verdict import pricing_yaml_price
 from offramp.evals import baselines
 from offramp.evals.errors import ProviderError
@@ -602,10 +602,11 @@ class Pipeline:
                 if s.contract and p.contract and s.contract.task_type != p.contract.task_type:
                     notes.append(f"{s.id}: labelled {s.contract.task_type} now, prepared as "
                                  f"{p.contract.task_type}; evaluating as prepared")  # fmt: skip
-                # the code's current position, how it parses the reply and its timeout now (read from code)
-                read = ("reply_json", "timeout_s")
-                code = {k: getattr(s.contract, k) if s.contract else None for k in read}
-                contract = p.contract.model_copy(update=code) if p.contract else None
+                # the code's current position, how it parses the reply and its timeout now: read from the
+                # code, also when this run's label did not validate (review M-1: both gates were off then)
+                code = read_from_code(repo, s)
+                update = {k: code.get(k) for k in ("reply_json", "timeout_s")}
+                contract = p.contract.model_copy(update=update) if p.contract else None
                 sites.append(p.model_copy(update={"lines": s.lines, "contract": contract}))
         chat = [s for s in sites if s.kind == "chat"]
         self._stage(Stage.SCANNED, f"{len(chat)} call sites found")
@@ -1088,6 +1089,9 @@ def write_and_open_pr(
         alone=patch.get("alone", {}),
         combined=patch.get("combined", []),
         combined_repair=patch.get("combined_repair", []),
+        verification=patch.get("verification", {}),
+        tests_run=patch.get("tests_run", {}),
+        untested=patch.get("untested", {}),
         refused={k: r["refused"] for k, r in routes.items() if r.get("refused")},
         not_iterated={k: r["not_iterated"] for k, r in routes.items() if r.get("not_iterated")},
     )

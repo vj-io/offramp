@@ -127,7 +127,11 @@ class Runner:
 
 def iterate(adapter, site, failing, tier, error_counts):
     return Adapter(
-        site_id=site.id, version=adapter.version + 1, tier=tier, spec=adapter.spec, change_log=["x"]
+        site_id=site.id,
+        version=adapter.version + 1,
+        tier=tier,
+        spec=adapter.spec.model_copy(update={"user_suffix": f" v{adapter.version + 1}"}),  # a real change
+        change_log=["x"],
     )
 
 

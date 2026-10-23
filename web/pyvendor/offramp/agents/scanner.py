@@ -801,12 +801,8 @@ def label_contracts(sites: list[CallSite], llm: LLM, root: str | Path | None = N
             reasoning="off",  # Nemotron thinks by default (docs/plan/tf-probe.md); labelling needs none
         )
         label: ContractLabel | None = result.parsed
-        hints = _hints(site)
+        hints = _hints(site) | (read_from_code(root, site) if root is not None else {})
         certain = "task_type" in hints
-        if root is not None and "tools" not in hints and (parsed := json_reply(root, site)):
-            hints["reply_json"] = parsed  # from the code, like the other hints: the labeller is not asked
-        if root is not None and (seconds := call_timeout(root, site)) is not None:
-            hints["timeout_s"] = seconds
         if label is None:  # keep what the code settles, and ask a human for the rest
             flags = site.flags if "MANUAL_REVIEW" in site.flags else [*site.flags, "MANUAL_REVIEW"]
             update = {
@@ -1093,6 +1089,17 @@ def _located(root: str | Path, site: CallSite) -> tuple[ast.Module, ast.Call, Fn
         ),
         None,
     )
+
+
+def read_from_code(root: str | Path, site: CallSite) -> dict[str, Any]:
+    """The contract fields read from the code, never asked of the labeller: how the reply is parsed
+    (`reply_json`, not for a tool call) and the call's timeout (`timeout_s`), each only when known."""
+    out: dict[str, Any] = {}
+    if "tools" not in _hints(site) and (parsed := json_reply(root, site)):
+        out["reply_json"] = parsed
+    if (seconds := call_timeout(root, site)) is not None:
+        out["timeout_s"] = seconds
+    return out
 
 
 def json_reply(root: str | Path, site: CallSite) -> str | None:

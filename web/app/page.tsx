@@ -20,8 +20,8 @@ export default function NewRunPage() {
         </h1>
         <p className="max-w-xl text-lg leading-relaxed font-medium">
           Offramp finds every OpenAI and Anthropic call in a Python repo and shows, on held-out cases, which ones NVIDIA
-          Nemotron on Nebius Token Factory can take over, by checking them against reference answers with known ground
-          truth. It opens a pull request for the calls that reach the parity bar. The rest stay on their source model,
+          Nemotron on Nebius Token Factory can take over, by checking them against reference answers: seeded, computed
+          by code, or written by another model family. It opens a pull request for the calls that reach the parity bar. The rest stay on their source model,
           with the numbers that show why.
         </p>
         <div className="flex flex-col gap-2">

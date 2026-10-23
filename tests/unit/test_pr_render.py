@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from offramp.agents.pr_writer import (
+    NO_TEST_FILE,
     SOURCE_OUTPUTS_NOT_RECORDED,
     PRContext,
     PRProse,
@@ -66,6 +67,53 @@ def test_a_rewrite_refused_before_evaluation_is_stated_on_its_sites_line():
     (line,) = [ln for ln in body.splitlines() if ln.startswith(f"- **{migrated}**")]
     assert line.endswith(f"Rewrites never evaluated nor shipped: {why}.")
     assert "never evaluated" not in render_pr(c).body
+
+
+def test_a_site_no_test_ran_says_so_and_the_pr_claims_no_test_of_it():
+    """Task 31 B (review I-2): PR #1 said a test fakes the async client and that each site's test files are
+    listed, while no test ran either migrated function and no test file changed. Each site's line now says
+    how its request was checked and what was measured: the tests that ran in test files that name its
+    function, or plainly that none did and why (review M-2: no more than that)."""
+    c = ctx(async_client=True, sandbox="docker")
+    a, b, d = [v.site_id for v in c.verdicts if v.decision == "MIGRATE"][:3]
+    fn = {s.id: s.function for s in c.sites}
+    skipped = "`tests/test_a.py` was skipped: could not import 'fastapi': No module named 'fastapi'"
+    probe = "probe: run in the sandbox with case cs_01:001, it sends the evaluated request"
+    body = render_pr(
+        c.model_copy(
+            update={
+                "verification": {a: probe},
+                "tests_run": {a: [], b: ["tests/test_b.py::test_x", "tests/test_b.py::test_y"], d: []},
+                "untested": {a: skipped, d: NO_TEST_FILE},
+            }
+        )
+    ).body
+    (line,) = [ln for ln in body.splitlines() if ln.startswith(f"- **{a}**")]
+    assert line.endswith(
+        f"Request check: {probe}. No test ran in the test files that name `{fn[a]}`: {skipped}."
+    )
+    (line,) = [ln for ln in body.splitlines() if ln.startswith(f"- **{b}**")]
+    assert line.endswith(f"2 tests ran in test files that name `{fn[b]}`: `tests/test_b.py`.")
+    (line,) = [ln for ln in body.splitlines() if ln.startswith(f"- **{d}**")]
+    assert line.endswith(f"No test file names `{fn[d]}`.")
+    assert "each still `await`s its call." in body and "a test fakes it" not in body
+    assert "test files are listed above" not in body and "no test file of this repo changed" in body
+
+
+def test_the_async_sentence_claims_a_fake_only_where_an_edited_test_file_ran():
+    """Review M-3: a test of every site ran is not a test that fakes the client. The claim needs, for each
+    migrated site, a test file its patch edited whose tests ran."""
+    c = ctx(async_client=True, sandbox="docker")
+    sites = [v.site_id for v in c.verdicts if v.decision == "MIGRATE"]
+    edited = {sid: [f"tests/test_{sid}.py"] for sid in sites}
+    ran = {sid: [f"tests/test_{sid}.py::test_x"] for sid in sites}
+    claim = "and a test fakes it the way it faked the old SDK client."
+    assert claim in render_pr(c.model_copy(update={"site_files": edited, "tests_run": ran})).body
+    other = {**ran, sites[0]: ["tests/test_other.py::test_x"]}  # its tests ran, not those of the edited file
+    assert claim not in render_pr(c.model_copy(update={"site_files": edited, "tests_run": other})).body
+    unedited = {**edited, sites[0]: []}  # tests ran, no test file edited (a mock of the whole function)
+    body = render_pr(c.model_copy(update={"site_files": unedited, "tests_run": ran})).body
+    assert claim not in body and "(each site's test files are listed above)" in body
 
 
 def test_a_tier_left_uniterated_for_latency_is_stated_on_its_sites_line():

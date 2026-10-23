@@ -39,6 +39,7 @@ from offramp.tf.prices import from_yaml
 from offramp.tf.tiers import get_tier
 
 FREE_TEXT_TAG = "free_text_arg:"  # offramp.evals.scorers.tool_call
+NO_TEST_FILE = "no test file names it"  # PatchResult.untested: the site had no test file to run
 ROLE = "pr_writer"
 MAX_TOKENS = 1500
 MAX_FAILING_SHOWN = 10
@@ -110,6 +111,9 @@ class PRContext(BaseModel):
     alone: dict[str, bool] = Field(default_factory=dict)  # PatchResult.alone: site -> green on its own
     combined: list[str] = Field(default_factory=list)  # PatchResult.combined: sites in the checked tree
     combined_repair: list[str] = Field(default_factory=list)  # PatchResult.combined_repair: files it changed
+    verification: dict[str, str] = Field(default_factory=dict)  # PatchResult.verification: request checks
+    tests_run: dict[str, list[str]] = Field(default_factory=dict)  # PatchResult.tests_run: tests that ran
+    untested: dict[str, str] = Field(default_factory=dict)  # PatchResult.untested: why none of a site's ran
     refused: dict[str, list[str]] = Field(default_factory=dict)  # site_id -> rewrites refused unevaluated
     not_iterated: dict[str, list[str]] = Field(default_factory=dict)  # site_id -> tiers left uniterated
     today: date = Field(default_factory=lambda: datetime.now(UTC).date())  # "retires" or "retired" on a date
@@ -416,7 +420,7 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
     def changelog(sid: str) -> str:
         a = ctx.adapters.get(sid)
         text = f"Adapter changes: {'; '.join(a.change_log)}." if a and a.change_log else ""
-        if sid in ctx.refused:  # model-written adapters the sanity gate stopped (adapter.adapter_problem)
+        if sid in ctx.refused:  # rewrites refused unevaluated: adapter_problem, or a repeat (ends the tier)
             text += f" Rewrites never evaluated nor shipped: {'; '.join(ctx.refused[sid])}."
         if (
             sid in ctx.not_iterated
@@ -434,6 +438,26 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
                 f"Tests updated (they pinned the old provider's request or fakes): {', '.join(tests)}."
             )
         return " ".join(out)
+
+    def checked(sid: str) -> str:
+        """How the site's request was checked, and what was measured of its tests on the shipped tree: the
+        tests that ran in test files naming its function, or plainly that none did and why (review I-2: green
+        checks had run no test of either migrated function; M-2: say no more than that)."""
+        out = [f"Request check: {ctx.verification[sid]}."] if sid in ctx.verification else []
+        site = sites.get(sid)
+        fn = f"`{site.function if site else sid}`"
+        if (why := ctx.untested.get(sid)) == NO_TEST_FILE:
+            out.append(f"No test file names {fn}.")
+        elif why:
+            out.append(f"No test ran in the test files that name {fn}: {why}.")
+        elif ran := ctx.tests_run.get(sid):
+            files = ", ".join(f"`{f}`" for f in sorted({n.split("::")[0] for n in ran}))
+            out.append(f"{len(ran)} test{'s' * (len(ran) != 1)} ran in test files that name {fn}: {files}.")
+        return " ".join(out)
+
+    def faked(sid: str) -> bool:  # a test file its patch edited (a fake mirrored or a pin updated) ran
+        ran = {n.split("::")[0] for n in ctx.tests_run.get(sid, [])}
+        return any(is_test_path(p) and p in ran for p in ctx.site_files.get(sid, []))
 
     out = ["## Summary", ""]
     if lead := _retiring(verdicts, sites, ctx.today):
@@ -474,9 +498,11 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
             where = f"beside the migrated modules in the `{folder}/` folder, which is not a package"
         else:
             where = "at the repository root, because the migrated call sites are not inside one package"
+        tested = all(faked(v.site_id) for v in migrated)  # review M-3: true of every site, or not said
         asynchronous = (
             " For the async call sites, `token_factory_async_client()` (`openai.AsyncOpenAI`): each still "
-            "`await`s its call, and a test fakes it the way it faked the old SDK client."
+            "`await`s its call"
+            + (", and a test fakes it the way it faked the old SDK client." if tested else ".")
             if ctx.async_client
             else ""
         )
@@ -491,18 +517,31 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
     for v in migrated:
         site = sites.get(v.site_id)
         text = " ".join(
-            t for t in [_migrated_line(ctx, v, site), changelog(v.site_id), files(v.site_id)] if t
+            t
+            for t in [
+                _migrated_line(ctx, v, site),
+                changelog(v.site_id),
+                files(v.site_id),
+                checked(v.site_id),
+            ]
+            if t
         )
         out.append(
             f"- **{v.site_id}** `{site.file if site else '?'}` → {TIER_NAMES[Tier(v.tier)]}. {text}".rstrip()
         )
     if migrated:
+        edited = any(is_test_path(p) for v in migrated for p in ctx.site_files.get(v.site_id, []))
         out.append(
             "- Offramp's code rewrote each migrated call (the evaluated request as written-out keyword "
             "arguments, the reply read the OpenAI way) and the callers that build its client, and that code "
-            "ships as Offramp wrote it; Nemotron 3 Super edited only tests and their fakes (each site's test "
-            "files are listed above) where they pinned the old provider, with repair rounds on "
-            "Nemotron 3 Ultra (thinking off) when this repo's checks failed."
+            "ships as Offramp wrote it; "
+            + (
+                "Nemotron 3 Super edited only tests and their fakes (each site's test files are listed "
+                "above) where they pinned the old provider, with repair rounds on Nemotron 3 Ultra (thinking "
+                "off) when this repo's checks failed."
+                if edited
+                else "no test file of this repo changed."
+            )
         )
     green = sorted(sid for sid, ok in ctx.alone.items() if ok)
     if len(green) > 1:

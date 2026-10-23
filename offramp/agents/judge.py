@@ -167,24 +167,27 @@ def _ask(
         )
     except openai.APIError as e:  # after the SDK's retries; any kind: the judge is not under test
         raise provider_error(e, "judge: ") from e
-    if result.parsed is None:  # not kept: a resume must ask again, never replay the bad reply forever
+    try:  # a reply is kept while what follows it succeeds: a second ask or a replay walks the same requests
+        if result.parsed is None:
+            if room == 1:
+                return _ask(client, items, paired, again, room=2)
+            raise ProviderError("judge: reply does not match the rubric schema")
+        by_case: dict[int, Any] = {}
+        for item in result.parsed.scores:
+            if 1 <= item.case <= len(items):
+                by_case.setdefault(item.case, item)  # first entry wins
+        missing = [n for n in range(1, len(items) + 1) if n not in by_case]
+        if missing and again:
+            retried = _ask(client, [items[n - 1] for n in missing], paired, again=False)
+            by_case.update({missing[k - 1]: item for k, item in retried.items()})
+        elif missing:
+            ids = ", ".join(items[n - 1][0].id for n in missing)
+            raise ProviderError(f"judge: left {len(missing)} case(s) unscored: {ids}")
+        return by_case
+    except ProviderError:  # not kept: a resume must ask again, never replay a failed reply forever
         if result.cache_key and (forget := getattr(client, "forget", None)):
             forget(result.cache_key)
-        if room == 1:
-            return _ask(client, items, paired, again, room=2)
-        raise ProviderError("judge: reply does not match the rubric schema")
-    by_case: dict[int, Any] = {}
-    for item in result.parsed.scores:
-        if 1 <= item.case <= len(items):
-            by_case.setdefault(item.case, item)  # first entry wins
-    missing = [n for n in range(1, len(items) + 1) if n not in by_case]
-    if missing and again:
-        retried = _ask(client, [items[n - 1] for n in missing], paired, again=False)
-        by_case.update({missing[k - 1]: item for k, item in retried.items()})
-    elif missing:
-        ids = ", ".join(items[n - 1][0].id for n in missing)
-        raise ProviderError(f"judge: left {len(missing)} case(s) unscored: {ids}")
-    return by_case
+        raise
 
 
 def _chunks(items: list) -> list[list]:

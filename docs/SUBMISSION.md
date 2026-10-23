@@ -14,6 +14,10 @@ Tests each closed-LLM call in a Python repo against NVIDIA Nemotron on Nebius To
 
 Coding and Agentic Engineering
 
+## Video
+
+https://youtu.be/dECD_2mqnME: "Offramp: move LLM calls to NVIDIA Nemotron on Nebius Token Factory, with evidence" (2:43).
+
 ## Inspiration
 
 Moving a product off a closed LLM API sounds like a base-URL change, and teams have reasons to do it: price, vendor lock-in, and deprecations. Offramp's own Tavily lookup found that Claude Sonnet 4.5 retires on 30 November 2026, and two of our demo app's calls use it. A static scan of 30 popular public Python repos found 50 chat calls that name their model; 33 of them use a model its provider has retired or scheduled for shutdown. What stops teams from moving is risk they cannot see: JSON that no longer parses, tool schemas that drift, answers that are slightly worse. Nobody wants to migrate on a vibe check, and nobody has time to check parity call site by call site. We wanted a tool that does the checking and hands over a pull request a reviewer can trust.
@@ -23,15 +27,15 @@ Moving a product off a closed LLM API sounds like a base-URL change, and teams h
 Point Offramp at a Python repo. It:
 
 1. **Scans** for every OpenAI, Anthropic, LiteLLM and LangChain call with a deterministic AST pass, and Nemotron 3 Super labels each call's contract: classification, JSON extraction, tool call, free text or reasoning.
-2. **Builds an eval set per call site**, split into dev and holdout by a hash of the case id. Expected outputs are references with known ground truth: seeded (the expected label, record or tool call is chosen first, and Super writes an input that implies it), computed by code, or written by a different model family. Seed references are audited blind.
+2. **Builds an eval set per call site**, split into dev and holdout by a hash of the case id. Expected outputs are reference answers: seeded (the expected label, record or tool call is chosen first, and Super writes an input that implies it), computed by code, or, for free text, written by Claude Sonnet 5.5, a different model family. Seed references are audited blind; the free-text ones were not audited.
 3. **Runs a tier matrix** on Nebius Token Factory: Nemotron 3.5 Lightning, then Nemotron 3 Super, then Nemotron 3 Ultra. Deterministic scorers check schemas, labels, tool names and arguments, and numeric answers; an Ultra judge scores free text.
-4. **Iterates.** When a cheaper tier fails on dev, Nemotron 3 Ultra reads the failing cases and rewrites the adapter (prompt, few-shot examples, schema, reasoning switch), up to 3 times per tier. The Iterator never sees holdout cases.
+4. **Iterates.** When a cheaper tier fails on dev, Nemotron 3 Ultra reads the failing cases and rewrites the adapter (prompt, few-shot examples, schema, reasoning switch), up to 3 times per tier; a rewrite identical to one already tried ends that tier's rewrites early. The Iterator never sees holdout cases.
 5. **Decides** per call site: migrate to the cheapest tier that passes dev and then holdout, keep the source model when no tier does, or hand the site to manual review. When the call sets a timeout, a tier must also answer within it.
 6. **Patches and opens a PR.** Code rewrites each migrated call, and Nemotron edits only the tests and fakes that pinned the old provider. The repo's own ruff and pytest run in a network-off Docker sandbox, and any site whose patch cannot be verified goes to manual review with the exact reason. The PR carries an evidence table, how parity was measured, failing cases, prices with their sources, and a "What Offramp did NOT change" section.
 
 A dashboard shows it live: stage stepper, call-site cards, a parity-by-tier grid, the log and a report page.
 
-**On our demo app** (a small support-desk app with six chat calls on `gpt-4o-mini`, `gpt-4o`, `o3`, `claude-sonnet-4-5` and `claude-haiku-4-5`), Offramp evaluated 121 cases, 40 of them held out. All 6 call sites reached the parity bar on a Nemotron tier. 5 migrated in [one pull request](https://github.com/vj-io/offramp-demo-app/pull/3): two Claude Sonnet 4.5 calls to Super, the RAG answerer to Ultra, and the o3 refund planner and the Haiku summariser to Lightning. The demo repo's own CI passes on that PR. Estimated cost per 1,000 calls to each site falls from $49.21 to $2.61 on the 5 migrated sites (−95%), and from $49.24 to $2.65 across all 6 (−95%). The o3 site is most of the "before"; without it, the other five go from $9.74 to $1.46 (−85%). The sixth site, the ticket classifier, went to manual review: the model's edit to its test would have dropped three asserts, so Offramp refused it.
+**On our demo app** (a small support-desk app with six chat calls on `gpt-4o-mini`, `gpt-4o`, `o3`, `claude-sonnet-4-5` and `claude-haiku-4-5`), Offramp evaluated 121 cases, 40 of them held out. All 6 call sites reached the parity bar on a Nemotron tier. 5 migrated in [one pull request](https://github.com/vj-io/offramp-demo-app/pull/3): two Claude Sonnet 4.5 calls to Super, the RAG answerer to Ultra, and the o3 refund planner and the Haiku summariser to Lightning. The demo repo's own CI passes on that PR. Estimated cost per 1,000 calls to each site falls from $49.21 to $2.61 on the 5 migrated sites (−95%), and from $49.24 to $2.65 across all 6 (−95%). The o3 site is most of the "before"; without it, the other five sites (four migrated, plus the ticket classifier at its source model's price) go from $9.74 to $1.46 (−85%). The sixth site, the ticket classifier, went to manual review: the model's edit to its test would have dropped three asserts, so Offramp refused it.
 
 **The gate saying no.** Rerun with a team policy of "no Ultra", Offramp kept the RAG answerer on `gpt-4o`: Lightning and Super both failed the dev split, Super with a best judge mean of 4.45, more than 0.3 below the references' mean.
 
@@ -43,7 +47,7 @@ A dashboard shows it live: stage stepper, call-site cards, a parity-by-tier grid
 
 - **Backend:** Python 3.12 with FastAPI, Pydantic and SQLModel; a run is a state machine that streams its events over server-sent events.
 - **Models:** every inference call in Offramp's code goes through one client, the OpenAI Python SDK pointed at Nebius Token Factory. Nemotron 3 Super and Nemotron 3 Ultra are the agents (labelling, case generation, adapter, iterator, judge, patch writer, PR prose), and Nemotron 3.5 Lightning, Super and Ultra are the models under test. Structured calls use `temperature=0`, `json_schema` output, an explicit `enable_thinking` switch and a per-agent token cap.
-- **Cache as cassettes:** every response is stored by a hash of model, messages and parameters. Cache hits are free, a run can be replayed exactly, and the test suite replays real Token Factory output without a key.
+- **Cache as cassettes:** every response is stored by a hash of model, messages and parameters. Cache hits are free, a finished run can be replayed from the cache without a new call, and the test suite replays real Token Factory output without a key. The exception is the open-source PR run `20261022-153359255-7bea7c`: a bug deleted judge replies it would need, and it is fixed for later runs.
 - **Budget guardrails:** caps per run on input and output tokens and on Ultra agent calls; hitting one keeps the affected sites on their source model instead of crashing.
 - **Patching:** an AST rewrite writes the evaluated request into each call site as literal keyword arguments, and a check rejects any model edit to a non-test file. The target repo's own checks run in Docker with the network off, on the repo's tracked files only.
 - **Partners:** Tavily looks up each source model's published price and deprecation notices at run time, and a price is accepted only if the cited page prints it next to that exact model. LangSmith traces every Token Factory call and keeps each site's cases as a dataset. Claude Sonnet 5.5, run through Claude Code during the build, wrote the free-text references and blind-audited the seed references, so Nemotron never grades its own gold.
@@ -51,7 +55,7 @@ A dashboard shows it live: stage stepper, call-site cards, a parity-by-tier grid
 
 ## Challenges we ran into
 
-- **No closed-model keys.** We had only hackathon credits, so the source models' own outputs could not be recorded. We defined parity as agreement with references whose ground truth is known, labelled every reference with where it came from, and audited the seed references blind with a different model family.
+- **No closed-model keys.** We had only hackathon credits, so the source models' own outputs could not be recorded. We defined parity as agreement with reference answers (seeded, computed by code, or written by Claude Sonnet 5.5 for free text), labelled every reference with where it came from, and audited the seed references blind with a different model family.
 - **Super was unreliable at writing shipped code to a spec.** Asked to rewrite call sites from the evaluated adapter, Super's patches were rejected on 5 of 6 sites. We moved the call-site rewrite into deterministic code and let the model edit tests only. That took the demo from 1 patched site to 3, and later fixes to the repair loop took it to 5.
 - **A real repo broke our assumptions.** The first two runs on the open-source repo found five bugs in Offramp: repeated eval cases leaking across the dev and holdout splits, an Ultra budget spent on the wrong work, a degenerate adapter (one word repeated about 750 times) that passed the metric, parity measured without the call's own 30 s timeout, and a judge reply cut at `max_tokens` that the cache kept serving. We fixed each, with tests, before the run that opened the PR.
 - **Nemotron and Token Factory specifics:** reasoning is on by default and its tokens count toward `max_tokens`; Lightning with `tool_choice="required"` looped until the token cap; and on 2026-10-22 Lightning answered about 50 times slower than on 2026-10-19 for replies of the same size. `docs/FEEDBACK.md` has priorities, evidence and repro steps.
@@ -81,7 +85,7 @@ A dashboard shows it live: stage stepper, call-site cards, a parity-by-tier grid
 ## What we learned
 
 - Deterministic scorers should decide wherever they can. `json_schema` and tool calling worked on all three Nemotron tiers, so only free-text sites needed a judge.
-- The cheapest tier is often enough, but not always: on the demo, three sites passed on Lightning (one of them then went to manual review), two needed Super, and the RAG answerer needed Ultra after Lightning and Super each failed three adapter rewrites.
+- The cheapest tier is often enough, but not always: on the demo, three sites passed on Lightning (one of them then went to manual review), two needed Super, and the RAG answerer needed Ultra after three adapter rewrites on Lightning and one on Super failed (Super's next two rewrites repeated that one).
 - Let models propose and code decide. Every allowance for model edits to shipped code reopened a way for unverified changes to slip through; restricting the model to tests closed it.
 - A real repo is worth more than a polished demo. Two runs on one found five bugs that our demo app never triggered.
 - Honest labels matter more than flattering numbers: "est.", "parity vs reference", "manual review" and the scope of every cost figure.
@@ -100,6 +104,7 @@ Python, FastAPI, Pydantic, SQLModel, OpenAI Python SDK, Nebius Token Factory, NV
 
 ## Testing instructions
 
+- **Demo video (2:43):** <https://youtu.be/dECD_2mqnME>.
 - **Hosted, no login and no keys:** open <https://offramp-seven.vercel.app> and click "Watch demo run (replay)", or go straight to <https://offramp-seven.vercel.app/runs/demo?replay=demo>. At 4x speed the replay plays in about 14 seconds (the event gaps add up to 14.2 s); "Skip to end" jumps to the result. Then open the report: <https://offramp-seven.vercel.app/runs/demo/report?replay=demo>.
 - **The gate saying no:** <https://offramp-seven.vercel.app/runs/demo?replay=no-ultra> (the same app with Ultra not allowed).
 - **A real open-source repo:** <https://offramp-seven.vercel.app/runs/demo?replay=oss>, and the PR it opened on our fork: <https://github.com/vj-io/idea-reality-mcp/pull/1>.

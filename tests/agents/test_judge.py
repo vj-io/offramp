@@ -325,6 +325,75 @@ def test_replies_that_failed_the_rubric_are_not_kept_so_a_resume_asks_again(tmp_
     assert list(tmp_path.glob("*.json")) == []
 
 
+def test_a_recovered_retry_keeps_the_first_reply_so_the_same_outputs_score_the_same(tmp_path, monkeypatch):
+    """Task 31 A (review I-1): in run 20261022-153359255-7bea7c the first reply was deleted although the retry
+    with twice the room succeeded, so the identical request went live on the next ask (a fresh judge sample:
+    cs_05 Super v2 2.778, the identical v3 4.000) and a cache-only replay raised CacheMiss. Kept, a second
+    ask and a replay walk the same two cached requests."""
+    from offramp.tf.client import TFClient
+
+    class Reply:
+        def __init__(self, content):
+            self.content = content
+
+        def model_dump(self, **_):
+            message = {"role": "assistant", "content": self.content}
+            return {"choices": [{"message": message}], "usage": {"completion_tokens": 9}}
+
+    good = json.dumps({"scores": [_single(1, _r(4, 4, 4))]})
+    sent = []
+    monkeypatch.setattr(
+        TFClient,
+        "_create",
+        lambda self, model, messages, params: (
+            sent.append(params["max_tokens"])
+            or Reply(TRUNCATED["reply"] if params["max_tokens"] == 550 else good)
+        ),
+    )
+    case = _case(1)
+    outputs = {case.id: ModelOutput(text="answer")}
+    first = judge(TFClient(api_key="x", cache_dir=tmp_path, live=True), [case], outputs)
+    assert sent == [550, 1100]
+    sent.clear()
+    again = judge(TFClient(api_key="x", cache_dir=tmp_path, live=True), [case], outputs)
+    replay = judge(TFClient(cache_dir=tmp_path, live=False), [case], outputs)  # raised CacheMiss before
+    assert sent == [] and [s.candidate for s in first.scores] == [4.0]
+    assert again.scores == first.scores == replay.scores
+
+
+def test_a_case_skipped_twice_keeps_neither_reply_so_a_resume_asks_again(tmp_path, monkeypatch):
+    """Review M-6: a batch reply that parses but skips a case, then a re-ask of that case that skips it again,
+    raised "unscored" with both replies cached: the route's retry and every resume replayed the same two
+    replies (run 20261019-220847641-43d3df ended FAILED on this). Both are now deleted, as for a double
+    schema failure."""
+    from offramp.tf.client import TFClient
+
+    class Reply:
+        def __init__(self, content):
+            self.content = content
+
+        def model_dump(self, **_):
+            message = {"role": "assistant", "content": self.content}
+            return {"choices": [{"message": message}], "usage": {"completion_tokens": 9}}
+
+    sent = []
+
+    def create(self, model, messages, params):
+        sent.append(params["max_tokens"])  # 700: the batch of two; 550: the re-ask of the skipped case
+        scores = [_single(1, _r(4, 4, 4))] if params["max_tokens"] == 700 else []
+        return Reply(json.dumps({"scores": scores}))
+
+    monkeypatch.setattr(TFClient, "_create", create)
+    cases = [_case(1), _case(2)]
+    outputs = {c.id: ModelOutput(text="answer") for c in cases}
+    for _ in ("run", "resume"):
+        sent.clear()
+        with pytest.raises(ProviderError, match="unscored"):
+            judge(TFClient(api_key="x", cache_dir=tmp_path, live=True), cases, outputs)
+        assert sent == [700, 550]  # live both times: nothing that failed was kept
+    assert list(tmp_path.glob("*.json")) == []
+
+
 def test_pairwise_ordering_the_judge_skipped_raises():
     case = _case(1)
     fake = FakeLLM().add(
