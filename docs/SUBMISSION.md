@@ -121,7 +121,7 @@ Python, FastAPI, Pydantic, SQLModel, OpenAI Python SDK, Nebius Token Factory, NV
 
 ## Gallery images
 
-1500x1000 PNGs in `docs/media/`, in this order. `00` and `07` were drawn as HTML and rendered with Playwright; `01`, `02`, `03`, `05` and `06` were taken with Playwright from the dashboard (local build, 2026-10-22); `04` is the GitHub pull request page, cropped below the site header.
+1500x1000 PNGs in `docs/media/`, in this order. `00` and `07` were drawn as HTML and rendered with Playwright; `01`, `02`, `03`, `05` and `06` were taken with Playwright from the dashboard (local build 2026-10-22; `06` retaken from the hosted site 2026-10-23); `04` is the GitHub pull request page, cropped below the site header.
 
 | File | Caption |
 |---|---|
