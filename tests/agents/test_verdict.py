@@ -1391,7 +1391,10 @@ def test_a_rewrite_identical_to_one_tried_on_the_tier_is_refused_and_ends_the_ti
     it = RepeatingIterator(repeat, of)
     table = {(L, "dev"): 0.5, (L, "dev", 1): 0.5, (S, "dev"): 1.0, (S, "holdout"): 1.0}
     out, runner, _ = route(table, iterator=it, events=events)
-    refusal = f"Lightning v{repeat} refused before evaluation: identical to v{of}"
+    refusal = (
+        f"Lightning v{repeat} refused before evaluation: identical to v{of}; "
+        "no further rewrite asked on Lightning"
+    )
     assert out.refused == [refusal] and len(it.told) == repeat
     assert runner.calls == [(L, "dev", v) for v in range(repeat)] + [(S, "dev", 0), (S, "holdout", 0)]
     assert [t for t, _ in events].count("iteration") == repeat - 1  # the refused rewrite is not announced

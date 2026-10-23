@@ -36,6 +36,7 @@ from typing import Any
 
 from offramp.agents.judge import MAX_TOKENS_BASE, MAX_TOKENS_PER_CASE
 from offramp.tf.budget import EVAL_TARGET_ROLE
+from offramp.tf.cache import cache_key
 from offramp.tf.client import strip_think, validate_structured
 from offramp.tf.tiers import DEFAULT_MODEL_IDS
 
@@ -114,7 +115,22 @@ def to_call(entry: dict[str, Any], source: str) -> dict[str, Any]:
         "repair_of_synthetic": False,
         # judge._ask sends a batch again with twice the room only after the first reply did not parse
         "room_retry": role == "judge" and bool(cases) and params.get("max_tokens") == 2 * room,
+        "key": cache_key(request["model"], messages, params),
+        "first_try_key": cache_key(request["model"], messages, {**params, "max_tokens": room}),
     }
+
+
+def deleted_first_replies(calls: list[dict[str, Any]]) -> dict[str, int]:
+    """Scope -> judge retries (twice the room) whose first reply was deleted from the cache: its request has
+    no entry, or only one recorded after the retry (the same request asked again later, live). Until
+    2026-10-23 the judge deleted a first reply that did not parse even when the retry succeeded."""
+    recorded = {c["key"]: c["created_at"] for c in calls}
+    deleted = [
+        c
+        for c in calls
+        if c["room_retry"] and recorded.get(c["first_try_key"], "9999") > (c["created_at"] or "")
+    ]
+    return dict(sorted(Counter(c["scope"] for c in deleted).items()))
 
 
 def load_calls(directories: list[tuple[str, Path]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
@@ -313,7 +329,7 @@ def aggregate(
         "by_model_thinking_eval_target": by_thinking(eval_target),
         "by_scope": {k[0]: summarise(v) for k, v in sorted(group(calls, "scope").items())},
         "length_calls": [{k: c[k] for k in length_keys} for c in calls if c["finish_reason"] == "length"],
-        "judge_room_retries": dict(sorted(Counter(c["scope"] for c in calls if c["room_retry"]).items())),
+        "judge_room_retries": deleted_first_replies(calls),
         "run_reconciliation": reconcile(calls, runs),
         "run_events": {
             "runs_failed": [{"run_id": r["run_id"], **e} for r in runs for e in r["errors"]],
@@ -570,11 +586,12 @@ def render_md(r: dict[str, Any]) -> str:
     room = r["judge_room_retries"]
     by_run = "; ".join(f"`{k}`: {n}" for k, n in room.items())
     deleted = (
-        f"{sum(room.values())} judge requests carry twice the judge's `max_tokens` for their batch "
-        f"({by_run}). The judge sends one only after the first reply to the same batch did not match the "
-        "rubric schema, and Offramp deleted that first reply from the cache, so the replies that did not "
-        "parse are in none of the counts here. (Offramp now keeps a first reply when the retry succeeds, and "
-        "deletes both when it fails.)"
+        f"{sum(room.values())} judge retries with twice the judge's `max_tokens` for their batch have no "
+        f"first reply recorded before them ({by_run}). The judge sends such a retry only after the first "
+        "reply to the same batch did not match the rubric schema, and Offramp deleted that first reply from "
+        "the cache (where the same request was asked again later, live, the cache holds that later reply), "
+        "so the replies that did not parse are in none of the counts here. (Offramp now keeps a first reply "
+        "when the retry succeeds, and deletes both when it fails.)"
         if room
         else "No judge request was sent again with twice the room."
     )

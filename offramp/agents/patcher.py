@@ -48,13 +48,14 @@ from openai import APIStatusError
 from packaging.requirements import InvalidRequirement, Requirement
 from pydantic import BaseModel, Field
 
-from offramp.agents.pr_writer import TIER_NAMES, is_test_path, threshold
+from offramp.agents.pr_writer import NO_TEST_FILE, TIER_NAMES, is_test_path, threshold
 from offramp.agents.translate import UnresolvedCallSite, build_request
 from offramp.evals.baselines import load_cases
 from offramp.sandbox import (
     NO_SANDBOX,
     NOT_COPIED,
     OPENAI_REQUIREMENT,
+    TIMEOUT_S,
     CheckResult,
     Sandbox,
     copy_repo,
@@ -2375,36 +2376,72 @@ def run_probe(box: Sandbox, jobs: list[dict[str, Any]]) -> dict[str, dict[str, A
     return {job["site"]: found.get(job["site"], {"error": "no result"}) for job in jobs}
 
 
-TESTS_RUN = (  # one line per test in pytest's summary: PASSED / SKIPPED [n] path:line: reason / ...
-    "import sys, pytest\nsys.exit(pytest.main(['-rfEpsxX', '--tb=no', '-p', 'no:cacheprovider', *%r]))"
+TESTS_RUN = (  # a summary line per test: PASSED / FAILED / SKIPPED [n] path:line: reason / XFAIL / ERROR
+    "import sys, pytest\nsys.exit(pytest.main(['-rfEpsxX', '--tb=line', '-p', 'no:cacheprovider', "
+    "'--continue-on-collection-errors', *%r]))"
 )
+
+
+def names_function(source: str, function: str) -> bool:
+    """Whether `source` names `function` as a Python name: not in a string, a comment or a longer name."""
+    try:
+        return any(
+            t.type == tokenize.NAME and t.string == function
+            for t in tokenize.generate_tokens(io.StringIO(source).readline)
+        )
+    except (tokenize.TokenError, SyntaxError):  # a file that does not tokenize does not run either
+        return False
+
+
+def _collection_error(output: str, path: str) -> str:
+    """The first `E ` line of pytest's "ERROR collecting <path>" section (one line, capped), or a fallback."""
+    section = re.search(
+        rf"ERROR collecting {re.escape(path)} _*\n(.*?)(?:\n_{{3,}} |\n={{3,}} )", output, re.S
+    )
+    lines = section.group(1).splitlines() if section else []
+    return next((ln[1:].strip() for ln in lines if ln.startswith("E ")), "an error during collection")[:200]
 
 
 def run_site_tests(
     box: Sandbox, site_tests: dict[str, list[str]]
 ) -> tuple[dict[str, list[str]], dict[str, str]]:
-    """The tests of each site's own test files run once more on the tree that ships, in one container: (site
-    -> the tests that ran, as pytest node ids; site -> why none did, in plain words). A green check says
-    nothing of a site whose tests were all skipped, and the skip-count backstop passes a module skipped
-    before and after the patch alike (review I-2)."""
+    """The tests of each site's test files (those that name its function) run once more on the tree that
+    ships, in one container: (site -> the tests that ran, passed or failed, as pytest node ids; site -> why
+    none did, in plain words). A green check says nothing of a site whose tests were all skipped, and the
+    skip-count backstop passes a module skipped before and after the patch alike (review I-2)."""
     files = sorted({f for fs in site_tests.values() for f in fs})
     code, output = box.probe(TESTS_RUN % (files,)) if files else (0, "")
-    ran = re.findall(r"^(?:PASSED|FAILED|XFAIL|XPASS) (\S+)", output, re.M)
+    ran = re.findall(r"^(?:PASSED|FAILED) (\S+)", output, re.M)  # an xfail, skip or deselection is no run
     skipped = dict.fromkeys(re.findall(r"^SKIPPED \[\d+\] (.+?):\d+: (.*)$", output, re.M))
+    xfailed = Counter(n.split("::")[0] for n in re.findall(r"^(?:XFAIL|XPASS) (\S+)", output, re.M))
+    broken = set(re.findall(r"^ERROR (\S+)$", output, re.M))  # a module that did not collect
     counts = r"\b(\d+ (passed|failed|skipped|xfailed|xpassed|errors?|deselected)|no tests ran)\b.* in [\d.]+s"
-    started = re.search(counts, output)  # pytest's last line; absent when the run never got that far
+    started = re.search(counts, output)  # pytest's last line: absent at -qq, or when the run never got there
     out: dict[str, list[str]] = {}
     why: dict[str, str] = {}
     for sid, fs in site_tests.items():
         out[sid] = [n for n in ran if n.split("::")[0] in fs]
+        if out[sid]:
+            continue
+        reasons = [f"`{f}` could not be collected: {_collection_error(output, f)}" for f in fs if f in broken]
+        reasons += [f"`{path}` was skipped: {reason[:200]}" for path, reason in skipped if path in fs]
+        for f, n in sorted(xfailed.items()):
+            if f in fs:
+                tests = "1 test marked xfail, which does" if n == 1 else f"{n} tests marked xfail, which do"
+                reasons.append(f"`{f}`: {tests} not count as a run")
+        listed = ", ".join(f"`{f}`" for f in fs)
         if not fs:
-            why[sid] = "no test refers to it"
-        elif not started:
+            why[sid] = NO_TEST_FILE
+        elif code == 124:
+            why[sid] = f"the run of its tests timed out after {getattr(box, 'timeout_s', TIMEOUT_S)} s"
+        elif reasons:
+            why[sid] = "; ".join(reasons)
+        elif not started and not (ran or skipped or xfailed or broken):
             why[sid] = f"the run of its tests did not start (exit {code}): {output.strip()[-200:]}"
-        elif not out[sid]:
-            skips = [f"`{path}` was skipped: {reason[:200]}" for path, reason in skipped if path in fs]
-            listed = ", ".join(f"`{f}`" for f in fs)
-            why[sid] = "; ".join(skips) or f"none of the tests in {listed} ran (pytest exit {code})"
+        elif re.search(r"\b\d+ deselected\b", output):
+            why[sid] = f"none of the tests in {listed} ran (this repo's pytest options deselect tests)"
+        else:
+            why[sid] = f"none of the tests in {listed} ran (pytest exit {code})"
     return out, why
 
 
@@ -3745,7 +3782,7 @@ def compose_patches(
     versions: dict[str, dict[str, str]] = {}  # site -> its patched files, green alone
     unchecked = False  # a green-alone patch was pruned after its check
     reach: dict[str, set[str]] = {}  # site -> what its tests name to reach the migrated function
-    site_tests: dict[str, list[str]] = {}  # site -> its test files: those in its context naming a handle
+    site_tests: dict[str, list[str]] = {}  # site -> its test files: those in its context naming its function
     raw: dict[str, dict[str, str]] = {}  # site -> its patched files as checked alone, before pruning
     befores: dict[str, dict[str, str]] = {}  # site -> its files before its patch
     code_of: dict[str, dict[str, str]] = {}  # site -> the code files Offramp's code changed, as written
@@ -3846,9 +3883,9 @@ def compose_patches(
             *(reach_handles(code[p], site.function) for p in code if p != site.file)
         )
         reach[v.site_id] = handles
-        named = re.compile(r"\b(" + "|".join(map(re.escape, sorted(h for h in handles if h))) + r")\b")
+        name = (site.function or "").rsplit(".", 1)[-1]  # what the PR says was measured: files naming it
         site_tests[v.site_id] = [p for p in context if is_test_path(p) and Path(p).name != "conftest.py"
-                                 and any(handles) and named.search(read(p) or "")]  # fmt: skip
+                                 and name and names_function(read(p) or "", name)]  # fmt: skip
         twins: dict[str, set[str]] = {}  # test file -> the fake lines mirror_fakes added
         for p in context:  # mechanical: the repo's provider fakes answer the Token Factory client's call
             if not is_test_path(p) or p in base_code:  # a test file shipped code imports stays as it is

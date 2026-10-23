@@ -62,6 +62,7 @@ from offramp.agents.patcher import (
     line_length,
     merge_onto,
     mirror_fakes,
+    names_function,
     parse_edits,
     prune_twins,
     py_literal,
@@ -333,7 +334,30 @@ def test_a_site_whose_only_test_module_is_skipped_is_recorded_as_untested():
 
     (repo / "tests" / "test_greet.py").unlink()  # no test names the function at all
     result = run(patcher_llm(), repo=repo, name="skipped-module-run", precheck=True, box=box)
-    assert result.untested == {"cs_01": "no test refers to it"} and result.tests_run["cs_01"] == []
+    assert result.untested == {"cs_01": "no test file names it"} and result.tests_run["cs_01"] == []
+
+
+class LocalPytest:
+    """A sandbox stand-in that runs the probe with this interpreter in `repo`: real pytest output."""
+
+    timeout_s = 600
+
+    def __init__(self, repo: Path):
+        self.repo = repo
+
+    def probe(self, script: str) -> tuple[int, str]:
+        env = {**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+        p = subprocess.run([sys.executable, "-"], input=script, cwd=self.repo, capture_output=True, text=True,
+                           timeout=60, env=env)  # fmt: skip
+        return p.returncode, p.stdout + p.stderr
+
+
+def repo_with_tests(tmp_path: Path, files: dict[str, str], ini: str = "") -> LocalPytest:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "pytest.ini").write_text(f"[pytest]\n{ini}")
+    for name, text in files.items():
+        (tmp_path / "tests" / name).write_text(text)
+    return LocalPytest(tmp_path)
 
 
 def test_a_test_run_that_did_not_start_is_not_reported_as_tests_that_did_not_run():
@@ -344,8 +368,68 @@ def test_a_test_run_that_did_not_start_is_not_reported_as_tests_that_did_not_run
     _, untested = run_site_tests(NoImage(), {"cs_01": ["tests/test_a.py"], "cs_02": []})
     assert untested == {
         "cs_01": "the run of its tests did not start (exit 1): sandbox image build failed: no network",
-        "cs_02": "no test refers to it",
+        "cs_02": "no test file names it",
     }
+
+
+def test_a_test_run_cut_by_the_time_cap_says_it_timed_out():
+    class Slow:
+        timeout_s = 600
+
+        def probe(self, script):
+            return 124, "sandbox time cap of 600s reached running python -"
+
+    assert run_site_tests(Slow(), {"cs_01": ["tests/test_a.py"]})[1] == {
+        "cs_01": "the run of its tests timed out after 600 s"
+    }
+
+
+def test_tests_that_passed_count_when_pytest_prints_no_count_line(tmp_path):
+    """Review M-1: at `-qq` pytest drops its last line; the PASSED lines still show the tests ran."""
+    box = repo_with_tests(tmp_path, {"test_a.py": "def test_one():\n    pass\n"}, "addopts = -qq\n")
+    assert run_site_tests(box, {"cs_01": ["tests/test_a.py"]}) == (
+        {"cs_01": ["tests/test_a.py::test_one"]},
+        {},
+    )
+
+
+def test_only_passed_and_failed_tests_count_as_run_and_each_other_outcome_is_named(tmp_path):
+    """Review M-7: an xfail (even run=False) counted as a run; a deselected test and a collection error were
+    reported without saying why. A collection error in one site's file no longer stops another's tests."""
+    box = repo_with_tests(
+        tmp_path,
+        {
+            "test_xf.py": "import pytest\n\n\n@pytest.mark.xfail(run=False, reason='later')\n"
+            "def test_x():\n    assert 0\n",
+            "test_slow.py": "import pytest\n\n\n@pytest.mark.slow\ndef test_s():\n    pass\n",
+            "test_broken.py": "import offramp_missing_module  # noqa: F401\n\n\ndef test_b():\n    pass\n",
+            "test_ok.py": "def test_ok():\n    assert 0\n",
+        },
+        'addopts = -m "not slow"\nmarkers =\n    slow: slow\n',
+    )
+    ran, untested = run_site_tests(
+        box,
+        {
+            "xf": ["tests/test_xf.py"],
+            "slow": ["tests/test_slow.py"],
+            "broken": ["tests/test_broken.py"],
+            "ok": ["tests/test_ok.py"],
+        },
+    )
+    assert ran == {"xf": [], "slow": [], "broken": [], "ok": ["tests/test_ok.py::test_ok"]}  # failed: it ran
+    assert untested == {
+        "xf": "`tests/test_xf.py`: 1 test marked xfail, which does not count as a run",
+        "slow": "none of the tests in `tests/test_slow.py` ran (this repo's pytest options deselect tests)",
+        "broken": "`tests/test_broken.py` could not be collected: "
+        "ModuleNotFoundError: No module named 'offramp_missing_module'",
+    }
+
+
+def test_a_test_file_names_the_function_only_as_a_python_name():
+    """Review M-2: demo cs_05's `tests/test_fixtures.py` counted through the tag string "prior-refund"."""
+    assert names_function("from app import plan_refund\n\nplan_refund(1)\n", "plan_refund")
+    assert not names_function('TAGS = ["plan_refund", "prior-refund"]  # plan_refund\n', "plan_refund")
+    assert not names_function("x = plan_refunds\n", "plan_refund")
 
 
 def test_client_module_reads_the_key_and_pins_verified_tier_ids():

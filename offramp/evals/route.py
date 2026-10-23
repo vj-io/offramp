@@ -236,7 +236,7 @@ def _route(
                 counts = Counter(s.error_category or "failed" for s in failed)
                 failing = failing_dev_cases(dev, cases, references, calls)
                 why = None  # a rewrite that fails adapter_problem costs its try, never an evaluation
-                tried = history[tier]  # a repeat's outputs replay from the cache: only the judge re-samples
+                tried = history[tier]  # a repeat would replay its outputs and judge scores from the cache
                 while tries < config.max_iterations:
                     tries += 1
                     new = iterate(current, site, failing, tier, counts, **({"refused": why} if why else {}))
@@ -245,9 +245,9 @@ def _route(
                     same = next((f"identical to v{a.version}" for a in tried if a.spec == new.spec), None)
                     if not (why := same or adapter_problem(site, new.spec)):
                         break
-                    refused.append(
-                        f"{tier.value.capitalize()} v{new.version} refused before evaluation: {why}"
-                    )
+                    name = tier.value.capitalize()
+                    ended = f"; no further rewrite asked on {name}" if same else ""
+                    refused.append(f"{name} v{new.version} refused before evaluation: {why}{ended}")
                     emit("log", {"level": "warn", "message": f"{site.id}: {refused[-1]}"})
                     if same:  # nothing new: asked again unchanged it replies the same (cached); asked with
                         break  # the reason, it is a request no recorded run made, so their replay would miss

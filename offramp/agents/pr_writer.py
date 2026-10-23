@@ -39,6 +39,7 @@ from offramp.tf.prices import from_yaml
 from offramp.tf.tiers import get_tier
 
 FREE_TEXT_TAG = "free_text_arg:"  # offramp.evals.scorers.tool_call
+NO_TEST_FILE = "no test file names it"  # PatchResult.untested: the site had no test file to run
 ROLE = "pr_writer"
 MAX_TOKENS = 1500
 MAX_FAILING_SHOWN = 10
@@ -419,7 +420,7 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
     def changelog(sid: str) -> str:
         a = ctx.adapters.get(sid)
         text = f"Adapter changes: {'; '.join(a.change_log)}." if a and a.change_log else ""
-        if sid in ctx.refused:  # model-written adapters the sanity gate stopped (adapter.adapter_problem)
+        if sid in ctx.refused:  # rewrites refused unevaluated: adapter_problem, or a repeat (ends the tier)
             text += f" Rewrites never evaluated nor shipped: {'; '.join(ctx.refused[sid])}."
         if (
             sid in ctx.not_iterated
@@ -439,17 +440,24 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
         return " ".join(out)
 
     def checked(sid: str) -> str:
-        """How the site's request was checked, and which tests of its test files ran on the shipped tree, or
-        plainly that none did (review I-2: green checks had run no test of either migrated function)."""
+        """How the site's request was checked, and what was measured of its tests on the shipped tree: the
+        tests that ran in test files naming its function, or plainly that none did and why (review I-2: green
+        checks had run no test of either migrated function; M-2: say no more than that)."""
         out = [f"Request check: {ctx.verification[sid]}."] if sid in ctx.verification else []
-        if sid in ctx.untested:
-            site = sites.get(sid)
-            out.append(f"No test exercised `{site.function if site else sid}`: {ctx.untested[sid]}.")
+        site = sites.get(sid)
+        fn = f"`{site.function if site else sid}`"
+        if (why := ctx.untested.get(sid)) == NO_TEST_FILE:
+            out.append(f"No test file names {fn}.")
+        elif why:
+            out.append(f"No test ran in the test files that name {fn}: {why}.")
         elif ran := ctx.tests_run.get(sid):
-            files = sorted({n.split("::")[0] for n in ran})
-            where = f"its test file{'s' * (len(files) > 1)} {', '.join(f'`{f}`' for f in files)}"
-            out.append(f"{len(ran)} test{'s' * (len(ran) != 1)} in {where} ran on the shipped tree.")
+            files = ", ".join(f"`{f}`" for f in sorted({n.split("::")[0] for n in ran}))
+            out.append(f"{len(ran)} test{'s' * (len(ran) != 1)} ran in test files that name {fn}: {files}.")
         return " ".join(out)
+
+    def faked(sid: str) -> bool:  # a test file its patch edited (a fake mirrored or a pin updated) ran
+        ran = {n.split("::")[0] for n in ctx.tests_run.get(sid, [])}
+        return any(is_test_path(p) and p in ran for p in ctx.site_files.get(sid, []))
 
     out = ["## Summary", ""]
     if lead := _retiring(verdicts, sites, ctx.today):
@@ -490,7 +498,7 @@ def render_pr(ctx: PRContext, prose: PRProse | None = None) -> PRDraft:
             where = f"beside the migrated modules in the `{folder}/` folder, which is not a package"
         else:
             where = "at the repository root, because the migrated call sites are not inside one package"
-        tested = all(ctx.tests_run.get(v.site_id) for v in migrated)  # a test of each ran on the shipped tree
+        tested = all(faked(v.site_id) for v in migrated)  # review M-3: true of every site, or not said
         asynchronous = (
             " For the async call sites, `token_factory_async_client()` (`openai.AsyncOpenAI`): each still "
             "`await`s its call"

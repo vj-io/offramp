@@ -205,3 +205,24 @@ def test_a_judge_request_with_twice_the_room_is_counted_as_a_retry_after_a_delet
 
     assert [judge(2 * (400 + 150 * 2))["room_retry"], judge(400 + 150 * 2)["room_retry"]] == [True, False]
     assert judge(2 * (400 + 150 * 2), system=APP)["room_retry"] is False  # not a judge call
+
+
+def test_a_retry_counts_as_a_deleted_first_reply_only_when_that_reply_is_not_in_the_cache_before_it():
+    """Review M-4: a recovered retry now keeps its first reply. Deleted means the first-try request has no
+    entry, or only one recorded after the retry (the same request asked again later, live)."""
+    stats = load_script()
+    batch = "Case 1\n<evidence>\nq\n</evidence>"  # one case: max_tokens 550, doubled 1100
+
+    def judge(max_tokens, created, user=batch):
+        e = entry('{"a": 1}', system=JUDGE, fmt=JSON_SCHEMA, created=created)
+        e["request"]["messages"][-1]["content"] = user
+        e["request"]["params"]["max_tokens"] = max_tokens
+        call = stats.to_call(e, "cache")
+        call["scope"] = "run-1"
+        return call
+
+    kept = [judge(550, "2026-10-23T10:00:00+00:00"), judge(1100, "2026-10-23T10:00:05+00:00")]
+    gone = [judge(1100, "2026-10-23T11:00:00+00:00", batch + "\nb")]
+    asked_again = [judge(1100, "2026-10-23T12:00:00+00:00", batch + "\nc"),
+                   judge(550, "2026-10-23T12:01:00+00:00", batch + "\nc")]  # fmt: skip
+    assert stats.deleted_first_replies(kept + gone + asked_again) == {"run-1": 2}
